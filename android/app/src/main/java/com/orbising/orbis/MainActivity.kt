@@ -1753,7 +1753,8 @@ internal fun ChatScreen(
     var input by remember(runtimeId, sessionId, state.deviceId) {
         mutableStateOf(model.loadDraft(runtimeId))
     }
-    val composerMode = composerAction(isWorking = runtime?.status == "running", input = if (kimiCode) "" else input)
+    val openClawComposer = (runtime?.agentKind ?: state.launchPage?.agentKind) == "openclaw"
+    val composerMode = composerAction(isWorking = runtime?.status == "running", input = if (openClawComposer || kimiCode) "" else input)
     var selectedSlashCommandName by remember(runtimeId) { mutableStateOf<String?>(null) }
     var modelConfigurationOpen by remember(runtimeId) { mutableStateOf(false) }
     var modelConfigurationSetting by remember(runtimeId) { mutableStateOf<String?>(null) }
@@ -1808,10 +1809,11 @@ internal fun ChatScreen(
     val attachedUploads = runtimeUploads.filter { it.taskId in attachedTaskIds }
     val attachablePaths = attachedUploads.filter { it.status == "completed" }.mapNotNull(UploadTask::remotePath)
     // 基础协议支持附件路径，不使用 `messageAttachments` 能力位（ADR-0012）。
-    val canAttachFiles = !kimiCode && runtime != null && state.hostId != null
+    val canAttachFiles = !kimiCode && !openClawComposer && runtime != null && state.hostId != null
     val filePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
+        if (!canAttachFiles) return@rememberLauncherForActivityResult
         uris.take(MAX_ATTACHMENTS_PER_MESSAGE).forEach { uri ->
             // 登记完立刻把任务挂到 composer 的附件 chip 上——上传进度必须可见，
             // 否则用户不知道文件正在传、也不知道为什么发送键是灰的。
@@ -2218,7 +2220,7 @@ internal fun ChatScreen(
                         allowCancel = !kimiCode,
                         onCancel = model::cancelQueuedMessage,
                     )
-                    OrbisCollapse(expanded = !kimiCode && deliveryChoicesVisible(showDeliveryChoices, runtime?.status)) {
+                    OrbisCollapse(expanded = !kimiCode && !openClawComposer && deliveryChoicesVisible(showDeliveryChoices, runtime?.status)) {
                         Row(
                             Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2245,7 +2247,7 @@ internal fun ChatScreen(
                             )
                         }
                     }
-                    SlashCommandPicker(
+                    if (!openClawComposer) SlashCommandPicker(
                         input = input,
                         commands = state.capabilities[runtimeId]?.commands.orEmpty(),
                         selectedCommandName = selectedSlashCommandName,
@@ -2330,7 +2332,7 @@ internal fun ChatScreen(
                             }
                         },
                         modifier = Modifier.weight(1f).onGloballyPositioned { sendFlight.composer = it.boundsInWindow() },
-                        placeholder = { Text(L10n.tr("发给 {0}，/ 命令", LocalAgentBrand.current.title), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        placeholder = { Text(L10n.tr(if (openClawComposer) "发给 {0}" else "发给 {0}，/ 命令", LocalAgentBrand.current.title), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         enabled = runtime != null || launchOpen,
                         minLines = 1,
                         maxLines = 5,
@@ -2338,7 +2340,7 @@ internal fun ChatScreen(
                     // 两侧按钮保持 48dp 触控区；输入框承担剩余宽度，多行输入时按钮贴底对齐。
                     val sendEnabled = when (composerMode) {
                         ComposerAction.Abort -> runtime != null
-                        ComposerAction.Send -> (runtime != null || launchOpen) && canSubmitInput(
+                        ComposerAction.Send -> (runtime != null || launchOpen) && (!openClawComposer || runtime?.status != "running") && canSubmitInput(
                             input,
                             state.capabilities[runtimeId]?.commands.orEmpty(),
                             selectedSlashCommandName,

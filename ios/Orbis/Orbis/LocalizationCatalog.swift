@@ -533,6 +533,7 @@ enum LocalizationCatalog {
         "参数": "Arguments",
         "参数接收中": "Receiving arguments",
         "发出第一句话并创建会话": "Send the first message and create the session",
+        "发给 {0}": "Message {0}",
         "发给 {0}，/ 命令": "Message {0}, / commands",
         "发送": "Send",
         "发送中": "Sending",

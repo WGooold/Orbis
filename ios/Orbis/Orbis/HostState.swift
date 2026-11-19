@@ -254,6 +254,14 @@ final class HostState: ObservableObject {
     }
     func negotiateCatalogReadFormat() { queryReads.connect() }
 
+    /// The same source version can have a different feature projection on a new handshake.
+    func invalidateBackendProjection() {
+        cancelRequests()
+        for name in ["catalog", "backends", "providers", "management", "operations"] { domains[name] = nil; missing[name] = nil }
+        catalogRange = nil; catalogQuery = nil; catalogQueryRows = []
+        queryReads.disconnect(resetProjection: true)
+    }
+
     func setCatalogVisible(_ visible: Bool) {
         if visible && !catalogVisible { catalogRecovered = false }
         catalogVisible = visible

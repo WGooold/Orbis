@@ -197,10 +197,12 @@ final class LiveActivityCoordinator: ObservableObject {
             let hostId = host.hostId
             let connection = host.connection
             let revision = revisions[hostId, default: 0]
-            let complete = !connection.homeRuntimesUpdating && !connection.runtimes.contains { runtime in
+            // Keep the local projection aligned with the Host's unnegotiated APNs kind set.
+            let runtimes = connection.runtimes.filter { connection.agentKind($0) != "openclaw" }
+            let complete = !connection.homeRuntimesUpdating && !runtimes.contains { runtime in
                 runtime.status == "idle" && runtime.backgroundTasks.map { !$0.confirmed } == true
             }
-            let facts = connection.runtimes.compactMap { runtime -> LiveActivityRuntimeFact? in
+            let facts = runtimes.compactMap { runtime -> LiveActivityRuntimeFact? in
                 guard let session = runtime.sessionId, let kind = runtime.agentKind else { return nil }
                 let execution = connection.agentState.snapshots[runtime.runtimeId]?.domains["execution"]
                 let tasks = runtime.backgroundTasks

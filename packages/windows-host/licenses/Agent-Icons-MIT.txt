@@ -1,14 +1,14 @@
-Agent identity marks (Pi, Codex, Claude)
+Agent identity marks (Pi, Codex, Claude, OpenClaw)
 
 Pi mark
 Source: https://pi.dev/logo-auto.svg
 Copyright (c) 2025 Mario Zechner
 
-Codex mark and Claude mark (Lobe Icons)
+Codex, Claude and OpenClaw marks (Lobe Icons)
 Source: https://github.com/lobehub/lobe-icons
 Copyright (c) 2023 LobeHub
 
-The Pi, Codex and Claude marks are distributed under the following MIT License. Their
+The Pi, Codex, Claude and OpenClaw marks are distributed under the following MIT License. Their
 product names and marks identify the corresponding third-party agents.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

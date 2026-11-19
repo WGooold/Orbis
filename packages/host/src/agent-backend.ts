@@ -71,6 +71,8 @@ export interface AgentBackend {
   /** 本后端名下的会话目录（§7.5）。失败抛错，由上层聚合（单后端失败不拖垮整个列表）。 */
   catalog(archived?: boolean): Promise<AgentSessionSummary[]>;
   catalogCoverage?(archived?: boolean): Promise<{ sessions: AgentSessionSummary[]; complete: boolean }>;
+  /** A bounded backend can return valid rows without asserting catalog exhaustion. */
+  catalogComplete?(): boolean;
   /** Effective configured provider, independent of any open session. Unknown on failure. */
   currentProvider?(): Promise<string | undefined>;
   sessionConfiguration?(cwd: string): Promise<SessionConfigurationCatalog>;

@@ -1,4 +1,4 @@
-import { DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_KIMI_CODE, type AgentKind } from "@orbis/protocol";
+import { DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_KIMI_CODE, DEVICE_FEATURE_OPENCLAW, type AgentKind } from "@orbis/protocol";
 import { isKimiId, KIMI_KIND } from "./kimi-sessions.js";
 export const DSH_DESKTOP_KIND = "dshDesktop" satisfies AgentKind;
 const isDshDesktopRuntime = (value: unknown): boolean => typeof value === "string" && value.startsWith("dsh-desktop:");
@@ -7,16 +7,19 @@ type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Obj : undefined;
 
 /** Each distinct hidden-kind set is one directory/cursor projection. */
-export type AgentView = 0 | 1 | 2 | 3;
-const views = [[], [KIMI_KIND], [DSH_DESKTOP_KIND], [DSH_DESKTOP_KIND, KIMI_KIND]] as const satisfies ReadonlyArray<readonly AgentKind[]>;
-export const agentViews = [0, 1, 2, 3] as const;
-export const hiddenKinds = (view: AgentView): readonly AgentKind[] => views[view];
+const negotiatedAgents = [
+  [KIMI_KIND, DEVICE_FEATURE_KIMI_CODE], [DSH_DESKTOP_KIND, DEVICE_FEATURE_DSH_DESKTOP], ["openclaw", DEVICE_FEATURE_OPENCLAW],
+] as const;
+export type AgentView = number;
+export const agentViews = Array.from({ length: 1 << negotiatedAgents.length }, (_, view) => view);
+export const hiddenKinds = (view: AgentView): readonly AgentKind[] => negotiatedAgents.flatMap(([kind], index) => view & (1 << index) ? [kind] : []);
 export function deviceAgentView(features?: ReadonlySet<string>): AgentView {
-  return ((features?.has(DEVICE_FEATURE_KIMI_CODE) ? 0 : 1) | (features?.has(DEVICE_FEATURE_DSH_DESKTOP) ? 0 : 2)) as AgentView;
+  return negotiatedAgents.reduce((view, [, feature], index) => view | (features?.has(feature) ? 0 : 1 << index), 0);
 }
 export const allowsAgent = (view: AgentView, kind: unknown): boolean => !hiddenKinds(view).some(hidden => hidden === kind);
 export const allowsRuntime = (view: AgentView, id: unknown): boolean =>
-  (!(view & 1) || !isKimiId(id)) && (!(view & 2) || !isDshDesktopRuntime(id));
+  (!(view & 1) || !isKimiId(id)) && (!(view & 2) || !isDshDesktopRuntime(id)) &&
+  (!(view & 4) || typeof id !== "string" || !id.startsWith("openclaw:"));
 export function allowsAgentIdentity(view: AgentView, value: object): boolean {
   const row = value as Obj;
   return allowsAgent(view, row.agentKind) && allowsAgent(view, row.kind) && allowsRuntime(view, row.sessionId) && allowsRuntime(view, row.runtimeId);
@@ -49,6 +52,7 @@ export function projectAgentMessage(view: AgentView, message: object): object | 
       const next: Obj = { ...value, runtimes: filter(view, value.runtimes) };
       for (const key of ["agents", "launchableAgents"]) if (Array.isArray(value[key])) next[key] = value[key].filter(kind => allowsAgent(view, kind));
       if (!allowsAgent(view, DSH_DESKTOP_KIND)) delete next.dshDesktop;
+      if (!allowsAgent(view, "openclaw")) delete next.deviceFeatures;
       return next;
     }
     case "session.list.result": return { ...value, sessions: filter(view, value.sessions), currentProviders: filter(view, value.currentProviders) };

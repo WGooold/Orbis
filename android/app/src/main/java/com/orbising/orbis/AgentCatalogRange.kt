@@ -124,6 +124,11 @@ internal class CatalogViewReads(
     private var recoveries = 0
     private var cursors = mutableSetOf<String>()
 
+    @Synchronized fun resetProjection() {
+        supported = false; capability = null; read = null; result = null
+        cursors.clear(); recoveries = 0
+    }
+
     @Synchronized fun connect() {
         supported = false; read = null
         if (result?.error != null) result = null

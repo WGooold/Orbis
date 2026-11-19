@@ -9,6 +9,7 @@ import { DEVICE_STORE_FILE, HOST_IDENTITY_FILE, X25519_KEY_BYTES, deriveSharedSe
 import QRCode from "qrcode";
 import { hostRecoveryProof, type AgentStateRangeRequest } from "@orbis/protocol";
 import { HostService } from "./host-service.js";
+import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
 import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
@@ -223,8 +224,19 @@ export class DesktopRuntime {
     this.#usage.start();
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
     return { hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
+      ...(this.#qa ? {} : { openClaw: await readOpenClawDesktopSettings(this.#stateDir) }),
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
       iosAppDownloadQr: await QRCode.toDataURL(IOS_APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
+  }
+
+  async saveOpenClaw(url: unknown, token: unknown): Promise<Awaited<ReturnType<typeof saveOpenClawDesktopSettings>>> {
+    if (this.#qa) throw new Error("QA Host 不修改 OpenClaw 配置");
+    try { return await saveOpenClawDesktopSettings(this.#stateDir, url, token); }
+    catch (error) {
+      // Filesystem diagnostics can contain paths; expose only the safe validation messages.
+      if (error instanceof Error && !("code" in error)) throw error;
+      throw new Error("无法保存 OpenClaw 配置，请检查 Host 状态目录权限");
+    }
   }
 
   #managedRoot(): string { return agentInstallRoot(); }
@@ -717,6 +729,7 @@ export class DesktopRuntime {
       let relayAuthenticated = false;
       const service = await HostService.create({
         ...(kimiRuntime === undefined ? {} : { kimiCodeRuntime: kimiRuntime }),
+        ...(this.#qa ? { openClaw: false } : {}),
         providers: this.#providers,
         providerUsage: (kind, id) => this.#usage.get(kind, id),
         managementBackends: () => (["pi", "codex", "dsh"] as const).map(kind => {

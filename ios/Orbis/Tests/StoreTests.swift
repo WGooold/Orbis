@@ -1545,6 +1545,38 @@ struct StoreTests {
         #expect(store.runtimes.map(\.runtimeId) == ["pi-a"])
     }
 
+    // OPENCLAW-03: an offline Gateway does not cause repeated declarations; a
+    // later advertisement or fresh handshake can still introduce the backend.
+    @Test func negotiatesOpenClawOnAuthenticatedReadyEvenWhenGatewayIsOffline() async throws {
+        let (store, transport) = setup()
+        let hello: [String: Any] = ["type": "device.ready", "modelEpoch": "m", "runtimes": [],
+            "hostFeatures": ["device.features", "agent.openclaw"], "sessionConfiguration": 1, "agents": ["pi"], "launchableAgents": ["pi"]]
+        await transport.emit(hello, channel: nil)
+        #expect(transport.sent.allSatisfy { $0["type"] as? String != "device.features" })
+        await transport.emit(hello)
+        await transport.emit(hello)
+        func declarations() -> [[String: Any]] { transport.sent.filter { $0["type"] as? String == "device.features" } }
+        #expect(declarations().count == 1)
+        #expect(declarations().first?["features"] as? [String] == ["agent.dshDesktop", "agent.openclaw"])
+        #expect(!store.openClawNegotiated)
+        let offline = hello.merging(["deviceFeatures": ["agent.dshDesktop", "agent.openclaw"], "dshDesktop": NSNull()]) { _, new in new }
+        await transport.emit(offline)
+        await transport.emit(offline)
+        #expect(store.openClawNegotiated)
+        #expect(store.launchableAgents == ["pi"])
+        #expect(declarations().count == 1)
+        let claw = runtime("openclaw:fixture", session: "openclaw:session")
+        await transport.emit(offline.merging(["runtimes": [claw], "agents": ["pi", "openclaw"], "launchableAgents": ["pi", "openclaw"]]) { _, new in new })
+        #expect(store.launchableAgents == ["pi", "openclaw"])
+        #expect(store.runtimes.first?.agentKind == "openclaw")
+        transport.state?(.connecting, nil)
+        await transport.emit(hello)
+        #expect(declarations().count == 2)
+        await transport.ready([])
+        #expect(!store.openClawNegotiated)
+        #expect(!store.supportsSessionConfiguration(for: "openclaw"))
+    }
+
     @Test func authenticatedDesktopAvailabilityClearsWhenOmitted() async throws {
         let (store, transport) = setup()
         await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "runtimes": [],

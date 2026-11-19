@@ -6,12 +6,13 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { DeviceHandshake, E2eChannel, buildHandshakeEnvelope, loadOrCreateHostIdentity, saveDeviceStore, readHandshakeEnvelope } from "@orbis/e2e";
 import { EnvelopeReassembler, fragmentEnvelope, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
 import type { RelayServer } from "@orbis/relay";
 import { createBusinessRelayServer as createRelayServer, relayBusinessDeviceURL, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 import { HostService as SourceHostService } from "./host-service.js";
+import type { OpenClawConfig } from "./openclaw-gateway.js";
 
 // Optional additional oracle from an unchanged installed release. Native require
 // preserves its own dependency resolution, outside Vitest's current-source aliases.
@@ -21,6 +22,9 @@ const compatibleRoot = process.env.ORBIS_COMPATIBLE_RUNTIME;
 // Native import supports the runtime's top-level await and keeps packaged dependency
 // resolution outside Vitest's aliases. The path is an explicit local test fixture.
 const nativeImport = nativeRequire("../../../scripts/test-fixtures/import-native.cjs") as (specifier: string) => Promise<{ HostService: typeof SourceHostService }>;
+// Optional source archives built from the published release tags, kept outside Vitest aliases.
+const releaseProtocolPaths = (process.env.ORBIS_RELEASE_PROTOCOLS ?? "").split(",").filter(Boolean);
+const releaseProtocols = await Promise.all(releaseProtocolPaths.map(path => import(/* @vite-ignore */ pathToFileURL(path).href) as Promise<typeof import("@orbis/protocol")>));
 const HostService = compatibleRoot ? (await nativeImport(pathToFileURL(join(compatibleRoot, "packages/host/dist/host-service.js")).href)).HostService : SourceHostService;
 const legacyProtocol = legacyRoot ? nativeRequire(join(legacyRoot, "node_modules/@orbis/protocol/dist/index.js")) as typeof import("@orbis/protocol") : undefined;
 const legacyE2e = legacyRoot ? nativeRequire(join(legacyRoot, "node_modules/@orbis/e2e/dist/index.js")) as typeof import("@orbis/e2e") : undefined;
@@ -113,7 +117,7 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     if (directory) await rm(directory, { recursive: true, force: true });
     keys.clear();
   });
-  const setup = async (): Promise<void> => {
+  const setup = async (openClaw: OpenClawConfig | false = false): Promise<void> => {
     directory = await mkdtemp(join(tmpdir(), "orbis-wire-compat-"));
     hostId = (await loadOrCreateHostIdentity({ dir: directory })).hostId;
     const devices = ["phone18", "phone19"].map(deviceId => {
@@ -122,7 +126,7 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     });
     await saveDeviceStore(directory, { version: 1, devices });
     relay = await createRelayServer({ port: 0, runtimeCredentials: ["isolated-runtime"], deviceCredentials: devices.map(device => ({ deviceId: device.deviceId, hostId, name: device.label, credential: device.deviceId })) });
-    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "isolated-runtime", stateDir: directory, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "isolated-runtime", stateDir: directory, openClaw, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
     await host.start();
   };
   const connect = async (version: 18 | 19, path: "relay" | "lan", outerVersion: 18 | 19 = version, bootstrap = true): Promise<OldPhone> => {
@@ -179,6 +183,138 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     expect(phone.errors).toEqual([]);
     expect(host.devices).toHaveLength(2);
   });
+
+  // OPENCLAW-02: exercise the SDK, Host and Relay together with a synthetic Gateway.
+  // The same device ID can reconnect from an older App without inheriting its old capability.
+  it("keeps OpenClaw private to the negotiated App view, including after rollback", async () => {
+    const gateway = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(gateway, "listening");
+    const address = gateway.address(); if (!address || typeof address === "string") throw new Error("No Gateway port");
+    const methods = ["sessions.list", "sessions.create", "sessions.subscribe", "sessions.messages.subscribe", "sessions.messages.unsubscribe",
+      "sessions.patch", "chat.history", "chat.send", "chat.abort"];
+    const rows: Array<{ key: string; sessionId: string; spawnedCwd: string; archived: boolean }> = [];
+    const requests: string[] = [];
+    let loseCreateReceipt = true;
+    gateway.on("connection", socket => {
+      socket.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "isolated-fixture", ts: Date.now() } }));
+      socket.on("message", raw => {
+        const { id, method, params } = JSON.parse(raw.toString()); requests.push(method);
+        let payload: unknown;
+        if (method === "connect") payload = { type: "hello-ok", protocol: 4, server: { version: "fixture", connId: "fixture" },
+          features: { methods, events: [] }, snapshot: { presence: [], health: {}, stateVersion: { presence: 0, health: 0 }, uptimeMs: 0 },
+          auth: { role: "operator", scopes: ["operator.read", "operator.write"] },
+          policy: { maxPayload: 1000000, maxBufferedBytes: 1000000, tickIntervalMs: 10000 } };
+        else if (method === "sessions.list") payload = { sessions: rows.filter(row => row.archived === (params.archived === true)), hasMore: false };
+        else if (method === "sessions.subscribe") payload = { subscribed: true };
+        else if (method === "sessions.messages.subscribe") payload = { subscribed: true, key: params.key };
+        else if (method === "sessions.messages.unsubscribe") payload = { unsubscribed: true, key: params.key };
+        else if (method === "sessions.create") {
+          const entry = { key: `agent:main:${params.key}`, sessionId: `native-${rows.length}`, spawnedCwd: params.cwd, archived: false };
+          rows.push(entry);
+          if (loseCreateReceipt) {
+            loseCreateReceipt = false;
+            socket.close(1001);
+            return;
+          }
+          payload = { ok: true, key: entry.key, sessionId: entry.sessionId, entry };
+        } else if (method === "chat.history") {
+          const row = rows.find(row => row.key === params.sessionKey)!;
+          payload = { sessionKey: row.key, sessionId: row.sessionId, hasMore: false, messages: [{ role: "assistant", content: "fixture-history", __openclaw: { id: "occurrence-1" } }] };
+        } else if (method === "chat.send") payload = { runId: params.idempotencyKey, status: "started" };
+        else if (method === "chat.abort") payload = { aborted: true };
+        else if (method === "sessions.patch") {
+          const row = rows.find(row => row.key === params.key && row.sessionId === params.expectedSessionId)!;
+          row.archived = params.archived;
+          payload = { ok: true, key: row.key, entry: { sessionId: row.sessionId, ...(row.archived ? { archivedAt: 1 } : {}) } };
+        }
+        socket.send(JSON.stringify({ type: "res", id, ok: payload !== undefined, payload }));
+      });
+    });
+    try {
+      await setup({ url: `ws://127.0.0.1:${address.port}`, token: "fixture-only" });
+      await vi.waitFor(() => expect(requests).toContain("sessions.list"));
+      const released = await connect(18, "relay");
+      const modern = await connect(19, "lan");
+      released.request({ type: "device.features", features: ["agent.dshDesktop"] });
+      const legacyReady = await released.take("device.ready");
+      expect(legacyReady).not.toHaveProperty("deviceFeatures");
+      for (const protocol of releaseProtocols) protocol.RelayToDeviceMessageSchema.parse({ ...legacyReady, protocolVersion: protocol.PROTOCOL_VERSION });
+      modern.request({ type: "device.features", features: ["agent.openclaw"] });
+      const negotiated = await modern.take("device.ready");
+      expect(negotiated).toMatchObject({ deviceFeatures: ["agent.openclaw"], launchableAgents: expect.arrayContaining(["openclaw"]) });
+      expect(negotiated).not.toHaveProperty("dshDesktop");
+
+      modern.request({ type: "session.configuration.read", requestId: "options", agentKind: "openclaw", cwd: directory });
+      const options = await modern.take("session.configuration.result", "options");
+      expect(options).toMatchObject({ catalog: { models: [], permissions: [] } });
+      const launch = { type: "session.launch", requestId: "start", launchId: "launch-1", agentKind: "openclaw", cwd: directory,
+        binding: options.binding, revision: options.revision, values: {}, spawnMode: "headless" };
+      modern.request(launch);
+      expect(await modern.take("session.launch.result", "start")).toMatchObject({ phase: "preparing" });
+      expect(await modern.take("session.launch.result", "start")).toMatchObject({ phase: "unknown" });
+      await vi.waitFor(() => expect(requests.filter(method => method === "connect")).toHaveLength(2), { timeout: 5000 });
+      await vi.waitFor(() => expect(host.readHostState(["backends"]).domains[0]?.value).toMatchObject({ agents: expect.arrayContaining(["openclaw"]) }));
+      modern.request({ type: "session.launch.read", requestId: "recover", launchId: "launch-1" });
+      const recovered = await modern.take("session.launch.result", "recover");
+      expect(recovered).toMatchObject({ phase: "ready", spawnMode: "headless", sessionId: expect.stringMatching(/^openclaw:/) });
+      expect(requests.filter(method => method === "sessions.create")).toHaveLength(1);
+      expect(requests).not.toContain("chat.send");
+      const sessionId = recovered.sessionId as string;
+      const { runtime } = await modern.take("runtime.online");
+      const runtimeId = (runtime as { runtimeId: string }).runtimeId;
+      modern.request({ type: "runtime.command", runtimeId, commandId: "read-history",
+        command: { type: "session.sync", sessionId, syncId: "preview", range: "preview" } });
+      await vi.waitFor(() => expect(modern.messages).toContainEqual(expect.objectContaining({ type: "runtime.event", runtimeId,
+        event: expect.objectContaining({ type: "session.snapshot", syncId: "preview", entries: [expect.objectContaining({
+          data: { message: expect.objectContaining({ content: [{ type: "text", text: "fixture-history" }] }) },
+        })] }) })));
+      const noUpload = join(directory, "should-not-exist");
+      modern.request({ type: "file.upload.init", requestId: "upload-disabled", runtimeId, directory: noUpload, fileName: "x", size: 1, sha256: "a".repeat(64) });
+      expect(await modern.take("file.upload.failed", "upload-disabled")).toMatchObject({ code: "unsupported_command" });
+      await expect(readFile(noUpload)).rejects.toMatchObject({ code: "ENOENT" });
+      modern.request({ type: "runtime.command", runtimeId, commandId: "prompt", command: { type: "user_message", text: "fixture prompt", messageId: "prompt-1" } });
+      await vi.waitFor(() => expect(modern.messages).toContainEqual(expect.objectContaining({ type: "runtime.event", runtimeId,
+        event: expect.objectContaining({ type: "command.result", commandId: "prompt", status: "success" }) })));
+      modern.request({ type: "runtime.command", runtimeId, commandId: "stop", command: { type: "stop" } });
+      await vi.waitFor(() => expect(modern.messages).toContainEqual(expect.objectContaining({ type: "runtime.event", runtimeId,
+        event: expect.objectContaining({ type: "command.result", commandId: "stop", status: "success" }) })));
+      for (const phone of [released, modern]) {
+        phone.request({ type: "agent.state.request", scope: "host", domains: ["backends", "catalog"], requestId: "catalog" });
+        const snapshot = await phone.take("agent.state.snapshot", "catalog");
+        expect(JSON.stringify(snapshot).includes(sessionId)).toBe(phone === modern);
+        for (const protocol of releaseProtocols) {
+          if (phone === modern) expect(protocol.RelayToDeviceMessageSchema.safeParse(negotiated).success).toBe(false);
+          else {
+            protocol.RelayToDeviceMessageSchema.parse({ ...snapshot, protocolVersion: protocol.PROTOCOL_VERSION });
+            for (const domain of (snapshot.domains as Array<{ domain: string; value: unknown }>)) {
+              if (domain.domain === "catalog") protocol.HostCatalogStateSchema.parse(domain.value);
+              if (domain.domain === "backends") protocol.HostBackendsStateSchema.parse(domain.value);
+            }
+          }
+        }
+      }
+      released.request({ type: "session.activate", requestId: "reject-legacy", target: { type: "resume", sessionId } });
+      expect(await released.take("protocol.error", "reject-legacy")).toMatchObject({ code: "agent_feature_required" });
+      expect(JSON.stringify(released.messages)).not.toContain(sessionId);
+      expect(await readFile(join(directory, "openclaw-session-configuration.json"), "utf8")).toContain(sessionId);
+      await expect(readFile(join(directory, "session-configuration.json"))).rejects.toMatchObject({ code: "ENOENT" });
+
+      modern.request({ type: "session.archive", agentKind: "openclaw", sessionId, requestId: "archive", archived: true });
+      expect(await modern.take("session.archive.changed", "archive")).toMatchObject({ archived: true });
+      modern.request({ type: "session.archive", agentKind: "openclaw", sessionId, requestId: "restore", archived: false });
+      expect(await modern.take("session.archive.changed", "restore")).toMatchObject({ archived: false });
+      modern.request({ type: "session.activate", requestId: "resume", target: { type: "resume", sessionId } });
+      expect(await modern.take("session.activated", "resume")).toMatchObject({ sessionId, agentKind: "openclaw" });
+      const rolledBack = await connect(19, "lan");
+      rolledBack.request({ type: "session.launch.read", launchId: "launch-1", requestId: "old-read" });
+      expect(await rolledBack.take("session.launch.result", "old-read")).toMatchObject({ phase: "absent" });
+      rolledBack.request({ type: "agent.state.request", scope: "device", domains: ["operations"], requestId: "old-operations" });
+      expect(JSON.stringify(await rolledBack.take("agent.state.snapshot", "old-operations"))).not.toContain(runtimeId);
+    } finally {
+      for (const socket of gateway.clients) socket.terminate();
+      await new Promise<void>(resolve => gateway.close(() => resolve()));
+    }
+  }, 20_000);
 
   it("does not publish ready or select an unbound Relay path after invalid first requests", async () => {
     await setup();

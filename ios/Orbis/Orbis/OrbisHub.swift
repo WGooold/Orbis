@@ -320,6 +320,8 @@ final class OrbisStore: ObservableObject {
     var commands: [String: [SlashCommand]] { activeConnection.commands }
     var supportedAgents: [String]? { activeConnection.supportedAgents }
     var sessionConfigurationSupported: Bool { activeConnection.sessionConfigurationSupported }
+    var openClawNegotiated: Bool { activeConnection.openClawNegotiated }
+    func supportsSessionConfiguration(for agent: String) -> Bool { activeConnection.supportsSessionConfiguration(for: agent) }
     var sessionConfiguration: SessionConfigurationSnapshot? { activeConnection.sessionConfiguration }
     var sessionConfigurationValues: SessionConfigurationValues { activeConnection.sessionConfigurationValues }
     var sessionConfigurationRequest: String? { activeConnection.sessionConfigurationRequest }

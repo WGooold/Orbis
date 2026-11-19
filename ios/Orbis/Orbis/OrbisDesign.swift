@@ -186,6 +186,7 @@ struct OrbisPalette {
         case "dsh", "dshDesktop": return Color(hex: dark ? 0xA9BBFF : 0x3550CF)
         case kimiCodeKind: return Color(hex: dark ? 0xBDC6FF : 0x343B8E)
         case "claude": return Color(hex: dark ? 0xF0B48C : 0x9A4521)
+        case "openclaw": return Color(hex: dark ? 0xFF8A75 : 0xA93531)
         default: return Color(hex: dark ? 0xF0A9D3 : 0x8C3870)
         }
     }
@@ -2218,7 +2219,7 @@ struct AgentEmblem: View {
         }.accessibilityLabel(agentTitle(kind))
     }
     private var mark: some View {
-        Image(agentAsset(kind)).renderingMode(kind == "pi" || kind == "claude" || kind == nil ? .original : .template)
+        Image(agentAsset(kind)).renderingMode(kind == "pi" || kind == "claude" || kind == "openclaw" || kind == nil ? .original : .template)
             .resizable().scaledToFit().foregroundStyle(OrbisPalette(scheme).agent(kind))
             .frame(width: size * (recessed ? 0.56 : 0.9), height: size * (recessed ? 0.56 : 0.9))
             .modifier(OrbisActionPulse())
@@ -2231,6 +2232,7 @@ func agentTitle(_ kind: String?) -> String {
     case "dsh", "dshDesktop": return "DeepSeek"
     case "claude": return "Claude Code"
     case kimiCodeKind: return "Kimi Code"
+    case "openclaw": return "OpenClaw"
     default: return "Pi"
     }
 }
@@ -2241,6 +2243,7 @@ private func agentAsset(_ kind: String?) -> String {
     case "dsh", "dshDesktop": return "AgentDeepSeek"
     case "claude": return "AgentClaude"
     case kimiCodeKind: return "AgentKimi"
+    case "openclaw": return "AgentOpenClaw"
     default: return "AgentPi"
     }
 }

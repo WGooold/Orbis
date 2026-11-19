@@ -144,6 +144,7 @@ final class HostConnection: ObservableObject {
     @Published private(set) var kimiCodeSupported = false {
         didSet { if oldValue != kimiCodeSupported { directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
     }
+    @Published private(set) var openClawNegotiated = false
     @Published private(set) var sessionConfiguration: SessionConfigurationSnapshot?
     @Published private(set) var proposedSessionConfiguration: SessionConfigurationValues?
     @Published private(set) var sessionConfigurationRequest: String?
@@ -194,8 +195,12 @@ final class HostConnection: ObservableObject {
     }
     var sessionConfigurationValues: SessionConfigurationValues { proposedSessionConfiguration ?? sessionConfiguration?.values ?? SessionConfigurationValues() }
 
+    func supportsSessionConfiguration(for agent: String) -> Bool {
+        sessionConfigurationSupported && (agent != "openclaw" || openClawNegotiated) && (agent != kimiCodeKind || kimiCodeSupported)
+    }
+
     func loadSessionConfiguration(agent: String, cwd: String) {
-        guard sessionConfigurationSupported, connection == .secured, !cwd.isEmpty, agent != kimiCodeKind || kimiCodeSupported else { return }
+        guard supportsSessionConfiguration(for: agent), connection == .secured, !cwd.isEmpty else { return }
         let id = UUID().uuidString
         startConfigurationTimeout(id)
         sessionConfigurationRequest = id; sessionConfiguration = nil; proposedSessionConfiguration = nil; sessionConfigurationError = nil
@@ -205,7 +210,7 @@ final class HostConnection: ObservableObject {
     }
 
     func saveSessionConfiguration(_ values: SessionConfigurationValues) {
-        guard connection == .secured, let config = sessionConfiguration else { return }
+        guard connection == .secured, let config = sessionConfiguration, config.agentKind != "openclaw" else { return }
         let id = UUID().uuidString; startConfigurationTimeout(id); sessionConfigurationRequest = id; proposedSessionConfiguration = values; sessionConfigurationError = nil
         if !transport.send(["type": "session.configuration.save", "protocolVersion": orbisProtocolVersion, "requestId": id,
                             "agentKind": config.agentKind, "cwd": config.cwd, "binding": config.binding, "revision": config.revision, "values": values.payload]) {
@@ -225,9 +230,8 @@ final class HostConnection: ObservableObject {
         }
     }
     private func restoreConfiguredLaunch() {
-        guard sessionConfigurationSupported, let saved = readLaunchJournal(), let id = saved["launchId"] as? String,
-              let agent = saved["agentKind"] as? String, let cwd = saved["cwd"] as? String,
-              connection == .secured, agent != kimiCodeKind || kimiCodeSupported else { return }
+        guard let saved = readLaunchJournal(), let id = saved["launchId"] as? String,
+              let agent = saved["agentKind"] as? String, let cwd = saved["cwd"] as? String, connection == .secured, supportsSessionConfiguration(for: agent) else { return }
         configuredLaunchId = id
         let rejected = saved["rejected"] as? Bool == true
         if launching == nil && (saved["sessionId"] == nil || (saved["firstMessageId"] as? String).flatMap { pendingSends.item($0) } == nil) {
@@ -264,7 +268,8 @@ final class HostConnection: ObservableObject {
             basis: ledgerBasis(OperationKinds.runtimesDomain), payload: .launch(requestId: id, placeholder: placeholder), written: false, now: Date())
         guard creation == .created else { return false }
         let payload: [String: Any] = ["type": "session.launch", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id,
-            "agentKind": agent, "cwd": cwd, "binding": config.binding, "revision": config.revision, "values": sessionConfigurationValues.payload, "spawnMode": kimiSpawnMode(agent)]
+            "agentKind": agent, "cwd": cwd, "binding": config.binding, "revision": config.revision, "values": agent == "openclaw" ? SessionConfigurationValues().payload : sessionConfigurationValues.payload,
+            "spawnMode": agent == "openclaw" ? "headless" : kimiSpawnMode(agent)]
         let firstId = UUID().uuidString, firstCommand = UUID().uuidString
         guard let persisted = writeLaunchJournal(payload.merging(["firstMessage": firstMessage, "firstMessageId": firstId, "firstCommandId": firstCommand]) { _, new in new }, creating: true) else {
             ledger.remove(id); return false
@@ -926,7 +931,7 @@ final class HostConnection: ObservableObject {
         }
         pairings = []
         guard selectedHostId == hostId else { return }
-        connectionGeneration = UUID()
+        connectionGeneration = UUID(); filteredReady = nil
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
@@ -949,7 +954,7 @@ final class HostConnection: ObservableObject {
 
     func shutdown() {
         clearFeedbackScope()
-        connectionGeneration = UUID()
+        connectionGeneration = UUID(); filteredReady = nil
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
@@ -979,7 +984,7 @@ final class HostConnection: ObservableObject {
 
     private func connect(pairing: HostPairing, identity: DeviceIdentity) {
         homeDirectoryReceived = false
-        connectionGeneration = UUID()
+        connectionGeneration = UUID(); filteredReady = nil
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
@@ -1034,10 +1039,10 @@ final class HostConnection: ObservableObject {
             else { self.ledgerOpenConnection() }
             self.connection = state
             if state != .secured { self.pathRTT = nil }
-            if state != .secured { self.homeDirectoryReceived = false }
+            if state != .secured { self.homeDirectoryReceived = false; self.filteredReady = nil }
             self.recordConnectionEvent(L10n.tr("连接：{0}", state.rawValue))
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
-            if state != .secured { self.kimiCodeSupported = false; self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
+            if state != .secured { self.openClawNegotiated = false; self.kimiCodeSupported = false; self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
             if state == .offline || state == .connecting {
                 self.toolContent.close(); self.turnFileChanges.disconnected()
                 self.activePath = nil
@@ -1836,6 +1841,7 @@ final class HostConnection: ObservableObject {
     func activate(_ session: SessionSummary) {
         let kimi = isKimiCode(kind: session.agentKind, id: session.sessionId)
         guard !kimi || kimiCodeSupported else { return }
+        if session.agentKind == "openclaw", !openClawNegotiated { return }
         if let mismatch = providerMismatch(session) { sessionOperationErrors[session.sessionId] = mismatch; return }
         if let runtime = runtimes.first(where: { $0.sessionId == session.sessionId }) {
             selectRuntime(runtime.runtimeId)
@@ -1848,19 +1854,24 @@ final class HostConnection: ObservableObject {
     }
 
     func createSession(agentKind: String, cwd: String) {
-        guard !cwd.isEmpty, agentKind != kimiCodeKind || kimiCodeSupported && sessionConfigurationSupported else { return }
-        if sessionConfigurationSupported { _ = createSession(agentKind: agentKind, cwd: cwd, firstMessage: ""); return }
+        guard !cwd.isEmpty, !["openclaw", kimiCodeKind].contains(agentKind) || supportsSessionConfiguration(for: agentKind) else { return }
+        if supportsSessionConfiguration(for: agentKind) { _ = createSession(agentKind: agentKind, cwd: cwd, firstMessage: ""); return }
         activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new")
     }
     /// S49 / SC70: an empty draft reuses the original windowed launch; a first sentence also queues a send.
     func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
         reconcilePendingSends()
-        guard !cwd.isEmpty, connection == .secured, activationRequestId == nil,
-              agentKind != kimiCodeKind || kimiCodeSupported && sessionConfigurationSupported else { return false }
-        if !sessionConfigurationSupported && hasLaunchJournal {
+        guard !cwd.isEmpty, connection == .secured, activationRequestId == nil else { return false }
+        if agentKind == "openclaw" || agentKind == kimiCodeKind {
+            guard supportsSessionConfiguration(for: agentKind), (launchableAgents ?? supportedAgents ?? []).contains(agentKind) else { return false }
+            if firstMessage.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
+                composerFeedback(L10n.tr("请从命令菜单选择斜杠命令。"), newSession: true); return false
+            }
+        }
+        if !supportsSessionConfiguration(for: agentKind) && hasLaunchJournal {
             sessionLaunchError = L10n.tr("请先核对上一次启动及首句结果"); return false
         }
-        if sessionConfigurationSupported {
+        if supportsSessionConfiguration(for: agentKind) {
             let text = firstMessage.trimmingCharacters(in: .whitespacesAndNewlines)
             guard text.isEmpty || validatedMessageBody(text, newSession: true) != nil else { return false }
             guard ledger.operations.filter({ !$0.phase.isSettled }).count + (text.isEmpty ? 1 : 2) <= ledger.capacity else { return false }
@@ -1969,8 +1980,8 @@ final class HostConnection: ObservableObject {
 
     /// ADR-0049 §6.4 `archive`：卡片立即移到目标列表；回执、断线、期限与核对全部交给账本。
     func archive(_ session: SessionSummary, archived: Bool) {
-        guard connection == .secured, let kind = session.agentKind,
-              !isKimiCode(kind: kind, id: session.sessionId) || kimiCodeSupported else { return }
+        if session.agentKind == "openclaw", !openClawNegotiated { return }
+        guard connection == .secured, let kind = session.agentKind, !isKimiCode(kind: kind, id: session.sessionId) || kimiCodeSupported else { return }
         let requestId = UUID().uuidString
         let creation = ledger.create(opId: requestId, kind: OperationKinds.archive,
                                      target: OperationKinds.archiveTarget(agentKind: kind, sessionId: session.sessionId),
@@ -2465,6 +2476,7 @@ final class HostConnection: ObservableObject {
         if isKimiCode(kind: agentKind(runtime), id: runtime.runtimeId) {
             guard kimiCodeSupported, runtime.status != "running", delivery == nil, attachmentIds.isEmpty else { return false }
         }
+        if agentKind(runtime) == "openclaw", !openClawNegotiated || delivery != nil || !attachmentIds.isEmpty || runtime.status == "running" { return false }
         guard let body = validatedMessageBody(text, attachmentCount: attachmentIds.count) else { return false }
         let attachments = transfers.currentTasks.filter { attachmentIds.contains($0.id) && $0.runtimeId == runtime.runtimeId && $0.sessionId == runtime.sessionId && $0.direction == "upload" }
         guard attachments.count == attachmentIds.count, attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }) else { return false }
@@ -2986,28 +2998,35 @@ final class HostConnection: ObservableObject {
             if let selectedRuntime { syncSession(selectedRuntime, force: true) }
         case "device.ready":
             guard channel != nil, let values = message["runtimes"] as? [[String: Any]] else { return }
-            let features = deviceAgentFeatures(message)
-            // A Host that can show DeepSeek Desktop first sends the view released Apps parse (no `dshDesktop` key).
-            // Declare the feature and wait for the full view, so a selected Desktop session is never dropped.
-            if !features.isEmpty, message["dshDesktop"] == nil,
-               message["_orbisFilteredFallback"] == nil,
-               transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": features]) {
-                let id = UUID()
-                filteredReady = (id, message, channel)
-                Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    guard let self, let pending = self.filteredReady, pending.id == id else { return }
-                    self.filteredReady = nil
-                    var fallback = pending.message; fallback["_orbisFilteredFallback"] = true
-                    await self.receive(fallback, channel: pending.channel)
+            // OpenClaw's echo is independent of Gateway readiness. The old Host
+            // continues to signal Desktop acceptance with the presence of its status key.
+            let features = Set(message["hostFeatures"] as? [String] ?? [])
+            let supportsRender = features.contains(messageRenderFeature)
+            let admittedOpenClaw = features.contains("agent.openclaw") && (message["deviceFeatures"] as? [String])?.contains("agent.openclaw") == true
+            if features.contains("device.features"), message["_orbisFilteredFallback"] == nil,
+               message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw {
+                if filteredReady != nil { return }
+                let requested = deviceAgentFeatures(message)
+                if transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": requested]) {
+                    let id = UUID()
+                    filteredReady = (id, message, channel)
+                    Task { [weak self] in
+                        do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                        guard let self, let pending = self.filteredReady, pending.id == id else { return }
+                        var fallback = pending.message; fallback["_orbisFilteredFallback"] = true
+                        await self.receive(fallback, channel: pending.channel)
+                    }
+                    return
                 }
-                return
             }
             filteredReady = nil
             let previousDisplayVersion = expectedMessageDisplayVersion
             expectedMessageDisplayVersion = !supportsRender ? legacyDisplayProjectionVersion :
                 (message["dshDesktop"] == nil ? nil : messageDisplayProjectionVersion)
             let displayVersionChanged = previousDisplayVersion != expectedMessageDisplayVersion
+            let projectionChanged = openClawNegotiated != admittedOpenClaw
+            openClawNegotiated = admittedOpenClaw
+            if projectionChanged { hostState.invalidateBackendProjection() }
             let catalogWasConnected = hostState.connected
             historyWindowSupported = false
             historyInterest = HistoryWindowInterest()
@@ -3020,7 +3039,10 @@ final class HostConnection: ObservableObject {
                 recordConnectionEvent("catalog.decode_failed"); hostState.refresh(["catalog"]); return
             }
             hostState.setConnection(selectedHost, connected: true)
-            if catalogWasConnected { hostState.negotiateCatalogReadFormat() }
+            if catalogWasConnected {
+                hostState.negotiateCatalogReadFormat()
+                if projectionChanged { hostState.refresh(force: true) }
+            }
             agentState.setConnection(selectedHost, connected: true)
             notifications.setConnection(selectedHost, connected: true)
             guard hostState.beginEpoch(message["modelEpoch"] as? String), agentState.beginEpoch(message["modelEpoch"] as? String) else { return }
@@ -3046,7 +3068,9 @@ final class HostConnection: ObservableObject {
             if let selectedRuntime { saveLastSession(selectedRuntime) }
             setHistoryConnection(true)
             connection = .secured
+            for condition in FeedbackCondition.allCases { feedback.resolve(condition) }
             if sessionLaunchErrorAwaitsConnection { sessionLaunchError = nil }
+            if browse?.error == L10n.tr("未连接到电脑，连接恢复后可重试。") { browse = nil }
             hostState.setConnection(selectedHost, connected: true)
             agentState.setConnection(selectedHost, connected: true)
             notifications.setConnection(selectedHost, connected: true)
@@ -4057,7 +4081,9 @@ final class HostConnection: ObservableObject {
     /// Directory announcements are transport metadata, not a replacement for committed model
     /// domains. A duplicate ready/online/metadata must not erase facts while the existing
     /// subscription is still active. Session replacement and Host epochs clear these baselines.
-    private func reprojectRuntime(_ runtime: RuntimeSummary) -> RuntimeSummary {
+    private func reprojectRuntime(_ incoming: RuntimeSummary) -> RuntimeSummary {
+        var runtime = incoming
+        if runtime.agentKind == nil, runtime.runtimeId.hasPrefix("openclaw:") { runtime.agentKind = "openclaw" }
         guard let snapshot = agentState.snapshots[runtime.runtimeId], snapshot.sessionId == runtime.sessionId,
               let projection = AgentProjection.make(runtime: runtime, hostId: selectedHostId, domains: snapshot.domains,
                 commands: commands[runtime.runtimeId] ?? [], interactions: interactions[runtime.runtimeId] ?? [],

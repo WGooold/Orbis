@@ -44,6 +44,7 @@ import {
   DeviceE2ePayloadSchema,
   DEVICE_FEATURE_MESSAGE_RENDER,
   DEVICE_FEATURE_KIMI_CODE,
+  DEVICE_FEATURE_OPENCLAW,
   HOST_FEATURE_DEVICE_FEATURES,
   PROTOCOL_VERSION,
   type AgentKind,
@@ -105,6 +106,9 @@ import { CodexRuntime } from "./codex-runtime.js";
 import type { DshRuntime } from "./dsh-runtime.js";
 import { DSH_DESKTOP_KIND, agentViews, allowsAgent, allowsAgentIdentity, allowsAgentRequest, allowsRuntime, applyDeviceViewEpoch, deviceAgentView,
   hiddenKinds, projectAgentMessage, projectBackendDomain, type AgentView } from "./device-agent-visibility.js";
+import { OpenClawBackend } from "./openclaw-backend.js";
+import { loadOpenClawConfig, type OpenClawConfig } from "./openclaw-gateway.js";
+import { OPENCLAW_PREFIX } from "./openclaw-history.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
 import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.js";
@@ -136,6 +140,7 @@ import type { UsageSnapshot } from "./provider-usage-cache.js";
 const CATALOG_TTL_MS = 5_000;
 type DshKind = "dsh" | "dshDesktop";
 const DSH_KINDS: readonly DshKind[] = ["dsh", "dshDesktop"];
+const OPENCLAW_KIND = "openclaw" as const;
 type DshSlot = {
   runtime?: DshRuntime | undefined; starting?: Promise<DshRuntime | undefined> | undefined; startingExistingOnly: boolean;
   recoveryTimer?: ReturnType<typeof setTimeout> | undefined; recoveryError?: string | undefined;
@@ -272,6 +277,8 @@ export type HostServiceOptions = {
    * Sessions appear only while an attached TUI reports in.
    */
   claude?: { configDir?: string; launcher?: ClaudeLauncher };
+  /** Explicit isolated fixture, or false to prevent QA from inheriting a user's opt-in. */
+  openClaw?: OpenClawConfig | false;
   providers?: ProviderManager;
   providerUsage?: (kind: AgentKind, providerId: string) => UsageSnapshot | undefined;
   managementBackends?: () => HostManagementState["backends"];
@@ -318,6 +325,7 @@ export class HostService {
    * 接口，不为单个后端写特判。
    */
   #backends: AgentBackend[];
+  #openClaw: OpenClawBackend | undefined;
   /** DSH Web and Desktop each own their connection, start and recovery state (ADR-0076 DSH-DESKTOP-03). */
   readonly #dsh: Record<DshKind, DshSlot> = { dsh: { startingExistingOnly: false }, dshDesktop: { startingExistingOnly: false } };
   /** Features each device declared on its current handshake (ADR-0064); absent = released App behaviour. */
@@ -596,7 +604,7 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#options.kimiCodeRuntime ? [KIMI_KIND] as const : [])];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#options.kimiCodeRuntime ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
     facts.backends({ backends: kinds.map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
@@ -634,7 +642,7 @@ export class HostService {
       sync: this.#sessionSync.aggregateStats(), transfers: { uploads: this.#uploads.activeUploads, downloads: this.#downloads.activeDownloads }, retentionMs: 300_000,
       items: [...this.#sharedOperations.values()], truncated: this.#sharedOperationsTruncatedAt > Date.now() - 300_000 });
     facts.management({ lifecycle: this.#modelLifecycle, platform: process.platform, nodeVersion: process.version,
-      backends: this.#options.managementBackends?.() ?? kinds.map(kind => ({ kind, installed: null, version: null })) });
+      backends: this.#options.managementBackends?.() ?? kinds.filter(kind => kind !== OPENCLAW_KIND).map(kind => ({ kind, installed: null, version: null })) });
   }
 
   /** Desktop and mobile share the same committed model and snapshot serializer. */
@@ -729,6 +737,8 @@ export class HostService {
   readonly #desktopOwnedIds = new Set<string>();
   readonly #sessionConfigurations: SessionConfigurationStore;
   readonly #kimiConfigurations: SessionConfigurationStore;
+  // Published Hosts strictly decode their launch journal. New Agent records cannot poison it on rollback.
+  readonly #openClawLaunches: SessionConfigurationStore;
   #desktopLedgerWrite: Promise<void> = Promise.resolve();
 
   private constructor(
@@ -742,6 +752,7 @@ export class HostService {
     this.#sessionConfigurations = new SessionConfigurationStore(join(stateDir, "session-configuration.json"));
     // Released Hosts parse every launch entry strictly; never mix new kinds into their file.
     this.#kimiConfigurations = new SessionConfigurationStore(join(stateDir, "kimi-session-configuration.json"));
+    this.#openClawLaunches = new SessionConfigurationStore(join(stateDir, "openclaw-session-configuration.json"));
     // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
     this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
     this.#identity = identity;
@@ -1580,6 +1591,7 @@ export class HostService {
    * `device.ready` 当整体快照覆盖——分开发就会互相抹掉。
    */
   #deviceReadyPayload(deviceId: string): Omit<Extract<RelayToDeviceMessage, { type: "device.ready" }>, "type"> {
+    const features = this.#deviceFeatures.get(deviceId);
     return {
       protocolVersion: PROTOCOL_VERSION,
       deviceId,
@@ -1590,8 +1602,9 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, DEVICE_FEATURE_MESSAGE_RENDER, ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : [])],
+      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, DEVICE_FEATURE_MESSAGE_RENDER, DEVICE_FEATURE_OPENCLAW, ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : [])],
       sessionConfiguration: 1,
+      ...(features?.has(DEVICE_FEATURE_OPENCLAW) ? { deviceFeatures: [...features] } : {}),
     };
   }
 
@@ -1776,12 +1789,42 @@ export class HostService {
     await relay.start();
     this.#modelLifecycle = "running";
     this.#options.kimiCodeRuntime?.start();
+    void this.#startOpenClaw();
     // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
     // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
     // prestarted backend settled, so it cannot open a second connection beside one still starting.
     for (const kind of DSH_KINDS) void this.#startDshBackend(kind).finally(() => this.#scheduleDshRecovery(kind));
     this.refreshHostFacts();
     void this.refreshProviderFacts();
+  }
+
+  async #startOpenClaw(): Promise<void> {
+    if (this.#options.openClaw === false || this.#openClaw || this.#providerFactsClosing) return;
+    try {
+      const config = this.#options.openClaw ?? await loadOpenClawConfig(this.#stateDir);
+      if (!config || this.#providerFactsClosing) return;
+      const backend = await OpenClawBackend.create(config, this.#stateDir, this.hostId, {
+        ready: () => { this.#invalidateCatalog(); this.#broadcastDeviceReady(); },
+        catalog: () => this.#invalidateCatalog(),
+        online: runtime => {
+          this.#agentFacts.observe(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
+          this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
+          this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+        },
+        offline: (runtimeId, reason) => {
+          this.#notifications.end(runtimeId); this.#markRuntimeOffline(runtimeId, reason);
+          this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
+        },
+        event: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+        ...(this.#options.log ? { log: this.#options.log } : {}),
+      });
+      if (this.#providerFactsClosing) { await backend.stop(); return; }
+      this.#openClaw = backend;
+      this.#backends.push(backend);
+      backend.start();
+    } catch {
+      this.#options.log?.("OpenClaw Gateway setup failed; check Orbis state file permissions and the configured loopback endpoint");
+    }
   }
 
   async #startDshBackend(kind: DshKind): Promise<void> {
@@ -1805,6 +1848,7 @@ export class HostService {
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
     await this.#options.kimiCodeRuntime?.stop();
+    await this.#openClaw?.stop();
     await this.#liveActivities.close();
     for (const kind of DSH_KINDS) { clearTimeout(this.#dsh[kind].recoveryTimer); this.#dsh[kind].recoveryTimer = undefined; }
     this.#commandOwners.close();
@@ -2049,9 +2093,10 @@ export class HostService {
     }
     if (message.type === "device.features") {
       const before = this.#agentView(deviceId);
+      const hadRender = this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_MESSAGE_RENDER) ?? false;
       this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature => feature !== DEVICE_FEATURE_KIMI_CODE || this.#options.kimiCodeRuntime !== undefined)));
       const after = this.#agentView(deviceId);
-      if (before === after) return;
+      if (before === after && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER)) return;
       this.#resetAgentView(deviceId);
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
       for (const runtime of this.#runtimesSnapshot()) {
@@ -2158,6 +2203,11 @@ export class HostService {
     if (message.type === "file.upload.init") {
       if (isKimiId(message.runtimeId)) { this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId,
         code: "unsupported_command", message: "Kimi Code 不提供文件上传" }); return; }
+      if (message.runtimeId.startsWith(OPENCLAW_PREFIX)) {
+        this.#sendToDeviceOn(deviceId, path, { type: "file.upload.failed", protocolVersion: PROTOCOL_VERSION,
+          requestId: message.requestId, code: "unsupported_command", message: "OpenClaw 会话不支持附件" });
+        return;
+      }
       void this.#uploads.handleInit(deviceId, message);
       return;
     }
@@ -2243,6 +2293,11 @@ export class HostService {
       return;
     }
     if (command.type === "file.download" || command.type === "artifact.download") {
+      if (message.runtimeId.startsWith(OPENCLAW_PREFIX)) {
+        this.#sendToDeviceOn(deviceId, path, { type: "protocol.error", code: "unsupported_command",
+          commandId: message.commandId, message: "OpenClaw 会话不支持文件传输" });
+        return;
+      }
       // 下载完全由 Host 服务（spec §9.4 的 Host→APP 模型）：文件就在这台机器的磁盘上，
       // Host 常驻，读盘发分片不需要任何 Pi 进程参与。**不再回落到 runtime**——手机发的
       // 就是对 Host 的请求，Host 服务不了就如实回报失败，而不是把它转给某个进程再报
@@ -2257,6 +2312,13 @@ export class HostService {
   async #handleGitBranchRequest(deviceId: string, request: GitBranchRequest): Promise<void> {
     const runtime = this.#runtimesSnapshot().find((entry) => entry.runtimeId === request.runtimeId);
     if (runtime === undefined) return;
+    // A Gateway-reported cwd is for display and grouping, not Host-side filesystem authority.
+    if (runtime.runtimeId.startsWith(OPENCLAW_PREFIX)) {
+      this.#sendJsonToDevice(deviceId, { type: "runtime.git", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId,
+        runtimeId: runtime.runtimeId, sessionId: runtime.sessionId ?? null, cwd: runtime.cwd,
+        branch: null, commit: null }, "ctl");
+      return;
+    }
     let pending = this.#gitReads.get(runtime.cwd);
     if (pending === undefined) {
       pending = readGitBranch(runtime.cwd);
@@ -2312,7 +2374,7 @@ export class HostService {
       if (sessionId !== undefined) {
         // A configured launch may publish runtime.online before native settings are confirmed.
         const epoch = this.#deviceViewEpochs.get(deviceId);
-        void (isKimiId(sessionId) ? this.#kimiConfigurations : this.#sessionConfigurations).blocks(sessionId).then(blocked => {
+        void (isKimiId(sessionId) ? this.#kimiConfigurations : sessionId.startsWith(OPENCLAW_PREFIX) ? this.#openClawLaunches : this.#sessionConfigurations).blocks(sessionId).then(blocked => {
           if (epoch !== this.#deviceViewEpochs.get(deviceId) || !allowsRuntime(this.#agentView(deviceId), runtimeId)) return;
           if (blocked) this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "command.result", commandId,
             ok: false, status: "failure", error: "会话启动配置尚未确认，消息未发送" }));
@@ -2518,7 +2580,7 @@ export class HostService {
         const catalog = [...new Map([...active.sessions, ...archived.sessions].map((entry) => [entry.sessionId, entry])).values()];
         this.#options.log?.(`[debug] session.list：${backend.kind} 返回 ${catalog.length} 条（${Date.now() - started}ms）`);
         sessions.push(...catalog);
-        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: active.complete && archived.complete, elapsedMs: Date.now() - started });
+        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: active.complete && archived.complete && (backend.catalogComplete?.() ?? true), elapsedMs: Date.now() - started });
       } catch (error) {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
@@ -2590,7 +2652,7 @@ export class HostService {
     const epoch = this.#deviceViewEpochs.get(deviceId);
     const current = () => this.#links.get(deviceId)?.active !== undefined && epoch === this.#deviceViewEpochs.get(deviceId);
     if (!current() || !allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message); return; }
-    let ledger = message.type !== "session.launch.read" && message.agentKind === KIMI_KIND ? this.#kimiConfigurations : this.#sessionConfigurations;
+    let ledger = message.type !== "session.launch.read" && message.agentKind === KIMI_KIND ? this.#kimiConfigurations : "agentKind" in message && message.agentKind === OPENCLAW_KIND ? this.#openClawLaunches : this.#sessionConfigurations;
     const sendLaunch = async (launchId: string) => {
       const result = await ledger.result(deviceId, launchId, message.requestId);
       if (!current()) return;
@@ -2602,6 +2664,7 @@ export class HostService {
         // Serialize with creation: a read must not report absence while the original create is queued.
         if (allowsAgent(this.#agentView(deviceId), KIMI_KIND) &&
             !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#kimiConfigurations;
+        if (allowsAgent(this.#agentView(deviceId), OPENCLAW_KIND) && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#openClawLaunches;
         if (!current()) return;
         await this.#recoverSessionLaunch(ledger, deviceId, message.launchId, current);
         await sendLaunch(message.launchId); return;
@@ -2649,6 +2712,7 @@ export class HostService {
       if (catalog.binding !== message.binding) throw new SessionConfigurationError("configuration_stale", "供应商或模型清单已变化，请刷新启动配置");
       validateSessionConfiguration(catalog, message.values);
       if (message.type === "session.configuration.save") {
+        if (backend.kind === OPENCLAW_KIND) throw new SessionConfigurationError("configuration_unavailable", "请在 OpenClaw 中配置模型与权限");
         const saved = await ledger.save(message.agentKind, message.cwd, message.binding, message.revision, message.values);
         this.#sendToDevice(deviceId, { type: "session.configuration.result", requestId: message.requestId,
           agentKind: message.agentKind, cwd: message.cwd, binding: message.binding, ...saved, catalog }); return;
@@ -2659,7 +2723,7 @@ export class HostService {
       try {
         if (!current()) throw new KimiLaunchBlocked("agent_unsupported", "客户端连接已经改变，未创建会话");
         const activated = await backend.activate({ type: "new", cwd: message.cwd }, {
-          deviceId, launchId: message.launchId, spawnMode: message.spawnMode ?? (backend.kind === "kimiCode" ? "auto" : "tui"), configuration: message.values,
+          deviceId, launchId: message.launchId, spawnMode: backend.kind === OPENCLAW_KIND ? "headless" : message.spawnMode ?? (backend.kind === "kimiCode" ? "auto" : "tui"), configuration: message.values,
           ...(begun.record.nativeLaunchMarker === undefined ? {} : { nativeLaunchMarker: begun.record.nativeLaunchMarker }),
           ...(begun.record.expectedSessionId === undefined ? {} : { expectedSessionId: begun.record.expectedSessionId }),
           onCreated: async result => {
@@ -2708,6 +2772,12 @@ export class HostService {
           const sessionId = launch && await backend.recoverLaunch?.(launch.marker, launch.cwd, launch.binding);
           if (sessionId) await ledger.update(deviceId, launchId, { sessionId, phase: "configuring", spawnMode: "headless" });
         } catch { /* Native absence/unavailability is not permission to repeat the create. */ }
+      } else if (prior.agentKind === OPENCLAW_KIND) {
+        const backend = await this.#configuredBackend(prior.agentKind).catch(() => undefined);
+        if (backend instanceof OpenClawBackend && prior.cwd && current()) {
+          const sessionId = await backend.recoverLaunch(deviceId, launchId, prior.cwd).catch(() => undefined);
+          if (sessionId && current()) await ledger.update(deviceId, launchId, { sessionId, phase: "configuring", spawnMode: "headless" });
+        }
       } else {
         const backend = await this.#configuredBackend(prior.agentKind);
         const expectedSessionId = await ledger.expectedSessionId(deviceId, launchId);
@@ -2761,7 +2831,7 @@ export class HostService {
     const receipted = message.type === "session.archive" || message.type === "session.activate";
     const operationRuntimeId = message.type === "session.archive" ? message.sessionId : message.type === "session.activate"
       ? message.target.type === "resume" ? message.target.sessionId : message.target.agentKind === DSH_DESKTOP_KIND ? "dsh-desktop:launch"
-        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : this.#identity.hostId
+        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : message.target.agentKind === OPENCLAW_KIND ? "openclaw:launch" : this.#identity.hostId
       : this.#identity.hostId;
     // Scope receipts for gated runtimes before a device reconnects with an older build.
     const receiptRuntimeId = allowsRuntime(3, operationRuntimeId) ? this.#identity.hostId : operationRuntimeId;
@@ -2855,6 +2925,7 @@ export class HostService {
           : target.type === "resume" && isKimiId(target.sessionId) ? { spawnMode: "headless" as const } : {}),
       };
       if (target.type === "new") {
+        if (target.agentKind === OPENCLAW_KIND) throw new ActivationError("agent_unsupported", "请使用支持可恢复启动的 App 创建 OpenClaw 会话");
         let backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
         if ((backend === undefined || !backend.isReady()) && target.agentKind === "codexDesktop") {
           try {
@@ -2883,7 +2954,8 @@ export class HostService {
               : target.agentKind === "codexDesktop"
                 ? "Codex 桌面版未安装，或 Host 无法启动并接入它"
               : target.agentKind === "dsh" ? "DeepSeek Harness 未安装，或 Host 无法启动并接入它"
-              : target.agentKind === "dshDesktop" ? this.#options.dshDesktopStatus?.()?.reason ?? "DeepSeek 桌面版不可用" : "未知的 agent 类型",
+              : target.agentKind === "dshDesktop" ? this.#options.dshDesktopStatus?.()?.reason ?? "DeepSeek 桌面版不可用"
+              : "未知的 agent 类型",
           );
         }
         if (!backend.isReady()) {
@@ -2896,7 +2968,7 @@ export class HostService {
         this.#sendActivated(deviceId, requestId, backend.kind, activated);
         return;
       }
-      const resumeKind = target.agentKind ?? (isKimiId(target.sessionId) ? KIMI_KIND : target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
+      const resumeKind = target.agentKind ?? (isKimiId(target.sessionId) ? KIMI_KIND : target.sessionId.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
         : target.sessionId.startsWith("dsh-desktop:") ? "dshDesktop" : target.sessionId.startsWith("dsh:") ? "dsh" : undefined);
       if (resumeKind === KIMI_KIND && !this.#options.kimiCodeRuntime?.isReady())
         throw new ActivationError("agent_unsupported", this.#options.kimiCodeRuntime?.reason ?? "Kimi Code Web 未连接");
@@ -2920,7 +2992,7 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND)) continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND || backend.kind === OPENCLAW_KIND)) continue;
         try {
           const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, context);
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。
@@ -3144,7 +3216,7 @@ export class HostService {
 
   #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent): void {
     if (this.#isCodexRuntime(runtimeId)) this.#deviceMessageRendering.observe(runtimeId, event);
-    if (!isKimiId(runtimeId)) this.#fileChangeTurns.observe(runtimeId, event);
+    if (!isKimiId(runtimeId) && !runtimeId.startsWith(OPENCLAW_PREFIX)) this.#fileChangeTurns.observe(runtimeId, event);
     if (event.type === "tool.activity") return;
     if (event.type === "session.tools.produced") {
       this.#countToolTraffic(runtimeId, "summaryJsonBytes", Buffer.byteLength(JSON.stringify(event.page), "utf8"));
@@ -3236,7 +3308,7 @@ export class HostService {
 
   readonly #pushWakeReceipts = new PushWakeReceipts();
   #wakeDevices(category: "task-completed" | "approval-requested", eventId: string, runtimeId: string, sessionId?: string): void {
-    if (!this.#pushWakeReceipts.observe(category, eventId)) return;
+    if (runtimeId.startsWith(OPENCLAW_PREFIX) || !this.#pushWakeReceipts.observe(category, eventId)) return;
     // APNS-L19: capture each phone's interest at the semantic edge. Defer the
     // reachability probe until the event has been queued for its E2E recipients.
     const recipients = this.#store.devices.filter(device => !device.revoked && allowsRuntime(this.#agentView(device.deviceId), runtimeId)).map(device => ({ device,

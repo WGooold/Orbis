@@ -108,3 +108,10 @@ internal fun RemoteState.withConfiguredLaunchResult(message: JsonObject): Remote
         failure = message["error"]?.jsonPrimitive?.contentOrNull))
     return this
 }
+
+internal fun configuredLaunchPayload(id: String, config: SessionConfigurationSnapshot, values: SessionConfigurationValues, spawnMode: String): JsonObject = buildJsonObject {
+    put("type", "session.launch"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id); put("launchId", id)
+    put("agentKind", config.agentKind); put("cwd", config.cwd); put("binding", config.binding); put("revision", config.revision)
+    put("values", (if (config.agentKind == "openclaw") SessionConfigurationValues() else values).payload())
+    put("spawnMode", if (config.agentKind == "openclaw") "headless" else spawnMode)
+}

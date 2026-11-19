@@ -18,7 +18,7 @@ import { HostProviderAuthenticationSchema, HostProviderUsageSchema, HostProvider
  * DeepSeek Harness Desktop 自己拥有的后端（ADR-0076）。只有声明了
  * `DEVICE_FEATURE_DSH_DESKTOP` 的设备才会收到 `dshDesktop`。
  */
-export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", "kimiCode"]);
+export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", "kimiCode", "openclaw"]);
 export type AgentKind = z.infer<typeof AgentKindSchema>;
 
 const identity = z.string().min(1).max(256).refine(value => value.trim().length > 0, "Identifier must not be blank");

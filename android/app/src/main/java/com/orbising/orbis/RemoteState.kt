@@ -607,6 +607,7 @@ data class RemoteState(
     val launchableAgents: Set<String>? = null,
     val sessionConfigurationSupported: Boolean = false,
     val kimiCodeSupported: Boolean = false,
+    val openClawNegotiated: Boolean = false,
     val sessionConfiguration: SessionConfigurationState = SessionConfigurationState(),
     /**
      * Codex 桌面版 app-server 的接入状态；null = 未知或这台电脑没跑这条后端。
@@ -788,7 +789,8 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
         contextUsage = sameSession?.contextUsage,
         permissions = null,
         permissionManagement = sameSession?.permissionManagement,
-        agentKind = sameSession?.agentKind,
+        // This reserved Host route establishes OpenClaw identity before the model read.
+        agentKind = sameSession?.agentKind ?: agentKind.takeIf { it == "openclaw" && runtimeId.startsWith("openclaw:") },
         domainAvailability = sameSession?.domainAvailability.orEmpty(),
     )
 }
@@ -2027,7 +2029,9 @@ class RelayReducer(
                 }
                 val runtimes = message["runtimes"]?.let {
                     json.decodeFromJsonElement<List<RuntimeSummary>>(it)
-                }.orEmpty().map { it.withKimiIdentity() }.associateBy(RuntimeSummary::runtimeId)
+                }.orEmpty().map { it.withOpenClawKind().withKimiIdentity() }.associateBy(RuntimeSummary::runtimeId)
+                val openClawNegotiated = readyAdmitsOpenClaw(message)
+                val projectionChanged = state.openClawNegotiated != openClawNegotiated
                 // 「这台电脑支持哪些 agent」只有 Host 说得准。中继那条种子 device.ready 发的是
                 // 显式 `null`（它不知道装没装 codex）；任何一种"不知道"都保持原判（未知 = 不限制）。
                 val supportedAgents = message["agents"]
@@ -2119,6 +2123,7 @@ class RelayReducer(
                     homeDirectoryReceived = true,
                     sessionConfigurationSupported = message["sessionConfiguration"]?.jsonPrimitive?.intOrNull == 1,
                     kimiCodeSupported = kimiCodeSupported,
+                    openClawNegotiated = openClawNegotiated,
                     sessions = sessions,
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
@@ -2127,13 +2132,15 @@ class RelayReducer(
                     pendingToolConversations = emptyMap(),
                     toolDetail = state.toolDetail?.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     retiredAgentModelEpochs = state.retiredAgentModelEpochs + listOfNotNull(state.agentModelEpoch?.takeIf { it != message.string("modelEpoch") }),
-                    agentStateSnapshots = state.agentStateSnapshots.takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty(),
+                    agentStateSnapshots = state.agentStateSnapshots.takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty()
+                        .filterValues { !projectionChanged || it.scope != "host" && it.scope != "device" },
                     agentStateRequests = emptySet(),
                     agentStateReads = emptyMap(),
-                    agentCatalogRange = state.agentCatalogRange?.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    agentCatalogRange = state.agentCatalogRange?.takeIf { !projectionChanged && state.agentModelEpoch == message.string("modelEpoch") },
                     agentCatalogRangeRequest = null,
-                    supportedAgents = state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
-                    launchableAgents = state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    catalogQuery = state.catalogQuery.takeUnless { projectionChanged },
+                    supportedAgents = if (openClawNegotiated || projectionChanged) supportedAgents else state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    launchableAgents = if (openClawNegotiated || projectionChanged) launchableAgents else state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     codexDesktop = state.codexDesktop.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     sessionListRequests = emptySet(),
                     sessionListRequestEpochs = emptyMap(),
@@ -2181,14 +2188,20 @@ class RelayReducer(
                         }
                         .map { it.runtimeId }
                         .toSet(),
-                    feedback = state.feedback.resolve(FeedbackCondition.PAIRING.name).resolve(FeedbackCondition.VERSION.name).resolve("computer-disabled"),
+                    feedback = state.feedback
+                        .resolve(FeedbackCondition.PAIRING.name)
+                        .resolve(FeedbackCondition.VERSION.name)
+                        .resolve(FeedbackCondition.COMPUTER_UNAVAILABLE.name)
+                        .resolve(FeedbackCondition.OTHER.name)
+                        .resolve("computer-disabled"),
+                    sessionListError = null,
                 // 新连接的首个 device.ready 是因果晚于旧连接上所有操作的完整在线列表（L2、L5）。
                 ).ledgerOpenConnection().ledgerExpireStaleNotices().ledgerRuntimeList(read = null, complete = true)
             }
             "runtime.online" -> {
                 val runtime = message["runtime"]?.let {
                     json.decodeFromJsonElement<RuntimeSummary>(it)
-                }?.withKimiIdentity() ?: return state
+                }?.withKimiIdentity()?.withOpenClawKind() ?: return state
                 val previousRuntime = state.runtimes[runtime.runtimeId]
                 val hasPreviousRuntime = previousRuntime != null ||
                     state.knownRuntimeSessions.containsKey(runtime.runtimeId)
@@ -2672,7 +2685,7 @@ class RelayReducer(
             "runtime.metadata" -> {
                 val metadata = event["metadata"]?.let {
                     json.decodeFromJsonElement<RuntimeSummary>(it)
-                }?.withKimiIdentity() ?: return state
+                }?.withKimiIdentity()?.withOpenClawKind() ?: return state
                 if (metadata.runtimeId != runtimeId) return state
                 val previousRuntime = state.runtimes[runtimeId]
                 val previousView = state.runtimeSessionViews[runtimeId]
@@ -3731,3 +3744,12 @@ internal fun runtimeStatusText(status: String): String = when (status) {
     "waiting_local_interaction" -> L10n.tr("等待电脑端交互")
     else -> L10n.tr("未知状态")
 }
+
+internal fun RemoteState.supportsSessionConfiguration(agentKind: String): Boolean =
+    sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated) && (agentKind != KIMI_CODE_KIND || kimiCodeSupported)
+
+internal fun RemoteState.canLaunchOpenClaw(): Boolean =
+    supportsSessionConfiguration("openclaw") && (launchableAgents ?: supportedAgents)?.contains("openclaw") == true
+
+private fun RuntimeSummary.withOpenClawKind(): RuntimeSummary =
+    if (agentKind == null && runtimeId.startsWith("openclaw:")) copy(agentKind = "openclaw") else this

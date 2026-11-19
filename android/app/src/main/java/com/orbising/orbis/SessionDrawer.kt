@@ -98,7 +98,8 @@ internal enum class DrawerAgentFilter(
     DeepSeek("dsh", "DeepSeek", "dsh"),
     DeepSeekDesktop("dshDesktop", "DeepSeek 桌面版", "dshDesktop"),
     Claude("claude", "Claude Code", "claude"),
-    Kimi(KIMI_CODE_KIND, "Kimi Code", KIMI_CODE_KIND);
+    Kimi(KIMI_CODE_KIND, "Kimi Code", KIMI_CODE_KIND),
+    OpenClaw("openclaw", "OpenClaw", "openclaw");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
     val label: String get() = L10n.tr(labelKey)
@@ -118,6 +119,7 @@ private fun DrawerAgentFilterMenu(
     onRequestProviders: () -> Unit,
     desktopDeepSeek: Boolean = false,
     kimiCode: Boolean = false,
+    openClaw: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
@@ -155,7 +157,14 @@ private fun DrawerAgentFilterMenu(
                 }
             } else {
             // The Desktop entry is listed only where this Host offers it (ADR-0076).
-            DrawerAgentFilter.values().filter { (it != DrawerAgentFilter.DeepSeekDesktop || desktopDeepSeek || it == selected) && (it != DrawerAgentFilter.Kimi || kimiCode) }.forEach { filter ->
+            DrawerAgentFilter.values().filter { filter ->
+                when (filter) {
+                    DrawerAgentFilter.DeepSeekDesktop -> desktopDeepSeek || filter == selected
+                    DrawerAgentFilter.Kimi -> kimiCode
+                    DrawerAgentFilter.OpenClaw -> openClaw
+                    else -> true
+                }
+            }.forEach { filter ->
                 NeumorphMenuItem(
                     text = { Text(filter.label) },
                     onClick = {
@@ -224,7 +233,7 @@ internal fun SessionDrawer(
     // 只列当前电脑的目录：多台电脑不合并成一棵树，切换在页脚的电脑行（ADR-0030 修订）。
     val activeHostState = hosts.firstOrNull { it.hostId == activeHostId }?.state
     var savedAgentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
-    val agentFilterKey = savedAgentFilterKey.takeUnless { it == KIMI_CODE_KIND && !state.kimiCodeSupported } ?: DrawerAgentFilter.All.key
+    val agentFilterKey = savedAgentFilterKey.takeUnless { it == KIMI_CODE_KIND && !state.kimiCodeSupported || it == "openclaw" && !state.openClawNegotiated } ?: DrawerAgentFilter.All.key
     val agentFilter = drawerAgentFilter(agentFilterKey)
     val currentProvider = state.currentProviders[agentFilter.key]
     val hostProvider = activeHostState?.currentProviders?.get(agentFilter.key)
@@ -403,6 +412,8 @@ internal fun SessionDrawer(
                         kimiCode = state.kimiCodeSupported,
                         desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it } ||
                             state.sessions.values.any { it.agentKind == "dshDesktop" },
+                        openClaw = state.openClawNegotiated && (state.supportedAgents?.contains("openclaw") == true ||
+                            state.sessions.values.any { it.agentKind == "openclaw" }),
                     )
 
                 }
@@ -793,12 +804,13 @@ private fun DrawerSessionRow(row: CachedSessionRow, runtimeStatus: String?, runt
 
 private fun drawerArchiveUnavailableReason(row: CachedSessionRow, state: RemoteState): String? = when {
     !state.e2eReady -> L10n.tr("连接电脑后可操作")
+    row.agentKind == "openclaw" && !state.openClawNegotiated -> L10n.tr("连接电脑后可操作")
     row.catalogEntry?.agentKind == null -> L10n.tr("尚未获取会话类型")
     row.sessionId in state.archivingSessionIds -> L10n.tr("处理中…")
     row.isArchived || !row.isOnline -> null
     row.agentKind == "pi" -> L10n.tr("请先退出 Pi 会话")
     row.agentKind == "claude" -> L10n.tr("请先退出 Claude Code 会话")
-    (row.isCodex || row.agentKind == "dsh" || row.agentKind == "dshDesktop") && state.runtimes[row.runtimeId]?.status == "idle" -> null
+    (row.isCodex || row.agentKind == "dsh" || row.agentKind == "dshDesktop" || row.agentKind == "openclaw") && state.runtimes[row.runtimeId]?.status == "idle" -> null
     else -> L10n.tr("等待任务完成后归档")
 }
 

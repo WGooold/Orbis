@@ -3593,7 +3593,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const launch = { requestId: "launch", launchId: "kimi-launch", agentKind: "kimiCode", cwd, binding: "kimi-code:fixture:local", revision: 0, values: {}, spawnMode: "headless" };
     await handshake();
     const initial = await wait(message => message.type === "device.ready", true);
-    expect(initial.hostFeatures).toEqual(["device.features", "message.content-render.v1", "agent.kimiCode"]);
+    expect(initial.hostFeatures).toEqual(["device.features", "message.content-render.v1", "agent.openclaw", "agent.kimiCode"]);
     expect(initial.agents).not.toContain("kimiCode");
     const hidden = await read("host-hidden");
     for (const [type, body] of [
@@ -3831,6 +3831,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(ready.ready.launchableAgents).not.toContain("dshDesktop");
       expect(ready.ready).not.toHaveProperty("dshDesktop");
       expect(ready.ready.hostFeatures).toEqual(expect.arrayContaining(["device.features"]));
+      expect(ready.ready.hostFeatures).toContain("agent.openclaw");
       RelayToDeviceMessageSchema.parse(ready.ready);
       const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
         for (let i = 0; i < 80; i++) {

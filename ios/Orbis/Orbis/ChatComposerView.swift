@@ -154,6 +154,7 @@ struct ChatComposerView: View, Equatable {
     private var kind: String? { facts.kind }
     private var claudeComposer: Bool { kind == "claude" }
     private var kimiComposer: Bool { isKimiCode(kind: kind, id: runtime.runtimeId) }
+    private var textOnly: Bool { kimiComposer || kind == "openclaw" }
     private var accent: Color { OrbisPalette(scheme).agent(kind) }
     /// PERF-12 / IOS-CHAT-01: typed text belongs to the editor subtree and persists without
     /// invalidating the transcript owner. A store-originated draft (command result, restored copy,
@@ -185,6 +186,7 @@ struct ChatComposerView: View, Equatable {
         // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
         guard facts.canSend, !facts.preparing, !kimiComposer || runtime.status != "running", attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
               hasText || !attachments.isEmpty else { return false }
+        if textOnly { return hasText && !slash && runtime.status != "running" }
         if slash {
             guard let command, currentDraft.hasPrefix("/" + command.name), facts.pendingActions.isEmpty else { return false }
             return command.argument?.required != true || !commandArguments(command).isEmpty
@@ -220,7 +222,7 @@ struct ChatComposerView: View, Equatable {
                 }.frame(height: 2).accessibilityLabel(L10n.tr("上下文已使用 {0}%", Int(percent)))
             } else { Color.clear.frame(height: 2) }
             QueuedMessagesView(model: model, actions: actions, runtimeId: runtime.runtimeId).equatable()
-            OrbisCollapse(expanded: !kimiComposer && deliveryChoices) {
+            OrbisCollapse(expanded: deliveryChoices && !textOnly) {
                 HStack(spacing: 12) {
                     OrbisActionButton(title: deliveryTitle("followUp"), tint: accent) { submit(delivery: "followUp") }
                     OrbisActionButton(title: deliveryTitle("steer"), tint: accent) { submit(delivery: "steer") }
@@ -258,10 +260,12 @@ struct ChatComposerView: View, Equatable {
             if let selectedCommand, let error = facts.menuErrors[selectedCommand] {
                 HStack { Label(error, systemImage: "exclamationmark.circle"); OrbisActionButton(title: L10n.tr("重试")) { actions.loadMenuOptions(selectedCommand) } }.font(.orbisCaption()).foregroundStyle(p.error).padding(.horizontal, 20)
             }
-            if !kimiComposer { AttachmentStrip(actions: actions, tasks: facts.attached, preparing: facts.preparing) }
-            if slash { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
+            if !textOnly { AttachmentStrip(actions: actions, tasks: facts.attached, preparing: facts.preparing) }
+            if slash && !textOnly { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
             ChatComposerRowLayout {
-                if !kimiComposer || foldReading && focused {
+                if textOnly && !(foldReading && focused) {
+                    Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
+                } else {
                     OrbisIconButton(symbol: foldReading && focused ? "keyboard.chevron.compact.down" : "paperclip",
                                     label: L10n.tr(foldReading && focused ? "收起键盘" : "发送文件到电脑"), tint: accent) {
                         if foldReading && focused { composerFocus.focused = false; return }
@@ -272,7 +276,7 @@ struct ChatComposerView: View, Equatable {
                 }
                 OrbisDraftEditor(text: draft,
                                  focused: Binding(get: { focused }, set: { if composerFocus.focused != $0 { composerFocus.focused = $0 } }),
-                                 placeholder: L10n.tr("发给 {0}，/ 命令", agentTitle(kind)),
+                                 placeholder: L10n.tr(textOnly ? "发给 {0}" : "发给 {0}，/ 命令", agentTitle(kind)),
                                  ink: UIColor(p.text), placeholderInk: UIColor(p.secondary),
                                  tint: UIColor(accent),
                                  font: .monospacedDigitSystemFont(ofSize: OrbisTextSize.body, weight: .regular),
@@ -287,7 +291,7 @@ struct ChatComposerView: View, Equatable {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 56)
                     .orbisField(focused: focused).orbisAnchor(sendFlight.composer)
-                if runtime.status == "running" && (kimiComposer || !hasText && attachments.isEmpty) {
+                if runtime.status == "running" && (textOnly || !hasText && attachments.isEmpty) {
                     OrbisIconButton(symbol: "stop.fill", label: L10n.tr("停止生成"), tint: p.error) {
                         if actions.isCurrent, actions.stopRuntime() { OrbisHaptics.commit() }
                     }.disabled(!facts.canSend)
@@ -299,7 +303,7 @@ struct ChatComposerView: View, Equatable {
             }.padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 12)
         }.padding(.top, 4).background(p.base)
             .fileImporter(isPresented: $filePickerOpen, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-                guard let selection = fileSelection else { return }
+                guard !textOnly, let selection = fileSelection else { fileSelection = nil; return }
                 fileSelection = nil
                 switch result {
                 case .success(let urls): selection.actions.upload(urls, capacity: selection.capacity)

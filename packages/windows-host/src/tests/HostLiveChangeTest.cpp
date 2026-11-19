@@ -25,13 +25,14 @@ class HostLiveChangeTest : public QObject {
 const fs = require("node:fs"), path = require("node:path");
 const out = value => process.stdout.write(JSON.stringify(value) + "\n");
 require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
-  const { id, method } = JSON.parse(line);
+  const { id, method, params } = JSON.parse(line);
   fs.appendFileSync(path.join(__dirname, "methods.log"), method + "\n");
   const failing = path.join(__dirname, "fail-" + method);
   if (method === "initialize") return out({ id, error: "fixture bridge stays uninitialized" });
   if (fs.existsSync(failing)) return out({ id, error: method + " failed in fixture" });
   if (method === "start") { out({ event: "state", state: "connecting" }); out({ event: "state", state: "connected" }); }
   if (method === "stop") out({ event: "state", state: "stopped" });
+  if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
   if (method === "detect") return out({ id, result: [] });
   if (method === "updateAgent") return out({ id, result: { entry: "/fixture/pi", version: "9.9.9" } });
   out({ id, result: {} });
@@ -73,6 +74,40 @@ private slots:
         m_host->m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
     }
     void cleanup() { m_host.reset(); m_root.reset(); }
+
+    // OPENCLAW-04: only a successful save reconnects a running Host; a paused Host stays paused.
+    void openClawSettingsReconnectOnlyAfterSuccessfulSave() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        host.m_openClaw = {{"source", "file"}};
+        const auto url = QString("ws://127.0.0.1:18789");
+        host.saveOpenClaw(url, "fixture-token");
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"openclaw.save", "stop", "start"}));
+        QCOMPARE(host.openClaw().value("url").toString(), url);
+        QVERIFY(!host.openClaw().contains("token"));
+        QFile marker(root() + "/packages/host/dist/fail-openclaw.save");
+        QVERIFY(marker.open(QIODevice::WriteOnly)); marker.close();
+        clearMethods(root());
+        host.saveOpenClaw("ws://invalid", "");
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"openclaw.save"}));
+        QCOMPARE(host.openClaw().value("url").toString(), url);
+        QVERIFY(host.desiredRunning());
+        QVERIFY(marker.remove());
+        host.stopHost(); settle(host);
+        clearMethods(root());
+        host.saveOpenClaw("", "");
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"openclaw.save"}));
+        QVERIFY(!host.desiredRunning());
+        QVERIFY(host.openClaw().value("url").toString().isEmpty());
+        host.m_openClaw = {{"source", "environment"}, {"url", url}};
+        clearMethods(root());
+        host.saveOpenClaw("", "");
+        QVERIFY(!host.busy());
+        QVERIFY(methods(root()).isEmpty());
+    }
 
     void agentUpdatePausesAndResumes_data() {
         QTest::addColumn<bool>("fails");

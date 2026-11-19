@@ -333,6 +333,40 @@ struct LaunchLedgerTests {
         #expect(fixture.transport.userMessages.count == 1)
     }
 
+    // OPENCLAW-03: no native defaults are guessed; runtime.online alone cannot release the first sentence.
+    @Test func openClawUsesHeadlessJournalAndSendsOnlyAfterMatchingReady() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-claw-launch-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = Fixture(root: root)
+        await fixture.transport.ready()
+        #expect(!fixture.host.createSession(agentKind: "openclaw", cwd: "/repo/app", firstMessage: "hello"))
+        #expect(fixture.transport.activations.isEmpty)
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": [],
+            "hostFeatures": ["device.features", "agent.openclaw"], "deviceFeatures": ["agent.dshDesktop", "agent.openclaw"],
+            "dshDesktop": NSNull(), "agents": ["openclaw"], "launchableAgents": ["openclaw"]])
+        fixture.host.loadSessionConfiguration(agent: "openclaw", cwd: "/repo/app")
+        let read = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.configuration.read" })
+        await fixture.transport.emit(["type": "session.configuration.result", "requestId": read["requestId"]!, "agentKind": "openclaw", "cwd": "/repo/app",
+            "binding": "gateway-defaults", "revision": 0, "values": [:],
+            "catalog": ["binding": "gateway-defaults", "defaults": [:], "models": [], "permissions": []]])
+        #expect(fixture.host.createSession(agentKind: "openclaw", cwd: "/repo/app", firstMessage: "hello"))
+        await fixture.store.waitForPendingEvents()
+        let launch = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.launch" })
+        let id = try #require(launch["launchId"] as? String)
+        #expect(launch["spawnMode"] as? String == "headless")
+        #expect(launch["binding"] as? String == "gateway-defaults")
+        #expect(fixture.transport.activations.isEmpty)
+        await fixture.transport.emit(["type": "runtime.online", "runtime": ["runtimeId": "openclaw:runtime", "sessionId": "openclaw:session",
+            "name": "OpenClaw", "cwd": "/repo/app", "status": "idle"]])
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "configuring", "sessionId": "openclaw:session"])
+        #expect(fixture.transport.userMessages.isEmpty)
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "ready",
+            "agentKind": "openclaw", "sessionId": "openclaw:session", "spawnMode": "headless"])
+        #expect(fixture.transport.userMessages.count == 1)
+        #expect(fixture.transport.userMessages.first?["runtimeId"] as? String == "openclaw:runtime")
+        #expect(fixture.host.selectedRuntimeId == "openclaw:runtime")
+    }
+
     @Test func configuredLaunchReopensWithTheOriginalIdentityAndDoesNotResendTheFirstSentence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-configured-recovery-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
