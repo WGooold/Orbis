@@ -61,6 +61,7 @@ import * as pushRelayConfig from "./config.js";
 import type { ActivePathChange } from "./device-link.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DSH_DESKTOP_FLAVOR } from "./dsh-web-runtime.js";
 import type { DshConnection } from "./dsh-client.js";
@@ -3490,6 +3491,105 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(ensureDshRuntime).not.toHaveBeenCalled();
       expect(recoverDshRuntime).toHaveBeenCalledTimes(mode === "recovered" ? 1 : 0);
     } finally { await runtime.stop(); }
+  });
+
+  // KIMI-06: use the real encrypted transport and verify both directions, including a same-device downgrade.
+  it("gates Kimi discovery, commands, scoped diagnostics, launch recovery and receipts on the current handshake", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-kimi-host-"));
+    relay = await startRelayLocal(stateDir);
+    const cwd = join(stateDir, "kimi-only-workspace"); await mkdir(cwd);
+    const id = "kimi-code:fixture:session_host_wire";
+    const kimi = new KimiRuntime({ stateDir });
+    let events: (event: RuntimeEvent, runtimeId: string) => void = () => {};
+    let online = false;
+    const metadata = { name: "Kimi Code", runtimeId: id, sessionId: id, cwd, status: "idle" as const, sessionGraphSync: true };
+    vi.spyOn(kimi, "start").mockImplementation(() => {});
+    vi.spyOn(kimi, "setEventSink").mockImplementation(sink => { events = sink; });
+    vi.spyOn(kimi, "isReady").mockReturnValue(true);
+    vi.spyOn(kimi, "ownsRuntime").mockImplementation(runtimeId => online && runtimeId === id);
+    vi.spyOn(kimi, "directoryEntries").mockImplementation(() => online ? [metadata] : []);
+    vi.spyOn(kimi, "catalogCoverage").mockImplementation(async archived => ({ complete: true, sessions: archived ? [] : [
+      { agentKind: "kimiCode", sessionId: id, cwd, hostname: "fixture", createdAt: 1, modifiedAt: 2, messageCount: 0 },
+    ] }));
+    vi.spyOn(kimi, "sessionConfiguration").mockResolvedValue({ defaults: {}, models: [], permissions: [], binding: "kimi-code:fixture:local" });
+    const activate = vi.spyOn(kimi, "activate").mockImplementation(async (_target, context) => {
+      online = true; kimi.onMetadataChange?.(metadata);
+      const activation = { sessionId: id, spawnMode: "headless" as const };
+      await context?.onCreated?.(activation); return activation;
+    });
+    const dispatched = vi.spyOn(kimi, "dispatchCommand").mockImplementation((_id, commandId) => {
+      events({ type: "command.result", commandId, ok: true, status: "success" }, id); return "handled";
+    });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, kimiCodeRuntime: kimi });
+    await host.start();
+    const opened = await host.openPairingWindow();
+    const connected = await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Kimi fixture" });
+    device = connected.device;
+    const pskRoot = await device.pair(opened.payload);
+    const handshake = () => device!.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+    const wait = async (predicate: (message: Record<string, unknown>) => boolean, forbidden = false) => {
+      for (let i = 0; i < 100; i++) {
+        const message = await device!.receiveMessage() as Record<string, unknown>;
+        if (forbidden) expect(JSON.stringify(message)).not.toMatch(/kimi-code:fixture|kimi-only-workspace|"agentKind":"kimiCode"|native diagnostic/u);
+        if (predicate(message)) return message;
+      }
+      throw new Error("Kimi fixture did not receive expected message");
+    };
+    const send = (type: string, params: object) => sendRequest(device!, { type, protocolVersion: PROTOCOL_VERSION, ...params });
+    const read = (requestId: string, scope = "host", known?: unknown[]) => {
+      send("agent.state.request", { requestId, scope, stateFormat: "compact-v2", subscribe: true,
+        domains: scope === "host" ? ["backends", "workspaces", "catalog", "diagnostics", "management"] : ["operations"], ...(known ? { known } : {}) });
+      return wait(message => message.requestId === requestId, requestId !== "host-full");
+    };
+    const launch = { requestId: "launch", launchId: "kimi-launch", agentKind: "kimiCode", cwd, binding: "kimi-code:fixture:local", revision: 0, values: {}, spawnMode: "headless" };
+    await handshake();
+    const initial = await wait(message => message.type === "device.ready", true);
+    expect(initial.hostFeatures).toEqual(["device.features", "agent.kimiCode"]);
+    expect(initial.agents).not.toContain("kimiCode");
+    const hidden = await read("host-hidden");
+    for (const [type, body] of [
+      ["session.configuration.read", { requestId: "config-no", agentKind: "kimiCode", cwd }],
+      ["session.launch", launch],
+      ["session.activate", { requestId: "resume-no", target: { type: "resume", sessionId: id } }],
+      ["session.archive", { requestId: "archive-no", sessionId: id, agentKind: "kimiCode", archived: true }],
+      ["runtime.command", { commandId: "history-no", runtimeId: id, command: { type: "session.sync", sessionId: id, syncId: "history", range: "preview" } }],
+      ["runtime.command", { commandId: "answer-no", runtimeId: id, command: { type: "interaction.respond", requestId: "approval", extensionId: "kimiCode", response: { kind: "confirm", value: true } } }],
+    ] as const) {
+      send(type, body);
+      const reply = await wait(message => message.requestId === ("requestId" in body ? body.requestId : body.commandId) || message.commandId === ("commandId" in body ? body.commandId : "never"), true);
+      expect(reply).toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+    }
+    expect(activate).not.toHaveBeenCalled(); expect(dispatched).not.toHaveBeenCalled();
+    send("device.features", { features: ["agent.kimiCode"] });
+    const full = await wait(message => message.type === "device.ready" && (message.launchableAgents as string[]).includes("kimiCode"));
+    expect(full.modelEpoch).not.toBe(initial.modelEpoch);
+    expect(full).not.toHaveProperty("dshDesktop");
+    const known = (hidden.domains as AgentStateDomainSnapshot[]).map(({ domain, modelEpoch, revision }) => ({ domain, modelEpoch, revision }));
+    const snapshot = await read("host-full", "host", known);
+    expect(snapshot.unchanged).toBeUndefined();
+    expect(snapshot.domains).toEqual(expect.arrayContaining([expect.objectContaining({ domain: "catalog", modelEpoch: full.modelEpoch,
+      value: expect.objectContaining({ totalSessions: 1, sessions: [expect.objectContaining({ sessionId: id })] }) })]));
+    expect((snapshot.domains as AgentStateDomainSnapshot[]).every(domain => domain.delta === undefined)).toBe(true);
+    send("session.launch", launch);
+    expect(await wait(message => message.requestId === "launch" && message.phase === "ready")).toMatchObject({ sessionId: id, spawnMode: "headless" });
+    expect(activate).toHaveBeenCalledExactlyOnceWith({ type: "new", cwd }, expect.objectContaining({ nativeLaunchMarker: expect.any(String), spawnMode: "headless" }));
+    await expect(readFile(join(stateDir, "session-configuration.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(stateDir, "kimi-session-configuration.json"), "utf8")).toContain('"agentKind":"kimiCode"');
+    host.recordDiagnostic({ scope: "agent", agentKind: "kimiCode", sessionId: id, category: "fixture", severity: "info", message: "native diagnostic" });
+    send("runtime.command", { commandId: "native-stop", runtimeId: id, command: { type: "stop" } });
+    await wait(message => (message.event as { commandId?: string } | undefined)?.commandId === "native-stop");
+    expect(dispatched).toHaveBeenCalledTimes(1);
+    await handshake();
+    const downgraded = await wait(message => message.type === "device.ready" && message.modelEpoch !== full.modelEpoch, true);
+    expect(downgraded.agents).not.toContain("kimiCode");
+    send("session.launch.read", { launchId: launch.launchId, requestId: "recover-no" });
+    expect(await wait(message => message.requestId === "recover-no", true)).toMatchObject({ type: "session.launch.result", phase: "absent" });
+    await read("private-downgraded", "device");
+    send("diagnostics.request", { requestId: "diagnostics-no", category: "fixture" });
+    expect(await wait(message => message.requestId === "diagnostics-no", true)).toMatchObject({ page: { records: [] } });
+    expect(activate).toHaveBeenCalledTimes(1);
   });
 
   // ADR-0076 DSH-DESKTOP-03 / 06: Web and Desktop expose the same native id as two routes, and a device sees

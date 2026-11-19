@@ -30,7 +30,7 @@ const catalogPage = z.object({ items: z.array(z.object({
 })).max(PAGE_SIZE), has_more: z.boolean(), next_page_token: z.string().min(1).max(4096).nullable() });
 const recoveryPage = z.object({ items: z.array(KimiSessionSchema).max(PAGE_SIZE), has_more: z.boolean() });
 export class KimiLaunchBlocked extends ActivationError {}
-export function isKimiId(value: unknown): value is string { return typeof value === "string" && value.startsWith(KIMI_PREFIX); }
+export function isKimiId(value: unknown): value is `kimi-code:${string}` { return typeof value === "string" && value.startsWith(KIMI_PREFIX); }
 export const kimiSessionPath = (id: string) => `/api/v1/sessions/${encodeURIComponent(id)}`;
 
 /** Identity persists through Web restarts and changes when the data root is replaced. */

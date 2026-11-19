@@ -53,6 +53,7 @@ type LiveActivityPublisherOptions = {
   now?: () => number;
   producerId?: string;
   /** Ordinary changes coalesce; a quiet activity only needs a bounded freshness renewal. */
+  includeAgent?: (key: AgentKey) => boolean;
   coalesceMs?: number;
   heartbeatMs?: number;
   terminalCoalesceMs?: number;
@@ -109,7 +110,7 @@ export class LiveActivityPublisher {
     this.#unsubscribe = options.registry.subscribe(change => {
       if (this.#closing || this.#closed) return;
       if (change.kind === "reset") { this.#queueCollection(); return; }
-      if (change.scope.kind !== "agent" || change.scope.key.hostId !== options.hostId ||
+      if (change.scope.kind !== "agent" || change.scope.key.hostId !== options.hostId || options.includeAgent?.(change.scope.key) === false ||
           !["execution", "availability"].includes(change.domain)) return;
       const id = agentKeyId(change.scope.key);
       const tracked = this.#tracked.get(id);

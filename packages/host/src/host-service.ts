@@ -42,7 +42,7 @@ import {
 } from "@orbis/e2e";
 import {
   DeviceE2ePayloadSchema,
-  DEVICE_FEATURE_DSH_DESKTOP,
+  DEVICE_FEATURE_KIMI_CODE,
   HOST_FEATURE_DEVICE_FEATURES,
   PROTOCOL_VERSION,
   type AgentKind,
@@ -91,7 +91,7 @@ import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
 import { ClaudeBackend, PiBackend } from "./agent-backend.js";
 import type { KimiRuntime } from "./kimi-runtime.js";
-import { KimiLaunchBlocked } from "./kimi-sessions.js";
+import { isKimiId, KIMI_KIND, KimiLaunchBlocked } from "./kimi-sessions.js";
 import { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
 import { ClaudeHookBridge } from "./claude-hook-bridge.js";
 import { TerminalClaudeLauncher, type ClaudeLauncher } from "./claude-launcher.js";
@@ -100,7 +100,8 @@ import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import type { DshRuntime } from "./dsh-runtime.js";
-import { DSH_DESKTOP_KIND, hiddenFromLegacy, isDshDesktopRuntime, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
+import { DSH_DESKTOP_KIND, agentViews, allowsAgent, allowsAgentIdentity, allowsAgentRequest, allowsRuntime, applyDeviceViewEpoch, deviceAgentView,
+  hiddenKinds, projectAgentMessage, projectBackendDomain, type AgentView } from "./device-agent-visibility.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
 import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.js";
@@ -251,7 +252,7 @@ export type HostServiceOptions = {
   dshLaunchable?: boolean;
   /** DeepSeek Harness Desktop (ADR-0076): a separate entry with its own kind, namespace and connection. */
   dshDesktopRuntime?: DshRuntime;
-  /** Added to the device backend inventory only after KIMI-06. */
+  /** Existing, user-managed Kimi Web service. */
   kimiCodeRuntime?: KimiRuntime;
   /** Open Desktop when closed and attach to the backend it owns; never a substitute Web service. */
   ensureDshDesktopRuntime?: () => Promise<DshRuntime | undefined>;
@@ -318,8 +319,9 @@ export class HostService {
   readonly #dsh: Record<DshKind, DshSlot> = { dsh: { startingExistingOnly: false }, dshDesktop: { startingExistingOnly: false } };
   /** Features each device declared on its current handshake (ADR-0064); absent = released App behaviour. */
   readonly #deviceFeatures = new Map<string, ReadonlySet<string>>();
-  /** Devices that read a host-scope view without `dshDesktop`; their cached revisions are not full views. */
-  readonly #legacyHostServed = new Set<string>();
+  /** A new view cannot reuse an old view's known revisions, including on same-host downgrade. */
+  readonly #deviceViewEpochs = new Map<string, string>();
+  readonly #workspaceViews = new Map<AgentView, HostWorkspacesState>();
   readonly #claudeBridge: ClaudeHookBridge;
   readonly #claudeModsBridge: ClaudeModsBridge;
   readonly #claudeBackend: ClaudeBackend;
@@ -373,8 +375,8 @@ export class HostService {
   }
 
   /** 读一页诊断记录（游标读；缺口语义见 DiagnosticJournal）。 */
-  readDiagnostics(request: DiagnosticPageRequest = {}): ReturnType<DiagnosticJournal["page"]> {
-    const page = this.#diagnostics.page(request);
+  readDiagnostics(request: DiagnosticPageRequest = {}, view: AgentView = 0): ReturnType<DiagnosticJournal["page"]> {
+    const page = this.#diagnostics.page(request, row => allowsAgentIdentity(view, row));
     // 读取本身会触发淘汰：顺手让目录投影跟当前窗口对齐。
     this.#publishDiagnostics();
     return page;
@@ -382,8 +384,8 @@ export class HostService {
 
   #recordAgentDiagnostic(runtimeId: string, category: string, message: string, severity: "info" | "warning" | "error" = "info", operationId?: string): void {
     const scope = this.#agentFacts.scopeOf(runtimeId);
-    this.recordDiagnostic({ scope: scope ? "agent" : "host", agentKind: scope?.kind === "agent" ? scope.key.agentKind : null,
-      sessionId: scope?.kind === "agent" ? scope.key.sessionId : null, category, severity, message,
+    this.recordDiagnostic({ scope: scope ? "agent" : "host", agentKind: scope?.kind === "agent" ? scope.key.agentKind : isKimiId(runtimeId) ? KIMI_KIND : null,
+      sessionId: scope?.kind === "agent" ? scope.key.sessionId : isKimiId(runtimeId) ? runtimeId : null, category, severity, message,
       ...(operationId === undefined ? {} : { operationId }) });
   }
 
@@ -588,26 +590,33 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#options.kimiCodeRuntime ? [KIMI_KIND] as const : [])];
     facts.backends({ backends: kinds.map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
-        reason: backend === undefined ? "backend_not_attached" : backend.isReady() ? null : "backend_not_ready" };
+        reason: backend === undefined ? "backend_not_attached" : backend.isReady() ? null
+          : kind === KIMI_KIND ? this.#options.kimiCodeRuntime?.reason ?? "backend_not_ready" : "backend_not_ready" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
-    const grouped = new Map<string, Set<string>>();
-    for (const session of [...(this.#catalogCache?.sessions ?? []), ...runtimes]) {
-      if (!session.cwd) continue;
-      const keys = grouped.get(session.cwd) ?? new Set<string>(); keys.add(session.sessionId ?? "runtime:" + ("runtimeId" in session ? session.runtimeId : ""));
-      grouped.set(session.cwd, keys);
-    }
     const catalog = this.#hostStateFacts.read();
-    const catalogComplete = catalog?.backends.every(backend => backend.complete) === true && !catalog.truncated;
-    facts.workspaces({ workspaces: [...grouped].slice(0, 256).map(([cwd, sessions]) => ({
-      workspaceId: createHash("sha256").update(cwd).digest("hex"), cwd, sessionCount: sessions.size,
-      git: this.#workspaceGit.get(cwd) ?? { availability: "unknown", branch: null, head: null, repoRoot: null },
-    })), truncated: grouped.size > 256 || !catalogComplete });
-    for (const cwd of this.#workspaceGit.keys()) if (!grouped.has(cwd)) this.#workspaceGit.delete(cwd);
+    const candidates = [...(this.#catalogCache?.sessions ?? []), ...runtimes];
+    for (const view of agentViews) {
+      const grouped = new Map<string, Set<string>>();
+      for (const session of candidates) {
+        if (!session.cwd || !allowsAgentIdentity(view, session)) continue;
+        const keys = grouped.get(session.cwd) ?? new Set<string>();
+        keys.add(session.sessionId ?? "runtime:" + ("runtimeId" in session ? session.runtimeId : "")); grouped.set(session.cwd, keys);
+      }
+      const complete = catalog?.backends.filter(row => allowsAgent(view, row.kind)).every(row => row.complete) === true && !catalog.truncated;
+      const value = { workspaces: [...grouped].slice(0, 256).map(([cwd, sessions]) => ({
+        workspaceId: createHash("sha256").update(cwd).digest("hex"), cwd, sessionCount: sessions.size,
+        git: this.#workspaceGit.get(cwd) ?? { availability: "unknown" as const, branch: null, head: null, repoRoot: null },
+      })), truncated: grouped.size > 256 || !complete };
+      if (view === 0) {
+        facts.workspaces(value);
+        for (const cwd of this.#workspaceGit.keys()) if (!grouped.has(cwd)) this.#workspaceGit.delete(cwd);
+      } else this.#workspaceViews.set(view, facts.workspaceValue(value, this.#workspaceViews.get(view)));
+    }
     facts.files(this.#downloads.inventory());
     const links = [...this.#links.values()];
     facts.connections({ pairedDevices: this.devices.filter(device => !device.revoked).length, connectedDevices: links.filter(link => link.active !== undefined).length,
@@ -630,7 +639,7 @@ export class HostService {
   }
 
   /** The first range read reconciles the source; cursor continuations read one committed immutable inventory. */
-  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: AgentKind): Promise<HostCatalogRange> {
+  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: readonly AgentKind[]): Promise<HostCatalogRange> {
     if (!request.cursor && !this.#serviceClosed) await this.#catalogWithCache();
     return this.#hostStateFacts.catalogRange(request, hide);
   }
@@ -712,6 +721,7 @@ export class HostService {
   #sharedOperationsTruncatedAt = 0;
   readonly #desktopOwnedIds = new Set<string>();
   readonly #sessionConfigurations: SessionConfigurationStore;
+  readonly #kimiConfigurations: SessionConfigurationStore;
   #desktopLedgerWrite: Promise<void> = Promise.resolve();
 
   private constructor(
@@ -723,6 +733,8 @@ export class HostService {
     this.#options = { ...options, relayHistoryMode: relayHistoryMode(options.relayHistoryMode) };
     this.#stateDir = stateDir;
     this.#sessionConfigurations = new SessionConfigurationStore(join(stateDir, "session-configuration.json"));
+    // Released Hosts parse every launch entry strictly; never mix new kinds into their file.
+    this.#kimiConfigurations = new SessionConfigurationStore(join(stateDir, "kimi-session-configuration.json"));
     // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
     this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
     this.#identity = identity;
@@ -738,7 +750,7 @@ export class HostService {
         const message = this.#runtimeEventMessage(runtimeId, event);
         assertToolWireBudget(message);
         const payload = this.#encodeMeasured(message), link = this.#links.get(deviceId);
-        if (!link) return false;
+        if (!link || !allowsRuntime(this.#agentView(deviceId), runtimeId)) return false;
         return event.type === "session.tool.content.page"
           ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
           : link.send(payload, "ctl", outboundQueueSource(message, payload.byteLength));
@@ -788,7 +800,10 @@ export class HostService {
         const scope = this.#agentFacts.scopeOf(runtimeId);
         return !scope || !this.#conversationState.hasBaseline(scope);
       },
-      encodeEvent: (runtimeId, event, deviceId) => this.#encodeForDevice(deviceId, this.#runtimeEventMessage(runtimeId, event)),
+      encodeEvent: (runtimeId, event, deviceId) => {
+        if (!allowsRuntime(this.#agentView(deviceId), runtimeId)) throw new Error("agent_feature_required");
+        return this.#encodeForDevice(deviceId, this.#runtimeEventMessage(runtimeId, event));
+      },
       acceptSnapshot: (runtimeId, event) => {
         let rejectionReason: string | undefined;
         const accepted = this.#acceptConversation(runtimeId, event, reason => { rejectionReason = reason; });
@@ -914,6 +929,8 @@ export class HostService {
     this.#agentStateRegistry = agentStateRegistry;
     this.#liveActivities = new LiveActivityPublisher({ registry: agentStateRegistry,
       hostId: this.#identity.hostId, relayUrl: options.relayUrl, credential: options.credential,
+      // The relay activity endpoint is a host-wide fanout, without per-device feature negotiation.
+      includeAgent: key => key.agentKind !== KIMI_KIND,
       ...(options.log === undefined ? {} : { log: options.log }) });
     this.#conversationState = new AgentConversationState(agentStateRegistry);
     this.#toolInventory = new AgentToolInventory(agentStateRegistry);
@@ -921,7 +938,7 @@ export class HostService {
     this.#fileChanges = new TurnFileChangeService({
       directory: join(stateDir, "turn-file-changes"), scope: changeScope,
       send: (deviceId, runtimeId, event) => {
-        const link = this.#links.get(deviceId); if (!link) return false;
+        const link = this.#links.get(deviceId); if (!link || !allowsRuntime(this.#agentView(deviceId), runtimeId)) return false;
         const message = this.#runtimeEventMessage(runtimeId, event), payload = this.#encodeMeasured(message);
         return event.type === "session.change.detail.page"
           ? link.sendToolContent(payload, outboundQueueSource(message, payload.byteLength))
@@ -945,15 +962,39 @@ export class HostService {
     this.#toolIngestion = new ToolInventoryIngestion(this.#toolInventory);
     const project = (deviceId: string, scope: StateScope, domain: string, value: unknown) => this.#projectHostDomain(deviceId, scope, domain, value);
     this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
-    this.#compactState = new CompactStateModel(agentStateRegistry,
-      value => legacyHostDomain("catalog", value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, DSH_DESKTOP_KIND)));
+    this.#compactState = new CompactStateModel(agentStateRegistry, value => new Map(agentViews.filter(view => view !== 0).map(view =>
+      [view, this.#projectCatalog(view, value)])));
     this.#compactStateSubscriptions = new AgentStateSubscriptions(this.#compactState.registry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
       if (codex !== undefined) this.#attachCodexBackend(codex);
     }
     if (options.dshRuntime !== undefined) this.#attachDshBackend(options.dshRuntime);
     if (options.dshDesktopRuntime !== undefined) this.#attachDshBackend(options.dshDesktopRuntime);
+    if (options.kimiCodeRuntime !== undefined) this.#attachKimiBackend(options.kimiCodeRuntime);
     this.refreshHostFacts();
+  }
+
+  #attachKimiBackend(runtime: KimiRuntime): void {
+    this.#backends.push(runtime);
+    if (this.#toolContentStore) runtime.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
+    runtime.setEventSink((event, id) => this.#publishRuntimeEvent(id, event));
+    runtime.onCatalogChange = () => this.#invalidateCatalog();
+    runtime.onReadyChange = () => this.#broadcastDeviceReady();
+    runtime.onMetadataChange = metadata => {
+      const { runtimeId, sessionId } = metadata;
+      if (!this.#notifications.has(runtimeId) || this.#notifications.needsAttach(runtimeId)) this.#notifications.attach(runtimeId, sessionId);
+      this.#publishRuntimeEvent(runtimeId, { type: "runtime.metadata", metadata });
+      this.#broadcastDeviceMessage({ type: "runtime.online", runtime: metadata });
+    };
+    runtime.onArchiveChange = (sessionId, archived) => {
+      this.#invalidateCatalog();
+      this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: KIMI_KIND, sessionId, archived });
+    };
+    runtime.onOffline = (metadata, reason) => {
+      this.#notifications.end(metadata.runtimeId);
+      this.#markRuntimeOffline(metadata.runtimeId, reason);
+      this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: metadata.runtimeId, reason });
+    };
   }
 
   /** Wire a Codex runtime once. Desktop runtimes can be attached after relay startup. */
@@ -1249,6 +1290,7 @@ export class HostService {
    */
   async #handleAgentStateRequest(deviceId: string, request: Extract<DeviceE2ePayload, { type: "agent.state.request" }>): Promise<void> {
     const authenticatedLink = this.#links.get(deviceId);
+    const view = this.#agentView(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
     this.refreshHostFacts();
     // 点名要供应商摘要就先现读一次：模型里那份是「上次有人读时」的，不能当成刚核对过。
     if (request.domains?.includes("providers") === true) await this.refreshProviderFacts();
@@ -1259,7 +1301,8 @@ export class HostService {
     };
     const scope = this.#resolveAgentStateScope(deviceId, request);
     if (scope?.kind === "host" && (request.domains === undefined || request.domains.includes("catalog"))) await this.readHostRange();
-    if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active) return;
+    if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active || epoch !== this.#deviceViewEpochs.get(deviceId) || view !== this.#agentView(deviceId)) return;
+    if (scope?.kind === "agent" && !allowsAgentIdentity(view, scope.key)) { this.#rejectAgentFeature(deviceId, request); return; }
     if (scope === undefined) {
       this.#sendJsonToDevice(deviceId, {
         type: "agent.state.snapshot", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId,
@@ -1279,6 +1322,7 @@ export class HostService {
         if (threadId !== undefined) backend.announce(threadId);
       }
       for (const kind of DSH_KINDS) if (this.#dsh[kind].runtime?.ownsRuntime(runtimeId)) this.#dsh[kind].runtime!.announce();
+      if (this.#options.kimiCodeRuntime?.ownsRuntime(runtimeId)) this.#options.kimiCodeRuntime.announce();
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
     if (request.runtimeId && request.domains?.includes("records")) this.#agentFacts.refreshRecords(request.runtimeId);
@@ -1290,15 +1334,15 @@ export class HostService {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "model_subscription_limit", message: "模型订阅已达上限" });
       return;
     }
-    // A device that has just declared `agent.dshDesktop` may hold revisions of the filtered view.
-    const known = scope.kind === "host" && this.#showsDshDesktop(deviceId) && this.#legacyHostServed.delete(deviceId) ? undefined : request.known;
+    const known = epoch === undefined ? request.known : request.known?.filter(item => item.modelEpoch === epoch)
+      .map(item => ({ ...item, modelEpoch: registry.currentModelEpoch() }));
     for (const part of buildAgentStateSnapshotParts({
       registry,
       requestId: request.requestId,
       scope,
       identity,
       stateFormat: request.stateFormat,
-      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision, !this.#showsDshDesktop(deviceId)) } : {}),
+      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision, view) } : {}),
       projectValue: (domain, value) => this.#projectHostDomain(deviceId, scope, domain, value),
       ...(request.domains === undefined ? {} : { domains: request.domains }),
       ...(known === undefined ? {} : { known }),
@@ -1307,20 +1351,49 @@ export class HostService {
     }
   }
 
-  #showsDshDesktop(deviceId: string): boolean {
-    return this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_DSH_DESKTOP) === true;
+  #agentView(deviceId: string): AgentView { return deviceAgentView(this.#deviceFeatures.get(deviceId)); }
+
+  #resetAgentView(deviceId: string): void {
+    this.#deviceViewEpochs.set(deviceId, randomUUID());
+    this.#agentStateSubscriptions.clearDevice(deviceId);
+    this.#compactStateSubscriptions.clearDevice(deviceId);
+    this.#sessionSync.clearDevice(deviceId);
+    this.#historyInterests.delete(deviceId);
+    this.#fieldTraffic.release(deviceId);
+    this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
   }
 
-  /** Host-scope values for a device without `agent.dshDesktop` (ADR-0076 DSH-DESKTOP-06). */
+  #projectCatalog(view: AgentView, value: unknown): unknown {
+    return value && typeof value === "object" ? this.#hostStateFacts.hiddenCatalog(value as Record<string, unknown>, hiddenKinds(view)) : value;
+  }
+
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
-    if (scope.kind !== "host" || this.#showsDshDesktop(deviceId)) return value;
-    this.#legacyHostServed.add(deviceId);
-    return legacyHostDomain(domain, value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, DSH_DESKTOP_KIND));
+    const view = this.#agentView(deviceId);
+    if (!view) return value;
+    if (scope.kind === "host") {
+      if (domain === "catalog") return this.#projectCatalog(view, value);
+      if (domain === "workspaces") return this.#workspaceViews.get(view) ?? { workspaces: [], truncated: true };
+      if (domain === "diagnostics") {
+        const stats = this.#diagnostics.stats(row => allowsAgentIdentity(view, row));
+        return { ...value as object, ...stats };
+      }
+      return projectBackendDomain(view, domain, value);
+    }
+    if (scope.kind === "device" && domain === "operations" && value && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).filter(([, row]) => row && typeof row === "object" && allowsAgentIdentity(view, row)));
+    }
+    return value;
   }
 
-  /** What one device may receive; `undefined` drops the message for that device. */
   #visibleTo(deviceId: string, message: object): object | undefined {
-    return this.#showsDshDesktop(deviceId) ? message : legacyDeviceMessage(message);
+    const visible = projectAgentMessage(this.#agentView(deviceId), message);
+    return visible === undefined ? undefined : applyDeviceViewEpoch(visible, this.#deviceViewEpochs.get(deviceId));
+  }
+
+  #rejectAgentFeature(deviceId: string, message: { requestId?: unknown; commandId?: unknown }): void {
+    this.#sendToDevice(deviceId, { type: "protocol.error", code: "agent_feature_required", message: "当前客户端未协商此 Agent 功能",
+      ...(typeof message.requestId === "string" ? { requestId: message.requestId } : {}),
+      ...(typeof message.commandId === "string" ? { commandId: message.commandId } : {}) });
   }
 
   #resolveAgentStateScope(
@@ -1509,7 +1582,7 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES],
+      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : [])],
       sessionConfiguration: 1,
     };
   }
@@ -1851,7 +1924,7 @@ export class HostService {
     this.#deviceViewFacts.forget(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
-    this.#deviceFeatures.delete(deviceId); this.#legacyHostServed.delete(deviceId);
+    this.#deviceFeatures.delete(deviceId); this.#deviceViewEpochs.delete(deviceId);
     this.#historyInterests.delete(deviceId);
     this.#catalogQueryDevices.delete(deviceId);
     this.#fieldTraffic.release(deviceId);
@@ -1966,17 +2039,22 @@ export class HostService {
       return;
     }
     if (message.type === "device.features") {
-      const before = this.#showsDshDesktop(deviceId);
-      this.#deviceFeatures.set(deviceId, new Set(message.features));
-      if (before === this.#showsDshDesktop(deviceId)) return;
-      // The filtered device.ready and notification snapshots of this handshake are replaced by the full view.
+      const before = this.#agentView(deviceId);
+      this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature => feature !== DEVICE_FEATURE_KIMI_CODE || this.#options.kimiCodeRuntime !== undefined)));
+      const after = this.#agentView(deviceId);
+      if (before === after) return;
+      this.#resetAgentView(deviceId);
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
       for (const runtime of this.#runtimesSnapshot()) {
-        if (isDshDesktopRuntime(runtime.runtimeId)) this.#sendToDevice(deviceId, this.#notifications.snapshot(runtime.runtimeId, deviceId));
+        if (!allowsAgentIdentity(before, runtime) && allowsAgentIdentity(after, runtime)) {
+          this.#sendToDevice(deviceId, this.#notifications.snapshot(runtime.runtimeId, deviceId));
+        }
       }
-      this.#dsh.dshDesktop.runtime?.announce();
+      if (allowsAgent(after, DSH_DESKTOP_KIND)) this.#dsh.dshDesktop.runtime?.announce();
+      if (allowsAgent(after, KIMI_KIND)) this.#options.kimiCodeRuntime?.announce();
       return;
     }
+    if (!allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message as { requestId?: unknown; commandId?: unknown }); return; }
     if (message.type === "device.version.report") {
       const device = findActiveDeviceRecord(this.#store, deviceId);
       if (device !== undefined && (device.appVersion !== message.version || device.appVersionCode !== message.versionCode)) {
@@ -1989,7 +2067,10 @@ export class HostService {
     if (message.type === "session.configuration.read" || message.type === "session.configuration.save"
       || message.type === "session.launch" || message.type === "session.launch.read") {
       if (message.type === "session.launch" || message.type === "session.launch.read") {
-        this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionConfiguration(deviceId, message));
+        const epoch = this.#deviceViewEpochs.get(deviceId);
+        this.#sessionMutation = this.#sessionMutation.then(() => {
+          if (epoch === this.#deviceViewEpochs.get(deviceId)) return this.#handleSessionConfiguration(deviceId, message);
+        });
       } else void this.#handleSessionConfiguration(deviceId, message);
       return;
     }
@@ -2000,10 +2081,10 @@ export class HostService {
     }
     if (message.type === "session.catalog.query") {
       if (!this.#catalogQueryDevices.has(deviceId)) return;
-      const link = this.#links.get(deviceId);
+      const link = this.#links.get(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
       void (message.cursor ? Promise.resolve() : this.#catalogWithCache()).then(() => {
-        if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active) return;
-        const response = { ...this.#hostStateFacts.catalogQuery(message, this.#showsDshDesktop(deviceId) ? undefined : "dshDesktop"), protocolVersion: PROTOCOL_VERSION };
+        if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active || epoch !== this.#deviceViewEpochs.get(deviceId)) return;
+        const response = { ...this.#hostStateFacts.catalogQuery(message, hiddenKinds(this.#agentView(deviceId))), protocolVersion: PROTOCOL_VERSION };
         if (encodeDeviceMessage(response).byteLength > 64 * 1024) {
           this.#sendToDevice(deviceId, { type: "protocol.error",
             requestId: message.requestId, code: "catalog_page_too_large", message: "目录页超出传输上限" }); return;
@@ -2030,7 +2111,7 @@ export class HostService {
       return;
     }
     if (message.type === "transport.fields.read") {
-      this.#sendToDevice(deviceId, this.#fieldTraffic.page(deviceId, message)); return;
+      this.#sendToDevice(deviceId, this.#fieldTraffic.page(deviceId, message, kind => allowsAgent(this.#agentView(deviceId), kind))); return;
     }
     if (message.type === "agent.menu.options.read") {
       const scope = this.#agentFacts.scopeOf(message.runtimeId);
@@ -2066,6 +2147,8 @@ export class HostService {
     }
     // ── 上传（spec: 手机上传文件到电脑）：接收方驱动（ADR-0012），落地、校验、拉取都在这里。
     if (message.type === "file.upload.init") {
+      if (isKimiId(message.runtimeId)) { this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId,
+        code: "unsupported_command", message: "Kimi Code 不提供文件上传" }); return; }
       void this.#uploads.handleInit(deviceId, message);
       return;
     }
@@ -2075,7 +2158,11 @@ export class HostService {
     }
     if (message.type === "session.activate" || message.type === "session.archive") {
       // Serialize activation with file moves, including the gap before a spawned Pi registers.
-      this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionRequest(deviceId, message));
+      const epoch = this.#deviceViewEpochs.get(deviceId);
+      this.#sessionMutation = this.#sessionMutation.then(() => {
+        if (epoch === this.#deviceViewEpochs.get(deviceId) && this.#links.get(deviceId)?.active !== undefined && allowsAgentRequest(this.#agentView(deviceId), message))
+          return this.#handleSessionRequest(deviceId, message);
+      });
       return;
     }
     if (message.type === "session.list" || message.type === "session.browse") {
@@ -2091,9 +2178,9 @@ export class HostService {
     }
     if (message.type === "agent.state.range.request") {
       const authenticatedLink = this.#links.get(deviceId);
-      if (!this.#showsDshDesktop(deviceId)) this.#legacyHostServed.add(deviceId);
-      void this.readHostRange(message, this.#showsDshDesktop(deviceId) ? undefined : DSH_DESKTOP_KIND).then(page => {
-        if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active) return;
+      const epoch = this.#deviceViewEpochs.get(deviceId);
+      void this.readHostRange(message, hiddenKinds(this.#agentView(deviceId))).then(page => {
+        if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active || epoch !== this.#deviceViewEpochs.get(deviceId)) return;
         this.#sendToDevice(deviceId, { type: "agent.state.range.page", protocolVersion: PROTOCOL_VERSION,
           requestId: message.requestId, scope: "host", domain: "catalog", page });
       }).catch(error => { this.#options.onDeviceError?.(deviceId, error); });
@@ -2108,7 +2195,7 @@ export class HostService {
         ...(message.severity === undefined ? {} : { severity: message.severity }),
         ...(message.sessionId === undefined ? {} : { sessionId: message.sessionId }),
         ...(message.agentKind === undefined ? {} : { agentKind: message.agentKind }),
-      });
+      }, this.#agentView(deviceId));
       this.#sendToDevice(deviceId, buildDiagnosticsPageMessage(message, page));
       return;
     }
@@ -2133,6 +2220,9 @@ export class HostService {
       return;
     }
     const command = message.command;
+    if (isKimiId(message.runtimeId) && (command.type === "file.download" || command.type.startsWith("artifact.") || command.type.startsWith("session.change"))) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", commandId: message.commandId, code: "unsupported_command", message: "Kimi Code 不提供文件操作" }); return;
+    }
     if (this.#providerChanging && ["user_message", "slash.execute", "permissions.update"].includes(command.type) && this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(message.runtimeId))) {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "provider_switching", commandId: message.commandId, message: "正在切换供应商，请稍后重新打开会话" });
       return;
@@ -2212,7 +2302,9 @@ export class HostService {
       const sessionId = this.#runtimesSnapshot().find(item => item.runtimeId === runtimeId)?.sessionId;
       if (sessionId !== undefined) {
         // A configured launch may publish runtime.online before native settings are confirmed.
-        void this.#sessionConfigurations.blocks(sessionId).then(blocked => {
+        const epoch = this.#deviceViewEpochs.get(deviceId);
+        void (isKimiId(sessionId) ? this.#kimiConfigurations : this.#sessionConfigurations).blocks(sessionId).then(blocked => {
+          if (epoch !== this.#deviceViewEpochs.get(deviceId) || !allowsRuntime(this.#agentView(deviceId), runtimeId)) return;
           if (blocked) this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "command.result", commandId,
             ok: false, status: "failure", error: "会话启动配置尚未确认，消息未发送" }));
           else this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command);
@@ -2392,6 +2484,7 @@ export class HostService {
       }
       this.#catalogCache = { at: Date.now(), sessions };
       this.refreshHostFacts();
+      this.refreshHostFacts();
       return { sessions, cached: false };
     } finally {
       if (this.#catalogInFlight === flight) this.#catalogInFlight = undefined;
@@ -2421,7 +2514,7 @@ export class HostService {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
         this.recordDiagnostic({
-          scope: "host", agentKind: null, sessionId: null, category: "catalog", severity: "error",
+          scope: "host", agentKind: backend.kind, sessionId: null, category: "catalog", severity: "error",
           message: `拉取 ${backend.kind} 会话目录失败`, detail: { agentKind: backend.kind, reason: detail.slice(0, 256) },
         });
         backends.push({ kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail });
@@ -2429,12 +2522,12 @@ export class HostService {
     }
     const desktopIds = this.#desktopOwnedIds;
     const visible = sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId));
-    const limited = visible.slice(0, 2_000);
+
     if (epoch === this.#catalogEpoch && !this.#serviceClosed) {
       this.#hostStateFacts.catalog({ totalSessions: visible.length, truncated: false, backends,
         sessions: visible.map(entry => ({ ...entry, hostname: hostname() })), currentProviders: this.#hostStateFacts.read()?.currentProviders ?? [] });
     }
-    return limited;
+    return visible;
   }
 
   #recordDesktopThread(id: string): void {
@@ -2485,30 +2578,47 @@ export class HostService {
   async #handleSessionConfiguration(deviceId: string, message: Extract<DeviceE2ePayload, {
     type: "session.configuration.read" | "session.configuration.save" | "session.launch" | "session.launch.read"
   }>): Promise<void> {
+    const epoch = this.#deviceViewEpochs.get(deviceId);
+    const current = () => this.#links.get(deviceId)?.active !== undefined && epoch === this.#deviceViewEpochs.get(deviceId);
+    if (!current() || !allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message); return; }
+    let ledger = message.type !== "session.launch.read" && message.agentKind === KIMI_KIND ? this.#kimiConfigurations : this.#sessionConfigurations;
     const sendLaunch = async (launchId: string) => {
-      const result = await this.#sessionConfigurations.result(deviceId, launchId, message.requestId);
+      const result = await ledger.result(deviceId, launchId, message.requestId);
+      if (!current()) return;
       this.#sendToDevice(deviceId, result ?? { type: "session.launch.result", requestId: message.requestId,
         launchId, phase: "absent" });
     };
     try {
       if (message.type === "session.launch.read") {
         // Serialize with creation: a read must not report absence while the original create is queued.
-        await this.#recoverSessionLaunch(deviceId, message.launchId);
+        if (allowsAgent(this.#agentView(deviceId), KIMI_KIND) &&
+            !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#kimiConfigurations;
+        if (!current()) return;
+        await this.#recoverSessionLaunch(ledger, deviceId, message.launchId, current);
         await sendLaunch(message.launchId); return;
       }
       if (message.type === "session.launch") {
-        const prior = await this.#sessionConfigurations.result(deviceId, message.launchId, message.requestId);
+        if (allowsAgent(this.#agentView(deviceId), KIMI_KIND)) {
+          const other = ledger === this.#kimiConfigurations ? this.#sessionConfigurations : this.#kimiConfigurations;
+          if (await other.result(deviceId, message.launchId, message.requestId)) {
+            this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId,
+              code: "launch_id_conflict", message: "启动身份与已有配置冲突，请先核对原启动" }); return;
+          }
+        }
+        const prior = await ledger.result(deviceId, message.launchId, message.requestId);
         if (prior) {
           // begin validates the immutable fingerprint even for a completed/recovered operation.
-          await this.#sessionConfigurations.begin(deviceId, message);
-          await this.#recoverSessionLaunch(deviceId, message.launchId);
+          await ledger.begin(deviceId, message);
+          if (!current()) return;
+          await this.#recoverSessionLaunch(ledger, deviceId, message.launchId, current);
           await sendLaunch(message.launchId); return;
         }
       }
       const backend = await this.#configuredBackend(message.agentKind);
       const catalog = await backend.sessionConfiguration!(message.cwd);
+      if (!current()) return;
       if (message.type === "session.configuration.read") {
-        const saved = await this.#sessionConfigurations.read(message.agentKind, message.cwd, catalog.binding);
+        const saved = await ledger.read(message.agentKind, message.cwd, catalog.binding);
         const values = { ...catalog.defaults, ...saved.values,
           permissions: { ...catalog.defaults.permissions, ...saved.values.permissions } };
         const model = catalog.models.find(item => item.value === values.model);
@@ -2530,30 +2640,31 @@ export class HostService {
       if (catalog.binding !== message.binding) throw new SessionConfigurationError("configuration_stale", "供应商或模型清单已变化，请刷新启动配置");
       validateSessionConfiguration(catalog, message.values);
       if (message.type === "session.configuration.save") {
-        const saved = await this.#sessionConfigurations.save(message.agentKind, message.cwd, message.binding, message.revision, message.values);
+        const saved = await ledger.save(message.agentKind, message.cwd, message.binding, message.revision, message.values);
         this.#sendToDevice(deviceId, { type: "session.configuration.result", requestId: message.requestId,
           agentKind: message.agentKind, cwd: message.cwd, binding: message.binding, ...saved, catalog }); return;
       }
-      const begun = await this.#sessionConfigurations.begin(deviceId, message);
+      const begun = await ledger.begin(deviceId, message);
       if (!begun.execute) { await sendLaunch(message.launchId); return; }
       await sendLaunch(message.launchId);
       try {
+        if (!current()) throw new KimiLaunchBlocked("agent_unsupported", "客户端连接已经改变，未创建会话");
         const activated = await backend.activate({ type: "new", cwd: message.cwd }, {
           deviceId, launchId: message.launchId, spawnMode: message.spawnMode ?? (backend.kind === "kimiCode" ? "auto" : "tui"), configuration: message.values,
           ...(begun.record.nativeLaunchMarker === undefined ? {} : { nativeLaunchMarker: begun.record.nativeLaunchMarker }),
           ...(begun.record.expectedSessionId === undefined ? {} : { expectedSessionId: begun.record.expectedSessionId }),
           onCreated: async result => {
-            await this.#sessionConfigurations.update(deviceId, message.launchId, { phase: "configuring",
+            await ledger.update(deviceId, message.launchId, { phase: "configuring",
               ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }), spawnMode: result.spawnMode });
             await sendLaunch(message.launchId);
           },
         });
         if (!activated.sessionId) throw new Error("后端未确认新会话身份，已停止发送首句");
-        await this.#sessionConfigurations.update(deviceId, message.launchId, { phase: "ready", sessionId: activated.sessionId, spawnMode: activated.spawnMode });
+        await ledger.update(deviceId, message.launchId, { phase: "ready", sessionId: activated.sessionId, spawnMode: activated.spawnMode });
         this.#invalidateCatalog();
       } catch (error) {
         // Native create may already have happened. Unknown is retained and never automatically re-created.
-        await this.#sessionConfigurations.update(deviceId, message.launchId, {
+        await ledger.update(deviceId, message.launchId, {
           phase: error instanceof ClaudeStartupBlocked || error instanceof KimiLaunchBlocked ? "failed" : "unknown", error: describeError(error).slice(0, 2000) });
       }
       await sendLaunch(message.launchId);
@@ -2562,12 +2673,12 @@ export class HostService {
         // All native effects are inside the inner try. A rejected preflight has
         // no native side effect, while a stored operation remains recoverable.
         try {
-          const record = await this.#sessionConfigurations.result(deviceId, message.launchId, message.requestId);
+          const record = await ledger.result(deviceId, message.launchId, message.requestId);
           if (record && !(error instanceof SessionConfigurationError && error.code === "launch_id_conflict")) {
             this.#sendToDevice(deviceId, record); return;
           }
           if (!record) {
-            await this.#sessionConfigurations.reject(deviceId, message, describeError(error).slice(0, 2000));
+            await ledger.reject(deviceId, message, describeError(error).slice(0, 2000));
             await sendLaunch(message.launchId); return;
           }
         } catch { /* Storage is unreadable; never claim authoritative absence. */ }
@@ -2577,27 +2688,28 @@ export class HostService {
     }
   }
 
-  async #recoverSessionLaunch(deviceId: string, launchId: string): Promise<void> {
-    const prior = await this.#sessionConfigurations.result(deviceId, launchId, launchId);
+  async #recoverSessionLaunch(ledger: SessionConfigurationStore, deviceId: string, launchId: string, current: () => boolean): Promise<void> {
+    const prior = await ledger.result(deviceId, launchId, launchId);
+    if (!current() || prior && !allowsAgentIdentity(this.#agentView(deviceId), prior)) return;
     if (prior?.phase === "unknown" && !prior.sessionId && prior.agentKind) {
       if (prior.agentKind === "kimiCode") {
         try {
           const backend = await this.#configuredBackend(prior.agentKind);
-          const launch = await this.#sessionConfigurations.launchMarker(deviceId, launchId);
+          const launch = await ledger.launchMarker(deviceId, launchId);
           const sessionId = launch && await backend.recoverLaunch?.(launch.marker, launch.cwd, launch.binding);
-          if (sessionId) await this.#sessionConfigurations.update(deviceId, launchId, { sessionId, phase: "configuring", spawnMode: "headless" });
+          if (sessionId) await ledger.update(deviceId, launchId, { sessionId, phase: "configuring", spawnMode: "headless" });
         } catch { /* Native absence/unavailability is not permission to repeat the create. */ }
       } else {
         const backend = await this.#configuredBackend(prior.agentKind);
-        const expectedSessionId = await this.#sessionConfigurations.expectedSessionId(deviceId, launchId);
+        const expectedSessionId = await ledger.expectedSessionId(deviceId, launchId);
         // Legacy unknown records without a reserved identity cannot safely adopt an arbitrary hello.
         const found = expectedSessionId === undefined ? undefined : backend.findLaunch?.(launchId, expectedSessionId);
-        if (found?.sessionId) await this.#sessionConfigurations.update(deviceId, launchId,
+        if (found?.sessionId) await ledger.update(deviceId, launchId,
           { sessionId: found.sessionId, phase: "configuring", spawnMode: "tui" });
       }
     }
-    const record = await this.#sessionConfigurations.recover(deviceId, launchId);
-    if (!record?.sessionId) return;
+    const record = await ledger.recover(deviceId, launchId);
+    if (!current() || !record?.sessionId) return;
     try {
       const backend = await this.#configuredBackend(record.agentKind);
       const online = backend.directoryEntries?.().some(item => item.sessionId === record.sessionId);
@@ -2607,18 +2719,19 @@ export class HostService {
           if (catalog.binding !== record.binding) throw new Error("后端配置来源已变化，请核对原会话；不会重新创建");
           validateSessionConfiguration(catalog, record.values);
         }
+        if (!current()) return;
         const result = await backend.activate({ type: "resume", sessionId: record.sessionId }, {
           deviceId, spawnMode: record.spawnMode ?? "tui",
           ...(record.phase === "ready" ? {} : { configuration: record.values }),
         });
         if (result.sessionId !== record.sessionId) throw new Error("恢复返回了不同会话身份，已停止发送");
       }
-      await this.#sessionConfigurations.update(deviceId, launchId, { phase: "ready", error: undefined });
+      await ledger.update(deviceId, launchId, { phase: "ready", error: undefined });
       this.#invalidateCatalog();
     } catch (error) {
       // A failed process reattach does not invalidate historically confirmed
       // configuration or authorize reapplying the launch snapshot over later edits.
-      await this.#sessionConfigurations.update(deviceId, launchId, { phase: record.phase === "ready" ? "ready" : "unknown", error: describeError(error).slice(0, 2000) });
+      await ledger.update(deviceId, launchId, { phase: record.phase === "ready" ? "ready" : "unknown", error: describeError(error).slice(0, 2000) });
     }
   }
 
@@ -2637,7 +2750,13 @@ export class HostService {
     // ADR-0049 §7.6：归档 / 启动按 requestId 写设备私有回执，手机断线重连后能据此核对乐观显示。
     // 它们是 Host 级请求，回执的 runtimeId 填 Host 身份（见 AgentOperationItemSchema）。
     const receipted = message.type === "session.archive" || message.type === "session.activate";
-    if (receipted) this.#deviceViewFacts.accepted(deviceId, { operationId: requestId, runtimeId: this.#identity.hostId, requestId });
+    const operationRuntimeId = message.type === "session.archive" ? message.sessionId : message.type === "session.activate"
+      ? message.target.type === "resume" ? message.target.sessionId : message.target.agentKind === DSH_DESKTOP_KIND ? "dsh-desktop:launch"
+        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : this.#identity.hostId
+      : this.#identity.hostId;
+    // Scope receipts for gated runtimes before a device reconnects with an older build.
+    const receiptRuntimeId = allowsRuntime(3, operationRuntimeId) ? this.#identity.hostId : operationRuntimeId;
+    if (receipted) this.#deviceViewFacts.accepted(deviceId, { operationId: requestId, runtimeId: receiptRuntimeId, requestId });
     if (message.type === "session.activate") { this.#activationsPending++; this.refreshHostFacts(); }
     this.#options.log?.(`[debug] 收到 ${message.type}（requestId=${requestId}）`);
     try {
@@ -2690,7 +2809,7 @@ export class HostService {
         const payload = {
           type: "session.list.result" as const,
           requestId,
-          sessions: sessions.map((entry) => ({ ...entry, hostname: localHostname })),
+          sessions: sessions.filter(row => allowsAgentIdentity(this.#agentView(deviceId), row)).slice(0, 2_000).map(entry => ({ ...entry, hostname: localHostname })),
           currentProviders: providers.flat(),
         };
         this.#hostStateFacts.catalogProviders(payload.currentProviders);
@@ -2718,9 +2837,13 @@ export class HostService {
       // - new 按 agentKind 点名后端，没这个后端就是 agent_unsupported；
       // - resume 按装配顺序（Pi → Codex）逐个问，session_not_found = 不归它管。
       const target = message.target;
+      if (target.type === "new" && target.agentKind === KIMI_KIND) throw new ActivationError("agent_unsupported", "请使用可恢复的 Kimi Code 启动请求");
+      if (target.type === "resume" && isKimiId(target.sessionId) && target.agentKind !== undefined && target.agentKind !== KIMI_KIND)
+        throw new ActivationError("session_not_found", "会话与 Agent 类型不一致");
       const context = {
         deviceId,
-        ...(message.spawnMode === undefined ? {} : { spawnMode: message.spawnMode }),
+        ...(message.spawnMode !== undefined ? { spawnMode: message.spawnMode }
+          : target.type === "resume" && isKimiId(target.sessionId) ? { spawnMode: "headless" as const } : {}),
       };
       if (target.type === "new") {
         let backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
@@ -2764,8 +2887,10 @@ export class HostService {
         this.#sendActivated(deviceId, requestId, backend.kind, activated);
         return;
       }
-      const resumeKind = target.agentKind ?? (target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
+      const resumeKind = target.agentKind ?? (isKimiId(target.sessionId) ? KIMI_KIND : target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
         : target.sessionId.startsWith("dsh-desktop:") ? "dshDesktop" : target.sessionId.startsWith("dsh:") ? "dsh" : undefined);
+      if (resumeKind === KIMI_KIND && !this.#options.kimiCodeRuntime?.isReady())
+        throw new ActivationError("agent_unsupported", this.#options.kimiCodeRuntime?.reason ?? "Kimi Code Web 未连接");
       if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {
         try {
           const runtime = await this.#options.ensureCodexDesktop?.();
@@ -2786,7 +2911,7 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop")) continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND)) continue;
         try {
           const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, context);
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。
@@ -2813,7 +2938,7 @@ export class HostService {
     } finally {
       this.#settleSharedOperation(sharedOperationId, sharedOperationFailed ? "failed" : "succeeded");
       if (receipted) this.#deviceViewFacts.settled(deviceId, {
-        operationId: requestId, runtimeId: this.#identity.hostId, requestId,
+        operationId: requestId, runtimeId: receiptRuntimeId, requestId,
         state: sharedOperationFailed ? "failure" : "success", ...(failureCode === undefined ? {} : { detail: failureCode }),
       });
       if (message.type === "session.activate") { this.#activationsPending--; this.refreshHostFacts(); }
@@ -2832,7 +2957,10 @@ export class HostService {
    */
   #handleSessionReady(deviceId: string, kind: PathKind, active: PathKind, change: PathChange): void {
     // Features belong to the App process on the other end; a new handshake may be a different (older) build.
+    const previousView = this.#agentView(deviceId);
     this.#deviceFeatures.delete(deviceId);
+    if (previousView !== this.#agentView(deviceId)) this.#deviceViewEpochs.set(deviceId, randomUUID());
+    this.#fieldTraffic.release(deviceId);
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
     this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
     this.#agentStateSubscriptions.clearDevice(deviceId);
@@ -2922,7 +3050,7 @@ export class HostService {
       type.includes(".page") || event?.range === "history" || event?.range === "catchup" ? "range" :
         event?.selection === "snapshot" ? "recovery" : Array.isArray(object.unchanged) && object.unchanged.length ? "reconcile" :
           type.includes("snapshot") || type.includes("result") ? "read" : "producer";
-    this.#fieldTraffic.record(payload, { backend: runtime?.kind === "agent" ? runtime.key.agentKind : "host", messageType: type, reason });
+    this.#fieldTraffic.record(payload, { backend: runtime?.kind === "agent" ? runtime.key.agentKind : isKimiId(object.runtimeId) ? KIMI_KIND : "host", messageType: type, reason });
   }
 
   #sendToDevice(deviceId: string, message: RelayToDeviceMessage): void {
@@ -2991,7 +3119,7 @@ export class HostService {
   }
 
   #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent): void {
-    this.#fileChangeTurns.observe(runtimeId, event);
+    if (!isKimiId(runtimeId)) this.#fileChangeTurns.observe(runtimeId, event);
     if (event.type === "tool.activity") return;
     if (event.type === "session.tools.produced") {
       this.#countToolTraffic(runtimeId, "summaryJsonBytes", Buffer.byteLength(JSON.stringify(event.page), "utf8"));
@@ -3086,14 +3214,14 @@ export class HostService {
     if (!this.#pushWakeReceipts.observe(category, eventId)) return;
     // APNS-L19: capture each phone's interest at the semantic edge. Defer the
     // reachability probe until the event has been queued for its E2E recipients.
-    const recipients = this.#store.devices.filter(device => !device.revoked).map(device => ({ device,
+    const recipients = this.#store.devices.filter(device => !device.revoked && allowsRuntime(this.#agentView(device.deviceId), runtimeId)).map(device => ({ device,
       link: this.#links.get(device.deviceId), interest: this.#historyInterests.get(device.deviceId) }));
     queueMicrotask(() => {
       void Promise.all(recipients.map(async ({ device, link, interest }) => {
         const watching = interest === undefined || interest !== null && interest.runtimeId === runtimeId && interest.sessionId === sessionId;
         if (watching && await link?.confirmNotificationReachability()) return undefined;
         // Unpair/replacement may race the probe. Never revive an old recipient.
-        return this.#store.devices.some(current => current.deviceId === device.deviceId && !current.revoked && current.pskRoot === device.pskRoot)
+        return allowsRuntime(this.#agentView(device.deviceId), runtimeId) && this.#store.devices.some(current => current.deviceId === device.deviceId && !current.revoked && current.pskRoot === device.pskRoot)
           ? device.deviceId : undefined;
       })).then(ids => this.#sendPushWake(category, eventId, ids.filter((id): id is string => id !== undefined)))
         .catch(error => this.#options.log?.(`APNs routing failed: ${describeError(error)}`));
@@ -3119,7 +3247,7 @@ export class HostService {
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
-    const hidden = hiddenFromLegacy(message);
+    const visible = (id: string) => projectAgentMessage(this.#agentView(id), message) !== undefined;
     const chatEvent = message.type === "runtime.event" && ["session.patch", "session.snapshot", "message.started", "message.delta",
       "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished"].includes(message.event.type);
     if (message.type === "runtime.event" && chatEvent) {
@@ -3129,7 +3257,7 @@ export class HostService {
         const interest = this.#historyInterests.get(deviceId);
         if (interest !== undefined &&
             (!interest || interest.runtimeId !== message.runtimeId || interest.sessionId !== sessionId)) continue;
-        if (hidden && !this.#showsDshDesktop(deviceId)) continue;
+        if (!visible(deviceId)) continue;
         try { const payload = this.#encodeForDevice(deviceId, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }
@@ -3139,14 +3267,14 @@ export class HostService {
     if (message.type === "runtime.event" && message.event.type === "runtime.capabilities") {
       for (const [deviceId, link] of this.#links) {
         if (this.#compactStateSubscriptions.owns(deviceId, message.runtimeId, "capabilities")) continue;
-        if (hidden && !this.#showsDshDesktop(deviceId)) continue;
+        if (!visible(deviceId)) continue;
         try { this.#measurePayload(payload, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
         catch (error) { this.#options.onDeviceError?.(deviceId, error); }
       }
       return;
     }
     this.#broadcastPayload(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength),
-      hidden ? deviceId => this.#showsDshDesktop(deviceId) : undefined);
+      visible);
   }
 
   /** 广播给所有握好手的设备。单台设备封帧失败不影响其他设备。 */

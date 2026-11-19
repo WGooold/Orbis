@@ -43,7 +43,10 @@ export class KimiRuntime implements AgentBackend {
     this.#connector = new KimiWebConnector({ ...options, homeDir: this.#home,
       onStatus: status => {
         options.log?.(`Kimi Code Web: ${status.state}${status.reason ? ` · ${status.reason}` : ""}`);
-        if (status.state !== "connected") this.#disconnected(status.reason ?? "Kimi Code 已断开");
+        if (status.state !== "connected") {
+          if (this.#connection) this.#disconnected(status.reason ?? "Kimi Code 已断开");
+          else if (status.state !== "connecting") this.onReadyChange?.();
+        }
       },
       onConnected: (client, socket, generation) => {
         void this.#connected(client, socket, generation).catch(() => socket.terminate());
