@@ -1256,6 +1256,8 @@ export class HostService {
     return this.#pairing;
   }
 
+  get kimiCodeConnectionState() { return this.#options.kimiCodeRuntime?.connectionState ?? "disabled"; }
+
   get relayState(): HostRelayState {
     return this.#relay?.state ?? "closed";
   }

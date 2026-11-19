@@ -30,6 +30,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   const failing = path.join(__dirname, "fail-" + method);
   if (method === "initialize") return out({ id, error: "fixture bridge stays uninitialized" });
   if (fs.existsSync(failing)) return out({ id, error: method + " failed in fixture" });
+  if (method === "start") fs.writeFileSync(path.join(__dirname, "start.json"), JSON.stringify(params));
   if (method === "start") { out({ event: "state", state: "connecting" }); out({ event: "state", state: "connected" }); }
   if (method === "stop") out({ event: "state", state: "stopped" });
   if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
@@ -180,6 +181,47 @@ private slots:
         settle(host);
         QCOMPARE(methods(root()), QStringList({"updateAgent", "rename"}));
         QCOMPARE(host.state(), QString("stopped")); QVERIFY(!host.desiredRunning());
+    }
+    // KIMI-10: inherit once, apply explicit off by reconnecting, then save while paused without starting.
+    void kimiSettingUsesCurrentHostRun() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        QVERIFY(!host.kimiCodeAvailable());
+        host.m_kimiCodeSupported = true;
+        host.m_kimiCodeDefaultEnabled = true;
+        QVERIFY(host.kimiCodeAvailable()); QVERIFY(host.kimiCodeEnabled());
+        host.receiveLine({{"event", "status"}, {"kimiCodeState", "connected"}});
+        QCOMPARE(host.kimiCodeState(), QString("connected"));
+        host.saveSettings(host.relayUrl(), host.autoStart(), host.codexEnabled(), host.hostName(), host.dshEnabled(), host.dshWebUrl(), true, true, false);
+        QVERIFY(host.resumePending());
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"stop", "start"}));
+        QVERIFY(!host.kimiCodeEnabled()); QVERIFY(host.kimiCodeState().isEmpty());
+        QFile start(root() + "/packages/host/dist/start.json");
+        QVERIFY(start.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(start.readAll()).object().value("kimiCodeEnabled"), QJsonValue(false));
+        host.stopHost(); settle(host); clearMethods(root());
+        host.saveSettings(host.relayUrl(), host.autoStart(), host.codexEnabled(), host.hostName(), host.dshEnabled(), host.dshWebUrl(), true, true, true);
+        settle(host);
+        QVERIFY(host.kimiCodeEnabled()); QVERIFY(!host.desiredRunning()); QVERIFY(methods(root()).isEmpty());
+        host.receiveLine({{"event", "status"}, {"kimiCodeState", "connected"}});
+        QVERIFY(host.kimiCodeState().isEmpty());
+    }
+    // KIMI-11: source changes apply through the same stop/start path and do not replace the inherited default.
+    void kimiSourceSwitchRestartsEnabledHost() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        host.m_kimiCodeSupported = true;
+        host.m_kimiDesktopSupported = true;
+        host.m_kimiCodeDefaultEnabled = true;
+        QCOMPARE(host.kimiCodeSource(), QString("web"));
+        host.saveSettings(host.relayUrl(), host.autoStart(), host.codexEnabled(), host.hostName(), host.dshEnabled(), host.dshWebUrl(), true, true, true, "desktop");
+        settle(host);
+        QCOMPARE(host.kimiCodeSource(), QString("desktop"));
+        QCOMPARE(methods(root()), QStringList({"stop", "start"}));
+        QFile start(root() + "/packages/host/dist/start.json");
+        QVERIFY(start.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(start.readAll()).object().value("kimiCodeSource"), QJsonValue("desktop"));
     }
     void settingsReconnectOnlyForConnectionFields() {
         auto &host = *m_host;

@@ -19,6 +19,8 @@ import { readDesktopRecoveryReason } from "./codex-desktop-recovery.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { loadKimiCodeConfig } from "./config.js";
+import type { KimiSource } from "./kimi-web-client.js";
+import { supportsKimiDesktop } from "./kimi-desktop-owner.js";
 import { KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle, openDshDesktopFromHost } from "./dsh-desktop-lifecycle.js";
@@ -77,6 +79,8 @@ const providerPresets = [...existingProviderPresets, ...claudeProviderPresets];
 
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
+  kimiCodeEnabled?: boolean;
+  kimiCodeSource?: KimiSource;
   dshEnabled?: boolean; dshEntry?: string; dshWebUrl?: string;
   /** macOS：让用户自己在终端里运行的 Pi 也加载 Orbis 扩展（缺省开启）。 */
   piIntegrationEnabled?: boolean;
@@ -223,7 +227,9 @@ export class DesktopRuntime {
     this.#poll.unref();
     this.#usage.start();
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
-    return { hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
+    const kimi = await this.#kimiCodeConfig();
+    return { kimiCodeDefaultEnabled: kimi?.kimiCodeEnabled ?? false, kimiCodeDefaultSource: kimi?.kimiCodeSource ?? "web",
+      kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
       ...(this.#qa ? {} : { openClaw: await readOpenClawDesktopSettings(this.#stateDir) }),
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
       iosAppDownloadQr: await QRCode.toDataURL(IOS_APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
@@ -237,6 +243,14 @@ export class DesktopRuntime {
       if (error instanceof Error && !("code" in error)) throw error;
       throw new Error("无法保存 OpenClaw 配置，请检查 Host 状态目录权限");
     }
+  }
+
+  async #kimiCodeConfig() {
+    if (this.#qa) return undefined;
+    return await loadKimiCodeConfig(this.#stateDir).catch(() => {
+      this.log("Kimi Code Web: 无法读取本地接入配置");
+      return undefined;
+    });
   }
 
   #managedRoot(): string { return agentInstallRoot(); }
@@ -719,13 +733,12 @@ export class DesktopRuntime {
         if (runtime) this.#dshDesktopRuntime = runtime;
         return runtime;
       };
-      const kimi = this.#qa ? undefined : await loadKimiCodeConfig(this.#stateDir).catch(() => {
-        this.log("Kimi Code Web: 无法读取本地接入配置");
-        return undefined;
-      });
+      const kimi = await this.#kimiCodeConfig();
       if (this.#desired !== settings) { await this.#dispose(); return; }
-      const kimiRuntime = kimi?.kimiCodeEnabled ? new KimiRuntime({ stateDir: this.#stateDir, homeDir: kimi.kimiCodeHome,
-        ...(kimi.kimiCodeEndpoint === undefined ? {} : { endpoint: kimi.kimiCodeEndpoint }), log: line => this.log(`Kimi Code Web · ${line}`) }) : undefined;
+      const kimiRuntime = kimi && (settings.kimiCodeEnabled ?? kimi.kimiCodeEnabled) ? new KimiRuntime({ stateDir: this.#stateDir, homeDir: kimi.kimiCodeHome,
+        source: settings.kimiCodeSource ?? kimi.kimiCodeSource,
+        ...(kimi.kimiCodeEndpoint === undefined || (settings.kimiCodeSource !== undefined && settings.kimiCodeSource !== kimi.kimiCodeSource)
+          ? {} : { endpoint: kimi.kimiCodeEndpoint }), log: line => this.log(line) }) : undefined;
       let relayAuthenticated = false;
       const service = await HostService.create({
         ...(kimiRuntime === undefined ? {} : { kimiCodeRuntime: kimiRuntime }),
@@ -914,7 +927,7 @@ export class DesktopRuntime {
     const model = service.readHostState(["backends", "connections", "management", "operations"]);
     const backends = model.domains.find(domain => domain.domain === "backends")?.value as { backends?: { runtimeCount: number }[] } | undefined;
     const status = { event: "status", devices, runtimeCount: backends?.backends?.reduce((sum, backend) => sum + backend.runtimeCount, 0) ?? 0,
-      lan: service.lanEndpoints, model };
+      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, model };
     const text = JSON.stringify({ ...status, model: { ...model, domains: model.domains.map(domain => ({ ...domain, checkedAt: 0 })) } });
     if (text !== this.#lastStatus) { this.#lastStatus = text; this.#emit(status); }
   }

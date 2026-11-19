@@ -12,6 +12,7 @@ import { CodexAppServer } from "./codex-daemon.js";
 import { CodexDesktopLifecycle } from "./codex-desktop-lifecycle.js";
 import * as claudeInstallation from "./claude-integration-install.js";
 import * as claudeVersion from "./claude-version.js";
+import { KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import * as dshDesktopLifecycle from "./dsh-desktop-lifecycle.js";
 import { HostService } from "./host-service.js";
@@ -26,6 +27,34 @@ describe("desktop Host lifecycle", () => {
     vi.spyOn(claudeVersion, "readClaudeVersion").mockResolvedValue("2.1.322");
   });
   afterEach(() => { vi.restoreAllMocks(); });
+
+  // KIMI-10: explicit UI off overrides inherited opt-in; enabled state comes from the owned adapter.
+  it("honors the desktop Kimi toggle and publishes adapter status independently of Relay", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-kimi-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), root,
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const create = vi.spyOn(HostService, "create");
+    vi.spyOn(KimiRuntime.prototype, "start").mockImplementation(() => {});
+    const settings = { relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
+      piIntegrationEnabled: false, claudeIntegrationEnabled: false };
+    try {
+      await writeFile(join(root, "config.json"), JSON.stringify({ kimiCodeEnabled: true, kimiCodeHome: join(root, "kimi") }));
+      await runtime.start({ ...settings, kimiCodeEnabled: false });
+      expect(create.mock.lastCall?.[0].kimiCodeRuntime).toBeUndefined();
+      runtime.status();
+      expect(events).toContainEqual(expect.objectContaining({ event: "status", kimiCodeState: "disabled" }));
+      await runtime.stop();
+      await runtime.start(settings);
+      const kimi = create.mock.lastCall?.[0].kimiCodeRuntime;
+      expect(kimi).toBeInstanceOf(KimiRuntime);
+      vi.spyOn(kimi!, "connectionState", "get").mockReturnValue("not_running");
+      runtime.status();
+      expect(events).toContainEqual(expect.objectContaining({ event: "status", kimiCodeState: "not_running" }));
+    } finally { await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
 
   it("recovers an existing DSH bridge with prestart disabled and closes it when paused", async () => {
     const root = await mkdtemp(join(tmpdir(), "orbis-desktop-dsh-recovery-"));

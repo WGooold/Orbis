@@ -23,6 +23,7 @@ type KimiOptions = KimiWebClientOptions & { stateDir: string; log?: (message: st
 export class KimiRuntime implements AgentBackend {
   readonly kind = KIMI_KIND;
   readonly #home: string;
+  readonly #desktop: boolean;
   readonly #journal: KimiPromptJournal;
   readonly #connector: KimiWebConnector;
   readonly #active = new Map<string, Active>();
@@ -38,11 +39,12 @@ export class KimiRuntime implements AgentBackend {
   onReadyChange?: () => void;
 
   constructor(options: KimiOptions) {
+    this.#desktop = options.source === "desktop";
     this.#home = options.homeDir ?? defaultKimiHome();
     this.#journal = new KimiPromptJournal(join(options.stateDir, "kimi-prompt-journal.json"));
     this.#connector = new KimiWebConnector({ ...options, homeDir: this.#home,
       onStatus: status => {
-        options.log?.(`Kimi Code Web: ${status.state}${status.reason ? ` · ${status.reason}` : ""}`);
+        options.log?.(`${this.#desktop ? "Kimi Code Desktop" : "Kimi Code Web"}: ${status.state}${status.reason ? ` · ${status.reason}` : ""}`);
         if (status.state !== "connected") {
           if (this.#connection) this.#disconnected(status.reason ?? "Kimi Code 已断开");
           else if (status.state !== "connecting") this.onReadyChange?.();
@@ -78,20 +80,25 @@ export class KimiRuntime implements AgentBackend {
     this.#active.clear();
     await this.#connector.stop();
   }
+  get connectionState() {
+    const state = this.#connector.status.state;
+    return state === "connected" && !this.isReady() ? "connecting" : state;
+  }
   get reason(): string | null { return this.#connector.status.reason; }
   isReady(): boolean { return this.#connection?.socket.readyState === WebSocket.OPEN; }
   ownsRuntime(id: string): boolean { return this.#active.has(id); }
   directoryEntries(): RuntimeMetadata[] { return [...this.#active.values()].filter(item => item.subscribed).map(item => this.#metadata(item)); }
   #metadata(item: Active): RuntimeMetadata {
     const model = item.native.agent_config.model;
-    return { runtimeId: item.id, sessionId: item.id, cwd: item.cwd, name: "Kimi Code", status: item.native.main_turn_active ? "running" : "idle",
+    return { runtimeId: item.id, sessionId: item.id, cwd: item.cwd, name: this.#desktop ? "Kimi Code Desktop" : "Kimi Code", status: item.native.main_turn_active ? "running" : "idle",
       hostname: localHostname() ?? "localhost", sessionGraphSync: true,
       ...(item.native.title ? { sessionName: item.native.title.slice(0, 256) } : {}),
       ...(model && model.length <= 256 ? { model: { provider: "Kimi Code", id: model } } : {}),
       ...(item.thinking ? { thinkingLevel: item.thinking } : {}) };
   }
   async #connected(client: KimiWebClient, socket: WebSocket, generation: number): Promise<void> {
-    const key = await kimiSourceKey(this.#home);
+    const homeKey = await kimiSourceKey(this.#home);
+    const key = this.#desktop ? `desktop-${homeKey}` : homeKey;
     await this.#journal.load();
     if (this.#connector.client !== client || socket.readyState !== WebSocket.OPEN) return;
     const connection = { sessions: new KimiSessions(client, key), socket, generation };
