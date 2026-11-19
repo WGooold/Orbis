@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createToolSummary, type ChatMessage, type InteractionRequest, type QuestionnaireQuestion, type RemoteSessionEntry,
   type SessionLiveState, type SessionLiveTurn, type ToolSummary } from "@orbis/protocol";
 import type { OpenCodeClient } from "./opencode-service-connection.js";
+import { clientMessageKey } from "./opencode-commands.js";
 
 export type NativeSession = Awaited<ReturnType<OpenCodeClient["session"]["get"]>>;
 export type NativeMessage = Awaited<ReturnType<OpenCodeClient["session"]["message"]["get"]>>;
@@ -57,7 +58,9 @@ export function projectHistory(hostId: string, sessionId: string, messages: read
     if (native.type === "user") {
       type = "message";
       const content: ChatMessage["content"] = native.text ? [{ type: "text", text: native.text }] : [];
-      data = { message: { messageId: entryId, role: "user", content, timestamp: createdAt } satisfies ChatMessage };
+      const clientMessageId = native.metadata?.[clientMessageKey];
+      data = { message: { messageId: entryId, role: "user", content, timestamp: createdAt,
+        ...(typeof clientMessageId === "string" && clientMessageId.length > 0 && clientMessageId.length <= 256 ? { clientMessageId } : {}) } satisfies ChatMessage };
     } else if (native.type === "assistant") {
       type = "message";
       data = { message: projectAssistant(hostId, sessionId, native) };

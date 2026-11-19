@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { SessionConfigurationValuesSchema, type AgentKind, type ConfiguredSessionLaunch, type SessionConfigurationCatalog,
+import { AgentKindSchema, SessionConfigurationValuesSchema, type AgentKind, type ConfiguredSessionLaunch, type SessionConfigurationCatalog,
   type SessionConfigurationValues, type SessionLaunchResult } from "@orbis/protocol";
 
 const preference = z.object({ revision: z.number().int().nonnegative(), values: SessionConfigurationValuesSchema });
 const launch = z.object({
-  deviceId: z.string(), fingerprint: z.string(), launchId: z.string(), agentKind: z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"]),
+  deviceId: z.string(), fingerprint: z.string(), launchId: z.string(), agentKind: AgentKindSchema,
   cwd: z.string(), binding: z.string(), revision: z.number().int().nonnegative(), values: SessionConfigurationValuesSchema,
   phase: z.enum(["preparing", "created", "configuring", "ready", "failed", "unknown"]),
   sessionId: z.string().optional(), spawnMode: z.enum(["tui", "headless"]).optional(), error: z.string().optional(),

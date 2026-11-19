@@ -99,7 +99,7 @@ import { CodexRuntime } from "./codex-runtime.js";
 import { OpenCodeServiceConnection, type OpenCodeServiceStatus } from "./opencode-service-connection.js";
 import { OpenCodeBackend } from "./opencode-backend.js";
 import type { DshRuntime } from "./dsh-runtime.js";
-import { DSH_DESKTOP_KIND, OPENCODE_KIND, hiddenAgentKinds, hiddenFromLegacy, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
+import { DSH_DESKTOP_KIND, OPENCODE_KIND, OPENCODE_RUNTIME_PREFIX, hiddenAgentKinds, hiddenFromLegacy, legacyDeviceMessage, legacyHostDomain } from "./dsh-desktop-visibility.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
 import { DeviceLink, type ActivePathChange, type PathSink } from "./device-link.js";
@@ -1340,6 +1340,10 @@ export class HostService {
     return hiddenAgentKinds(this.#deviceFeatures.get(deviceId));
   }
 
+  #openCodeRuntimeHidden(deviceId: string, runtimeId: string): boolean {
+    return runtimeId.startsWith(OPENCODE_RUNTIME_PREFIX) && this.#hiddenKindsForDevice(deviceId).includes(OPENCODE_KIND);
+  }
+
   /** Host-scope values are projected before compact deltas are computed. */
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
     const hidden = this.#hiddenKindsForDevice(deviceId);
@@ -1998,6 +2002,15 @@ export class HostService {
       this.#options.onData?.(deviceId, payload);
       return;
     }
+    if ("runtimeId" in message && typeof message.runtimeId === "string" && this.#openCodeRuntimeHidden(deviceId, message.runtimeId)) {
+      const requestId = "requestId" in message ? message.requestId : undefined;
+      const commandId = "commandId" in message ? message.commandId : undefined;
+      if (typeof requestId === "string" || typeof commandId === "string") {
+        this.#sendToDevice(deviceId, { type: "protocol.error", code: "agent_unsupported", message: "device_agent_feature_required",
+          ...(typeof requestId === "string" ? { requestId } : {}), ...(typeof commandId === "string" ? { commandId } : {}) });
+      }
+      return;
+    }
     if (message.type === "device.features") {
       const before = this.#hiddenKindsForDevice(deviceId);
       this.#deviceFeatures.set(deviceId, new Set(message.features));
@@ -2009,7 +2022,7 @@ export class HostService {
       const newlyVisible = new Set(before.filter(kind => !after.includes(kind)));
       for (const runtime of this.#runtimesSnapshot()) {
         const kind = runtime.runtimeId.startsWith("dsh-desktop:") ? DSH_DESKTOP_KIND
-          : runtime.runtimeId.startsWith("opencode:") ? "opencode" : undefined;
+          : runtime.runtimeId.startsWith(OPENCODE_RUNTIME_PREFIX) ? OPENCODE_KIND : undefined;
         if (kind && newlyVisible.has(kind)) this.#sendToDevice(deviceId, this.#notifications.snapshot(runtime.runtimeId, deviceId));
       }
       if (newlyVisible.has(DSH_DESKTOP_KIND)) this.#dsh.dshDesktop.runtime?.announce();
@@ -2339,6 +2352,7 @@ export class HostService {
   }
 
   #dispatchRuntimeInput(deviceId: string, runtimeId: string, commandId: string, command: import("@orbis/protocol").RuntimeCommand): void {
+    if (this.#openCodeRuntimeHidden(deviceId, runtimeId)) return;
     const inputScope = this.#agentFacts.scopeOf(runtimeId);
     const admission = this.#commandOwners.begin(deviceId, runtimeId, commandId, command,
       inputScope?.kind === "agent" ? agentKeyId(inputScope.key) : runtimeId);
@@ -2525,6 +2539,10 @@ export class HostService {
   async #handleSessionConfiguration(deviceId: string, message: Extract<DeviceE2ePayload, {
     type: "session.configuration.read" | "session.configuration.save" | "session.launch" | "session.launch.read"
   }>): Promise<void> {
+    if (message.type !== "session.launch.read" && this.#hiddenKindsForDevice(deviceId).includes(message.agentKind)) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId, code: "agent_unsupported", message: "device_agent_feature_required" });
+      return;
+    }
     const sendLaunch = async (launchId: string) => {
       const result = await this.#sessionConfigurations.result(deviceId, launchId, message.requestId);
       this.#sendToDevice(deviceId, result ?? { type: "session.launch.result", requestId: message.requestId,
@@ -2618,6 +2636,8 @@ export class HostService {
 
   async #recoverSessionLaunch(deviceId: string, launchId: string): Promise<void> {
     const prior = await this.#sessionConfigurations.result(deviceId, launchId, launchId);
+    if (prior?.agentKind && this.#hiddenKindsForDevice(deviceId).includes(prior.agentKind))
+      throw new SessionConfigurationError("agent_unsupported", "device_agent_feature_required");
     if (prior?.phase === "unknown" && !prior.sessionId && prior.agentKind) {
       const backend = await this.#configuredBackend(prior.agentKind);
       const expectedSessionId = await this.#sessionConfigurations.expectedSessionId(deviceId, launchId);
@@ -2659,8 +2679,14 @@ export class HostService {
     message: Extract<DeviceE2ePayload, { type: "session.list" | "session.browse" | "session.activate" | "session.archive" }>,
   ): Promise<void> {
     const requestId = message.requestId;
+    const requestedKind = message.type === "session.archive" ? message.agentKind
+      : message.type === "session.activate" ? message.target.agentKind : undefined;
+    if (requestedKind && this.#hiddenKindsForDevice(deviceId).includes(requestedKind)) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", requestId, code: "agent_unsupported", message: "device_agent_feature_required" });
+      return;
+    }
     const sharedOperationId = message.type === "session.activate" ? this.#beginSharedOperation("session.activate",
-      message.target.type === "new" ? message.target.agentKind : null, message.target.type === "resume" ? message.target.sessionId : null)
+      requestedKind ?? null, message.target.type === "resume" ? message.target.sessionId : null)
       : message.type === "session.archive" ? this.#beginSharedOperation("session.archive", message.agentKind, message.sessionId) : undefined;
     this.#settleSharedOperation(sharedOperationId, "running");
     let sharedOperationFailed = false;
@@ -2817,7 +2843,8 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop")) continue;
+        if (this.#hiddenKindsForDevice(deviceId).includes(backend.kind)) continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === OPENCODE_KIND)) continue;
         try {
           const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, context);
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。
@@ -3114,14 +3141,15 @@ export class HostService {
     if (!this.#pushWakeReceipts.observe(category, eventId)) return;
     // APNS-L19: capture each phone's interest at the semantic edge. Defer the
     // reachability probe until the event has been queued for its E2E recipients.
-    const recipients = this.#store.devices.filter(device => !device.revoked).map(device => ({ device,
+    const recipients = this.#store.devices.filter(device => !device.revoked && !this.#openCodeRuntimeHidden(device.deviceId, runtimeId)).map(device => ({ device,
       link: this.#links.get(device.deviceId), interest: this.#historyInterests.get(device.deviceId) }));
     queueMicrotask(() => {
       void Promise.all(recipients.map(async ({ device, link, interest }) => {
         const watching = interest === undefined || interest !== null && interest.runtimeId === runtimeId && interest.sessionId === sessionId;
         if (watching && await link?.confirmNotificationReachability()) return undefined;
         // Unpair/replacement may race the probe. Never revive an old recipient.
-        return this.#store.devices.some(current => current.deviceId === device.deviceId && !current.revoked && current.pskRoot === device.pskRoot)
+        return !this.#openCodeRuntimeHidden(device.deviceId, runtimeId)
+          && this.#store.devices.some(current => current.deviceId === device.deviceId && !current.revoked && current.pskRoot === device.pskRoot)
           ? device.deviceId : undefined;
       })).then(ids => this.#sendPushWake(category, eventId, ids.filter((id): id is string => id !== undefined)))
         .catch(error => this.#options.log?.(`APNs routing failed: ${describeError(error)}`));

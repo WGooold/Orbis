@@ -1,15 +1,21 @@
-import type { OpenCodeEvent } from "@opencode/client";
+import { isMessageNotFoundError, isSessionNotFoundError, type OpenCodeEvent } from "@opencode/client";
+import { stat } from "node:fs/promises";
 import { hostname } from "node:os";
+import { basename, isAbsolute } from "node:path";
+import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { RecoverableSessionSource, SessionSyncPreparer, type AgentSessionSummary, type ChatMessage, type InteractionRequest,
-  type RemoteSessionEntry, type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata, type SessionLiveTurn } from "@orbis/protocol";
-import type { AgentBackend, AgentActivateTarget, BackendActivation, CommandDispatch } from "./agent-backend.js";
+  type RemoteSessionEntry, type RuntimeCapabilities, type RuntimeCommand, type RuntimeCommandStatus, type RuntimeEvent, type RuntimeMetadata, type SessionConfigurationCatalog, type SessionLiveTurn } from "@orbis/protocol";
+import type { AgentBackend, AgentActivateContext, AgentActivateTarget, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { ActivationError } from "./spawner.js";
 import { OPENCODE_RUNTIME_PREFIX } from "./dsh-desktop-visibility.js";
 import { type OpenCodeClient, OpenCodeServiceConnection } from "./opencode-service-connection.js";
 import { formRequest, permissionRequest, projectAssistant, projectHistory, projectLive, time, wireId,
   type NativeForm, type NativeMessage, type NativeSession } from "./opencode-projection.js";
+
+import { clientMessageKey, commandFailure, formAnswers, modelValue, OpenCodeCommandError, readAgents, readModels,
+  selectionCommands, selectionModel } from "./opencode-commands.js";
 
 const PAGE_SIZE = 200;
 const MAX_PAGES = 500;
@@ -28,9 +34,28 @@ const SESSION_EVENTS = ["session.created", "session.deleted", "session.archived"
 
 type Attempt = { client: OpenCodeClient; controller: AbortController };
 type PendingInteraction = { request: InteractionRequest; form?: NativeForm };
+type InboxUser = Awaited<ReturnType<OpenCodeClient["session"]["prompt"]>>;
+type ModelRef = NonNullable<NativeSession["model"]>;
+const sameModel = (left: NativeSession["model"], right: ModelRef) => left?.providerID === right.providerID && left.id === right.id
+  && (left.variant ?? "default") === (right.variant ?? "default");
+const clientIdOf = (item: InboxUser): string | undefined => {
+  const id = item.payload.metadata?.[clientMessageKey];
+  return typeof id === "string" && id.length > 0 && id.length <= 256 ? id : undefined;
+};
+const queueIdOf = (item: InboxUser): string => clientIdOf(item) ?? wireId(item.id);
+const selectionNames = new Set(["model", "thinking", "agent"]);
 type RecordState = {
   nativeId: string;
   runtime?: RuntimeMetadata;
+  info?: NativeSession;
+  capabilities?: RuntimeCapabilities;
+  capabilitiesUntil?: number;
+  pendingModel?: ModelRef;
+  pendingAgent?: string;
+  inbox: Map<string, InboxUser>;
+  inboxTerminal: Map<string, { state: "delivered" | "cancelled"; clientId?: string | undefined }>;
+  inboxKnown: boolean;
+  responding: Set<string>;
   source: RecoverableSessionSource;
   preparer: SessionSyncPreparer;
   entries: readonly RemoteSessionEntry[];
@@ -111,8 +136,8 @@ export class OpenCodeBackend implements AgentBackend {
     const attempt = this.#requireReady();
     let rows: NativeSession[];
     try {
-      rows = await readPages(cursor => attempt.client.session.list({ archived, order: "desc", limit: PAGE_SIZE,
-        ...(cursor === undefined ? {} : { cursor }) }, this.#request(attempt)));
+      rows = await readPages(cursor => attempt.client.session.list({ archived, limit: PAGE_SIZE,
+        ...(cursor === undefined ? { order: "desc" } : { cursor }) }, this.#request(attempt)));
       attempt.controller.signal.throwIfAborted();
     } catch (error) {
       if (error instanceof Error && error.message === "OpenCode returned a repeated cursor") throw error;
@@ -129,20 +154,71 @@ export class OpenCodeBackend implements AgentBackend {
     });
   }
 
-  async activate(target: AgentActivateTarget): Promise<BackendActivation> {
+  async sessionConfiguration(cwd: string): Promise<SessionConfigurationCatalog> {
+    await this.#checkDirectory(cwd);
     const attempt = this.#requireReady();
-    if (target.type !== "resume") throw new ActivationError("agent_unsupported", "OpenCode creation is not available");
-    if (!target.sessionId || runtimeIdFor(target.sessionId).length > 128) throw new ActivationError("session_not_found", "OpenCode session not found");
-    const record = this.#record(target.sessionId);
-    try { await this.#enqueue(record, attempt, () => this.#refresh(record, attempt)); }
-    catch {
-      if (!record.runtime) this.#records.delete(target.sessionId);
-      throw new ActivationError(attempt.controller.signal.aborted ? "agent_unsupported" : "session_not_found", "OpenCode session could not be opened");
-    }
-    return { sessionId: target.sessionId, spawnMode: "headless" };
+    try {
+      const { catalog } = await readModels(attempt.client, cwd, this.#request(attempt));
+      attempt.controller.signal.throwIfAborted();
+      return catalog;
+    } catch { throw new Error("OpenCode model options could not be read"); }
   }
 
-  async setArchived(): Promise<void> { throw new Error("OpenCode archive operation is not available"); }
+  async activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
+    const attempt = this.#requireReady();
+    const { client } = attempt;
+    let sessionId: string;
+    let selected: ModelRef | undefined;
+    try {
+      if (target.type === "new") {
+        await this.#checkDirectory(target.cwd);
+        if (context?.configuration) selected = selectionModel(await readModels(client, target.cwd, this.#request(attempt)), context.configuration);
+        attempt.controller.signal.throwIfAborted();
+        const info = await client.session.create({ location: { directory: target.cwd }, ...(selected ? { model: selected } : {}) }, this.#request(attempt));
+        sessionId = info.id;
+        await context?.onCreated?.({ sessionId, spawnMode: "headless" });
+        if (selected && !sameModel(info.model, selected)) throw new OpenCodeCommandError("configuration_unconfirmed", "unconfirmed");
+        this.options.onCatalogChange();
+      } else sessionId = target.sessionId;
+      attempt.controller.signal.throwIfAborted();
+      if (!sessionId || runtimeIdFor(sessionId).length > 128) throw new ActivationError("session_not_found", "OpenCode session not found");
+      const record = this.#record(sessionId);
+      try {
+        await this.#enqueue(record, attempt, async () => {
+          // A configured launch recovery may only apply settings to the already recorded session.
+          if (target.type === "resume" && context?.configuration) {
+            const info = await client.session.get({ sessionID: sessionId }, this.#request(attempt));
+            const models = await readModels(client, info.location.directory, this.#request(attempt));
+            const model = selectionModel(models, context.configuration);
+            if (model && !sameModel(info.model, model)) await this.#switchModel(record, attempt, model);
+          }
+          await this.#refresh(record, attempt);
+          if (selected && !sameModel(record.info?.model, selected)) throw new OpenCodeCommandError("configuration_unconfirmed", "unconfirmed");
+        });
+      } catch (error) {
+        if (!record.runtime && this.#records.get(sessionId) === record && this.#attempt === attempt) this.#records.delete(sessionId);
+        throw error;
+      }
+      return { sessionId, spawnMode: "headless" };
+    } catch (error) {
+      if (error instanceof ActivationError || error instanceof OpenCodeCommandError) throw error;
+      if (target.type === "resume" && isSessionNotFoundError(error)) throw new ActivationError("session_not_found", "OpenCode session could not be opened");
+      throw new ActivationError(target.type === "new" ? "spawn_failed" : "agent_unsupported", "OpenCode session result could not be confirmed");
+    }
+  }
+
+  async #checkDirectory(cwd: string): Promise<void> {
+    if (!isAbsolute(cwd) || !await stat(cwd).then(value => value.isDirectory(), () => false)) {
+      throw new ActivationError("cwd_missing", "OpenCode working directory is unavailable");
+    }
+  }
+
+  async setArchived(sessionId: string, archived: boolean): Promise<void> {
+    const attempt = this.#requireReady();
+    try { await attempt.client.session.update({ sessionID: sessionId, archived }, this.#request(attempt)); }
+    catch { throw new Error("OpenCode archive result could not be confirmed"); }
+    this.options.onCatalogChange();
+  }
 
   async readSessionEntry(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined> {
     const record = this.#records.get(sessionId);
@@ -153,7 +229,12 @@ export class OpenCodeBackend implements AgentBackend {
     if (!this.#ready || !this.#attempt || !this.ownsRuntime(runtimeId)) return "offline";
     const record = this.#records.get(runtimeId.slice(OPENCODE_RUNTIME_PREFIX.length));
     if (!record?.runtime) return "offline";
-    if (command.type !== "session.sync") return "unsupported";
+    if (command.type !== "session.sync") {
+      if (command.type !== "user_message" && command.type !== "user_message.cancel" && command.type !== "stop" && command.type !== "interaction.respond" &&
+          !(command.type === "slash.execute" && selectionNames.has(command.name))) return "unsupported";
+      void this.#dispatch(record, this.#attempt, commandId, command);
+      return "handled";
+    }
     try {
       if (command.sessionId !== record.nativeId) throw new Error("session_mismatch");
       const source = record.source.published();
@@ -253,12 +334,17 @@ export class OpenCodeBackend implements AgentBackend {
     record.queue = Promise.resolve();
     const runtime = record.runtime;
     delete record.runtime;
+    delete record.info;
+    delete record.capabilities;
+    delete record.capabilitiesUntil;
+    record.responding = new Set();
     record.source = this.#source(record.nativeId);
     record.entries = [];
     record.preparer.invalidate();
     record.assistant = undefined;
     record.interactions.clear();
     record.interactionsKnown = false;
+    record.inboxKnown = false;
     if (runtime) this.options.onRuntimeOffline(runtime.runtimeId, reason);
   }
 
@@ -282,7 +368,7 @@ export class OpenCodeBackend implements AgentBackend {
       this.#records.delete(old.nativeId);
     }
     const record: RecordState = { nativeId: id, source: this.#source(id), preparer: new SessionSyncPreparer(),
-      entries: [], turn: null, interactions: new Map(), queue: Promise.resolve(), full: false };
+      entries: [], turn: null, interactions: new Map(), inbox: new Map(), inboxTerminal: new Map(), inboxKnown: false, responding: new Set(), queue: Promise.resolve(), full: false };
     this.#records.set(id, record);
     return record;
   }
@@ -299,11 +385,8 @@ export class OpenCodeBackend implements AgentBackend {
   }
 
   #event(event: OpenCodeEvent, attempt: Attempt): void {
-    const data = event.data as { sessionID?: string; form?: { sessionID: string }; id?: string };
-    const id = event.type === "form.created" ? event.data.form.sessionID
-      : event.type === "form.replied" || event.type === "form.cancelled"
-        ? [...this.#records.values()].find(record => record.interactions.get(event.data.id)?.form)?.nativeId
-        : data.sessionID;
+    const data = event.data as { sessionID?: string; assistantMessageID?: string };
+    const id = event.type === "form.created" ? event.data.form.sessionID : data.sessionID;
     if (!id) return;
     if (event.type === "session.deleted") {
       const record = this.#records.get(id);
@@ -316,8 +399,14 @@ export class OpenCodeBackend implements AgentBackend {
     const record = this.#records.get(id) ?? (["session.execution.started", "permission.asked", "form.created"].includes(event.type)
       ? this.#recordIfValid(id) : undefined);
     if (!record) return;
+    if (event.type === "permission.replied" || event.type === "form.replied") {
+      const requestId = event.type === "permission.replied" ? event.data.requestID : event.data.id;
+      this.#finishInteraction(record, requestId, false, record.responding.has(requestId) ? "remote" : "local");
+    } else if (event.type === "form.cancelled") this.#finishInteraction(record, event.data.id, true, "remote");
+    else if (event.type === "session.inbox.delivered") this.#finishInbox(record, event.data.inboxID, "delivered");
+    else if (event.type === "session.inbox.cancelled") this.#finishInbox(record, event.data.inboxID, "cancelled");
     // Read the persisted partial message rather than replaying deltas collected before the recovery snapshot.
-    const messageId = (data as { assistantMessageID?: string }).assistantMessageID;
+    const messageId = data.assistantMessageID;
     if (messageId && (event.type.startsWith("session.text.") || event.type.startsWith("session.reasoning.") || event.type.startsWith("session.tool."))) {
       record.liveMessageId = messageId;
     } else record.full = true;
@@ -353,17 +442,23 @@ export class OpenCodeBackend implements AgentBackend {
   async #refresh(record: RecordState, attempt: Attempt): Promise<void> {
     const { client } = attempt;
     const sessionID = record.nativeId;
-    const [info, active, messages, interactions] = await Promise.all([
+    const [info, active, messages, interactions, inbox] = await Promise.all([
       client.session.get({ sessionID }, this.#request(attempt)), client.session.active(this.#request(attempt)),
-      readPages(cursor => client.message.list({ sessionID, order: "asc", limit: PAGE_SIZE,
-        ...(cursor === undefined ? {} : { cursor }) }, this.#request(attempt))),
+      readPages(cursor => client.message.list({ sessionID, limit: PAGE_SIZE,
+        ...(cursor === undefined ? { order: "asc" } : { cursor }) }, this.#request(attempt))),
       this.#readInteractions(sessionID, attempt).catch(() => undefined),
+      this.#readInbox(sessionID, attempt).catch(() => undefined),
     ]);
     this.#check(record, attempt);
     if (info.id !== sessionID) throw new Error("OpenCode returned mismatched session identity");
     const running = Object.hasOwn(active, sessionID);
     this.#publishHistory(record, info, messages, running);
     if (interactions) this.#publishInteractions(record, interactions);
+    if (inbox) this.#publishInbox(record, inbox, new Set(messages.map(message => message.id)));
+    const modelChanged = !isDeepStrictEqual(record.info?.model, info.model);
+    record.info = info;
+    this.#confirmSelection(record, info);
+    if (modelChanged || !record.capabilitiesUntil || record.capabilitiesUntil <= Date.now()) await this.#refreshCapabilities(record, attempt, info);
   }
 
   #publishHistory(record: RecordState, info: NativeSession, messages: NativeMessage[], running: boolean): void {
@@ -407,7 +502,245 @@ export class OpenCodeBackend implements AgentBackend {
     return { runtimeId: runtimeIdFor(info.id), name: title || "OpenCode", cwd: info.location.directory,
       status: running ? "running" : "idle", sessionId: info.id, sessionGraphSync: true, hostname: hostname(),
       ...(title ? { sessionName: title } : {}),
-      ...(info.model ? { model: { provider: info.model.providerID, id: info.model.id } } : {}) };
+      ...(info.model ? { model: { provider: info.model.providerID, id: info.model.id }, modelSelection: { model: modelValue(info.model),
+        ...(info.model.variant === undefined ? {} : { thinking: info.model.variant }) },
+        ...(info.model.variant === undefined ? {} : { thinkingLevel: info.model.variant }) } : {}) };
+  }
+
+  async #dispatch(record: RecordState, attempt: Attempt, commandId: string, command: RuntimeCommand): Promise<void> {
+    const runtimeId = runtimeIdFor(record.nativeId);
+    const result = (ok: boolean, status: RuntimeCommandStatus, error?: string) => this.options.onEvent(runtimeId,
+      { type: "command.result", commandId, ok, status, ...(error === undefined ? {} : { error }) });
+    const { client } = attempt;
+    const sessionID = record.nativeId;
+    try {
+      this.#check(record, attempt);
+      let status: RuntimeCommandStatus = "success";
+      switch (command.type) {
+        case "user_message":
+          await this.#enqueue(record, attempt, async () => {
+            if (record.pendingAgent !== undefined || record.pendingModel !== undefined) {
+              const info = await client.session.get({ sessionID }, this.#request(attempt));
+              this.#confirmSelection(record, info);
+              if (record.pendingAgent !== undefined || record.pendingModel !== undefined) throw new OpenCodeCommandError("configuration_confirmation_required");
+            }
+            const files = (command.attachments ?? []).map(path => {
+              if (!isAbsolute(path)) throw new OpenCodeCommandError("invalid_attachment_path");
+              return { uri: pathToFileURL(path).href, name: basename(path) };
+            });
+            const inbox = await client.session.prompt({ sessionID, text: command.text, delivery: command.delivery === "steer" ? "steer" : "queue",
+              ...(command.messageId === undefined ? {} : { metadata: { [clientMessageKey]: command.messageId } }),
+              ...(files.length ? { files } : {}) }, this.#request(attempt));
+            this.#check(record, attempt);
+            if (inbox.sessionID !== sessionID || !inbox.id || (command.messageId !== undefined && clientIdOf(inbox) !== command.messageId))
+              throw new OpenCodeCommandError("opencode_result_unconfirmed", "unconfirmed");
+            if (!record.inbox.has(inbox.id)) {
+              const terminal = record.inboxTerminal.get(inbox.id)?.state ?? (record.source.entry(wireId(inbox.id)) ? "delivered" : undefined);
+              if (terminal) this.#finishInbox(record, inbox.id, terminal, inbox);
+              else { record.inbox.set(inbox.id, inbox); this.#emitInbox(record, inbox, "accepted"); }
+            }
+          });
+          break;
+        case "user_message.cancel":
+          await this.#cancelQueued(record, attempt, command.messageId);
+          status = "cancelled";
+          break;
+        case "stop": {
+          const { interrupted } = await client.session.interrupt({ sessionID }, this.#request(attempt));
+          if (!interrupted) throw new OpenCodeCommandError("turn_not_running", "not_cancelable");
+          break;
+        }
+        case "interaction.respond":
+          status = await this.#respond(record, attempt, command) ? "cancelled" : "success";
+          break;
+        case "slash.execute":
+          await this.#enqueue(record, attempt, () => this.#select(record, attempt, command.name, command.args));
+          break;
+        default: throw new OpenCodeCommandError("unsupported_command");
+      }
+      this.#check(record, attempt);
+      result(true, status);
+    } catch (error) {
+      const failure = commandFailure(error);
+      result(false, failure.status, failure.error);
+    } finally {
+      if (this.#attempt === attempt && !attempt.controller.signal.aborted && this.#records.get(sessionID) === record) {
+        record.full = true;
+        this.#schedule(record, attempt);
+      }
+    }
+  }
+
+  async #readInbox(sessionID: string, attempt: Attempt): Promise<Map<string, InboxUser>> {
+    const inbox = await attempt.client.session.inbox.list({ sessionID }, this.#request(attempt));
+    return new Map(inbox.filter((item): item is InboxUser => item.type === "user" && item.sessionID === sessionID).map(item => [item.id, item]));
+  }
+
+  #emitInbox(record: RecordState, item: InboxUser, state: Extract<RuntimeEvent, { type: "message.queued" }>["state"]): void {
+    if (!item.payload.text) return;
+    this.options.onEvent(runtimeIdFor(record.nativeId), { type: "message.queued", queueId: queueIdOf(item), text: item.payload.text,
+      delivery: item.delivery === "steer" ? "steer" : "followUp", state });
+  }
+
+  #publishInbox(record: RecordState, inbox: Map<string, InboxUser>, delivered: ReadonlySet<string>): void {
+    for (const [key, item] of record.inbox) if (!inbox.has(key) || delivered.has(key)) {
+      if (delivered.has(key)) this.#finishInbox(record, key, "delivered");
+      else this.#emitInbox(record, item, "unconfirmed");
+    }
+    for (const [key, item] of inbox) {
+      if (record.inboxTerminal.has(key) || delivered.has(key)) { inbox.delete(key); continue; }
+      if (!record.inboxKnown || !isDeepStrictEqual(record.inbox.get(key), item)) this.#emitInbox(record, item, "accepted");
+    }
+    record.inbox = inbox;
+    record.inboxKnown = true;
+  }
+
+  #finishInbox(record: RecordState, inboxId: string, state: "delivered" | "cancelled", item = record.inbox.get(inboxId)): void {
+    const prior = record.inboxTerminal.get(inboxId);
+    if (item && (prior?.state !== state || prior.clientId === undefined)) this.#emitInbox(record, item, state);
+    record.inbox.delete(inboxId);
+    record.inboxTerminal.set(inboxId, { state, clientId: item ? clientIdOf(item) : prior?.clientId });
+    if (record.inboxTerminal.size > 128) record.inboxTerminal.delete(record.inboxTerminal.keys().next().value!);
+  }
+
+  async #delivered(record: RecordState, attempt: Attempt, inboxId: string): Promise<boolean> {
+    const message = await attempt.client.session.message.get({ sessionID: record.nativeId, messageID: inboxId }, this.#request(attempt))
+      .catch((error: unknown) => { if (isMessageNotFoundError(error)) return undefined; throw error; });
+    this.#check(record, attempt);
+    if (message && (message.id !== inboxId || message.type !== "user")) throw new OpenCodeCommandError("opencode_result_unconfirmed", "unconfirmed");
+    return message !== undefined;
+  }
+
+  async #cancelQueued(record: RecordState, attempt: Attempt, messageId: string): Promise<void> {
+    const deliveredError = () => new OpenCodeCommandError("message_already_delivered", "already_delivered");
+    const sessionID = record.nativeId;
+    const inbox = await this.#readInbox(sessionID, attempt);
+    this.#check(record, attempt);
+    const matches = (item: InboxUser) => queueIdOf(item) === messageId || wireId(item.id) === messageId;
+    const item = [...inbox.values()].find(matches);
+    if (!item) {
+      const alreadyDelivered = [...record.inboxTerminal.entries()].some(([id, fact]) => fact.state === "delivered"
+        && (fact.clientId === messageId || wireId(id) === messageId)) || record.entries.some(entry =>
+          entry.entryId === messageId || (entry.data.message as ChatMessage | undefined)?.clientMessageId === messageId);
+      const prior = [...record.inbox.values()].find(matches);
+      if (alreadyDelivered || prior && await this.#delivered(record, attempt, prior.id)) throw deliveredError();
+      throw new OpenCodeCommandError("message_not_queued", "not_cancelable");
+    }
+    await attempt.client.session.inbox.cancel({ sessionID, inboxID: item.id }, this.#request(attempt));
+    this.#check(record, attempt);
+    // 2.3.2 returns 204 for an inbox conflict too; a concurrent delivery is not a successful cancellation.
+    const terminal = record.inboxTerminal.get(item.id)?.state;
+    if (terminal === "cancelled") return;
+    if (terminal === "delivered" || await this.#delivered(record, attempt, item.id)) {
+      this.#finishInbox(record, item.id, "delivered", item);
+      throw deliveredError();
+    }
+    const remaining = await this.#readInbox(sessionID, attempt);
+    this.#check(record, attempt);
+    if (record.inboxTerminal.get(item.id)?.state === "delivered") throw deliveredError();
+    if (remaining.has(item.id)) throw new OpenCodeCommandError("opencode_result_unconfirmed", "unconfirmed");
+    this.#finishInbox(record, item.id, "cancelled", item);
+  }
+
+  async #respond(record: RecordState, attempt: Attempt, command: Extract<RuntimeCommand, { type: "interaction.respond" }>): Promise<boolean> {
+    const current = record.interactions.get(command.requestId);
+    if (!current || current.request.extensionId !== command.extensionId) throw new OpenCodeCommandError("interaction_not_found");
+    if (record.responding.has(command.requestId)) throw new OpenCodeCommandError("interaction_busy");
+    const responding = record.responding;
+    responding.add(command.requestId);
+    const sessionID = record.nativeId;
+    const { client } = attempt;
+    const { response } = command;
+    try {
+      let cancelled = false;
+      if (command.extensionId === "opencode.permission") {
+        if (response.kind !== "confirm" && response.kind !== "cancel") throw new OpenCodeCommandError("invalid_interaction_response");
+        await client.permission.reply({ sessionID, requestID: command.requestId,
+          decision: response.kind === "confirm" && response.value ? "once" : "reject" }, this.#request(attempt));
+      } else if (current.form) {
+        const form = await client.session.form.get({ sessionID, formID: current.form.id }, this.#request(attempt));
+        this.#check(record, attempt);
+        if (form.sessionID !== sessionID || form.id !== current.form.id || !formRequest(runtimeIdFor(sessionID), form, Date.now()))
+          throw new OpenCodeCommandError("interaction_not_found");
+        if (response.kind === "cancel") {
+          await client.session.form.cancel({ sessionID, formID: form.id }, this.#request(attempt));
+          cancelled = true;
+        } else if (response.kind === "questionnaire") {
+          await client.session.form.reply({ sessionID, formID: form.id, answer: formAnswers(form, response) }, this.#request(attempt));
+        } else throw new OpenCodeCommandError("invalid_interaction_response");
+      } else throw new OpenCodeCommandError("interaction_not_found");
+      this.#check(record, attempt);
+      this.#finishInteraction(record, command.requestId, cancelled, "remote");
+      return cancelled;
+    } finally { responding.delete(command.requestId); }
+  }
+
+  #finishInteraction(record: RecordState, requestId: string, cancelled: boolean, source: "local" | "remote"): void {
+    if (!record.interactions.delete(requestId)) return;
+    this.options.onEvent(runtimeIdFor(record.nativeId), cancelled ? { type: "interaction.cancelled", requestId, reason: "cancelled" }
+      : { type: "interaction.resolved", requestId, source });
+  }
+
+  async #select(record: RecordState, attempt: Attempt, name: string, value: string): Promise<void> {
+    const sessionID = record.nativeId;
+    const { client } = attempt;
+    const info = await client.session.get({ sessionID }, this.#request(attempt));
+    this.#check(record, attempt);
+    const cwd = info.location.directory;
+    if (name === "agent") {
+      const agents = await readAgents(client, cwd, this.#request(attempt));
+      this.#check(record, attempt);
+      if (!agents.some(item => item.value === value)) throw new OpenCodeCommandError("configuration_stale");
+      record.pendingAgent = value;
+      try { await client.session.switchAgent({ sessionID, agent: value }, this.#request(attempt)); }
+      catch (error) { if (commandFailure(error).status === "failure") delete record.pendingAgent; throw error; }
+      const actual = await client.session.get({ sessionID }, this.#request(attempt));
+      this.#check(record, attempt);
+      if (actual.agent !== value) throw new OpenCodeCommandError("configuration_unconfirmed", "unconfirmed");
+      this.#confirmSelection(record, actual);
+    } else {
+      const models = await readModels(client, cwd, this.#request(attempt));
+      this.#check(record, attempt);
+      const selected = name === "model" ? selectionModel(models, { model: value }) : info.model &&
+        selectionModel(models, { model: modelValue(info.model), thinking: value });
+      if (!selected) throw new OpenCodeCommandError("configuration_stale");
+      await this.#switchModel(record, attempt, selected);
+    }
+    await this.#refresh(record, attempt);
+  }
+
+  async #switchModel(record: RecordState, attempt: Attempt, model: ModelRef): Promise<void> {
+    this.#check(record, attempt);
+    const sessionID = record.nativeId;
+    record.pendingModel = model;
+    try { await attempt.client.session.switchModel({ sessionID, model }, this.#request(attempt)); }
+    catch (error) { if (commandFailure(error).status === "failure") delete record.pendingModel; throw error; }
+    const actual = await attempt.client.session.get({ sessionID }, this.#request(attempt));
+    this.#check(record, attempt);
+    if (!sameModel(actual.model, model)) throw new OpenCodeCommandError("configuration_unconfirmed", "unconfirmed");
+    this.#confirmSelection(record, actual);
+  }
+
+  #confirmSelection(record: RecordState, info: NativeSession): void {
+    if (record.pendingAgent === info.agent) delete record.pendingAgent;
+    if (record.pendingModel && sameModel(info.model, record.pendingModel)) delete record.pendingModel;
+  }
+
+  async #refreshCapabilities(record: RecordState, attempt: Attempt, info: NativeSession): Promise<void> {
+    const options = this.#request(attempt);
+    const cwd = info.location.directory;
+    const [models, agents] = await Promise.all([
+      readModels(attempt.client, cwd, options).catch(() => undefined),
+      readAgents(attempt.client, cwd, options).catch(() => undefined),
+    ]);
+    this.#check(record, attempt);
+    if (record.info !== info) return;
+    record.capabilitiesUntil = Date.now() + 30_000;
+    const capabilities = selectionCommands(info, models, agents);
+    if (!isDeepStrictEqual(record.capabilities, capabilities)) {
+      record.capabilities = capabilities;
+      this.options.onEvent(runtimeIdFor(record.nativeId), { type: "runtime.capabilities", capabilities });
+    }
   }
 
   async #readInteractions(sessionID: string, attempt: Attempt): Promise<Map<string, PendingInteraction>> {
