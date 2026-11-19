@@ -2,7 +2,7 @@
 (function (root) {
   'use strict';
   var tick = String.fromCharCode(96);
-  var messageFileLink = /^\[(?:\\.|[^\\\[\]\r\n])+\]\(<orbis-message-file:[a-f0-9]{64}>\)/;
+  var messageFileLink = /^\[(?:\\.|[^\\[\]\r\n])+\]\(<orbis-message-file:[a-f0-9]{64}>\)/;
   var environments = /^(equation|equation\*|align|align\*|alignat|alignat\*|gather|gather\*|displaymath|math)$/;
   function escaped(s, i) { var n = 0; while (i > 0 && s.charAt(--i) === '\\') n++; return n % 2 === 1; }
   function closeAt(s, end, start, limit) {
