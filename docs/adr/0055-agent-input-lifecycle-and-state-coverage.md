@@ -113,6 +113,8 @@ backend 按已发布命令目录解释读取、配置、历史、退出和对话
 
 界面以明确的发送、排队、未确认和失败状态反馈结果，输入恢复副本保存到精确落地或明确撤回。共用 outbox 与操作账本维护稳定身份、阅读位置和原位恢复，配置确认与主回合串行契约继续适用。
 
+**IOS-VOICE-01**：iOS 口述的临时识别结果直接显示在当前会话的输入框，只更新本次口述部分；点结束即保留已识别内容，随后可采用同一次识别的最终修订。不按静音计时结束，不自动发送；清理只在草稿仍未被改写时应用。实现见 [ChatComposerView.swift](../../ios/Orbis/Orbis/ChatComposerView.swift)、[VoiceInputController.swift](../../ios/Orbis/Orbis/VoiceInputController.swift)，回归见 [VoiceDictationDraftTests.swift](../../ios/Orbis/Tests/VoiceDictationDraftTests.swift)。
+
 ## Verification
 
 [测试规则](../../AGENTS.md#测试)；[ConfigLedgerTest.kt](../../android/app/src/test/java/com/orbising/orbis/ConfigLedgerTest.kt)；[ConfigComposerInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/ConfigComposerInstrumentedTest.kt)；[原始证据](../../.artifacts/)。
