@@ -2,6 +2,8 @@
 // - OPT-08 `launch`（V12、V10）（V12、V10）
 package com.orbising.orbis
 
+import kotlinx.serialization.json.Json
+
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -39,6 +41,25 @@ class LaunchLedgerTest {
         """{"type":"runtime.online","runtime":{"runtimeId":"rt-$sessionId","sessionId":"$sessionId","name":"Agent","cwd":"/repo/app","status":"idle"}}""")
 
     private fun newSession(state: RemoteState) = launch(state, mapOf("type" to "new", "agentKind" to "codex", "cwd" to "/repo/app"))
+
+    @Test fun launchRequestsNegotiateTheDefaultWithoutChangingExplicitModes() {
+        val legacy = setup()
+        val ready = """{"type":"device.ready","deviceId":"phone-1","modelEpoch":"epoch","runtimes":[],"hostFeatures":["session.spawn.auto"]}"""
+        val linux = reduce(legacy, ready)
+        val legacyAgain = reduce(linux, """{"type":"device.ready","deviceId":"phone-1","modelEpoch":"epoch","runtimes":[]}""")
+        assertFalse(reducer.reduce(legacy, ready).prefersAutoSessionSpawn)
+        val config = SessionConfigurationSnapshot("codex", "/repo/app", "fixture", 0, SessionConfigurationValues(), SessionConfigurationCatalog("fixture"))
+        for ((state, mode) in listOf(legacy to "tui", linux to "auto", legacyAgain to "tui")) {
+            for (target in listOf("""{"type":"new","agentKind":"codex","cwd":"/repo/app"}""", """{"type":"resume","sessionId":"s1"}""")) {
+                val json = Json.decodeFromString<kotlinx.serialization.json.JsonObject>(target)
+                assertEquals("\"$mode\"", state.sessionActivationRequest("id", json)["spawnMode"].toString())
+                for (explicit in listOf("tui", "headless")) {
+                    assertEquals("\"$explicit\"", state.sessionActivationRequest("id", json, explicit)["spawnMode"].toString())
+                }
+            }
+            assertEquals("\"$mode\"", state.configuredSessionLaunchRequest("id", config)["spawnMode"].toString())
+        }
+    }
 
     // LAUNCH-WAIT-01: legacy/resume launches have no configured journal; only
     // a matching uncertain or failed configured launch may expose abandonment.

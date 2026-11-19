@@ -145,6 +145,8 @@ final class HostConnection: ObservableObject {
         didSet { if oldValue != kimiCodeSupported { directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
     }
     @Published private(set) var openClawNegotiated = false
+    // ADR-0090: only an authenticated Host that advertises `session.spawn.auto` changes the legacy default.
+    private var defaultSessionSpawnMode = "tui"
     @Published private(set) var sessionConfiguration: SessionConfigurationSnapshot?
     @Published private(set) var proposedSessionConfiguration: SessionConfigurationValues?
     @Published private(set) var sessionConfigurationRequest: String?
@@ -269,7 +271,7 @@ final class HostConnection: ObservableObject {
         guard creation == .created else { return false }
         let payload: [String: Any] = ["type": "session.launch", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id,
             "agentKind": agent, "cwd": cwd, "binding": config.binding, "revision": config.revision, "values": agent == "openclaw" ? SessionConfigurationValues().payload : sessionConfigurationValues.payload,
-            "spawnMode": agent == "openclaw" ? "headless" : kimiSpawnMode(agent)]
+            "spawnMode": agent == "openclaw" ? "headless" : kimiSpawnMode(agent, otherwise: defaultSessionSpawnMode)]
         let firstId = UUID().uuidString, firstCommand = UUID().uuidString
         guard let persisted = writeLaunchJournal(payload.merging(["firstMessage": firstMessage, "firstMessageId": firstId, "firstCommandId": firstCommand]) { _, new in new }, creating: true) else {
             ledger.remove(id); return false
@@ -356,6 +358,7 @@ final class HostConnection: ObservableObject {
         var unconfirmed = false
         /// 用户仍停在这个启动页：成功后切到真实会话；离开后不再把用户拉回，会话照常出现在首页。
         var following = true
+        var spawnModeOverride: String? = nil
     }
     @Published private(set) var launching: LaunchState?
     /// 启动期间消息的占位 Session → 确认后的 Session。
@@ -559,7 +562,7 @@ final class HostConnection: ObservableObject {
                                        "requestId": requestId, "launchId": launch.id]
             if let configuration {
                 wire["agentKind"] = launch.agent; wire["cwd"] = launch.cwd; wire["binding"] = configuration.binding
-                wire["revision"] = configuration.revision; wire["values"] = configuration.values.payload; wire["spawnMode"] = "tui"
+                wire["revision"] = configuration.revision; wire["values"] = configuration.values.payload; wire["spawnMode"] = defaultSessionSpawnMode
             }
             if !transport.send(wire) { finishExternalLaunch(.unconfirmed) }
         }
@@ -1249,6 +1252,7 @@ final class HostConnection: ObservableObject {
 
     private func connect(pairing: HostPairing, identity: DeviceIdentity) {
         homeDirectoryReceived = false
+        defaultSessionSpawnMode = "tui"
         importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
         connectionGeneration = UUID(); filteredReady = nil
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
@@ -1305,7 +1309,7 @@ final class HostConnection: ObservableObject {
             else { self.ledgerOpenConnection() }
             self.connection = state
             if state != .secured { self.pathRTT = nil }
-            if state != .secured { self.homeDirectoryReceived = false; self.filteredReady = nil; self.importReady = false; self.finishExternalImport(.unconfirmed); self.finishExternalLaunch(.unconfirmed) }
+            if state != .secured { self.homeDirectoryReceived = false; self.defaultSessionSpawnMode = "tui"; self.filteredReady = nil; self.importReady = false; self.finishExternalImport(.unconfirmed); self.finishExternalLaunch(.unconfirmed) }
             self.recordConnectionEvent(L10n.tr("连接：{0}", state.rawValue))
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
             if state != .secured { self.openClawNegotiated = false; self.kimiCodeSupported = false; self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
@@ -2116,7 +2120,7 @@ final class HostConnection: ObservableObject {
         var target: [String: Any] = ["type": "resume", "sessionId": session.sessionId]
         let kind = kimi ? kimiCodeKind : session.agentKind
         if let kind { target["agentKind"] = kind }
-        activateTarget(target, sessionId: session.sessionId, spawnMode: kimiSpawnMode(kind))
+        activateTarget(target, sessionId: session.sessionId, spawnMode: kimi ? "headless" : nil)
     }
 
     func createSession(agentKind: String, cwd: String) {
@@ -2124,7 +2128,7 @@ final class HostConnection: ObservableObject {
         if supportsSessionConfiguration(for: agentKind) { _ = createSession(agentKind: agentKind, cwd: cwd, firstMessage: ""); return }
         activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new")
     }
-    /// S49 / SC70: an empty draft reuses the original windowed launch; a first sentence also queues a send.
+    /// S49 / SC70: an empty draft only launches; a first sentence also queues a send.
     func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
         reconcilePendingSends()
         guard !cwd.isEmpty, connection == .secured, activationRequestId == nil else { return false }
@@ -2165,7 +2169,7 @@ final class HostConnection: ObservableObject {
     }
     #endif
 
-    private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String = "tui", displayTitle: String? = nil) {
+    private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String? = nil, displayTitle: String? = nil) {
         guard connection == .secured, activationRequestId == nil else { return }
         let requestId = UUID().uuidString
         let placeholder = "launch:" + requestId
@@ -2174,7 +2178,7 @@ final class HostConnection: ObservableObject {
                                      payload: .launch(requestId: requestId, placeholder: placeholder), written: false, now: Date())
         guard creation == .created else { return }
         guard transport.send(["type": "session.activate", "protocolVersion": orbisProtocolVersion,
-                              "requestId": requestId, "target": target, "spawnMode": spawnMode]) else {
+                              "requestId": requestId, "target": target, "spawnMode": spawnMode ?? defaultSessionSpawnMode]) else {
             ledger.remove(requestId); handleLedger([])
             sessionLaunchError = L10n.tr("未连接到电脑，连接恢复后可重试。"); sessionLaunchErrorAwaitsConnection = true; return
         }
@@ -2190,7 +2194,7 @@ final class HostConnection: ObservableObject {
             ?? (cwd.split(separator: "/").last.map(String.init) ?? L10n.tr("新会话"))
         launching = LaunchState(requestId: requestId, placeholder: placeholder,
                                 target: target.compactMapValues { $0 as? String }, title: title, cwd: cwd,
-                                agentKind: target["agentKind"] as? String, resumed: resumed, sessionId: resumed)
+                                agentKind: target["agentKind"] as? String, resumed: resumed, sessionId: resumed, spawnModeOverride: spawnMode)
         if let resumed, let session = sessionIndex[resumed], openCachedSession(session) { return }
         toolContent.close(); turnFileChanges.clear(); dismissPreview()
         selectedOfflineSession = nil; selectedRuntimeId = placeholder; messages = []; cachedHistoryOptions = []
@@ -2209,7 +2213,7 @@ final class HostConnection: ObservableObject {
         var target: [String: Any] = launch.target
         if let kind { target["agentKind"] = kind }
         launching = nil
-        activateTarget(target, sessionId: launch.resumed ?? "new", spawnMode: kimiSpawnMode(kind), displayTitle: launch.title)
+        activateTarget(target, sessionId: launch.resumed ?? "new", spawnMode: kind == kimiCodeKind ? "headless" : launch.spawnModeOverride, displayTitle: launch.title)
     }
 
     /// 用户离开了启动页：启动继续，成功后不把用户拉回，会话照常出现在首页。
@@ -3347,6 +3351,7 @@ final class HostConnection: ObservableObject {
             launchableAgents = message["launchableAgents"] as? [String]
             sessionConfigurationSupported = message["sessionConfiguration"] as? Int == 1
             kimiCodeSupported = hasNegotiatedKimiCode(message)
+            defaultSessionSpawnMode = features.contains("session.spawn.auto") ? "auto" : "tui"
             recoverConfiguredLaunch()
             codexDesktop = (message["codexDesktop"] as? [String: Any]).flatMap(jsonDecode).flatMap { $0.valid ? $0 : nil }
             notifications.ready(epoch: message["notificationEpoch"] as? String, runtimes: runtimes)

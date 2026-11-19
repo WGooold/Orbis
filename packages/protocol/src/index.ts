@@ -277,6 +277,8 @@ export type CodexDesktopAttach = z.infer<typeof CodexDesktopAttachSchema>;
  * 未声明对应能力的设备不会收到该 Agent 的枚举、会话或运行时。
  */
 export const HOST_FEATURE_DEVICE_FEATURES = "device.features";
+/** ADR-0090: prefer `auto` over the legacy mobile default of `tui` for this Host. */
+export const HOST_FEATURE_SESSION_SPAWN_AUTO = "session.spawn.auto";
 export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
 /** ADR-0084: clients advertising this feature can consume normalized rich message blocks. */
 export const DEVICE_FEATURE_MESSAGE_RENDER = "message.content-render.v1";

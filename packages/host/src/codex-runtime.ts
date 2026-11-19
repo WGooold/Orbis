@@ -63,6 +63,7 @@ import type {
   ToolContentLocator,
   SessionConfigurationCatalog,
   SessionConfigurationValues,
+  SpawnMode,
   TurnConfiguration,
 } from "@orbis/protocol";
 
@@ -85,7 +86,7 @@ import { codexPermissionManagement } from "./permission-management.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { CodexClientRefreshCoordinator, FileCodexRefreshJournal, type CodexRefreshResult } from "./codex-client-refresh.js";
 import { CodexDesktopRefreshDriver, desktopHistoryRevision, type CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
-import { ActivationError } from "./spawner.js";
+import { ActivationError, hasDesktopSession } from "./spawner.js";
 import { CodexNotificationBuffer, type CodexBufferedNotification } from "./codex-notification-buffer.js";
 import { openMacCodexTerminal, listMacCodexTuisByEndpoint, closeMacCodexTuis } from "./codex-terminal-macos.js";
 import { codexTerminalEndpoints, codexTerminalRemotePattern, createCodexTerminalConnection, type CodexTerminalConnection, type CodexTerminalConnectionInput } from "./codex-terminal-connection.js";
@@ -139,6 +140,8 @@ export const CODEX_SOURCE_COALESCE_MS = 100;
 
 export type CodexRuntimeOptions = {
   server: CodexAppServer;
+  /** Run every phone-created Codex thread through app-server without opening a local TUI. */
+  headless?: boolean;
   /** Host-owned producer store shared by all this backend's sessions; explicit detail reads only. */
   toolContentStore?: ToolContentStore;
   /** ADR-0035 §15：完整 live patch 的发布窗口；0 保留同步发布。 */
@@ -1481,18 +1484,19 @@ export class CodexRuntime implements AgentBackend {
     this.#activating += 1;
     try {
       return await this.#activateInner(target.type === "resume"
-        ? { type: "resume", sessionId: this.#nativeSessionId(target.sessionId) } : target, context);
+        ? { type: "resume", sessionId: this.#nativeSessionId(target.sessionId) } : target,
+      context, this.#activationSpawnMode(context?.spawnMode));
     } finally {
       this.#activating -= 1;
     }
   }
 
-  async #activateInner(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
+  async #activateInner(target: AgentActivateTarget, context: AgentActivateContext | undefined,
+    spawnMode: "tui" | "headless"): Promise<BackendActivation> {
     const existing = target.type === "resume" ? this.#threads.get(target.sessionId) : undefined;
     if (existing?.reconcilePromise !== undefined) await this.#waitForReconcile(existing);
     const existingGeneration = existing === undefined ? undefined : ++existing.reconcileGeneration;
-    const needsTerminalTrust = !isDesktopAppServer(this.#server) && this.#server.endpoint !== undefined
-      && orbisEnvironment(process.env, "CODEX_HEAD") !== "0";
+    const needsTerminalTrust = !isDesktopAppServer(this.#server) && spawnMode === "tui" && this.#server.endpoint !== undefined;
     // Prepare before creating a new thread: a rejected config write must not leave
     // an unpublished session behind. Resume discovers cwd from the native reply.
     if (needsTerminalTrust && target.type === "new") await prepareCodexWorkspace(this.#server, target.cwd);
@@ -1512,7 +1516,8 @@ export class CodexRuntime implements AgentBackend {
     if (typeof id !== "string" || typeof cwd !== "string") {
       throw new Error(`app-server 的 ${method} 响应缺少 thread.id/cwd`);
     }
-    await context?.onCreated?.({ sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" });
+    const actualSpawnMode = isDesktopAppServer(this.#server) ? "headless" : spawnMode;
+    await context?.onCreated?.({ sessionId: this.#publicSessionId(id), spawnMode: actualSpawnMode });
     if (selection !== undefined) result = await this.#configureLaunch(id, selection, object(result));
     if (isCodexSubagentSource(threadJson?.source, threadJson?.parentThreadId)) {
       throw new ActivationError("session_not_found", "不属于 Codex 的用户会话");
@@ -1520,7 +1525,7 @@ export class CodexRuntime implements AgentBackend {
     if (existing !== undefined && !this.#isCurrentReconcile(existing, existingGeneration!)) {
       // A native turn/revert observed while resume was pending owns the newer projection.
       await this.#waitForReconcile(existing);
-      return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
+      return { sessionId: this.#publicSessionId(id), spawnMode: actualSpawnMode };
     }
     if (needsTerminalTrust && target.type === "resume") await prepareCodexWorkspace(this.#server, cwd);
     // Resuming an attached thread keeps its source sequence, pending interactions and queue.
@@ -1552,7 +1557,7 @@ export class CodexRuntime implements AgentBackend {
     this.#publishMetadataEvent(thread);
     if (existing !== undefined) this.#touchSource(thread);
     // 历史由设备的有界 session.sync 请求加载，metadata 不附带无人请求的整图。
-    try { await this.#openHeadWindow(id, cwd); }
+    try { await this.#openHeadWindow(id, cwd, actualSpawnMode); }
     catch (error) {
       // A failed local window must not leave a new idle subscription holding the writer lock.
       // Existing/running work keeps its native lifecycle and is never interrupted by this cleanup.
@@ -1562,7 +1567,27 @@ export class CodexRuntime implements AgentBackend {
       throw error;
     }
     this.#options.log?.(`Codex 会话已激活：${id}（cwd=${cwd}）`);
-    return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
+    return { sessionId: this.#publicSessionId(id), spawnMode: actualSpawnMode };
+  }
+
+  #activationSpawnMode(requested: SpawnMode | undefined): "tui" | "headless" {
+    if (isDesktopAppServer(this.#server)) return "headless";
+    const canOpenWindow = (process.platform === "win32" || process.platform === "darwin") && hasDesktopSession();
+    if (requested === "tui") {
+      if (this.#options.headless === true) {
+        throw new ActivationError("spawn_failed", "此 Linux CLI Host 仅支持无头 Codex 会话；请更新手机 App 使用自动启动模式");
+      }
+      if (orbisEnvironment(process.env, "CODEX_HEAD") === "0") {
+        throw new ActivationError("spawn_failed", "Codex TUI 已由 Host 配置关闭；请使用自动或无头启动模式");
+      }
+      if (!canOpenWindow) throw new ActivationError("spawn_failed", "此 Host 没有可用的 Codex 终端窗口；请使用自动或无头启动模式");
+      return "tui";
+    }
+    if (requested === "headless" || this.#options.headless === true
+      || orbisEnvironment(process.env, "CODEX_HEAD") === "0") return "headless";
+    if (requested === "auto") return canOpenWindow ? "tui" : "headless";
+    // Keep the legacy default for callers that do not send spawnMode.
+    return "tui";
   }
 
   /**
@@ -1571,11 +1596,12 @@ export class CodexRuntime implements AgentBackend {
    * 所以窗口先开、内嵌等待循环轮询 rollout，一落盘立即自动 attach。
    * endpoint 未知（测试桩 / app-server 未就绪）时静默跳过；`ORBIS_CODEX_HEAD=0` 关掉。
    */
-  async #openHeadWindow(sessionId: string, cwd: string): Promise<void> {
+  async #openHeadWindow(sessionId: string, cwd: string, spawnMode?: "tui" | "headless"): Promise<void> {
     // 桌面版那条后端自己就是「有头」：Codex 桌面版 GUI 就是它的窗口。再开一个终端 TUI
     // 会在用户那里凭空多出一个客户端，而且存活检测靠轮询 `--remote <端点>` 的 TUI 进程
     // ——GUI 永远不会出现在那份名单里，窗口“消失”后还会把会话误标成离线。
     if (isDesktopAppServer(this.#server)) return;
+    if (this.#options.headless === true || spawnMode === "headless") return;
     if (orbisEnvironment(process.env, "CODEX_HEAD") === "0") return;
     const endpoint = this.#server.endpoint;
     if (endpoint === undefined) return;
@@ -3151,8 +3177,10 @@ export class CodexRuntime implements AgentBackend {
     forked.sourceReady = forked.historyError === undefined;
     this.#publishMetadataEvent(forked);
 
-    await this.#openHeadWindow(id, cwd);
-    return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
+    const spawnMode = this.#options.headless === true || isDesktopAppServer(this.#server)
+      || orbisEnvironment(process.env, "CODEX_HEAD") === "0" ? "headless" : "tui";
+    await this.#openHeadWindow(id, cwd, spawnMode);
+    return { sessionId: this.#publicSessionId(id), spawnMode };
   }
 
   #slashNoSession(threadId: string | undefined, commandId: string | undefined): boolean {

@@ -52,6 +52,7 @@ import {
   DEVICE_FEATURE_CLAUDE_SEND_NOW,
   HOST_FEATURE_DEVICE_FEATURES,
   HOST_FEATURE_IMPORT_TARGET,
+  HOST_FEATURE_SESSION_SPAWN_AUTO,
   PROTOCOL_VERSION,
   type AgentKind,
   type HostProviderSummary,
@@ -215,6 +216,8 @@ export type HostServiceOptions = {
   adminToken?: string;
   stateDir?: string;
   reconnect?: boolean;
+  /** ADR-0090: recommend `auto` to clients using the Linux headless CLI profile. */
+  preferAutoSessionSpawn?: boolean;
   /** 关掉本机 loopback 端点（只有测试会这么做：它要的是纯 Relay 路径）。 */
   loopback?: boolean;
   /** 关掉 LAN 端点。关掉后只剩 Relay 一条路径，不影响其他功能。 */
@@ -1668,6 +1671,7 @@ export class HostService {
       hostFeatures: [
         HOST_FEATURE_DEVICE_FEATURES,
         HOST_FEATURE_IMPORT_TARGET,
+        ...(this.#options.preferAutoSessionSpawn === true ? [HOST_FEATURE_SESSION_SPAWN_AUTO] : []),
         DEVICE_FEATURE_MESSAGE_RENDER,
         DEVICE_FEATURE_OPENCLAW,
         DEVICE_FEATURE_HERMES,

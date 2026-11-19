@@ -422,7 +422,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     internal fun currentLaunchPresentation(): LaunchState? = active()?.state?.value?.launching
 
-    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean =
+    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String? = null): Boolean =
         active()?.createSession(agentKind, cwd, expectedHostId, spawnMode) == true
 
     internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =

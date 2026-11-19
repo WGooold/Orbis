@@ -221,7 +221,7 @@ internal class HostConnection(
         relay.sendDeviceMessage(buildJsonObject { put("type", "session.launch.read"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id); put("launchId", id) })
     }
 
-    private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String, firstMessage: String = ""): Boolean {
+    private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String? = null, firstMessage: String = ""): Boolean {
         val state = mutableState.value; val config = state.sessionConfiguration; val snapshot = config.snapshot
         if (kind == KIMI_CODE_KIND && (!state.kimiCodeSupported || !state.sessionConfigurationSupported)) return false
         val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded, configuredLaunchJournal.snapshot != null)
@@ -235,7 +235,7 @@ internal class HostConnection(
         val id = UUID.randomUUID().toString()
         val firstId = UUID.randomUUID().toString()
         val firstCommand = UUID.randomUUID().toString()
-        val payload = configuredLaunchPayload(id, confirmed, config.values, kimiSpawnMode(kind, spawnMode))
+        val payload = state.configuredSessionLaunchRequest(id, confirmed, spawnMode)
         // Reserve in memory immediately, then persist off UI before writing to the transport.
         val journal = JsonObject(payload + mapOf("firstMessage" to JsonPrimitive(firstMessage), "firstMessageId" to JsonPrimitive(firstId), "firstCommandId" to JsonPrimitive(firstCommand)))
         val persisted = configuredLaunchJournal.update(null) { journal } ?: return false
@@ -944,7 +944,8 @@ internal class HostConnection(
                 put("requestId", request); put("launchId", launch.id)
                 if (config != null) {
                     put("agentKind", launch.agent); put("cwd", launch.cwd); put("binding", config.binding)
-                    put("revision", config.revision); put("values", config.values.payload()); put("spawnMode", "tui")
+                    put("revision", config.revision); put("values", config.values.payload())
+                    put("spawnMode", mutableState.value.sessionSpawnMode(null))
                 }
             }, channel)) return ImportLaunchResult.Unconfirmed
             val start = SystemClock.elapsedRealtime()
@@ -1200,7 +1201,7 @@ internal class HostConnection(
             put("type", "resume")
             put("sessionId", sessionId)
             (if (kimi) KIMI_CODE_KIND else state.sessions[sessionId]?.agentKind)?.let { put("agentKind", it) }
-        }, kimiSpawnMode(if (kimi) KIMI_CODE_KIND else null, "tui"))
+        }, if (kimi) "headless" else null)
     }
 
     private fun validateNewSessionTarget(expectedHostId: String?): Boolean {
@@ -1210,8 +1211,8 @@ internal class HostConnection(
     }
 
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
-    /** [spawnMode] overrides the default `tui`; the UI-02 capture harness asks for `headless`. */
-    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean {
+    /** [spawnMode] overrides the Host-negotiated default; the UI-02 capture harness asks for `headless`. */
+    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String? = null): Boolean {
         if (agentKind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return false
         if (!mutableState.value.supportsSessionConfiguration(agentKind) && (!configuredLaunchJournal.isLoaded || configuredLaunchJournal.snapshot != null)) {
             updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(agentKind = agentKind, cwd = cwd,
@@ -1227,7 +1228,7 @@ internal class HostConnection(
         }, spawnMode)
     }
 
-    private fun activateTarget(target: JsonObject, spawnMode: String = "tui"): Boolean {
+    private fun activateTarget(target: JsonObject, spawnMode: String? = null): Boolean {
         lastSessionRestorer.cancel()
         val requestId = UUID.randomUUID().toString()
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”，草稿和消息先归属启动请求。
@@ -1237,17 +1238,7 @@ internal class HostConnection(
             ?: fields["cwd"]?.trimEnd('/', '\\')?.substringAfterLast('/')?.substringAfterLast('\\')?.ifBlank { null } ?: L10n.tr("新会话")
         val sent = sendSessionPayload(
             requestId = requestId,
-            payload = buildJsonObject {
-                put("type", "session.activate")
-                put("protocolVersion", PROTOCOL_VERSION)
-                put("requestId", requestId)
-                put("target", target)
-                // 明确要「有头」。`auto` 会把判定交给电脑侧的启发式（Windows 上看
-                // SESSIONNAME），而从服务、计划任务或 IDE 内部启动的 Host 根本没有它，
-                // 结果是一律降级成无窗口——那样手机就永远要不到窗口了。电脑侧探不到
-                // 开窗入口时会报启动失败，不把明确的有头请求改成无头。
-                put("spawnMode", spawnMode)
-            },
+            payload = mutableState.value.sessionActivationRequest(requestId, target, spawnMode),
             register = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests + requestId,
                 sessionActivateTargets = if (target["type"]?.jsonPrimitive?.contentOrNull == "resume") {
@@ -1255,7 +1246,7 @@ internal class HostConnection(
                 } else emptyMap(),
                 activatedSessionToOpen = null,
                 sessionConfiguration = if (fields["type"] == "new") it.sessionConfiguration.copy(launchError = null, waitingForLaunchJournal = false) else it.sessionConfiguration,
-            ).createLaunch(requestId, fields, title, System.currentTimeMillis()).first },
+            ).createLaunch(requestId, fields, title, System.currentTimeMillis(), spawnModeOverride = spawnMode).first },
             rollback = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests - requestId,
                 sessionActivateTargets = it.sessionActivateTargets - requestId,
@@ -1301,7 +1292,7 @@ internal class HostConnection(
         updateState { it.copy(launching = null, sessionActivateRequests = it.sessionActivateRequests - launch.requestId) }
         val kind = launch.target["agentKind"] ?: launch.target["sessionId"]?.takeIf { isKimiCode(null, it) }?.let { KIMI_CODE_KIND }
         if (kind == KIMI_CODE_KIND && (!mutableState.value.kimiCodeSupported || launch.target["type"] == "new")) return
-        activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } }, kimiSpawnMode(kind, "tui"))
+        activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } }, if (kind == KIMI_CODE_KIND) "headless" else launch.spawnModeOverride)
     }
 
     fun loadAgentProviders(kind: String) {
@@ -1980,7 +1971,7 @@ internal class HostConnection(
             if (kind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return@synchronized null
             if (!mutableState.value.supportsSessionConfiguration(kind)) updateState { it.copy(sessionConfiguration =
                 it.sessionConfiguration.copy(agentKind = kind, cwd = cwd)) }
-            // S49 / SC70: reuse the original windowed launch without a send operation.
+            // S49 / SC70: an empty first message launches without a send operation.
             if (text.isBlank()) return@synchronized if (createSession(kind, cwd, expectedHost)) FirstSessionSubmission(null) else null
             if (!validateMessageInput(text, newSession = true)) return@synchronized null
             // One local transaction owns both slots; another state writer cannot consume the send slot after launch.
@@ -1989,7 +1980,7 @@ internal class HostConnection(
                 return@synchronized null
             }
             if (mutableState.value.supportsSessionConfiguration(kind)) {
-                if (!validateNewSessionTarget(expectedHost) || !createConfiguredSession(kind, cwd, if (kind == "openclaw") "headless" else "tui", text)) return@synchronized null
+                if (!validateNewSessionTarget(expectedHost) || !createConfiguredSession(kind, cwd, firstMessage = text)) return@synchronized null
                 val id = configuredLaunchId ?: return@synchronized null
                 return@synchronized FirstSessionSubmission(mutableState.value.pendingSends.values.firstOrNull { it.sessionId == "launch:$id" }?.commandId)
             }

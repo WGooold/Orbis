@@ -64,13 +64,35 @@ struct LaunchLedgerTests {
         return fixture
     }
 
-    private func configured(_ fixture: Fixture) async throws {
-        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": []])
+    private func configured(_ fixture: Fixture, prefersAuto: Bool = false) async throws {
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": [], "hostFeatures": prefersAuto ? ["session.spawn.auto"] : []])
         fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
         let request = try #require(fixture.transport.sent.last)
         await fixture.transport.emit(["type": "session.configuration.result", "requestId": request["requestId"]!, "agentKind": "codex", "cwd": "/repo/app",
             "binding": "fixture", "revision": 0, "values": ["model": "fixture-model", "thinking": "high"],
             "catalog": ["binding": "fixture", "defaults": [:], "models": [["value": "fixture-model", "label": "Fixture", "thinking": [["value": "high", "label": "High"]]]], "permissions": []]])
+    }
+
+    @Test(arguments: [false, true]) func defaultSpawnModeFollowsAuthenticatedHostPreference(prefersAuto: Bool) async throws {
+        let mode = prefersAuto ? "auto" : "tui"
+        let features = prefersAuto ? ["session.spawn.auto"] : []
+        let created = Fixture()
+        await created.transport.emit(["type": "device.ready", "runtimes": [], "hostFeatures": features])
+        #expect(created.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: ""))
+        #expect(created.transport.activations.last?["spawnMode"] as? String == mode)
+
+        let resumed = Fixture()
+        await resumed.transport.emit(["type": "device.ready", "runtimes": [], "hostFeatures": features])
+        resumed.host.activate(SessionSummary(sessionId: "s1", name: "Old session", cwd: "/repo/app", firstMessage: nil,
+            createdAt: 1, modifiedAt: 1, messageCount: 1, agentKind: "codex", archived: false))
+        #expect(resumed.transport.activations.last?["spawnMode"] as? String == mode)
+
+        let configured = Fixture()
+        try await self.configured(configured, prefersAuto: prefersAuto)
+        #expect(configured.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first message"))
+        await configured.store.waitForPendingEvents()
+        let launch = try #require(configured.transport.sent.last { $0["type"] as? String == "session.launch" })
+        #expect(launch["spawnMode"] as? String == mode)
     }
 
     // SC73: only the exact configuration request owns its error; command errors
