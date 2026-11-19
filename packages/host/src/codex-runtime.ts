@@ -3897,6 +3897,26 @@ export class CodexRuntime implements AgentBackend {
         this.#touchSource(thread);
         return;
       }
+      case "turn/plan/updated": {
+        if (typeof record.turnId !== "string" || record.turnId !== thread.turnId || !Array.isArray(record.plan)) return;
+        const messageId = `codex-checklist:${record.turnId}`;
+        const lines = record.plan.slice(0, 50).flatMap(raw => {
+          const { step, status } = object(raw);
+          if (typeof step !== "string" || !["pending", "inProgress", "completed"].includes(String(status))) return [];
+          const label = step.slice(0, 500).replace(/\s+/gu, " ").trim().replace(/[\\`*_{}[\]<>!~|&$]/gu, "\\$&");
+          return label ? [`- ${status === "completed" ? "✓" : status === "inProgress" ? "◐" : "○"} ${label}`] : [];
+        });
+        if (lines.length === 0) {
+          if (thread.liveMessages.delete(messageId)) this.#touchSource(thread);
+          return;
+        }
+        const prior = thread.liveMessages.get(messageId)?.message;
+        const text = `**计划进度**\n\n${lines.join("\n")}`;
+        if (prior?.content[0]?.type === "text" && prior.content[0].text === text) return;
+        const message: ChatMessage = { messageId, role: "assistant", timestamp: prior?.timestamp ?? Date.now(), content: [{ type: "text", text }] };
+        this.#setLiveMessage(thread, { message, finished: true, contentComplete: true });
+        return;
+      }
       case "turn/started": {
         this.#clearError(thread);
         // app-server 把 turn 嵌在 `turn` 下（`{ threadId, turn: { id, startedAt } }`），
@@ -3907,6 +3927,7 @@ export class CodexRuntime implements AgentBackend {
           const owner = thread.compactionOwner;
           if (owner !== undefined && owner.turnId !== started.id) this.#settleCompactionTurn(thread, owner.turnId, "idle");
           thread.asyncInputs.updateTurn(started.id, "inProgress");
+          if (thread.turnId !== started.id && thread.turnId !== undefined) thread.liveMessages.delete(`codex-checklist:${thread.turnId}`);
           thread.turnId = started.id;
           if (thread.currentTurnConfiguration?.turnId !== started.id) delete thread.configurationReadAt;
           // app-server 的 startedAt 是秒级 epoch；本端事件用毫秒，统一乘 1000。
@@ -3942,6 +3963,7 @@ export class CodexRuntime implements AgentBackend {
           this.#completeItem(thread, pendingReview.item, pendingReview.turnId);
           if (review) this.#emit(thread.id, { type: "message.finished", message: review });
         }
+        if (completedTurnId !== undefined) thread.liveMessages.delete(`codex-checklist:${completedTurnId}`);
         for (const [id, target] of thread.pendingStops) if (target === completedTurnId) {
           thread.pendingStops.delete(id);
           const stopped = completedTurn.status === "interrupted";

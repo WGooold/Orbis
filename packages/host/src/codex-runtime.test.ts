@@ -170,7 +170,7 @@ function syncHistory(h: ReturnType<typeof makeHarness>, options: Partial<Session
   return h.events.slice(start).find((event) => event.type === "session.snapshot");
 }
 
-// MSG-RENDER-01: final plan text replaces deltas; checklist and review entry are control events.
+// MSG-RENDER-01: final plan text replaces deltas; review entry is a control event.
 it("keeps Codex plans and final reviews in the live and persisted conversation", async () => {
   const h = makeHarness();
   await activate(h);
@@ -198,6 +198,18 @@ it("keeps Codex plans and final reviews in the live and persisted conversation",
   const replay = makeHarness({ initialTurns: [{ id: route.turnId, status: "completed", items: [plan, review] }] });
   await activate(replay);
   expect(syncHistory(replay)?.display?.entries.map(e => e.message?.content)).toEqual(live.map(message => message.content));
+});
+
+it("replaces one live checklist per Codex turn and clears it at turn completion", async () => {
+  const h = makeHarness(); await activate(h);
+  const route = { threadId: "th-1", turnId: "plan-checklist" };
+  h.notify("turn/started", { threadId: route.threadId, turn: { id: route.turnId } });
+  const update = (status: string) => h.notify("turn/plan/updated", { ...route, plan: [{ step: "Check results", status }] });
+  update("pending"); update("completed");
+  expect(syncHistory(h)?.live?.messages).toMatchObject([{ message: { messageId: "codex-checklist:plan-checklist",
+    content: [{ type: "text", text: "**计划进度**\n\n- ✓ Check results" }] } }]);
+  h.notify("turn/completed", { threadId: route.threadId, turn: { id: route.turnId, status: "completed" } });
+  expect(syncHistory(h)?.live?.messages).toEqual([]);
 });
 
 it("shows the same-turn Codex review reply exactly once in live and replay", async () => {
