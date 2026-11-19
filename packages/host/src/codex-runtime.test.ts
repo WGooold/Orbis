@@ -199,6 +199,37 @@ it("keeps Codex plans and final reviews in the live and persisted conversation",
   expect(syncHistory(replay)?.display?.entries.map(e => e.message?.content)).toEqual(live.map(message => message.content));
 });
 
+// MSG-RENDER-01: native media stays in source order without sending data or native paths.
+it("preserves Codex user media, generated images, and public reasoning summaries", async () => {
+  const h = makeHarness(); await activate(h);
+  const route = { threadId: "th-1", turnId: "media-turn" };
+  const path = join(h.rolloutRoot, "result.png");
+  const items = [
+    { id: "user-media", type: "userMessage", content: [{ type: "text", text: "Before" },
+      { type: "localImage", path: "private.png" }, { type: "text", text: "After" }, { type: "audio", data: "private-base64" }] },
+    { id: "generated", type: "imageGeneration", status: "completed", savedPath: path, result: "private-result" },
+    { id: "failed-image", type: "imageGeneration", status: "failed", savedPath: path },
+    { id: "summary", type: "reasoning", summary: ["Public summary"], content: ["private reasoning"] },
+  ];
+  for (const item of items) h.notify("item/completed", { ...route, item });
+  const live = h.events.filter(e => e.type === "message.finished").map(e => e.message.content);
+  expect(live).toEqual([
+    [{ type: "text", text: "Before" }, { type: "render", renderKind: "image", text: "图片内容暂不可显示" },
+      { type: "text", text: "After" }, { type: "render", renderKind: "audio", text: "音频内容暂不可显示" }],
+    [{ type: "render", renderKind: "codex_generated_image", text: "生成图片暂不可显示" }],
+    [{ type: "render", renderKind: "codex_generated_image", text: "图片生成失败" }],
+    [{ type: "thinking", text: "Public summary" }],
+  ]);
+  const runtimeId = h.runtime.runtimeIdFor(route.threadId);
+  expect(h.runtime.generatedImagePath(runtimeId, "generated")).toBe(path);
+  expect(h.runtime.generatedImagePath(runtimeId, "failed-image")).toBeUndefined();
+  const replay = makeHarness({ initialTurns: [{ id: route.turnId, status: "completed", items }] });
+  await activate(replay);
+  expect(syncHistory(replay)?.display?.entries.map(e => e.message?.content)).toEqual(live);
+  expect(replay.runtime.generatedImagePath(runtimeId, "generated")).toBe(path);
+  expect(JSON.stringify(syncHistory(replay))).not.toMatch(/private|result\.png/);
+});
+
 // Child lifecycles belong to execution.tasks for both native transports; main input stays independent.
 describe("Codex CLI/Desktop child task integration", () => {
   const tasks = (h: ReturnType<typeof makeHarness>) => h.events.filter(event => event.type === "execution.tasks").at(-1)?.tasks;

@@ -41,6 +41,7 @@ import type {
   AgentKind,
   AgentSessionSummary,
   ChatMessage,
+  RemoteContent,
   RemoteSessionEntry,
   RuntimeCapabilities,
   RuntimeCommand,
@@ -352,6 +353,7 @@ export class CodexRuntime implements AgentBackend {
   readonly #options: CodexRuntimeOptions;
   #server: CodexAppServer;
   /** 活跃 thread 表。codex 的 thread/resume 返回完整 turns，激活即拿到历史。 */
+  readonly #generatedImages = new Map<string, string>();
   readonly #threads = new Map<string, ThreadState>();
   readonly #taskRegistries = new WeakMap<CodexAppServer, CodexTaskRegistry>();
   readonly #taskChecks = new WeakMap<ThreadState, Promise<void>>();
@@ -601,6 +603,7 @@ export class CodexRuntime implements AgentBackend {
       this.#captureEpochs.clear();
       this.#toolInventories.clear();
       this.#threads.clear();
+      this.#generatedImages.clear();
       this.#headWindows.clear();
       this.#headWindowSeen.clear();
       this.#windowKeyByThread.clear();
@@ -670,6 +673,10 @@ export class CodexRuntime implements AgentBackend {
   /** 某 thread 的对外 runtimeId（每个活跃 thread 一条独立进程卡）。 */
   runtimeIdFor(threadId: string): string {
     return `${this.runtimeId}:${threadId}`;
+  }
+
+  generatedImagePath(runtimeId: string, itemId: string): string | undefined {
+    return this.#generatedImages.get(JSON.stringify([runtimeId, itemId]));
   }
 
   #publicSessionId(threadId: string): string {
@@ -4234,6 +4241,15 @@ export class CodexRuntime implements AgentBackend {
   #completeItem(thread: ThreadState, item: Record<string, unknown>, turnId?: string): void {
     if (typeof item.id !== "string") return;
     const itemId = item.id;
+    if (item.type === "imageGeneration") {
+      const key = JSON.stringify([this.runtimeIdFor(thread.id), itemId]);
+      this.#generatedImages.delete(key);
+      const path = item.savedPath;
+      if (item.status === "completed" && typeof path === "string" && path.length <= 4096 && isAbsolute(path)) {
+        this.#generatedImages.set(key, path);
+        if (this.#generatedImages.size > 4096) this.#generatedImages.delete(this.#generatedImages.keys().next().value!);
+      }
+    }
     item = this.#projectToolItem(thread, item, "finished", turnId);
     this.#noteItem(thread, item);
     if (thread.itemOrder.indexOf(itemId) < thread.committedItemCount) {
@@ -4804,8 +4820,7 @@ function itemToMessage(item: Record<string, unknown>): ChatMessage | undefined {
   const timestamp = Date.now();
   switch (type) {
     case "userMessage": {
-      const text = codexQuestionReplyText(extractContentText(item));
-      return { messageId: id, role: "user", content: [{ type: "text", text }], timestamp };
+      return { messageId: id, role: "user", content: codexUserContent(item), timestamp };
     }
     case "agentMessage":
       // 旧格式 rollout 的 AgentMessage 把文本放在 content[].type="Text"（大写 T）；
@@ -4818,7 +4833,7 @@ function itemToMessage(item: Record<string, unknown>): ChatMessage | undefined {
       return typeof item.review === "string" && item.review.trim().length > 0
         ? { messageId: id, role: "assistant", content: [{ type: "text", text: item.review }], timestamp } : undefined;
     case "reasoning":
-      // Reasoning item 的摘要在 summary_text[]（字符串数组）；content/text 兜底。
+      // Reasoning item 的摘要在 summary_text[] / summary[]（字符串数组）；content/text 兜底。
       return { messageId: id, role: "assistant", content: [{ type: "thinking", text: extractReasoningText(item) }], timestamp };
     case "commandExecution": {
       const command = item.command;
@@ -4844,6 +4859,9 @@ function itemToMessage(item: Record<string, unknown>): ChatMessage | undefined {
         content: [{ type: "tool_call", toolCallId: id, toolName: "fileChange", arguments: { status: item.status, changes: item.changes } }],
         timestamp,
       };
+    case "imageGeneration":
+      return { messageId: id, role: "assistant", content: [{ type: "render", renderKind: "codex_generated_image",
+        text: item.status === "failed" ? "图片生成失败" : "生成图片暂不可显示" }], timestamp };
     case "mcpToolCall":
       return {
         messageId: id,
@@ -4857,11 +4875,23 @@ function itemToMessage(item: Record<string, unknown>): ChatMessage | undefined {
   }
 }
 
-/**
- * 从 item.content[] 抽取文本（大小写不敏感地认 type 为 text/Text/output_text）；
- * content 不是数组时退回 item.text（字符串）。覆盖旧 rollout（content[].type="Text"）
- * 与 app-server v2 在线 item（item.text）两种形态。
- */
+function codexUserContent(item: Record<string, unknown>): RemoteContent[] {
+  const parts = Array.isArray(item.content) ? item.content.map(object) : [];
+  if (!parts.some(part => ["image", "localImage", "audio", "localAudio"].includes(String(part.type)))) {
+    return [{ type: "text", text: codexQuestionReplyText(extractContentText(item)) }];
+  }
+  return parts.flatMap((part): RemoteContent[] => {
+    switch (part.type) {
+      case "text": case "Text": case "output_text":
+        return typeof part.text === "string" && part.text.length ? [{ type: "text", text: codexQuestionReplyText(part.text) }] : [];
+      case "image": case "localImage": return [{ type: "render", renderKind: "image", text: "图片内容暂不可显示" }];
+      case "audio": case "localAudio": return [{ type: "render", renderKind: "audio", text: "音频内容暂不可显示" }];
+      default: return []; // Skill/mention items bind existing user text.
+    }
+  });
+}
+
+/** Accept the legacy rollout and app-server v2 text shapes. */
 function extractContentText(item: Record<string, unknown>): string {
   const content = item.content;
   if (Array.isArray(content)) {
@@ -4881,7 +4911,7 @@ function extractContentText(item: Record<string, unknown>): string {
 
 /** Reasoning item 的摘要：优先 summary_text[]（字符串数组），再退回 content/text。 */
 function extractReasoningText(item: Record<string, unknown>): string {
-  const summary = item.summary_text;
+  const summary = item.summary_text ?? item.summary;
   if (Array.isArray(summary)) {
     const joined = summary.filter((s): s is string => typeof s === "string").join("\n");
     if (joined.length > 0) return joined;

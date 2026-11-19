@@ -2906,7 +2906,9 @@ export class HostService {
     const rich = this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_MESSAGE_RENDER) === true;
     const identity = scope?.kind === "agent" ? this.#agentStateRegistry.read(scope, "identity")?.value as { cwd?: string } | undefined : undefined;
     const cwd = codex ? identity?.cwd : undefined;
-    const rendered = this.#deviceMessageRendering.project(deviceId, message, { rich, codex, ...(cwd === undefined ? {} : { cwd }) });
+    const backend = codex && rich && scope?.kind === "agent" ? this.#backends.find(candidate => candidate.kind === scope.key.agentKind) as CodexRuntime | undefined : undefined;
+    const rendered = this.#deviceMessageRendering.project(deviceId, message, { rich, codex, ...(cwd === undefined ? {} : { cwd }),
+      ...(backend && runtimeId ? { generatedImagePath: (id: string) => backend.generatedImagePath?.(runtimeId, id) } : {}) });
     return this.#encodeMeasured(this.#compactStateSubscriptions.supportsSharedContent(deviceId)
       ? (rich ? this.#richSessionWireContent : this.#sessionWireContent).project(projectCompactDeviceMessage(rendered), rich ? deviceId : undefined) : rendered);
   }

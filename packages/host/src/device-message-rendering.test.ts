@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DISPLAY_PROJECTION_VERSION, RuntimeEventSchema, selectSessionSyncSnapshot, type ChatMessage, type RuntimeEvent } from "@orbis/protocol";
 import { DeviceMessageRendering } from "./device-message-rendering.js";
@@ -22,6 +23,19 @@ describe("MSG-RENDER-01 device message rendering", () => {
       file: { fileName: "final answer.md", referenceId: expect.stringMatching(/^orbis-message-file:[a-f0-9]{64}$/) } }] } });
     expect(render(event, false)).toEqual({ ...event, message: assistant("final answer.md") });
     expect(render(event, true, false, false)).toEqual(event);
+  });
+
+  it("uses the output file card for an available image path, with no path or action for older clients", () => {
+    const engine = new DeviceMessageRendering(new MessageFileReferences());
+    const message: ChatMessage = { ...assistant(), content: [{ type: "render", renderKind: "codex_generated_image", text: "生成图片暂不可显示" }] };
+    const envelope = { type: "runtime.event", runtimeId: "runtime", event: { type: "message.finished", message } };
+    const path = join(cwd, "image.png");
+    const project = (rich: boolean, generatedImagePath?: () => string) => engine.project("phone", envelope, { codex: true, rich, generatedImagePath });
+    expect(project(true, () => path)).toMatchObject({ event: { message: { content: [{ type: "render", renderKind: "file_reference", purpose: "output",
+      text: "image.png", file: { fileName: "image.png", referenceId: expect.stringMatching(/^orbis-message-file:/) } }] } } });
+    expect(JSON.stringify(project(true, () => path))).not.toContain(path);
+    expect(project(true)).toEqual(envelope);
+    expect(project(false, () => path)).toMatchObject({ event: { message: { content: [{ type: "text", text: "生成图片暂不可显示" }] } } });
   });
 
   it("withholds split directives even when no device saw the beginning; repeated projection does not append twice", () => {

@@ -9,7 +9,7 @@ const maxStreams = 64;
 const maxStreamLength = 256 * 1024;
 type JsonObject = Record<string, unknown>;
 type Stream = { raw: string; visible: string; pending: boolean; excessive?: true };
-type Projection = { rich: boolean; codex: boolean; cwd?: string };
+type Projection = { rich: boolean; codex: boolean; cwd?: string; generatedImagePath?: (messageId: string) => string | undefined };
 
 /** The source retains canonical entries. This adapter only projects the device wire view. */
 export class DeviceMessageRendering {
@@ -54,7 +54,16 @@ export class DeviceMessageRendering {
     const resolve = (path: string) => options.rich ? this.#files.register(path, options.cwd, deviceId, runtimeId) : undefined;
     const project = (value: ChatMessage, streaming = false): ChatMessage => {
       const normalized = options.codex ? normalizeCodexMessage(value, resolve, streaming) : value;
-      return options.rich ? normalized : downgradeMessageForLegacy(normalized);
+      if (!options.rich) return downgradeMessageForLegacy(normalized);
+      if (streaming || !options.generatedImagePath || !normalized.content.some(block => block.type === "render" && block.renderKind === "codex_generated_image")) return normalized;
+      const path = options.generatedImagePath(normalized.messageId);
+      const name = path?.split(/[\\/]/u).at(-1);
+      if (!path || !name || name.length > 255 || Array.from(path).some(ch => ch.codePointAt(0)! < 32 || /[\u007f\u202a-\u202e\u2066-\u2069]/u.test(ch))) return normalized;
+      const file = resolve(path);
+      if (!file) return normalized;
+      return { ...normalized, content: normalized.content.map(block => block.type === "render" && block.renderKind === "codex_generated_image"
+        ? { type: "render", renderKind: "file_reference", purpose: "output", text: name, file: { fileName: name, referenceId: file.referenceId } }
+        : block) };
     };
     let next: RuntimeEvent = event;
     switch (event.type) {
