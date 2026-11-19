@@ -1769,5 +1769,14 @@
   "添加附件": "Add attachment",
   "照片": "Photos",
   "无法读取所选照片": "Could not load selected photo",
-  "电脑已接收，等待处理": "Received by computer, waiting"
+  "电脑已接收，等待处理": "Received by computer, waiting",
+  "OpenCode 共享服务未运行。请在电脑上启动 OpenCode。": "The OpenCode shared service is not running. Start OpenCode on your computer.",
+  "OpenCode 版本不兼容。请在电脑上使用 Host 支持的版本。": "This OpenCode version is incompatible. Use a version supported by Host on your computer.",
+  "OpenCode 服务注册地址无效。请检查电脑上的 OpenCode 服务配置。": "The OpenCode service registration address is invalid. Check the OpenCode service configuration on your computer.",
+  "Host 无法连接 OpenCode 共享服务。请检查电脑上的服务状态和认证配置。": "Host cannot connect to the OpenCode shared service. Check the service status and authentication settings on your computer.",
+  "OpenCode 实时连接未就绪。请稍后再试。": "The OpenCode live connection is not ready. Try again shortly.",
+  "OpenCode 当前不可用。请检查电脑上的服务状态。": "OpenCode is unavailable. Check the service status on your computer.",
+  "会话配置": "Session configuration",
+  "切换 OpenCode Agent": "Switch OpenCode agent",
+  "允许一次": "Allow once"
 }

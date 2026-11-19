@@ -33,6 +33,7 @@ internal enum class AgentBrand(val title: String, val icon: Int) {
     Kimi("Kimi Code", R.drawable.ic_agent_kimi),
     OpenClaw("OpenClaw", R.drawable.ic_agent_openclaw),
     Hermes("Hermes Agent", R.drawable.ic_agent_hermes),
+    OpenCode("OpenCode", R.drawable.ic_agent_opencode),
 }
 
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
@@ -43,6 +44,7 @@ internal fun agentBrand(kind: String?) = when (kind) {
     KIMI_CODE_KIND -> AgentBrand.Kimi
     "openclaw" -> AgentBrand.OpenClaw
     "hermes" -> AgentBrand.Hermes
+    "opencode" -> AgentBrand.OpenCode
     else -> AgentBrand.Pi
 }
 /** Desktop entries are the app window on the computer; "headless" describes only terminal Agents (ADR-0022, ADR-0076). */
@@ -59,6 +61,7 @@ internal fun AgentBrand.accent(): Color = when (this) {
     AgentBrand.Hermes -> if (LocalOrbisDarkTheme.current) Color(0xFFF1D58A) else Color(0xFF765519)
     AgentBrand.Claude -> if (LocalOrbisDarkTheme.current) Color(0xFFF0B48C) else Color(0xFF9A4521)
     AgentBrand.OpenClaw -> if (LocalOrbisDarkTheme.current) Color(0xFFFF8A75) else Color(0xFFA93531)
+    AgentBrand.OpenCode -> if (LocalOrbisDarkTheme.current) Color(0xFFA99BFF) else Color(0xFF5E4CAD)
 }
 
 /** Keep the shared soft base; focus rings, actions and selection inherit the agent accent. */

@@ -183,7 +183,7 @@ struct ChatHeaderView: View, Equatable {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(L10n.tr("{0}，{1}，{2}", agentTitle(kind), facts.displayName, facts.connection == .secured ? runtime.presentationTitle : connectionTitle(facts.connection)))
                 .modifier(ChatTitleDiagnostics(value: [presentation.model, presentation.thinking, presentation.indicator].compactMap { $0 }.joined(separator: " · ")))
-                .accessibilityHint(L10n.tr("模型与深度")).accessibilityIdentifier("chat-title")
+                .accessibilityHint(runtime.agentKind == "opencode" ? L10n.tr("会话配置") : L10n.tr("模型与深度")).accessibilityIdentifier("chat-title")
                 .accessibilityAddTraits(.isButton)
         } trailing: {
             OrbisIconButton(symbol: "clock.arrow.circlepath", label: L10n.tr("历史与分支"), action: onHistory)

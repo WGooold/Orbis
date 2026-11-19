@@ -76,7 +76,7 @@ struct SessionModelConfigurationView: View {
     var body: some View {
         let presentation = target.owner.sessionModelPresentation(runtime)
         VStack(spacing: 0) {
-            OrbisPageHeader(title: L10n.tr("模型与深度"), closes: true, back: { dismiss() }) {
+            OrbisPageHeader(title: runtime.agentKind == "opencode" ? L10n.tr("会话配置") : L10n.tr("模型与深度"), closes: true, back: { dismiss() }) {
                 OrbisIconButton(symbol: "info.circle", label: L10n.tr("会话信息")) { diagnosticsOpen = true }
             }
             ScrollView {
@@ -115,13 +115,16 @@ struct SessionModelConfigurationView: View {
                         }
                         ForEach(command.argument?.options ?? []) { option in
                             OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: "",
-                                selected: OperationKinds.confirmedValue(runtime, setting: command.name) == option.value) {
+                                selected: command.name != "agent" && OperationKinds.confirmedValue(runtime, setting: command.name) == option.value) {
                                 select(command.name, option.value)
                             }.disabled(!store.canSend).accessibilityIdentifier("session-config-option-" + option.value)
                         }
                     } else {
                         configButton("模型", name: "model")
                         configButton("思考深度", name: OperationKinds.depthCommand(commands))
+                        if runtime.agentKind == "opencode", commands.contains(where: { $0.name == "agent" && $0.argument?.kind == "select" }) {
+                            configButton("切换 OpenCode Agent", name: "agent")
+                        }
                     }
                 }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
             }.accessibilityIdentifier("session-model-configuration")
