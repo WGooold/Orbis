@@ -123,6 +123,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_devices = obj.value("devices").toArray().toVariantList();
             refreshDeviceUpdateIndicators();
             m_kimiCodeSupported = obj.value("kimiCodeDefaultEnabled").isBool();
+            m_kimiDesktopSupported = obj.value("kimiDesktopSupported").toBool();
+            m_kimiCodeDefaultSource = obj.value("kimiCodeDefaultSource").toString("web");
             m_kimiCodeDefaultEnabled = obj.value("kimiCodeDefaultEnabled").toBool();
             m_bridgeReady = true;
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
@@ -793,6 +795,7 @@ void HostController::startHost() {
     params.insert("dshEnabled", dshEnabled()); params.insert("piIntegrationEnabled", piIntegrationEnabled());
     params.insert("claudeIntegrationEnabled", claudeIntegrationEnabled());
     if (kimiCodeAvailable() && m_settings.contains("kimiCodeEnabled")) params.insert("kimiCodeEnabled", kimiCodeEnabled());
+    if (kimiCodeAvailable() && m_settings.contains("kimiCodeSource")) params.insert("kimiCodeSource", kimiCodeSource());
     command("start", params);
 }
 void HostController::stopHost() { m_desiredRunning = false; m_resumePending = false; m_settings.setValue("runHost", false); m_qr.clear(); command("stop"); }
@@ -1035,7 +1038,7 @@ void HostController::setAutoStart(bool enabled) {
     setMessage(enabled ? "已开启登录启动" : "已关闭登录启动");
 }
 
-void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration, bool claudeIntegration, const QVariant &kimiCode) {
+void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration, bool claudeIntegration, const QVariant &kimiCode, const QString &kimiSource) {
     if (busy()) return;
     const auto normalized = CredentialStore::normalizedRelay(relay);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
@@ -1055,11 +1058,11 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
         // Drain the old runtime first: an authentication refusal from that connection
         // must finish persisting before the worker selects another Relay's active slot.
         pauseForChange(); m_relaySelectionPending = true; emit changed();
-        afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode] {
+        afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode, kimiSource] {
             m_relaySelectionPending = false;
-            restoreActivation(normalized, [this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode] {
-                afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode] {
-                    saveSettings(normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode);
+            restoreActivation(normalized, [this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode, kimiSource] {
+                afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode, kimiSource] {
+                    saveSettings(normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode, kimiSource);
                 });
             });
         });
@@ -1074,9 +1077,11 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
     const auto hostName = name.trimmed();
     const bool rename = !hostName.isEmpty() && hostName != m_hostName;
     const bool kimiChanged = kimiCodeAvailable() && kimiCode.isValid() && kimiCode.toBool() != kimiCodeEnabled();
-    if (kimiChanged || normalized != relayUrl() || rename || codex != codexEnabled() || dsh != dshEnabled() || dshUrl.trimmed() != dshWebUrl()) pauseForChange();
+    const bool kimiSourceChanged = kimiCodeAvailable() && (kimiSource == "web" || (kimiSource == "desktop" && kimiDesktopSupported())) && kimiSource != kimiCodeSource();
+    if (kimiChanged || (kimiSourceChanged && kimiCodeEnabled()) || normalized != relayUrl() || rename || codex != codexEnabled() || dsh != dshEnabled() || dshUrl.trimmed() != dshWebUrl()) pauseForChange();
     m_settings.setValue("relayUrl", normalized); m_settings.setValue("codexEnabled", codex);
     if (kimiChanged) m_settings.setValue("kimiCodeEnabled", kimiCode.toBool());
+    if (kimiSourceChanged) m_settings.setValue("kimiCodeSource", kimiSource);
     m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed());
 #ifdef Q_OS_MACOS
     // 立即生效，不等下次启动 Host：用户关掉它往往是为了接着删除应用。

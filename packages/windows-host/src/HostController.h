@@ -66,6 +66,8 @@ class HostController : public QObject {
     Q_PROPERTY(bool codexEnabled READ codexEnabled NOTIFY changed)
     Q_PROPERTY(bool kimiCodeAvailable READ kimiCodeAvailable NOTIFY changed)
     Q_PROPERTY(bool kimiCodeEnabled READ kimiCodeEnabled NOTIFY changed)
+    Q_PROPERTY(bool kimiDesktopSupported READ kimiDesktopSupported NOTIFY changed)
+    Q_PROPERTY(QString kimiCodeSource READ kimiCodeSource NOTIFY changed)
     Q_PROPERTY(QString kimiCodeState READ kimiCodeState NOTIFY changed)
     Q_PROPERTY(bool dshEnabled READ dshEnabled NOTIFY changed)
     Q_PROPERTY(bool piIntegrationEnabled READ piIntegrationEnabled NOTIFY changed)
@@ -147,6 +149,8 @@ public:
     bool autoStart() const { return m_settings.value("autoStart", false).toBool(); }
     bool kimiCodeAvailable() const { return !m_qaMode && m_kimiCodeSupported; }
     bool kimiCodeEnabled() const { return m_settings.value("kimiCodeEnabled", m_kimiCodeDefaultEnabled).toBool(); }
+    bool kimiDesktopSupported() const { return kimiCodeAvailable() && m_kimiDesktopSupported; }
+    QString kimiCodeSource() const { return m_settings.value("kimiCodeSource", m_kimiCodeDefaultSource).toString(); }
     QString kimiCodeState() const { return m_kimiCodeState; }
     bool codexEnabled() const { return m_settings.value("codexEnabled", true).toBool(); }
     bool dshEnabled() const { return m_settings.value("dshEnabled", false).toBool(); }
@@ -221,7 +225,7 @@ public:
     Q_INVOKABLE void openAgent(const QString &kind);
     Q_INVOKABLE void openAgentTui(const QString &kind);
     Q_INVOKABLE void setAutoStart(bool enabled);
-    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration = true, bool claudeIntegration = true, const QVariant &kimiCode = QVariant());
+    Q_INVOKABLE void saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration = true, bool claudeIntegration = true, const QVariant &kimiCode = QVariant(), const QString &kimiSource = QString());
     Q_INVOKABLE void diagnose();
     Q_INVOKABLE void exportDiagnostics();
     Q_INVOKABLE void copyDiagnostics();
@@ -360,7 +364,8 @@ private:
     DiagnosticLogModel m_logs;
     QVariantList m_devices, m_agents, m_backends;
     QVariantMap m_codexDesktop, m_dshDesktop;
-    QString m_kimiCodeState;
+    QString m_kimiCodeState, m_kimiCodeDefaultSource = "web";
+    bool m_kimiDesktopSupported = false;
     bool m_kimiCodeSupported = false, m_kimiCodeDefaultEnabled = false;
     /** 后台准备进度，按 kind 存放（Codex 可能是一次上百 MB 的下载，但都不阻塞中继连接）。 */
     QVariantMap m_preparations;

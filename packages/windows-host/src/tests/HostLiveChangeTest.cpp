@@ -172,6 +172,22 @@ private slots:
         host.receiveLine({{"event", "status"}, {"kimiCodeState", "connected"}});
         QVERIFY(host.kimiCodeState().isEmpty());
     }
+    // KIMI-11: source changes apply through the same stop/start path and do not replace the inherited default.
+    void kimiSourceSwitchRestartsEnabledHost() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        host.m_kimiCodeSupported = true;
+        host.m_kimiDesktopSupported = true;
+        host.m_kimiCodeDefaultEnabled = true;
+        QCOMPARE(host.kimiCodeSource(), QString("web"));
+        host.saveSettings(host.relayUrl(), host.autoStart(), host.codexEnabled(), host.hostName(), host.dshEnabled(), host.dshWebUrl(), true, true, true, "desktop");
+        settle(host);
+        QCOMPARE(host.kimiCodeSource(), QString("desktop"));
+        QCOMPARE(methods(root()), QStringList({"stop", "start"}));
+        QFile start(root() + "/packages/host/dist/start.json");
+        QVERIFY(start.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(start.readAll()).object().value("kimiCodeSource"), QJsonValue("desktop"));
+    }
     void settingsReconnectOnlyForConnectionFields() {
         auto &host = *m_host;
         connectHost(host, root());

@@ -274,10 +274,13 @@ int main(int argc, char *argv[]) {
                 QTimer::singleShot(400, &app, [&] {
                     auto *toggle = findVisualItem(window->contentItem(), "kimiCodeSwitch");
                     auto *status = findVisualItem(window->contentItem(), "kimiCodeStatus");
+                    auto *source = findVisualItem(window->contentItem(), "kimiCodeSource");
                     auto *scroll = findVisualItem(window->contentItem(), "pageScroll");
                     auto *viewport = scroll ? qobject_cast<QQuickItem *>(scroll->property("contentItem").value<QObject *>()) : nullptr;
                     if (!toggle || !toggle->isVisible() || !toggle->property("checked").toBool() ||
                         !status || !status->isVisible() || status->property("text").toString() != "已接入" || !viewport) { app.exit(86); return; }
+                    if (controller.kimiDesktopSupported() && (!source || !source->isVisible() ||
+                        source->property("currentValue").toString() != controller.kimiCodeSource())) { app.exit(90); return; }
                     const auto y = toggle->mapToItem(viewport, QPointF()).y() + viewport->property("contentY").toReal();
                     viewport->setProperty("contentY", qBound(0.0, y - viewport->height() / 3, qMax(0.0, viewport->property("contentHeight").toReal() - viewport->height())));
                     QTimer::singleShot(120, &app, [&, toggle, status, viewport] {
