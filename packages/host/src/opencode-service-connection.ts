@@ -160,4 +160,3 @@ export class OpenCodeServiceConnection {
     this.#timer.unref();
   }
 }
-

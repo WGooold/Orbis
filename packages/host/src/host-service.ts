@@ -1348,7 +1348,7 @@ export class HostService {
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
     const hidden = this.#hiddenKindsForDevice(deviceId);
     if (scope.kind !== "host" || hidden.length === 0) return value;
-    
+
     return legacyHostDomain(domain, value, catalog => this.#hostStateFacts.hiddenCatalog(catalog, hidden), hidden);
   }
 

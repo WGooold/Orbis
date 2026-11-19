@@ -2,7 +2,7 @@
 
 日期：2026-11-19
 
-Status: accepted（接入边界已定；实现与真实服务验收按 OPENCODE-02–06 分 ticket 完成）
+Status: accepted（接入已实现；已通过隔离的 Windows 原生服务测试，App 端到端验收待完成）
 
 关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0076](0076-deepseek-harness-desktop-integration.md)、[ADR-0084](0084-zcode-cli-integration.md)。
 
@@ -16,7 +16,7 @@ Host 将 OpenCode API 事件与按需读取的 session/message 数据映射到�
 
 ## 调查范围与证据
 
-核对日期：2026-11-19。官方文档当前标记为 OpenCode docs V2（latest）。npm registry 当日 `@opencode/client` latest 为 `2.3.2`；此版本只作为客户端包调查基线，不代表已验证的 OpenCode CLI 支持范围。
+核对日期：2026-11-19。调查基于 OpenCode V2 文档与源码。首版实现和验收只针对 `@opencode/client@2.3.2` 与 OpenCode 服务端 `2.3.2`，不推断相邻版本兼容。
 
 | ID | 已确认事实 | 依据 |
 | --- | --- | --- |
@@ -27,7 +27,7 @@ Host 将 OpenCode API 事件与按需读取的 session/message 数据映射到�
 | F05 | `/api/event` 是 experimental event-stream route，且按官方 API 契约只提供 live 事件：断线期间事件会丢失，慢消费者可能收到溢出失败；session API 提供重新读取数据的路由。 | [API reference：Event](https://opencode.ai/docs/api)；[JavaScript client](https://opencode.ai/docs/build/client/) |
 | F06 | Orbis 设备按 `device.features` 协商功能；既有 ADR-0076 / ADR-0084 已通过 feature gate 隔离新 Agent kind，防止旧客户端收到其不认识的目录、runtime 或 Agent state。 | [ADR-0064](0064-protocol-compatibility.md)、[ADR-0076](0076-deepseek-harness-desktop-integration.md)、[ADR-0084](0084-zcode-cli-integration.md) |
 
-上述 OpenCode API 与 service helper 行为需在真实支持版本上复核；文档和当前上游源码不是 Orbis 端到端验证结果。当前机器未发现 PATH 中的 `opencode` CLI，故本轮不能声称真实服务联调通过。
+上述文档和上游源码用于确定接口契约，不是 Orbis 端到端验证结果。Windows 原生服务的实际验证范围见下文。
 
 ## 决策
 
@@ -76,4 +76,25 @@ Host 将经过验证的 OpenCode catalog、history、message、tool、execution�
 
 ## 验证状态
 
-本 ADR 与上游接口静态调查已完成。Host / Protocol / iOS / Android 实现、mock API fixtures、真实 OpenCode service 联调均未执行；不能据此报告 OpenCode 已受支持。
+记录于 2026-11-19。以下为本分支的本地结果，不代表正式支持或发布。
+
+| 层次 | 已确认结果 |
+| --- | --- |
+| 模拟 OpenCode API | [后端回归](../../packages/host/src/opencode-backend.test.ts)覆盖目录与历史分页、事件流断线或溢出后重新读取、工具摘要、消息生命周期、权限批准／拒绝和问卷。[Host 回归](../../packages/host/src/host-service.test.ts)验证未声明 `agent.opencode` 的测试设备看不到 OpenCode 数据、不能执行 OpenCode 命令或收到其 APNs 唤醒；重复命令不会重复执行，回执只发给请求设备。 |
+| 实际 SDK + 本地 HTTP 测试服务 | [连接测试](../../packages/host/src/opencode-service-connection.test.ts)使用 `@opencode/client@2.3.2` 验证无效注册地址不发请求、有效 loopback 地址访问 `/api/info` 且不跟随重定向。这不是 OpenCode 原生服务。 |
+| Windows 原生 OpenCode `2.3.2` | [隔离测试](../../packages/host/src/opencode-native.test.ts)通过官方 CLI 二进制启动测试专用共享服务，使用 OpenCode 模拟模型模式、不加载用户凭据。验证注册发现与认证、版本与 PID 核对、实时事件订阅、创建／恢复／归档、模型／变体／Agent 修改后读回、发送及历史消息身份关联、停止命令、撤回排队输入和问卷回复。关闭后端与连接再接入时，核对服务 PID 与原生会话 ID 均不变。 |
+| Windows Node 构建与回归 | `npm run typecheck`、`npm run build` 通过；包含原生测试的 OpenCode 定向回归（Host / Protocol，6 个测试文件）118 项通过。默认全量 `npm test -- --maxWorkers=2` 为 2547 项通过、39 项跳过（含默认不运行的原生 OpenCode 测试）、2 项失败。失败项为 [Codex Windows 目录联接识别](../../packages/host/src/codex-command.test.ts#L72) 与 [Review Demo 的 Pi 注册](../../scripts/review-demo/portal.test.mjs#L32)，在接入前提交 `312eb281` 上复现了相同断言失败。 |
+| Android | Windows 构建脚本执行 `:app:testDebugUnitTest`，925 项通过、9 项跳过；未安装 APK，也未进行设备联调。 |
+
+复跑原生测试：在 Windows 上从 npm 包 `@opencode/cli-windows-x64@2.3.2` 提取 `package/bin/opencode.exe`，将下列路径替换为该测试二进制的绝对路径。未设置 `ORBIS_OPENCODE_TEST_BINARY` 时默认跳过此测试。测试为子进程分配独立的配置、数据、状态和临时目录，仅在 loopback 上监听，并在结束时停止自己的子进程。
+
+```powershell
+$env:ORBIS_OPENCODE_TEST_BINARY = 'C:\path\to\package\bin\opencode.exe'
+try {
+    npm test -- packages/host/src/opencode-native.test.ts
+} finally {
+    Remove-Item -LiteralPath 'Env:ORBIS_OPENCODE_TEST_BINARY'
+}
+```
+
+待验收：原生服务上的权限批准／拒绝和事件流溢出恢复（目前仅模拟测试通过）、iOS 编译、Android／iOS 与隔离 Host 的设备联调及真实旧版 App 兼容性。现阶段仍是预览候选，不加入正式支持清单，也不扩大 `2.3.2` 版本范围。
