@@ -22,16 +22,29 @@ struct ExternalImportDestination: Codable, Equatable, Identifiable, Sendable {
     var id: ExternalImportTarget { target }
 }
 
+enum ExternalImportReceipt: String, Codable, Sendable {
+    case pending, accepted, failed, unconfirmed, unknown
+}
+
+/// Recorded before the command can leave this device. A restart never resends it.
+struct ExternalImportAttempt: Codable, Equatable, Sendable {
+    let id: UUID
+    let runtimeId: String
+    var receipt: ExternalImportReceipt
+    var instruction: String? = nil
+}
+
 struct ExternalImportBatch: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let createdAt: Date
     let text: String?
     let files: [ExternalImportedFile]
     var destination: ExternalImportDestination? = nil
+    var attempt: ExternalImportAttempt? = nil
 }
 
 enum ExternalImportProblem: Error, Equatable {
-    case empty, unsupported, limit, full, busy, unreadable, targetUnavailable, alreadyAssigned
+    case empty, unsupported, limit, full, busy, unreadable, targetUnavailable, alreadyAssigned, hostUpgrade, uploadFailed
 }
 
 /// Retains ownership across asynchronous provider callbacks and across process death.
@@ -183,8 +196,44 @@ struct ExternalImportStore: Sendable {
     func unassign(_ id: UUID, from target: ExternalImportTarget) throws -> ExternalImportBatch {
         try update(id) { batch in
             guard batch.destination?.target == target else { throw ExternalImportProblem.targetUnavailable }
-            batch.destination = nil
+            guard batch.attempt == nil || batch.attempt?.receipt == .failed else { throw ExternalImportProblem.busy }
+            batch.destination = nil; batch.attempt = nil
         }
+    }
+
+    func uploadSources(_ id: UUID, target: ExternalImportTarget) throws -> [(URL, ExternalImportedFile)] {
+        try withLock {
+            let directory = ready(id), batch = try readBatch(directory, id: id)
+            guard batch.destination?.target == target, batch.attempt == nil || batch.attempt?.receipt == .failed else {
+                throw ExternalImportProblem.targetUnavailable
+            }
+            return batch.files.enumerated().map { (payload(directory, $0.offset), $0.element) }
+        }
+    }
+
+    func beginDelivery(_ id: UUID, target: ExternalImportTarget, attempt: ExternalImportAttempt) throws {
+        _ = try update(id) { batch in
+            guard batch.destination?.target == target, batch.attempt == nil || batch.attempt?.receipt == .failed else {
+                throw ExternalImportProblem.targetUnavailable
+            }
+            batch.attempt = attempt
+        }
+    }
+
+    func recordDelivery(_ id: UUID, attempt: UUID, receipt: ExternalImportReceipt) throws {
+        _ = try update(id) { batch in
+            guard batch.attempt?.id == attempt, batch.attempt?.receipt != .accepted, batch.attempt?.receipt != .failed else { return }
+            batch.attempt?.receipt = receipt
+        }
+    }
+
+    /// Keep a leading slash as quoted content, never as an Orbis slash command.
+    static func messageBody(text: String?, instruction: String, attachmentFallback: String, quotedPrefix: String) throws -> String {
+        let body = [instruction.trimmingCharacters(in: .whitespacesAndNewlines), text ?? ""].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let message = body.isEmpty ? attachmentFallback
+            : body.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") ? quotedPrefix + "\n\n" + body : body
+        guard message.utf16.count <= 100_000 else { throw ExternalImportProblem.limit }
+        return message
     }
 
     private func update(_ id: UUID, _ change: (inout ExternalImportBatch) throws -> Void) throws -> ExternalImportBatch {

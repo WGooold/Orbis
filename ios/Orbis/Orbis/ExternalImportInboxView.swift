@@ -5,6 +5,7 @@ import SwiftUI
     @Published private(set) var selected: UUID?
     @Published private(set) var problem: ExternalImportProblem?
     @Published private(set) var busy = false
+    @Published private(set) var delivering: UUID?
     @Published var isOpen = false
     private var readGeneration = 0
 
@@ -35,7 +36,7 @@ import SwiftUI
     }
 
     func unassign(_ id: UUID, from target: ExternalImportTarget) {
-        guard !busy else { return }
+        guard !busy, delivering != id else { return }
         problem = nil
         perform { try ExternalImportStore.applicationInbox().unassign(id, from: target).id }
     }
@@ -50,9 +51,26 @@ import SwiftUI
     }
 
     func delete(_ id: UUID) {
-        guard !busy else { return }
+        guard !busy, delivering != id else { return }
         problem = nil
         perform { try ExternalImportStore.applicationInbox().delete(id); return nil }
+    }
+
+    func deliver(_ batch: ExternalImportBatch, via connection: HostConnection?, instruction: String? = nil) {
+        guard !busy, delivering == nil else { return }
+        guard let connection else { problem = .targetUnavailable; return }
+        delivering = batch.id; problem = nil
+        Task {
+            do {
+                let inbox = try await Task.detached { try ExternalImportStore.applicationInbox() }.value
+                if let instruction { try await connection.sendExternalImport(batch, from: inbox, instruction: instruction) }
+                else { try await connection.checkExternalImport(batch, in: inbox) }
+            } catch {
+                if selected == batch.id { problem = (error as? ExternalImportProblem) ?? .unreadable }
+            }
+            delivering = nil
+            refresh()
+        }
     }
 
     private func perform(_ action: @escaping @Sendable () throws -> UUID?) {
@@ -117,6 +135,7 @@ struct ExternalImportInboxView: View {
     @EnvironmentObject private var overlay: OrbisOverlay
     let store: OrbisStore
     @State private var targets: [ExternalImportDestination]?
+    @State private var instruction = ""
 
     private var selected: ExternalImportBatch? { model.batches.first { $0.id == model.selected } }
     var body: some View {
@@ -131,7 +150,7 @@ struct ExternalImportInboxView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let problem = model.problem { OrbisNotice(text: importProblemText(problem), error: true) }
-                    if model.busy { ProgressView(L10n.tr("正在处理导入…")) }
+                    if model.busy || (selected != nil && model.delivering == selected?.id) { ProgressView(L10n.tr("正在处理导入…")) }
                     if let selected, let targets { targetList(targets, batch: selected) }
                     else if let selected { detail(selected) }
                     else if model.batches.isEmpty && !model.busy && model.problem == nil {
@@ -147,7 +166,7 @@ struct ExternalImportInboxView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
             }
         }
-        .onChange(of: model.selected) { _, _ in targets = nil }
+        .onChange(of: model.selected) { _, _ in targets = nil; instruction = selected?.attempt?.instruction ?? "" }
         .accessibilityIdentifier("external-import-sheet")
     }
 
@@ -198,8 +217,20 @@ struct ExternalImportInboxView: View {
                 Text(body.count > 2000 ? String(body.prefix(2000)) + "…" : body).font(.orbisBody()).textSelection(.enabled)
             }
             if let destination = batch.destination {
-                OrbisActionButton(title: L10n.tr("移回待导入")) { model.unassign(batch.id, from: destination.target) }
-                    .disabled(model.busy)
+                let connection = store.connection(for: destination.target.hostId)
+                if batch.attempt?.receipt == .accepted {
+                    Text(L10n.tr("会话已接收")).font(.orbisLabel())
+                } else if batch.attempt != nil && batch.attempt?.receipt != .failed {
+                    Text(L10n.tr("发送结果待核对")).font(.orbisLabel())
+                    OrbisActionButton(title: L10n.tr("核对结果")) { model.deliver(batch, via: connection) }.disabled(model.busy || model.delivering != nil)
+                } else {
+                    if batch.attempt?.receipt == .failed { OrbisNotice(text: L10n.tr("发送失败"), error: true) }
+                    TextField(L10n.tr("补充要求（可选）"), text: $instruction, axis: .vertical).textFieldStyle(.roundedBorder)
+                        .lineLimit(2...5).disabled(model.busy || model.delivering == batch.id)
+                    OrbisActionButton(title: L10n.tr("发送")) { model.deliver(batch, via: connection, instruction: instruction) }
+                        .disabled(model.busy || model.delivering != nil).accessibilityIdentifier("external-import-send")
+                    OrbisActionButton(title: L10n.tr("移回待导入")) { model.unassign(batch.id, from: destination.target) }.disabled(model.busy || model.delivering == batch.id)
+                }
             } else {
                 OrbisActionButton(title: L10n.tr("加入会话草稿")) {
                     targets = store.hosts.flatMap { $0.connection.externalImportDestinations() }
@@ -210,7 +241,7 @@ struct ExternalImportInboxView: View {
                     OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
                     OrbisDialogAction(title: L10n.tr("删除"), role: .destructive) { model.delete(batch.id) }
                 ])
-            }.font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).error).disabled(model.busy)
+            }.font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).error).disabled(model.busy || model.delivering == batch.id)
         }
     }
 }

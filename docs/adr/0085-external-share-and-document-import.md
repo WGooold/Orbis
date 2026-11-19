@@ -103,3 +103,9 @@ Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子�
 设备可用 `external-import.result.read` 按原目标和命令身份只读核对；不会重发命令。`accepted` 表示后端确认接收或排队，不表示执行完成。回执有界且仅保留在本次 Host 进程中；重启或记录过期后的 `unknown` 不证明未发送。附件校验归属也随 Host 进程重置；若尚未提交消息，可重新上传附件。旧 Host 不使用导入信封，原有上传及聊天格式不变。
 
 [自动回归](../../.artifacts/external-import/oi-04b-host/regression.log) 156/156，[类型检查](../../.artifacts/external-import/oi-04b-host/typecheck.log)通过。隔离 E2E 使用合成配对和 Pi；目标校验及重连只读回执见 [Host 用例](../../packages/host/src/host-service.test.ts)。[发布对照](../../packages/host/src/host-protocol-compatibility.test.ts)使用 v0.1.22（`11c7a227`）自身源码和锁定依赖构建的 Host 与协议解析器，覆盖同协议号下的能力差异、原有请求及重连。首轮使用非规范临时目录别名导致验收失败的[日志](../../.artifacts/external-import/oi-04b-host/fence-results-first.log)保留。未部署、未验收。
+
+### OI-04b-iOS 实施记录
+
+主 App 的[导入草稿](../../ios/Orbis/Orbis/ExternalImportInboxView.swift)可补充要求并明确发送。沿目标电脑的已认证通道复用[文件传输](../../ios/Orbis/Orbis/FileTransfers.swift)，不复制到聊天草稿，不提前上传，不回退到旧 Host 的未绑定命令。全部附件收到校验通过回执之后，先在收件批次写入命令身份，再发送消息。断线或重启后只读核对原命令；未知结果保留原件，不提供再次发送。确认接收后可删除本地副本。分享扩展仍仅保存，不直投。
+
+[Swift 回归](../../.artifacts/external-import/oi-04b-ios/core-send/run.log) 30/30，覆盖上传前能力检查、按原目标发送、回执丢失及只读核对；[首轮测试编译记录](../../.artifacts/external-import/oi-04b-ios/core-send-first/run.log)保留。[通用模拟器目标构建](../../.artifacts/external-import/oi-04b-ios/app-final/run.log)通过，已[核验并释放租约](../../.artifacts/external-import/oi-04b-ios/app-final/cleanup-audit.json)。未安装、未分发、未验收。
