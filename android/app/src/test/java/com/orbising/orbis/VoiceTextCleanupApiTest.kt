@@ -32,6 +32,30 @@ class VoiceTextCleanupApiTest {
         assertFalse(VoiceTextCleanupApi.isValid(custom.copy(endpoint = "http://example.com/edit")))
     }
 
+    // FT-VOICE-PROVIDER-02: identical profile IDs on different computers are distinct sources.
+    @Test fun providerChoiceIncludesSourceComputerAndCannotUseManualTransport() {
+        val provider = VoiceCleanupProvider("pi", "same-profile-id", "Same name", "host-a", "Laptop")
+        val selected = VoiceCleanupApiConfig("", "model", "", provider = provider)
+        check(VoiceTextCleanupApi.isValid(selected))
+        check(provider.sameSource(provider.copy(hostName = "Renamed")))
+        assertFalse(provider.sameSource(provider.copy(hostId = "host-b")))
+        assertFalse(VoiceTextCleanupApi.isValid(selected.copy(provider = provider.copy(hostId = ""))))
+        assertFalse(VoiceTextCleanupApi.isValid(selected.copy(key = "manual-key")))
+        assertFalse(runCatching { VoiceTextCleanupApi.makeRequest(selected, "test") }.isSuccess)
+    }
+
+    @Test fun manualModelDiscoveryUsesSameOriginWithoutChangingSavedCompletionAddress() = runBlocking {
+        val api = VoiceTextCleanupApi(OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            assertEquals("https://example.com/v1/models", request.url.toString())
+            assertEquals("GET", request.method)
+            assertEquals("Bearer test-key", request.header("Authorization"))
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body("""{"data":[{"id":"a"},{"id":"a"},{"id":"b"},{"id":3}]}""".toResponseBody()).build()
+        }.build())
+        assertEquals(listOf("a", "b"), api.models(config.copy(endpoint = "https://example.com/v1/chat/completions")))
+    }
+
     @Test fun unconfiguredCleanupDoesNotRequestAndRedirectUsesRules() = runBlocking {
         val requests = AtomicInteger()
         val api = VoiceTextCleanupApi(OkHttpClient.Builder().addInterceptor { chain ->

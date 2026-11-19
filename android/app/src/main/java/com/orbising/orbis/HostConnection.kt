@@ -1109,6 +1109,29 @@ internal class HostConnection(
         requestAgentProviders(provider.kind, provider.id, false)
     }
 
+    @Volatile private var voiceProviderGeneration = -1
+    private data class VoiceProviderPending(val generation: Int, val reply: kotlinx.coroutines.CompletableDeferred<JsonObject>)
+    private val voiceProviderPending = java.util.concurrent.ConcurrentHashMap<String, VoiceProviderPending>()
+
+    internal suspend fun requestVoiceProvider(action: String, provider: VoiceCleanupProvider?, model: String?, text: String?): JsonObject {
+        val current = mutableState.value
+        val requestGeneration = generation
+        check(current.e2eReady && current.connection == RelayConnection.ONLINE && voiceProviderGeneration == requestGeneration)
+        val requestId = UUID.randomUUID().toString()
+        val pending = VoiceProviderPending(requestGeneration, kotlinx.coroutines.CompletableDeferred())
+        voiceProviderPending[requestId] = pending
+        try {
+            check(generation == requestGeneration && relay.sendDeviceMessage(buildJsonObject {
+                put("type", "voice.cleanup.provider.request"); put("protocolVersion", PROTOCOL_VERSION)
+                put("requestId", requestId); put("action", action)
+                provider?.let { put("kind", it.kind); put("id", it.id) }
+                model?.let { put("model", it) }; text?.let { put("text", it) }
+            }))
+            val reply = kotlinx.coroutines.withTimeoutOrNull(17_000) { pending.reply.await() }
+            return requireNotNull(reply).also { check(generation == requestGeneration && it["error"] == null) }
+        } finally { voiceProviderPending.remove(requestId, pending) }
+    }
+
     private fun requestAgentProviders(kind: String, id: String?, enabled: Boolean) {
         val current = mutableState.value
         val hostId = current.hostId
@@ -2650,6 +2673,18 @@ internal class HostConnection(
                 var payload = interactive.payload
                 val interactiveChannel = interactive.channel
                 var incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+                if (interactiveChannel != null && incomingMessage != null && currentGeneration == generation &&
+                    supportedProtocolVersion(incomingMessage["protocolVersion"]) != null) {
+                    when ((incomingMessage["type"] as? JsonPrimitive)?.contentOrNull) {
+                        "device.ready" -> voiceProviderGeneration = if ((incomingMessage["hostFeatures"] as? JsonArray)
+                            ?.any { (it as? JsonPrimitive)?.contentOrNull == "voice.cleanup.provider.v1" } == true) currentGeneration else -1
+                        "voice.cleanup.provider.result" -> {
+                            val id = (incomingMessage["requestId"] as? JsonPrimitive)?.contentOrNull
+                            if (id != null) voiceProviderPending[id]?.takeIf { it.generation == currentGeneration }?.reply?.complete(incomingMessage)
+                            continue
+                        }
+                    }
+                }
                 // ADR-0076: a Host that can show DeepSeek Desktop first sends the view released Apps parse
                 // (no `dshDesktop` key). Declare the feature and apply the full device.ready it sends next, so a
                 // selected Desktop session is not dropped; the filtered view is applied only if none arrives.

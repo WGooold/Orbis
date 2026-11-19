@@ -761,6 +761,11 @@ describe("host end-to-end over relay", () => {
     expect(JSON.stringify(list)).not.toContain("never-send-this");
     expect(JSON.stringify(list)).not.toContain("private-notes-never-send");
     expect(JSON.stringify(list)).not.toContain("private-script-never-send");
+    // FT-VOICE-PROVIDER-01: authenticated discovery returns only saved profile identity, not credentials.
+    device.sendData(JSON.stringify({ type: "voice.cleanup.provider.request", protocolVersion: PROTOCOL_VERSION, requestId: "voice-providers", action: "providers" }));
+    expect(await device.receiveReply("voice-providers")).toMatchObject({ type: "voice.cleanup.provider.result", providers: [{ id: "custom", kind: "pi", name: "Custom" }] });
+    device.sendData(JSON.stringify({ type: "voice.cleanup.provider.request", protocolVersion: PROTOCOL_VERSION, requestId: "voice-injected", action: "models", kind: "pi", id: "custom", endpoint: "https://another.test/" }));
+    expect(await device.receiveReply("voice-injected")).toMatchObject({ type: "protocol.error", code: "invalid_request" });
     device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "switch", kind: "pi", id: "custom", enabled: true }));
     const switched = await device.receiveReply("switch");
     expect(switched).toMatchObject({ type: "provider.result", requestId: "switch", providers: [{ id: "custom", enabled: true }] });

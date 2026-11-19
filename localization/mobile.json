@@ -1711,5 +1711,14 @@
   "保存": "Save",
   "高级设置": "Advanced settings",
   "默认在手机上去除明显口癖。开启 API 后只发送本次转写，Key 仅存此设备。关闭并保存会删除 API 配置和 Key。": "Obvious filler words are removed on this device by default. When the API is enabled, only the current transcript is sent and the key stays on this device. Turning it off and saving removes the API settings and key.",
-  "请求头用 {{key}}；请求体可用 {{model}}、{{instruction}} 和 {{transcript}}。返回路径示例：/content/0/text。": "Use {{key}} in request headers. The request body can use {{model}}, {{instruction}}, and {{transcript}}. Example response path: /content/0/text."
+  "请求头用 {{key}}；请求体可用 {{model}}、{{instruction}} 和 {{transcript}}。返回路径示例：/content/0/text。": "Use {{key}} in request headers. The request body can use {{model}}, {{instruction}}, and {{transcript}}. Example response path: /content/0/text.",
+  "电脑供应商": "Computer provider",
+  "手动填写": "Enter manually",
+  "选择模型": "Select model",
+  "获取模型列表": "Fetch model list",
+  "这台电脑没有可用的 API 供应商": "No supported API providers on this computer",
+  "无法读取供应商，请检查电脑连接和 Host 版本": "Could not load providers. Check the computer connection and Host version.",
+  "没有可用的模型列表，请手动填写模型名称": "No models available. Enter a model name manually.",
+  "从已配对电脑选择供应商。只发送本次转写，不发送录音或聊天记录。供应商的 Key 留在所选电脑，手填的 Key 留在手机。": "Choose a provider from your paired computers. Only the current transcript is sent, not audio or chat history. Provider keys stay on the selected computer; manually entered keys stay on the phone.",
+  "电脑已离线": "Computer is offline"
 }

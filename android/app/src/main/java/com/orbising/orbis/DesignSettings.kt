@@ -32,7 +32,7 @@ import androidx.compose.ui.unit.dp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: Boolean,
-    onApplyProtocol: (RelayTransportMode) -> Unit) {
+    onApplyProtocol: (RelayTransportMode) -> Unit, model: RemoteViewModel? = null) {
     var protocolOpen by rememberSaveable { mutableStateOf(false) }
     var languageOpen by rememberSaveable { mutableStateOf(false) }
     var voiceOpen by remember { mutableStateOf(false) }
@@ -83,7 +83,7 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
             }
         }
     }
-    if (voiceOpen) VoiceCleanupSettings(onDismiss = { voiceOpen = false }) {
+    if (voiceOpen && model != null) VoiceCleanupSettings(model, onDismiss = { voiceOpen = false }) {
         voiceApiEnabled = it; voiceOpen = false
     }
     if (protocolOpen) ProtocolChoiceSheet(state.relayTransportMode, state.hostId != null, { protocolOpen = false }) {

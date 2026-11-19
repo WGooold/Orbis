@@ -1846,9 +1846,17 @@ internal fun ChatScreen(
                     val config = try { voiceApiStore.load() }
                     catch (e: kotlinx.coroutines.CancellationException) { throw e }
                     catch (_: Exception) { null }
-                    if (input != rawDraft) return@launch
+                    if (input != rawDraft || model.state.value.hostId != expectedHost) return@launch
                     voiceCleanupInProgress = config != null
-                    val result = VoiceTextCleanupApi.shared.clean(recognized, config)
+                    val provider = config?.provider
+                    val result = if (provider != null) {
+                        try {
+                            val reply = model.requestVoiceProvider(provider, "clean", config.model, recognized)
+                            val text = (reply["text"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+                            VoiceTextCleanupResult(requireNotNull(text?.takeIf { it.isNotBlank() }), VoiceCleanupMethod.Api)
+                        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (_: Exception) { VoiceTextCleanupResult(VoiceTextCleanupRules.clean(recognized), VoiceCleanupMethod.ApiFallback) }
+                    } else VoiceTextCleanupApi.shared.clean(recognized, config)
                     voiceCleanupInProgress = false
                     val current = model.state.value
                     if (current.hostId != expectedHost || current.selectedRuntimeId != runtimeId ||
@@ -3397,7 +3405,7 @@ internal fun StatusScreen(
     onBack: () -> Unit,
     root: Boolean = false,
 ) {
-    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode)
+    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode, model)
 }
 
 

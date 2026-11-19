@@ -117,6 +117,7 @@ import { ClaudeStartupBlocked } from "./claude-startup.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { ProviderManager, ProviderError } from "./provider-manager.js";
 import { SessionConfigurationStore, SessionConfigurationError, validateSessionConfiguration } from "./session-configuration-store.js";
+import { parseVoiceCleanupRequest, runVoiceCleanup, VOICE_CLEANUP_FEATURE, type VoiceCleanupRequest } from "./voice-cleanup.js";
 import { parseProviderRequest, providerResult, type ProviderRequest } from "./provider-messages.js";
 import type { UsageSnapshot } from "./provider-usage-cache.js";
 
@@ -1486,7 +1487,7 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES],
+      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : [])],
       sessionConfiguration: 1,
     };
   }
@@ -2011,6 +2012,15 @@ export class HostService {
       const scope = this.#agentFacts.scopeOf(message.runtimeId);
       if (scope) this.#compactState.ensure(scope);
       this.#sendToDevice(deviceId, this.#compactState.menuOptions.read(scope && this.#agentStateRegistry.read(scope, "capabilities")?.availability === "ready" ? JSON.stringify(scope) : undefined, message));
+      return;
+    }
+    if (message.type === "voice.cleanup.provider.request") {
+      const manager = this.#options.providers;
+      const reply = (result: object): void => this.#sendJsonToDevice(deviceId, {
+        type: "voice.cleanup.provider.result", protocolVersion: PROTOCOL_VERSION, requestId: message.requestId, ...result,
+      }, "ctl");
+      if (!manager) reply({ error: "unavailable" });
+      else void runVoiceCleanup(manager, message).then(reply, () => reply({ error: "unavailable" }));
       return;
     }
     if (message.type === "provider.list" || message.type === "provider.switch" || message.type === "provider.subscription") {
@@ -3267,7 +3277,7 @@ function isAddressInUse(error: unknown): boolean {
     (error as { code?: unknown }).code === "EADDRINUSE";
 }
 
-function parseDevicePayload(payload: Buffer): DeviceE2ePayload | LanDiscoveryRequest | GitBranchRequest | ProviderRequest | undefined {
+function parseDevicePayload(payload: Buffer): DeviceE2ePayload | LanDiscoveryRequest | GitBranchRequest | ProviderRequest | VoiceCleanupRequest | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(payload.toString("utf8")) as unknown;
@@ -3276,5 +3286,5 @@ function parseDevicePayload(payload: Buffer): DeviceE2ePayload | LanDiscoveryReq
   }
   const result = DeviceE2ePayloadSchema.safeParse(parsed);
   if (result.success) return result.data;
-  return parseLanDiscoveryRequest(parsed) ?? parseGitBranchRequest(parsed) ?? parseProviderRequest(parsed);
+  return parseLanDiscoveryRequest(parsed) ?? parseGitBranchRequest(parsed) ?? parseProviderRequest(parsed) ?? parseVoiceCleanupRequest(parsed);
 }

@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -53,11 +54,19 @@ internal data class VoiceCleanupJsonFormat(val headers: String, val body: String
 }
 
 @Serializable
+internal data class VoiceCleanupProvider(
+    val kind: String, val id: String, val name: String, val hostId: String = "", val hostName: String = "",
+) {
+    fun sameSource(other: VoiceCleanupProvider): Boolean = hostId == other.hostId && kind == other.kind && id == other.id
+}
+
+@Serializable
 internal data class VoiceCleanupApiConfig(
     val endpoint: String,
     val model: String,
     val key: String,
     val custom: VoiceCleanupJsonFormat? = null,
+    val provider: VoiceCleanupProvider? = null,
 ) {
     override fun toString(): String = "VoiceCleanupApiConfig(redacted)"
 }
@@ -75,6 +84,40 @@ internal class VoiceTextCleanupApi(http: OkHttpClient = OkHttpClient()) {
             throw cancelled
         } catch (_: Exception) {
             VoiceTextCleanupResult(VoiceTextCleanupRules.clean(text), VoiceCleanupMethod.ApiFallback)
+        }
+    }
+
+    suspend fun models(config: VoiceCleanupApiConfig): List<String> {
+        require(config.custom == null && config.provider == null)
+        val original = requireNotNull(config.endpoint.trim().toHttpUrlOrNull())
+        require(original.isHttps && original.username.isEmpty() && original.password.isEmpty() && original.fragment == null)
+        val path = original.encodedPath.trimEnd('/')
+        require(path.endsWith("/chat/completions"))
+        val url = original.newBuilder().encodedPath(path.removeSuffix("/chat/completions") + "/models").build()
+        val request = Request.Builder().url(url).header("Accept", "application/json").apply {
+            if (config.key.isNotEmpty()) header("Authorization", "Bearer ${config.key}")
+        }.build()
+        return suspendCancellableCoroutine { continuation ->
+            val call = http.newCall(request)
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) = continuation.resumeWithException(e)
+                override fun onResponse(call: Call, response: Response) {
+                    response.use {
+                        try {
+                            require(it.isSuccessful)
+                            val source = requireNotNull(it.body).source()
+                            require(!source.request(256L * 1024 + 1))
+                            val json = Json.parseToJsonElement(source.readUtf8()) as JsonObject
+                            val rows = json["data"] as JsonArray
+                            continuation.resume(rows.mapNotNull { row ->
+                                ((row as? JsonObject)?.get("id") as? JsonPrimitive)?.takeIf { id -> id.isString }
+                                    ?.contentOrNull?.takeIf { id -> id.isNotBlank() && id.length <= 256 }
+                            }.distinct().take(120))
+                        } catch (error: Exception) { continuation.resumeWithException(error) }
+                    }
+                }
+            })
         }
     }
 
@@ -107,9 +150,13 @@ internal class VoiceTextCleanupApi(http: OkHttpClient = OkHttpClient()) {
         private val headerName = Regex("[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}")
         private val forbiddenHeaders = setOf("host", "content-length", "content-type", "content-encoding", "connection", "transfer-encoding", "upgrade", "te", "trailer", "proxy-authorization", "proxy-connection", "cookie")
 
-        fun isValid(config: VoiceCleanupApiConfig): Boolean = runCatching { makeRequest(config, exampleTranscript) }.isSuccess
+        fun isValid(config: VoiceCleanupApiConfig): Boolean = if (config.provider != null) {
+            config.endpoint.isEmpty() && config.key.isEmpty() && config.custom == null && config.model.isNotBlank() && config.model.length <= 256 &&
+                config.provider.hostId.isNotBlank() && config.provider.kind in setOf("codex", "claude", "pi", "dsh") && config.provider.id.isNotBlank() && config.provider.id.length <= 128
+        } else runCatching { makeRequest(config, exampleTranscript) }.isSuccess
 
         internal fun makeRequest(config: VoiceCleanupApiConfig, text: String): Request {
+            require(config.provider == null)
             require(text.isNotBlank() && text.length <= MAX_TEXT)
             val address = config.endpoint.trim()
             require(address.length <= 4096 && address.startsWith("https://", ignoreCase = true))

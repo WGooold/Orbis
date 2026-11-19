@@ -297,6 +297,7 @@ internal object LocalizationCatalog {
         "仅记录部分范围" to "Only part of the scope is recorded",
         "今天 HH:mm" to "'Today' HH:mm",
         "从 Pi 配置移除；Host 中的卡片和配置仍保留。" to "Remove from Pi configuration; the Host card and configuration are kept.",
+        "从已配对电脑选择供应商。只发送本次转写，不发送录音或聊天记录。供应商的 Key 留在所选电脑，手填的 Key 留在手机。" to "Choose a provider from your paired computers. Only the current transcript is sent, not audio or chat history. Provider keys stay on the selected computer; manually entered keys stay on the phone.",
         "从相册选图" to "Choose from photos",
         "从这条回复后继续" to "Continue after this reply",
         "代码" to "Code",
@@ -319,9 +320,9 @@ internal object LocalizationCatalog {
         "会话同步范围或检查点无效，请重试。" to "Invalid session sync range or checkpoint. Try again.",
         "会话启动未完成，消息未发送" to "Session failed to start. Message was not sent.",
         "会话响应目标不匹配，请重试" to "The session response does not match. Try again.",
-        "会话头节点尚未提交" to "Session head has not been committed",
     )
     private fun part2(): Map<String, String> = mapOf(
+        "会话头节点尚未提交" to "Session head has not been committed",
         "会话密钥未建立" to "Session key is not established",
         "会话尚未就绪，请稍后重试" to "Session is not ready. Try again shortly.",
         "会话工具清单的归属或版本无效，请刷新重试。" to "Invalid session tool inventory ownership or version. Refresh and try again.",
@@ -471,9 +472,9 @@ internal object LocalizationCatalog {
         "刷新会话目录" to "Refresh sessions",
         "刷新供应商" to "Refresh providers",
         "刷新目录" to "Refresh folders",
-        "刷新配额" to "Refresh quota",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "刷新配额" to "Refresh quota",
         "前置操作已失效" to "Prerequisite operation expired",
         "剩余 " to "Remaining ",
         "剩余 {0} 秒" to "{0} seconds remaining",
@@ -623,9 +624,9 @@ internal object LocalizationCatalog {
         "启用供应商" to "Enable provider",
         "启用后可查询官方额度" to "Enable the official provider to check its quota",
         "启用后可查询配额" to "Enable to view quota",
-        "周" to "Week",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "周" to "Week",
         "周配额" to "Weekly quota",
         "命令" to "Command",
         "命令 /{0} 不接受参数" to "Command /{0} does not accept arguments",
@@ -775,9 +776,9 @@ internal object LocalizationCatalog {
         "差异版本不匹配，请重新打开。" to "Diff version mismatch. Reopen it.",
         "差异版本已变化，请关闭后重新打开" to "Diff version changed. Close and reopen it.",
         "差异版本已更新，请重新打开。" to "Diff version updated. Reopen it.",
-        "差异范围或版本无效" to "Invalid diff range or version",
     )
     private fun part5(): Map<String, String> = mapOf(
+        "差异范围或版本无效" to "Invalid diff range or version",
         "差异行 {0} / {1}" to "Diff line {0} / {1}",
         "差异读取未送达，请连接电脑后重试。" to "Diff request was not delivered. Connect to the computer and try again.",
         "差异读取超时，可重试" to "Diff read timed out. You can retry.",
@@ -927,15 +928,16 @@ internal object LocalizationCatalog {
         "所选助手尚未就绪，请在电脑端检查" to "The selected assistant is not ready. Check it on your computer.",
         "所选参数已不可用，请重新选择" to "Selected argument is no longer available. Select again.",
         "所选命令不接受参数" to "Selected command does not accept arguments",
-        "所选命令已不可用，请重新打开菜单" to "Selected command is no longer available. Reopen the menu.",
     )
     private fun part6(): Map<String, String> = mapOf(
+        "所选命令已不可用，请重新打开菜单" to "Selected command is no longer available. Reopen the menu.",
         "所选命令需要参数" to "Selected command requires arguments",
         "所选思考级别已不可用" to "Selected reasoning level is no longer available",
         "所选文件是空的" to "Selected file is empty",
         "所选模型已不可用" to "Selected model is no longer available",
         "所选路径不是普通文件" to "Selected path is not a regular file",
         "所选：{0}" to "Selected: {0}",
+        "手动填写" to "Enter manually",
         "手动输入" to "Enter manually",
         "手机无法安全处理此下载项，请在电脑端处理" to "This download cannot be handled safely on the phone. Use the computer.",
         "手机无法安全处理此运行时事件，请在电脑端处理" to "This runtime event cannot be handled safely on the phone. Use the computer.",
@@ -1070,6 +1072,7 @@ internal object LocalizationCatalog {
         "无法打开网页，请在电脑端完成操作。" to "Could not open the webpage. Complete this action on the computer.",
         "无法撤回" to "Cannot withdraw",
         "无法读取传输记录：{0}" to "Could not read transfer records: {0}",
+        "无法读取供应商，请检查电脑连接和 Host 版本" to "Could not load providers. Check the computer connection and Host version.",
         "无法读取安全凭据，请解锁设备后重新启动 App。" to "Could not read credentials. Unlock the device and restart the app.",
         "无法读取所选文件" to "Could not read the selected file",
         "无法读取所选文件：{0}" to "Could not read the selected file: {0}",
@@ -1077,11 +1080,11 @@ internal object LocalizationCatalog {
         "无法读取语音清理配置" to "Could not read voice cleanup settings",
         "旧 {0}" to "Old {0}",
         "昨天 HH:mm" to "'Yesterday' HH:mm",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "显示上限" to "Display limit",
         "显示其他分支" to "Show other branches",
         "显示工具与细节" to "Show tools and details",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "显示投影版本不匹配（Host：{0}），请更新 App" to "Presentation version mismatch (Host: {0}). Update the app.",
         "显示更多工具（剩余 {0} 项）" to "Show more tools ({0} remaining)",
         "显示：{0}" to "Showing: {0}",
@@ -1229,11 +1232,11 @@ internal object LocalizationCatalog {
         "模型不可用，已使用手机本地规则" to "Model unavailable. Used on-device rules.",
         "模型与上下文" to "Model and context",
         "模型与深度" to "Model and reasoning",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "模型名称" to "Model name",
         "模型和思考深度用于后续轮次；权限以电脑端确认生效" to "Model and reasoning changes apply to later turns. Permission changes take effect when confirmed by the computer.",
         "模型快照缺少代次" to "Model snapshot is missing generation",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "模型快照缺少领域清单" to "Model snapshot is missing domain list",
         "模型快照里的领域不是对象" to "Model snapshot domain is not an object",
         "模型快照里的领域缺少 envelope 字段" to "Model snapshot domain is missing envelope fields",
@@ -1311,6 +1314,7 @@ internal object LocalizationCatalog {
         "没有匹配的会话" to "No matching sessions",
         "没有匹配的命令" to "No matching commands",
         "没有匹配的节点" to "No matching nodes",
+        "没有可用的模型列表，请手动填写模型名称" to "No models available. Enter a model name manually.",
         "没有可读取的会话" to "No readable sessions",
         "没有已归档的会话" to "No archived sessions",
         "没有找到匹配的目录或会话" to "No matching folders or sessions",
@@ -1380,14 +1384,16 @@ internal object LocalizationCatalog {
         "电脑上的会话与历史不受影响，之后可以重新扫码配对。" to "Sessions and history on your computer stay intact. You can scan again to pair later.",
         "电脑上的会话仍在运行，请稍后重试或在电脑上关闭。" to "The session is still running on the computer. Try again later or close it on the computer.",
         "电脑上的会话可能仍在启动。结束等待后首句会保留为草稿；再次创建可能打开另一个会话。" to "The session on your computer may still be starting. Your first message will be kept as a draft. Creating again may open another session.",
-        "电脑上的会话目录仍是原状态" to "The computer's session catalog is unchanged",
-        "电脑上的原文件不受影响。" to "Original files on the computer are unaffected.",
-        "电脑尚未报告这个状态领域" to "The computer has not reported this state domain",
-        "电脑尚未核对" to "Not yet checked by computer",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "电脑上的会话目录仍是原状态" to "The computer's session catalog is unchanged",
+        "电脑上的原文件不受影响。" to "Original files on the computer are unaffected.",
+        "电脑供应商" to "Computer provider",
+        "电脑尚未报告这个状态领域" to "The computer has not reported this state domain",
+        "电脑尚未核对" to "Not yet checked by computer",
         "电脑尚未核对可用命令，请稍后重试" to "The computer has not checked available commands. Try again shortly.",
         "电脑尚未核对此 Agent 的供应商配置" to "The computer has not checked this Agent's provider configuration",
+        "电脑已离线" to "Computer is offline",
         "电脑已离线，以下为最后读取的状态" to "Computer is offline. Showing the last loaded state.",
         "电脑文件" to "Computer files",
         "电脑文件的完整路径" to "Full file path on the computer",
@@ -1530,20 +1536,21 @@ internal object LocalizationCatalog {
         "自动审查" to "Automatic review",
         "自动接受编辑" to "Accept edits automatically",
         "自动模式" to "Automatic mode",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "自动模式使用 WS" to "Automatic mode uses WS.",
         "自定义" to "Custom",
         "自定义 JSON 请求" to "Custom JSON request",
         "自定义模型 API" to "Custom model API",
         "自定义配置" to "Custom profile",
         "至少输入 {0} 个字符" to "Enter at least {0} characters",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "至少选择 {0} 项" to "Select at least {0} items",
         "范围：Codex 文件工具" to "Scope: Codex file tools",
         "范围：已跟踪及非忽略文件" to "Scope: tracked and non-ignored files",
         "范围：当前目录，已排除缓存" to "Scope: current folder, cache excluded",
         "草稿已保留" to "Draft saved",
         "草稿已保留，下次新建时还在" to "Draft saved for the next time you create a session",
+        "获取模型列表" to "Fetch model list",
         "落盘失败 " to "Save failed ",
         "行数未知" to "Line count unknown",
         "补充说明（可选）" to "Additional notes (optional)",
@@ -1681,6 +1688,8 @@ internal object LocalizationCatalog {
         "运行实例已离线，仅显示已缓存内容" to "Runtime offline. Showing cached content only.",
         "运行实例已离线，可在重连后继续" to "Runtime offline. Continue after reconnecting.",
         "运行实例已离线，无法发送文件" to "Runtime offline. Cannot send files.",
+    )
+    private fun part11(): Map<String, String> = mapOf(
         "运行目录" to "Working directory",
         "运行路径待同步" to "Working path awaiting sync",
         "返回" to "Back",
@@ -1688,8 +1697,6 @@ internal object LocalizationCatalog {
         "返回会话筛选" to "Back to session filters",
         "返回电脑菜单" to "Back to computer menu",
         "返回聊天" to "Back to chat",
-    )
-    private fun part11(): Map<String, String> = mapOf(
         "还原识别原文" to "Restore original transcript",
         "还有 {0} 个文件" to "{0} more files",
         "还有更新的没读" to "Newer records remain unread",
@@ -1706,6 +1713,7 @@ internal object LocalizationCatalog {
         "这台手机的配对已失效" to "This phone's pairing is no longer valid",
         "这台电脑不认识这个领域" to "This computer does not recognize this domain",
         "这台电脑没启用 Codex 后端" to "Codex backend is not enabled on this computer",
+        "这台电脑没有可用的 API 供应商" to "No supported API providers on this computer",
         "这台电脑的连接已停用，请联系管理员" to "Connections to this computer are disabled. Contact your administrator.",
         "这张图片里没有找到二维码" to "No QR code was found in this image",
         "这是一条还没有对话内容的记录。" to "This record has no conversation content yet.",
@@ -1755,6 +1763,7 @@ internal object LocalizationCatalog {
         "选择供应商" to "Select provider",
         "选择工作目录" to "Choose a working directory",
         "选择文字" to "Select text",
+        "选择模型" to "Select model",
         "选择此 Codex 会话的模型" to "Select the model for this Codex session",
         "选择电脑" to "Select computer",
         "选择电脑上的文件" to "Select a file on the computer",
@@ -1831,6 +1840,8 @@ internal object LocalizationCatalog {
         "随手机的浅色与深色自动切换" to "Match your phone’s light and dark appearance",
         "集合领域不是对象" to "Collection domain is not an object",
         "雾蓝" to "Mist blue",
+    )
+    private fun part12(): Map<String, String> = mapOf(
         "需要切换 provider" to "Provider switch required",
         "需要时询问" to "Ask when required",
         "需要相机权限才能扫描配对二维码。" to "Camera access is required to scan a pairing QR code.",
@@ -1840,8 +1851,6 @@ internal object LocalizationCatalog {
         "预览读取超时，请重试。" to "Preview read timed out. Try again.",
         "高级设置" to "Advanced settings",
         "默认" to "Default",
-    )
-    private fun part12(): Map<String, String> = mapOf(
         "默认在手机上去除明显口癖。开启 API 后只发送本次转写，Key 仅存此设备。关闭并保存会删除 API 配置和 Key。" to "Obvious filler words are removed on this device by default. When the API is enabled, only the current transcript is sent and the key stays on this device. Turning it off and saving removes the API settings and key.",
         "默认深度" to "Default reasoning",
         "默认（需要时询问）" to "Default (ask when needed)",
