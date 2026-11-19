@@ -43,6 +43,7 @@ import {
 import {
   DeviceE2ePayloadSchema,
   DEVICE_FEATURE_MESSAGE_RENDER,
+  DEVICE_FEATURE_OPENCODE,
   DEVICE_FEATURE_KIMI_CODE,
   HOST_FEATURE_DEVICE_FEATURES,
   PROTOCOL_VERSION,
@@ -1639,7 +1640,7 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, DEVICE_FEATURE_MESSAGE_RENDER, ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : [])],
+      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, DEVICE_FEATURE_MESSAGE_RENDER, DEVICE_FEATURE_OPENCODE, ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : [])],
       sessionConfiguration: 1,
     };
   }

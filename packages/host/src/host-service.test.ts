@@ -3744,7 +3744,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const launch = { requestId: "launch", launchId: "kimi-launch", agentKind: "kimiCode", cwd, binding: "kimi-code:fixture:local", revision: 0, values: {}, spawnMode: "headless" };
     await handshake();
     const initial = await wait(message => message.type === "device.ready", true);
-    expect(initial.hostFeatures).toEqual(["device.features", "message.content-render.v1", "agent.kimiCode"]);
+    expect(initial.hostFeatures).toEqual(["device.features", "message.content-render.v1", "agent.opencode", "agent.kimiCode"]);
     expect(initial.agents).not.toContain("kimiCode");
     const hidden = await read("host-hidden");
     for (const [type, body] of [

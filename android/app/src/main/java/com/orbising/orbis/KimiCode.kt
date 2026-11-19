@@ -11,7 +11,7 @@ private const val KIMI_CODE_FEATURE = "agent.kimiCode"
 internal fun deviceAgentFeatures(ready: JsonObject): List<String> {
     val advertised = (ready["hostFeatures"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
     return if ("device.features" !in advertised) emptyList()
-    else listOf("agent.dshDesktop", "agent.opencode") + listOf(KIMI_CODE_FEATURE, MESSAGE_RENDER_FEATURE).filter { it in advertised }
+    else listOf("agent.dshDesktop") + listOf(KIMI_CODE_FEATURE, MESSAGE_RENDER_FEATURE, "agent.opencode").filter { it in advertised }
 }
 
 // The authenticated reply has the Desktop key (possibly null) only after processing the feature declaration.
