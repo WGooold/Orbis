@@ -62,6 +62,16 @@ class LanConnectionTest {
             lanHost.send("""{"type":"path-control-processed"}""")
             assertEquals("""{"type":"path-control-processed"}""", messages.poll(3, TimeUnit.SECONDS))
             assertEquals("lan", client.activePath)
+            // IMPORT-06: same protocol number is not admission; a capability is tied to this authenticated path.
+            val importQuery = buildJsonObject { put("type", "external-import.result.read"); put("protocolVersion", PROTOCOL_VERSION) }
+            assertNull(client.externalImportChannel())
+            assertFalse(client.sendExternalImport(importQuery, Any()))
+            lanHost.send("""{"type":"device.ready","protocolVersion":$PROTOCOL_VERSION,"deviceId":"phone","runtimes":[],"hostFeatures":["external-import.target-v1"]}""")
+            lanHost.send("""{"type":"import-ready-barrier"}""")
+            assertEquals("""{"type":"import-ready-barrier"}""", messages.poll(3, TimeUnit.SECONDS))
+            val importChannel = checkNotNull(client.externalImportChannel())
+            assertTrue(client.sendExternalImport(importQuery, importChannel))
+            assertTrue(lanHost.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8).contains("external-import.result.read"))
             assertTrue(client.sendDeviceMessage(buildJsonObject { put("type", "session.list"); put("requestId", "lan-command") }))
             assertTrue(lanHost.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8).contains("lan-command"))
             val chunk = ByteArray(20_000) { it.toByte() }
@@ -90,6 +100,8 @@ class LanConnectionTest {
             assertTrue(lanDown.await(3, TimeUnit.SECONDS))
             resumedRelay.send("""{"type":"device.path","protocolVersion":$PROTOCOL_VERSION,"path":"relay"}""")
             assertTrue(relaySelected.await(3, TimeUnit.SECONDS))
+            assertNull(client.externalImportChannel())
+            assertFalse(client.sendExternalImport(importQuery, importChannel))
             assertTrue(client.sendDeviceMessage(buildJsonObject { put("type", "relay-fallback") }))
             assertTrue(resumedRelay.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8).contains("relay-fallback"))
             assertTrue(resumedLan.ready.await(7, TimeUnit.SECONDS))

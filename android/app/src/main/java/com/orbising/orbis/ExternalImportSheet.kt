@@ -33,6 +33,7 @@ internal fun ExternalImportButton(count: Int, action: () -> Unit) {
 @Composable
 internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportViewModel, remote: RemoteViewModel) {
     val selected = ui.batches.firstOrNull { it.id == ui.selected }
+    var instruction by remember(selected?.id) { mutableStateOf(selected?.attempt?.instruction.orEmpty()) }
     var deleting by remember(selected?.id) { mutableStateOf(false) }
     var choosingTarget by remember(selected?.id) { mutableStateOf(false) }
     var targets by remember(selected?.id) { mutableStateOf<List<ExternalImportDestination>?>(null) }
@@ -53,7 +54,7 @@ internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportView
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 ui.problem?.let { Text(importProblemText(it), color = MaterialTheme.colorScheme.error) }
-                if (ui.busy) Text(L10n.tr("正在处理导入…"))
+                if (ui.busy || (selected != null && ui.delivering == selected.id)) Text(L10n.tr("正在处理导入…"))
                 if (selected != null && choosingTarget) {
                     val destinations = targets
                     if (destinations == null) Text(L10n.tr("正在读取…"))
@@ -78,10 +79,27 @@ internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportView
                         NeumorphTextButton(L10n.tr("加入会话草稿"), onClick = { choosingTarget = true }, enabled = !ui.busy,
                             modifier = Modifier.testTag("external-import-choose-target"), dismissOnClick = false)
                     } else {
-                        NeumorphTextButton(L10n.tr("移回待导入"), onClick = { model.unassign(selected.id, destination.target) },
-                            enabled = !ui.busy, dismissOnClick = false)
+                        val receipt = selected.attempt?.receipt
+                        when {
+                            receipt == ExternalImportReceipt.ACCEPTED -> Text(L10n.tr("会话已接收"))
+                            receipt?.mayCheck == true -> {
+                                Text(L10n.tr("发送结果待核对"))
+                                NeumorphTextButton(L10n.tr("核对结果"), onClick = { model.deliver(selected, remote, null) },
+                                    enabled = !ui.busy && ui.delivering == null, dismissOnClick = false)
+                            }
+                            else -> {
+                                if (receipt == ExternalImportReceipt.FAILED) Text(L10n.tr("发送失败"), color = MaterialTheme.colorScheme.error)
+                                NeumorphTextField(instruction, { instruction = it }, modifier = Modifier.fillMaxWidth(),
+                                    placeholder = { Text(L10n.tr("补充要求（可选）")) }, minLines = 2, maxLines = 5,
+                                    enabled = !ui.busy && ui.delivering != selected.id)
+                                NeumorphTextButton(L10n.tr("发送"), onClick = { model.deliver(selected, remote, instruction) },
+                                    enabled = !ui.busy && ui.delivering == null, modifier = Modifier.testTag("external-import-send"), dismissOnClick = false)
+                                NeumorphTextButton(L10n.tr("移回待导入"), onClick = { model.unassign(selected.id, destination.target) },
+                                    enabled = !ui.busy && ui.delivering != selected.id, dismissOnClick = false)
+                            }
+                        }
                     }
-                    NeumorphTextButton(L10n.tr("删除"), onClick = { deleting = true }, enabled = !ui.busy, dismissOnClick = false)
+                    NeumorphTextButton(L10n.tr("删除"), onClick = { deleting = true }, enabled = !ui.busy && ui.delivering != selected.id, dismissOnClick = false)
                 } else {
                     if (ui.batches.isEmpty() && !ui.busy && ui.problem == null) Text(L10n.tr("暂无待导入内容"))
                     ui.batches.filter { it.destination == null }.forEach { BatchRow(it, model, enabled = !ui.busy) }
@@ -137,5 +155,7 @@ private fun importProblemText(problem: ImportProblem): String = when (problem) {
     ImportProblem.BUSY -> L10n.tr("已有导入正在进行，请稍后重试")
     ImportProblem.UNREADABLE -> L10n.tr("无法读取导入内容")
     ImportProblem.TARGET_UNAVAILABLE -> L10n.tr("所选会话已不可用")
+    ImportProblem.HOST_UPGRADE -> L10n.tr("更新电脑端后可发送导入内容")
+    ImportProblem.UPLOAD_FAILED -> L10n.tr("上传未完成，附件已保留")
     ImportProblem.ALREADY_ASSIGNED -> L10n.tr("此内容已加入其他会话草稿")
 }

@@ -5,6 +5,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
 import android.util.Log
+import android.os.SystemClock
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -26,6 +28,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -849,6 +852,153 @@ internal class HostConnection(
 
     /** Reconcile provider summaries on demand while preserving the connection's other domains. */
     fun refreshProviderModel() = refreshHostModel(listOf("providers"), force = true)
+
+    private val importDelivery = ExternalImportDelivery()
+    private class ImportUpload(
+        val task: UploadTask, val channel: Any, val current: () -> Boolean,
+        val result: CompletableDeferred<String?> = CompletableDeferred(),
+    ) {
+        @Volatile var uploadId: String? = null
+        @Volatile var activity = SystemClock.elapsedRealtime()
+        val reading = AtomicBoolean(false)
+    }
+    private class ImportWait(
+        val attempt: ExternalImportAttempt, val target: ExternalImportTarget, val query: Boolean,
+        val reply: CompletableDeferred<ExternalImportReceipt> = CompletableDeferred(),
+    )
+    @Volatile private var importUpload: ImportUpload? = null
+    @Volatile private var importWait: ImportWait? = null
+
+    private fun importPairingReady(target: ExternalImportTarget): Boolean {
+        val state = mutableState.value
+        return shouldConnect && target.hostId == hostId && target.pairingKey == externalImportPairingKey(pairing) &&
+            state.canOperateSessions && state.homeDirectoryReceived
+    }
+
+    private fun importRuntime(target: ExternalImportTarget): RuntimeSummary? = if (importPairingReady(target)) {
+        mutableState.value.externalImportRuntimes().firstOrNull { it.sessionId == target.sessionId && it.cwd == target.cwd }
+    } else null
+
+    suspend fun deliverImport(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String?) = withContext(Dispatchers.IO) {
+        val target = batch.destination?.target ?: reject(ImportProblem.TARGET_UNAVAILABLE)
+        val connection = generation
+        val epoch = mutableState.value.agentModelEpoch
+        val channel = relay.externalImportChannel()
+        fun paired() = generation == connection && importPairingReady(target)
+        fun capable() = paired() && channel != null && relay.externalImportChannel() === channel
+        fun current() = if (paired() && epoch == mutableState.value.agentModelEpoch) importRuntime(target) else null
+        if (instruction == null) {
+            importDelivery.check(batch, inbox, ::capable) { attempt, _ -> waitForExternalImport(attempt, target, channel!!, null) }
+        } else {
+            importDelivery.send(batch, inbox, instruction, ::current, ::capable,
+                upload = { source, id -> uploadExternalImport(source, target, id, channel!!) { capable() && current()?.runtimeId == id } },
+                request = { attempt, command -> waitForExternalImport(attempt, target, channel!!, command) })
+        }
+    }
+
+    private suspend fun uploadExternalImport(source: ImportUploadSource, target: ExternalImportTarget, runtimeId: String,
+                                             channel: Any, current: () -> Boolean): String {
+        val hash = ArtifactUploadStore.inspectImport(source)
+        if (!current()) reject(ImportProblem.TARGET_UNAVAILABLE)
+        val task = UploadTask(taskId = "import:" + UUID.randomUUID(), runtimeId = runtimeId, hostId = hostId, sourceUri = "",
+            displayName = source.metadata.name, size = source.metadata.bytes, sha256 = hash, directory = uploadDirectoryFor(target.cwd, hash))
+        val transfer = ImportUpload(task, channel, current)
+        artifactUploadStore.registerImport(task, source.file)
+        importUpload = transfer
+        var verified = false
+        try {
+            if (!relay.sendExternalImport(buildJsonObject {
+                put("type", "file.upload.init"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", task.taskId)
+                put("runtimeId", runtimeId); put("directory", task.directory); put("fileName", task.displayName)
+                put("sha256", task.sha256); put("size", task.size); put("importTarget", target.wire())
+            }, channel)) reject(ImportProblem.TARGET_UNAVAILABLE)
+            while (current() && SystemClock.elapsedRealtime() - transfer.activity < 30_000) {
+                withTimeoutOrNull(250) { transfer.result.await() ?: reject(ImportProblem.UPLOAD_FAILED) }?.let {
+                    verified = true
+                    return it
+                }
+            }
+            reject(ImportProblem.UPLOAD_FAILED)
+        } finally {
+            importUpload = null
+            if (!verified) transfer.uploadId?.let { relay.cancelExternalImport(it, channel) }
+            artifactUploadStore.releaseImport(task.taskId)
+        }
+    }
+
+    private suspend fun waitForExternalImport(attempt: ExternalImportAttempt, target: ExternalImportTarget,
+                                              channel: Any, command: JsonObject?): ExternalImportReceipt {
+        val wait = ImportWait(attempt, target, command == null)
+        importWait = wait
+        try {
+            if (!relay.sendExternalImport(attempt.wire(target, command), channel)) return ExternalImportReceipt.UNCONFIRMED
+            val elapsed = SystemClock.elapsedRealtime()
+            val timeout = if (wait.query) 10_000L else 65_000L
+            while (relay.externalImportChannel() === channel && SystemClock.elapsedRealtime() - elapsed < timeout) {
+                withTimeoutOrNull(250) { wait.reply.await() }?.let { return it }
+            }
+            return ExternalImportReceipt.UNCONFIRMED
+        } finally { importWait = null }
+    }
+
+    /** Consumes only scoped replies; legacy composer uploads keep their original handler. */
+    private fun consumeExternalImport(message: JsonObject): Boolean {
+        if (message.containsKey("protocolVersion") && supportedProtocolVersion(message["protocolVersion"]) == null) return false
+        val type = message.importString("type") ?: return false
+        val wait = importWait
+        if (wait != null) {
+            val (ours, receipt) = importReceiptFor(message, wait.attempt, wait.target, wait.query)
+            if (ours) { if (receipt != null) wait.reply.complete(receipt); return true }
+        } else if (type == "external-import.result") return true
+        if (!type.startsWith("file.upload.") && type != "protocol.error") return false
+        val upload = importUpload
+        val id = message.importString("uploadId")
+        val requestId = message.importString("requestId")
+        if (upload == null || (requestId != upload.task.taskId && (id == null || id != upload.uploadId))) {
+            if (requestId?.startsWith("import:") != true) return false
+            // The user may have left while the ready receipt was still in flight.
+            if (type == "file.upload.ready" && id != null) {
+                relay.externalImportChannel()?.let { relay.cancelExternalImport(id, it) }
+            }
+            return true
+        }
+        val task = upload.task
+        fun num(key: String) = (message[key] as? JsonPrimitive)?.longOrNull
+        if (!upload.current() || upload.result.isCompleted) {
+            if (type == "file.upload.ready" && id != null) relay.cancelExternalImport(id, upload.channel)
+            return true
+        }
+        when (type) {
+            "file.upload.ready" -> {
+                val size = num("receivedBytes")
+                if (requestId != task.taskId || upload.uploadId != null || id.isNullOrBlank() || id.length > 256 || size == null || size !in 0L..task.size) {
+                    upload.result.complete(null)
+                } else { upload.uploadId = id; upload.activity = SystemClock.elapsedRealtime() }
+            }
+            "file.upload.read" -> {
+                val offset = num("offset") ?: return true
+                val length = num("length") ?: return true
+                if (id == null || upload.uploadId != id || offset !in 0L..task.size || length !in 1..1_048_576L || length > task.size - offset ||
+                    !upload.reading.compareAndSet(false, true)) return true
+                upload.activity = SystemClock.elapsedRealtime()
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        if (importUpload !== upload || !upload.current()) return@launch
+                        val bytes = artifactUploadStore.read(task.taskId, offset, length.toInt())
+                        if (bytes.size.toLong() != length) upload.result.complete(null)
+                        else if (importUpload === upload && upload.current()) relay.sendUploadChunk(task.runtimeId, id, offset, bytes, upload.channel)
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { upload.result.complete(null) }
+                    finally { upload.reading.set(false) }
+                }
+            }
+            "file.upload.progress" -> if (id != null && id == upload.uploadId && num("receivedBytes")?.let { it in 0L..task.size } == true)
+                upload.activity = SystemClock.elapsedRealtime()
+            "file.upload.finished" -> if (id != null && id == upload.uploadId) upload.result.complete(task.verifiedImportPath(message))
+            "file.upload.failed", "protocol.error" -> upload.result.complete(null)
+        }
+        return true
+    }
 
     /** ADR-0049 §6.4 `archive`：卡片立即移到目标列表；回执、断线、期限与核对全部交给账本（替代原 30 秒超时）。 */
     fun setSessionArchived(sessionId: String, archived: Boolean) {
@@ -2650,6 +2800,7 @@ internal class HostConnection(
                 var payload = interactive.payload
                 val interactiveChannel = interactive.channel
                 var incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+                if (interactiveChannel != null && incomingMessage != null && consumeExternalImport(incomingMessage)) continue
                 // ADR-0076: a Host that can show DeepSeek Desktop first sends the view released Apps parse
                 // (no `dshDesktop` key). Declare the feature and apply the full device.ready it sends next, so a
                 // selected Desktop session is not dropped; the filtered view is applied only if none arrives.

@@ -12,6 +12,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -84,12 +85,18 @@ internal class LanTransport(
         }
     }
 
+    val importChannel: Any? get() = synchronized(lock) { attempt?.takeIf { it.channel != null && !closed }?.importChannel }
+
     val protocolVersion: Int get() = synchronized(lock) { attempt?.protocolVersion ?: INITIAL_WIRE_PROTOCOL_VERSION }
 
-    fun sendPayload(payload: JsonObject): Boolean = synchronized(lock) {
+    fun sendPayload(payload: JsonObject, importChannel: Any? = null): Boolean = synchronized(lock) {
+        if (importChannel != null && attempt?.importChannel !== importChannel) return false
         send("data", payload.withWireProtocolVersion(protocolVersion).toString().toByteArray(Charsets.UTF_8), "ctl")
     }
-    fun sendBinary(payload: ByteArray, channel: String): Boolean = send("bin", payload, channel)
+    fun sendBinary(payload: ByteArray, channel: String, importChannel: Any? = null): Boolean = synchronized(lock) {
+        if (importChannel != null && attempt?.importChannel !== importChannel) return false
+        send("bin", payload, channel)
+    }
 
     private fun send(kind: String, payload: ByteArray, channel: String): Boolean = synchronized(lock) {
         val current = attempt ?: return false
@@ -111,6 +118,7 @@ internal class LanTransport(
         var failureReason: String? = null
         var socket: WebSocket? = null
         var channel: E2eChannel? = null
+        var importChannel: Any? = null
         val ready = CompletableDeferred<Boolean>()
         val down = CompletableDeferred<Unit>()
         private val handshake = DeviceHandshake(pskRoot)
@@ -148,7 +156,16 @@ internal class LanTransport(
                         val crypto = checkNotNull(channel)
                         val bytes = crypto.open(envelope) ?: return
                         when (envelope.hdr.k) {
-                            "data" -> onPlaintext(bytes.toString(Charsets.UTF_8), envelope.hdr.ch)
+                            "data" -> {
+                                val text = bytes.toString(Charsets.UTF_8)
+                                if (envelope.hdr.ch == "ctl" && text.contains("device.ready")) {
+                                    val message = runCatching { E2eJson.json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+                                    if (message?.get("type") == JsonPrimitive("device.ready")) {
+                                        importChannel = if (announcesImportTarget(message)) importChannel ?: Any() else null
+                                    }
+                                }
+                                onPlaintext(text, envelope.hdr.ch)
+                            }
                             "bin" -> onBinary(bytes)
                             "ping" -> sendFrame(crypto.seal("ping", hostId, deviceId, hostId, bytes, "ctl"))
                         }

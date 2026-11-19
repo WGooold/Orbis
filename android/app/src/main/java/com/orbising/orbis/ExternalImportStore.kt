@@ -10,7 +10,7 @@ import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-internal enum class ImportProblem { EMPTY, UNSUPPORTED, LIMIT, FULL, BUSY, UNREADABLE, TARGET_UNAVAILABLE, ALREADY_ASSIGNED }
+internal enum class ImportProblem { EMPTY, UNSUPPORTED, LIMIT, FULL, BUSY, UNREADABLE, TARGET_UNAVAILABLE, ALREADY_ASSIGNED, HOST_UPGRADE, UPLOAD_FAILED }
 internal class ImportRejected(val problem: ImportProblem) : Exception()
 
 @Serializable
@@ -28,6 +28,7 @@ internal data class ExternalImportDestination(val target: ExternalImportTarget, 
 internal data class ExternalImportBatch(
     val id: String, val createdAt: Long, val text: String?, val files: List<ImportedFile>,
     val destination: ExternalImportDestination? = null,
+    val attempt: ExternalImportAttempt? = null,
 )
 
 internal data class ImportSource(val name: String?, val open: () -> InputStream)
@@ -108,8 +109,27 @@ internal class ExternalImportStore(
 
     fun unassign(id: String, target: ExternalImportTarget): ExternalImportBatch = update(id) { batch ->
         if (batch.destination?.target != target) reject(ImportProblem.TARGET_UNAVAILABLE)
-        batch.copy(destination = null)
+        if (batch.attempt?.receipt?.maySend == false) reject(ImportProblem.BUSY)
+        batch.copy(destination = null, attempt = null)
     }
+
+    fun uploadSources(id: String, target: ExternalImportTarget): List<ImportUploadSource> = synchronized(lock) {
+        if (!validId(id)) reject(ImportProblem.UNREADABLE)
+        val directory = File(root, READY + id)
+        val batch = readBatch(directory, id)
+        if (batch.destination?.target != target || batch.attempt?.receipt?.maySend == false) reject(ImportProblem.TARGET_UNAVAILABLE)
+        batch.files.mapIndexed { index, meta -> ImportUploadSource(File(directory, "file-$index"), meta) }
+    }
+
+    fun beginDelivery(id: String, target: ExternalImportTarget, attempt: ExternalImportAttempt) = update(id) { batch ->
+        if (batch.destination?.target != target || batch.attempt?.receipt?.maySend == false) reject(ImportProblem.TARGET_UNAVAILABLE)
+        batch.copy(attempt = attempt)
+    }
+
+    fun recordDelivery(id: String, attempt: String, receipt: ExternalImportReceipt) { update(id) { batch ->
+        val current = batch.attempt
+        if (current?.id == attempt && current.receipt.mayCheck) batch.copy(attempt = current.copy(receipt = receipt)) else batch
+    } }
 
     private fun update(id: String, change: (ExternalImportBatch) -> ExternalImportBatch): ExternalImportBatch = synchronized(lock) {
         if (!validId(id)) reject(ImportProblem.UNREADABLE)

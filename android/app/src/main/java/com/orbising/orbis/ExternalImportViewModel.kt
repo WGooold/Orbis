@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,6 +19,7 @@ internal data class ExternalImportUi(
     val batches: List<ExternalImportBatch> = emptyList(),
     val open: Boolean = false,
     val busy: Boolean = false,
+    val delivering: String? = null,
     val problem: ImportProblem? = null,
     val selected: String? = null,
 )
@@ -69,8 +71,25 @@ internal class ExternalImportViewModel(app: Application) : AndroidViewModel(app)
 
     fun delete(id: String) = mutate(id, null) { store.delete(id) }
 
+    fun deliver(batch: ExternalImportBatch, remote: RemoteViewModel, instruction: String?) {
+        if (mutableUi.value.busy || mutableUi.value.delivering != null) return
+        mutableUi.update { it.copy(delivering = batch.id, problem = null) }
+        viewModelScope.launch {
+            try {
+                remote.deliverExternalImport(batch, store, instruction)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                mutableUi.update { state -> if (state.selected == batch.id)
+                    state.copy(problem = (error as? ImportRejected)?.problem ?: ImportProblem.UNREADABLE) else state }
+            } finally {
+                disk.withLock { refresh() }
+                mutableUi.update { it.copy(delivering = null) }
+            }
+        }
+    }
+
     private fun mutate(id: String, selectedAfter: String?, action: () -> Unit) {
-        if (mutableUi.value.busy) return
+        if (mutableUi.value.busy || mutableUi.value.delivering == id) return
         mutableUi.update { it.copy(busy = true, problem = null) }
         viewModelScope.launch {
             disk.withLock {

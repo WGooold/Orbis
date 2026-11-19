@@ -126,6 +126,7 @@ private class E2eSession(val options: E2eConnectOptions) {
     var handshake: DeviceHandshake? = null
     var channel: E2eChannel? = null
     var bootstrapReady = false
+    var importChannel: Any? = null
     val pending = ArrayDeque<JsonObject>()
     val lock = Any()
     /** 入站片的重组缓冲（issue 03）。每次重握手都换一套序号空间，所以那时要 clear()。 */
@@ -299,7 +300,7 @@ class RelayClient internal constructor(
                 synchronized(connection.lock) {
                     connection.channel = null
                     connection.handshake = null
-                    connection.bootstrapReady = false
+                    connection.bootstrapReady = false; connection.importChannel = null
                 }
                 if (activePath != "lan") activePath = null
                 notifyE2eState(hasE2eChannel())
@@ -480,7 +481,7 @@ class RelayClient internal constructor(
                             val old = webSocket; webSocket = null
                             relaySwitchPhase = "retiring"
                             e2e?.let { state -> synchronized(state.lock) {
-                                state.channel = null; state.handshake = null; state.bootstrapReady = false
+                                state.channel = null; state.handshake = null; state.bootstrapReady = false; state.importChannel = null
                                 state.pending.clear(); state.reassembler.clear()
                             } }
                             notifyE2eState(hasE2eChannel())
@@ -657,7 +658,7 @@ class RelayClient internal constructor(
      * 所以 `bin` 的线上体积是 4/3，而 JSON 套 base64 是二次编码（约 1.8 倍）。
      * 返回 false（写被拒/通道未就绪）时不必重试——Host 的拉取循环会重发同一个 read。
      */
-    fun sendUploadChunk(runtimeId: String, uploadId: String, offset: Long, data: ByteArray): Boolean {
+    fun sendUploadChunk(runtimeId: String, uploadId: String, offset: Long, data: ByteArray, importChannel: Any? = null): Boolean {
         return synchronized(relayLock) {
         val state = e2e ?: return false
         val direct = lan
@@ -670,9 +671,9 @@ class RelayClient internal constructor(
             }
         // 上传分片固定走基础 `bulk` 通道（ADR-0012）。
         val channel = "bulk"
-        if (useLan) return direct!!.sendBinary(frame, channel)
+        if (useLan) return direct!!.sendBinary(frame, channel, importChannel)
         return synchronized(state.lock) {
-            if (!state.bootstrapReady) return false
+            if (!state.bootstrapReady || importChannel != null && state.importChannel !== importChannel) return false
             val e2eChannel = state.channel ?: run {
                 trace("upload.chunk_rejected offset=$offset reason=no_relay_channel")
                 return false
@@ -889,7 +890,7 @@ class RelayClient internal constructor(
         synchronized(state.lock) {
             state.handshake = handshake
             state.channel = null
-            state.bootstrapReady = false
+            state.bootstrapReady = false; state.importChannel = null
             state.hostProtocolVersion = proposedVersion
             if (!preservePending) state.pending.clear()
         }
@@ -1033,6 +1034,9 @@ class RelayClient internal constructor(
                         }.toString(), envelope.hdr.ch)
                         return
                     }
+                    if (envelope.hdr.ch == "ctl") synchronized(state.lock) {
+                        state.importChannel = if (announcesImportTarget(message)) state.importChannel ?: Any() else null
+                    }
                     if (!state.bootstrapReady) {
                         require(envelope.hdr.ch == "ctl") { "Host bootstrap must arrive on ctl" }
                         state.hostProtocolVersion = version
@@ -1139,6 +1143,29 @@ class RelayClient internal constructor(
 
         }
     }
+
+    /** A scope token is granted only by a validated ready on the path this send would use. */
+    internal fun externalImportChannel(): Any? = synchronized(relayLock) {
+        val direct = lan
+        if (activePath == "lan" && direct?.isReady == true) return direct.importChannel
+        val state = e2e ?: return null
+        synchronized(state.lock) { state.importChannel.takeIf { state.bootstrapReady } }
+    }
+
+    /** Unlike legacy commands, never queue a scoped import behind a future handshake. */
+    internal fun sendExternalImport(payload: JsonObject, channel: Any): Boolean = synchronized(relayLock) {
+        val direct = lan
+        if (activePath == "lan" && direct?.isReady == true) return direct.sendPayload(payload, channel)
+        val state = e2e ?: return false
+        if (!synchronized(state.lock) { state.bootstrapReady && state.importChannel === channel }) return false
+        sealAndSend(state, payload)
+    }
+
+    internal fun cancelExternalImport(uploadId: String, channel: Any): Boolean = sendExternalImport(buildJsonObject {
+        put("type", "file.upload.cancel")
+        put("protocolVersion", PROTOCOL_VERSION)
+        put("uploadId", uploadId)
+    }, channel)
 
     fun sendDeviceMessage(payload: kotlinx.serialization.json.JsonObject): Boolean {
         val state = e2e ?: return false

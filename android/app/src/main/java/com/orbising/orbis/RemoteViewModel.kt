@@ -384,6 +384,12 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    internal suspend fun deliverExternalImport(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String?) {
+        val hostId = batch.destination?.target?.hostId ?: reject(ImportProblem.TARGET_UNAVAILABLE)
+        val connection = connectionFor(hostId) ?: reject(ImportProblem.TARGET_UNAVAILABLE)
+        connection.deliverImport(batch, inbox, instruction)
+    }
+
     internal fun externalImportRuntime(target: ExternalImportTarget): RuntimeSummary? {
         val connection = connectionFor(target.hostId) ?: return null
         if (externalImportPairingKey(connection.pairing) != target.pairingKey) return null

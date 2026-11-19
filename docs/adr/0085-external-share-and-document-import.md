@@ -2,7 +2,7 @@
 
 日期：2026-11-19
 
-状态：本地入口已实现，会话投递实施中；独立工作树 `codex/external-import-20261119`。未部署、未验收。
+状态：本地入口和向已有在线会话发送已实现；新建目标、扩展直投待实施。独立工作树 `codex/external-import-20261119`。未部署、未验收。
 
 关联：[ADR-0049 乐观发送](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0051 移动 UI 基线](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055 Agent 输入生命周期](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0064 兼容性](0064-protocol-compatibility.md)、[ADR-0072 会话配置与可恢复启动](0072-session-configuration-and-recoverable-launch.md)、[ADR-0083 反馈等级](0083-feedback-levels-and-stale-replies.md)。
 
@@ -109,3 +109,9 @@ Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子�
 主 App 的[导入草稿](../../ios/Orbis/Orbis/ExternalImportInboxView.swift)可补充要求并明确发送。沿目标电脑的已认证通道复用[文件传输](../../ios/Orbis/Orbis/FileTransfers.swift)，不复制到聊天草稿，不提前上传，不回退到旧 Host 的未绑定命令。全部附件收到校验通过回执之后，先在收件批次写入命令身份，再发送消息。断线或重启后只读核对原命令；未知结果保留原件，不提供再次发送。确认接收后可删除本地副本。分享扩展仍仅保存，不直投。
 
 [Swift 回归](../../.artifacts/external-import/oi-04b-ios/core-send/run.log) 30/30，覆盖上传前能力检查、按原目标发送、回执丢失及只读核对；[首轮测试编译记录](../../.artifacts/external-import/oi-04b-ios/core-send-first/run.log)保留。[通用模拟器目标构建](../../.artifacts/external-import/oi-04b-ios/app-final/run.log)通过，已[核验并释放租约](../../.artifacts/external-import/oi-04b-ios/app-final/cleanup-audit.json)。未安装、未分发、未验收。
+
+### OI-04b-Android 实施记录
+
+主 App 的[导入草稿](../../android/app/src/main/java/com/orbising/orbis/ExternalImportSheet.kt)可补充要求并明确发送。[发送事务](../../android/app/src/main/java/com/orbising/orbis/ExternalImportDelivery.kt)与聊天输入框独立：能力按当前认证路径核对，附件从本地批次按 Host 拉取读取；所有校验完成后才记录命令身份并提交。仅已确认失败可再发送，结果未知时只读核对原命令。断线或路径变化不会将其排入下一次握手的发送队列。
+
+[Android 定向回归](../../.artifacts/external-import/oi-04b-android/verified/run.log) 43/43，[平台用例已编译](../../.artifacts/external-import/oi-04b-android/verified/test-results/)。覆盖旧 Host 回退、附件校验及发送先后、重开后的对账，以及 LAN/Relay 路径切换和既有发送回归。未安装、未分发，待用户验证。
