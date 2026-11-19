@@ -116,6 +116,7 @@ int main(int argc, char *argv[]) {
 #else
         parser.isSet("smoke-test") ? dataDir : sharedDataDir;
 #endif
+    if (parser.isSet("smoke-test")) qputenv("ORBIS_NO_KEYCHAIN", "1");
     if (parser.isSet("smoke-test") && parser.isSet("smoke-providers")) qputenv("ORBIS_PROVIDER_TEST_ROOT", (dataDir + "/test-agents").toUtf8());
     const auto serverName = "OrbisHost-" + QString::fromLatin1(QCryptographicHash::hash(dataDir.toUtf8(), QCryptographicHash::Sha256).toHex().left(24));
     const auto installerServerName = "OrbisSetup-" + serverName.right(24);
