@@ -1133,8 +1133,8 @@ ApplicationWindow {
                         // HOST-LIVE-01: start parameters of the running service apply by reconnecting it; the button says so.
                         readonly property bool reconnects: host.desiredRunning && (relayField.text.trim().replace(/\/+$/, "") !== host.relayUrl
                             || (nameField.text.trim().length > 0 && nameField.text.trim() !== host.hostName) || codexSwitch.checked !== host.codexEnabled
-                            || dshSwitch.checked !== host.dshEnabled || dshWebUrlField.text.trim() !== host.dshWebUrl)
-                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled; piIntegrationSwitch.checked = host.piIntegrationEnabled; claudeIntegrationSwitch.checked = host.claudeIntegrationEnabled }
+                            || (host.kimiCodeAvailable && kimiSwitch.checked !== host.kimiCodeEnabled) || dshSwitch.checked !== host.dshEnabled || dshWebUrlField.text.trim() !== host.dshWebUrl)
+                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled; kimiSwitch.checked = host.kimiCodeEnabled; piIntegrationSwitch.checked = host.piIntegrationEnabled; claudeIntegrationSwitch.checked = host.claudeIntegrationEnabled }
                         ColumnLayout {
                             anchors.fill: parent; spacing: 15
                             Heading { text: "外观" }
@@ -1201,6 +1201,24 @@ ApplicationWindow {
                             Field { id: nameField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; maximumLength: 80 }
                             SoftSwitch { id: codexSwitch; enabled: host.bridgeReady && !host.busy; text: "启动 Host 时预启动 Codex 终端后端" }
                             SoftSwitch { id: dshSwitch; enabled: host.bridgeReady && !host.busy; text: "启动 Host 时预启动 DeepSeek Harness" }
+                            RowLayout {
+                                visible: host.kimiCodeAvailable; Layout.fillWidth: true; spacing: 12
+                                onVisibleChanged: if (visible) kimiSwitch.checked = host.kimiCodeEnabled
+                                SoftSwitch {
+                                    id: kimiSwitch; objectName: "kimiCodeSwitch"; Layout.fillWidth: true
+                                    enabled: host.bridgeReady && !host.busy; text: "接入 Kimi Code"
+                                }
+                                Hint {
+                                    objectName: "kimiCodeStatus"
+                                    visible: host.kimiCodeEnabled && kimiSwitch.checked
+                                    text: !host.desiredRunning ? "未连接" : ({ connected: "已接入", connecting: "正在连接", not_running: "服务未启动", ambiguous: "有多个实例", unauthorized: "认证失败", unsupported: "版本不支持", unsafe: "配置不安全", unavailable: "暂不可用" })[host.kimiCodeState] || "未连接"
+                                }
+                                SoftToolButton {
+                                    symbol: "info"; Accessible.name: "Kimi Code 接入说明"
+                                    onClicked: kimiHelp.open()
+                                    ToolTip.visible: hovered; ToolTip.text: "Kimi Code 接入说明"
+                                }
+                            }
                             SoftSwitch { id: piIntegrationSwitch; enabled: host.bridgeReady && !host.busy; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
                             Hint { visible: Qt.platform.os === "osx"; text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"; Layout.fillWidth: true }
                             SoftSwitch { id: claudeIntegrationSwitch; enabled: host.bridgeReady && !host.busy; text: "让终端里运行的 Claude Code 连接 Orbis" }
@@ -1228,7 +1246,7 @@ ApplicationWindow {
                             Field { id: relayField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
                             Label { text: "DeepSeek Web 启动链接（可选）"; color: Theme.inkMuted }
                             Field { id: dshWebUrlField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
-                            ActionButton { objectName: "applySettings"; text: settingsPane.reconnects ? "应用并重新连接" : "应用设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked) }
+                            ActionButton { objectName: "applySettings"; text: settingsPane.reconnects ? "应用并重新连接" : "应用设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked, kimiSwitch.checked) }
                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
                             DownloadBar { visible: host.downloadReceived >= 0; label: host.downloadLabel || "Host 更新"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
@@ -1725,6 +1743,11 @@ ApplicationWindow {
             ActionButton { text: "取消"; enabled: !host.busy; onClicked: codexPreferencesDialog.reject() }
             ActionButton { text: "保存"; primary: true; enabled: !host.busy; onClicked: host.saveCodexPreferences({ commonConfig: codexCommonText.text, preserveOfficialLogin: preserveCodexLogin.checked }) }
         }
+    }
+    SoftDialog {
+        id: kimiHelp; anchors.centerIn: parent; modal: true; width: 410
+        title: "Kimi Code"; standardButtons: Dialog.Ok
+        contentItem: Hint { text: "请先在本机运行 kimi web。Orbis 只连接现有服务。" }
     }
     SoftDialog {
         id: providerInfoDialog; anchors.centerIn: parent; modal: true; width: 590; height: 400

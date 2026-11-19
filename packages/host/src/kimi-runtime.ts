@@ -78,6 +78,10 @@ export class KimiRuntime implements AgentBackend {
     this.#active.clear();
     await this.#connector.stop();
   }
+  get connectionState() {
+    const state = this.#connector.status.state;
+    return state === "connected" && !this.isReady() ? "connecting" : state;
+  }
   get reason(): string | null { return this.#connector.status.reason; }
   isReady(): boolean { return this.#connection?.socket.readyState === WebSocket.OPEN; }
   ownsRuntime(id: string): boolean { return this.#active.has(id); }

@@ -24,6 +24,7 @@
 #include <QTcpSocket>
 #ifdef ORBIS_SMOKE_INTERACTION
 #include <QQuickItem>
+#include <QQuickItemGrabResult>
 #include <QTest>
 static QQuickItem *findVisualItem(QQuickItem *root, const QString &name) {
     if (root->objectName() == name) return root;
@@ -85,6 +86,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
     parser.addOption({"smoke-exit", "Verify exit and update confirmation cancellation in the isolated smoke window"});
     parser.addOption({"smoke-exit-entry", "Quit entry used by the isolated exit regression (native or tray)", "entry", "native"});
+    parser.addOption({"smoke-kimi", "Check Kimi settings with an isolated fixture bridge"});
     parser.addOption({"smoke-guide", "Walk the overview through activation, connection, pairing and open steps with synthetic bridge events"});
     parser.process(app);
     QString runtimeRoot = parser.value("runtime-root");
@@ -259,11 +261,45 @@ int main(int argc, char *argv[]) {
         if (parser.isSet("smoke-compact")) window->resize(window->minimumSize());
         QTimer::singleShot(8000, Qt::PreciseTimer, &app, [&] {
             bool imageOk = true;
-            if (parser.isSet("screenshot")) imageOk = window->grabWindow().save(parser.value("screenshot"));
+            if (parser.isSet("screenshot") && !parser.isSet("smoke-kimi")) imageOk = window->grabWindow().save(parser.value("screenshot"));
             QFile report(dataDir + "/smoke-result.json");
             if (report.open(QIODevice::WriteOnly)) report.write(QJsonDocument(QJsonObject{{"bridgeReady", controller.bridgeReady()}, {"windowVisible", window->isVisible()}, {"screenshotSaved", imageOk}, {"message", controller.message()}, {"claudeInstalled", controller.claudeInstalled()}, {"agents", QJsonArray::fromVariantList(controller.agents())}}).toJson());
             if (!controller.bridgeReady() || !imageOk) { app.exit(5); return; }
 #ifdef ORBIS_SMOKE_INTERACTION
+            if (parser.isSet("smoke-kimi")) {
+                // KIMI-10: the fixture advertises an inherited opt-in; render observed status on the settings page.
+                controller.smokeActivation(true);
+                controller.smokeReceive({{"event", "status"}, {"kimiCodeState", "connected"}});
+                QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 3));
+                QTimer::singleShot(400, &app, [&] {
+                    auto *toggle = findVisualItem(window->contentItem(), "kimiCodeSwitch");
+                    auto *status = findVisualItem(window->contentItem(), "kimiCodeStatus");
+                    auto *scroll = findVisualItem(window->contentItem(), "pageScroll");
+                    auto *viewport = scroll ? qobject_cast<QQuickItem *>(scroll->property("contentItem").value<QObject *>()) : nullptr;
+                    if (!toggle || !toggle->isVisible() || !toggle->property("checked").toBool() ||
+                        !status || !status->isVisible() || status->property("text").toString() != "已接入" || !viewport) { app.exit(86); return; }
+                    const auto y = toggle->mapToItem(viewport, QPointF()).y() + viewport->property("contentY").toReal();
+                    viewport->setProperty("contentY", qBound(0.0, y - viewport->height() / 3, qMax(0.0, viewport->property("contentHeight").toReal() - viewport->height())));
+                    QTimer::singleShot(120, &app, [&, toggle, status, viewport] {
+                        const auto bounds = toggle->mapRectToScene(toggle->boundingRect()).united(status->mapRectToScene(status->boundingRect()));
+                        const auto viewportBounds = viewport->mapRectToScene(viewport->boundingRect());
+                        if (!viewportBounds.contains(bounds)) { app.exit(87); return; }
+                        const auto finish = [&, status] {
+                            controller.smokeActivation(false);
+                            app.exit(status->property("text").toString() == "未连接" ? 0 : 89);
+                        };
+                        if (!parser.isSet("screenshot")) { finish(); return; }
+                        const auto grab = toggle->parentItem()->grabToImage();
+                        if (!grab) { app.exit(88); return; }
+                        QObject::connect(grab.data(), &QQuickItemGrabResult::ready, &app, [&, grab, finish] {
+                            if (!grab->saveToFile(parser.value("screenshot"))) { app.exit(88); return; }
+                            finish();
+                        });
+                        QTimer::singleShot(2500, &app, [&] { app.exit(88); });
+                    });
+                });
+                return;
+            }
             if (parser.isSet("smoke-motion")) {
                 auto *metric = findVisualItem(window->contentItem(), "home-metric-0");
                 if (!metric) { app.exit(47); return; }
