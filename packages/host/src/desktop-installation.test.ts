@@ -26,6 +26,7 @@ vi.mock("./login-shell-env.js", async original => ({
   adoptLoginShellEnvironment: vi.fn().mockResolvedValue(false),
   adoptWindowsEnvironment: vi.fn().mockResolvedValue(false),
 }));
+import { AgentEnablementStore } from "./agent-enablement.js";
 import { agentEntries, agentPackages } from "./agent-installation.js";
 import { DesktopRuntime, type DesktopEvent } from "./desktop-runtime.js";
 import { resolveCodexCommand } from "./codex-daemon.js";
@@ -50,7 +51,7 @@ afterEach(async () => {
   vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.clearAllMocks();
   await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true, maxRetries: 3 })));
 });
-async function fixture() {
+async function fixture(enableAgents = true) {
   const root = await mkdtemp(join(tmpdir(), "orbis-desktop-install-")); roots.push(root);
   const prefix = join(root, "npm");
   vi.stubEnv("ORBIS_AGENT_INSTALL_ROOT", join(root, "agents"));
@@ -63,6 +64,8 @@ async function fixture() {
     await writeFile(join(packageRoot, "package.json"), JSON.stringify({ name: agentPackages[kind], version: "1.0.0" }));
     await writeFile(entry, 'console.log("1.0.0")');
   }
+  // Legacy installation assertions exercise explicitly enabled sources, not migration.
+  if (enableAgents) await new AgentEnablementStore(join(root, "state"), async () => ({ pi: true, codex: true, dsh: true, claude: true })).read();
   const events: DesktopEvent[] = [];
   const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { codex: join(root, "codex"), pi: join(root, "pi"), dsh: join(root, "dsh") });
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response('{"latest":"2.0.0"}')));
@@ -71,6 +74,19 @@ async function fixture() {
 }
 
 describe("desktop Agent installation commands", () => {
+  it("does not detect or install disabled Agents on a fresh Host", async () => {
+    const { runtime } = await fixture(false);
+    const claude = vi.spyOn(claudeDiscovery, "findClaudeExecutable");
+    try {
+      expect((await runtime.detect({}, true)).every(status => !status.installed)).toBe(true);
+      expect(claude).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      await expect(runtime.install("pi")).rejects.toThrow("请先在 Agent 设置中启用此接入");
+      expect(await runtime.installAll("update")).toEqual({ succeeded: 0, failures: [], warnings: [], cancelled: false });
+      expect(installation.run).not.toHaveBeenCalled();
+    } finally { await runtime.close(); }
+  });
+
   // HOST-CLAUDE-UPDATE-02: latest discovery is independent of local CLI I/O and
   // must survive local refreshes; a failed recheck cannot retain a stale latest claim.
   it("checks Claude latest in the background, shares pending checks, and recomputes after a local refresh", async () => {

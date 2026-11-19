@@ -25,13 +25,20 @@ vi.mock("./claude-startup.js", async importOriginal => ({
 vi.mock("./claude-version.js", async importOriginal => ({
   ...await importOriginal<typeof import("./claude-version.js")>(), requireClaudeModsVersion: vi.fn(async () => undefined),
 }));
+import { AgentEnablementStore } from "./agent-enablement.js";
 import { DesktopRuntime, shouldAutoEnableCodexTerminal } from "./desktop-runtime.js";
 import { openMacAgentTerminal } from "./macos-agent-terminal.js";
 
 describe("macOS terminal launch", () => {
   let workspace: string;
+  let runtime: DesktopRuntime;
   beforeEach(async () => {
     workspace = await mkdtemp(join(tmpdir(), "orbis 工作区's "));
+    const state = join(workspace, "state");
+    await new AgentEnablementStore(state, async () => ({ pi: true, codex: true, claude: true })).read();
+    runtime = new DesktopRuntime(() => {}, state, {
+      pi: join(workspace, "pi"), codex: join(workspace, "codex"), dsh: join(workspace, "dsh"), claude: join(workspace, "claude-config"),
+    });
     vi.clearAllMocks();
     vi.stubGlobal("process", { ...process, platform: "darwin" });
     terminal.pi.mockResolvedValue({ command: "/Orbis Tools/node", prefixArgs: ["/My Projects/pi.js"] });
@@ -47,11 +54,11 @@ describe("macOS terminal launch", () => {
       return child;
     });
   });
-  afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await rm(workspace, { recursive: true, force: true }); });
+  afterEach(async () => { await runtime.close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await rm(workspace, { recursive: true, force: true }); });
 
   it("opens native Claude Code in the selected workspace with the Orbis plugin", async () => {
     const state = join(workspace, "state");
-    await new DesktopRuntime(() => {}, state).openAgent("claude", "tui", workspace);
+    await runtime.openAgent("claude", "tui", workspace);
     const files = await readdir(join(state, "tmp"));
     const scripts = files.filter(name => name.endsWith(".command"));
     expect(scripts).toHaveLength(1);
@@ -74,7 +81,7 @@ describe("macOS terminal launch", () => {
 
   it("reports a missing Claude CLI without opening a terminal", async () => {
     terminal.claude.mockResolvedValue(undefined);
-    await expect(new DesktopRuntime(() => {}, workspace).openAgent("claude", "tui", workspace)).rejects.toThrow("没有找到 Claude Code");
+    await expect(runtime.openAgent("claude", "tui", workspace)).rejects.toThrow("没有找到 Claude Code");
     expect(terminal.spawn).not.toHaveBeenCalled();
   });
 
@@ -84,20 +91,20 @@ describe("macOS terminal launch", () => {
       queueMicrotask(() => { child.emit("spawn"); child.emit("exit", 1); });
       return child;
     });
-    await expect(new DesktopRuntime(() => {}, join(workspace, "state")).openAgent("claude", "tui", workspace))
+    await expect(runtime.openAgent("claude", "tui", workspace))
       .rejects.toThrow("Terminal 是否可用");
     expect(await readdir(join(workspace, "state", "tmp"))).toEqual([]);
   });
 
   it.each([undefined, "relative/path", "/orbis-missing-workspace-for-test"])("rejects an invalid Claude workspace %s before launching", async cwd => {
-    await expect(new DesktopRuntime(() => {}, workspace).openAgent("claude", "tui", cwd)).rejects.toThrow(/工作区目录/u);
+    await expect(runtime.openAgent("claude", "tui", cwd)).rejects.toThrow(/工作区目录/u);
     expect(terminal.claude).not.toHaveBeenCalled();
     expect(terminal.spawn).not.toHaveBeenCalled();
   });
 
   it("opens a private command file without Apple Events approval or bridge protocol stdio", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "must-not-appear-in-launch-file");
-    await new DesktopRuntime(() => {}, join(workspace, "state")).openAgent("codex", "tui", workspace);
+    await runtime.openAgent("codex", "tui", workspace);
     const [program, args, options] = terminal.spawn.mock.calls[0] as [string, string[], Record<string, unknown>];
     expect(program).toBe("/usr/bin/open");
     expect(args.slice(0, 2)).toEqual(["-a", "Terminal"]);
@@ -112,7 +119,7 @@ describe("macOS terminal launch", () => {
   });
 
   it("keeps the Pi extension in the terminal invocation", async () => {
-    await new DesktopRuntime(() => {}, join(workspace, "state")).openAgent("pi", "tui", workspace);
+    await runtime.openAgent("pi", "tui", workspace);
     const args = terminal.spawn.mock.calls[0]![1] as string[];
     const script = await readFile(args[2]!, "utf8");
     expect(script).toContain("'PI_SKIP_VERSION_CHECK=1'");
@@ -146,7 +153,7 @@ describe("macOS terminal launch", () => {
       queueMicrotask(() => child.emit("exit", 1));
       return child;
     });
-    await expect(new DesktopRuntime(() => {}, join(workspace, "state")).openAgent("codex", "tui", workspace)).rejects.toThrow("Terminal 是否可用");
+    await expect(runtime.openAgent("codex", "tui", workspace)).rejects.toThrow("Terminal 是否可用");
     expect(await readdir(join(workspace, "state", "tmp"))).toEqual([]);
     expect(shouldAutoEnableCodexTerminal({ platform: "darwin", hostRunning: true, installed: true, compatible: true, state: "disabled", needsElevation: false })).toBe(false);
   });
