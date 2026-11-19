@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, open, readFile, readdir, rm, stat, writeFile, type FileHandle } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -89,6 +89,37 @@ describe("HostUploadService（接收方驱动：Host 拉，手机应答）", () 
       );
     }
   };
+
+  // A source can change sessions after the Host has already asked for file bytes.
+  it("does not publish a scoped import whose target changes during transfer", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-upload-import-fence-"));
+    const data = Buffer.from("sensitive synthetic payload");
+    const messages: RelayToDeviceMessage[] = [];
+    const uploads = service(messages);
+    const request = { ...init(data), directory: join(stateDir, ".orbis-uploads", hash(data)), importTarget: { sessionId: "old", cwd: stateDir } };
+    let current = true;
+    await uploads.handleInit("device-a", request, () => current);
+    await waitFor(() => readRequests(messages).length > 0);
+    current = false;
+    serveReads(uploads, "device-a", messages, data, new Set());
+    await waitFor(() => messages.some(message => message.type === "file.upload.failed" && message.code === "import_target_changed"));
+    expect(await readdir(request.directory)).toEqual([]);
+    expect(messages.some(message => message.type === "file.upload.finished")).toBe(false);
+  });
+
+  // A directory in the selected project must not redirect imported files to another project.
+  it("refuses an import through a symlink within the project upload root", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-upload-import-link-"));
+    const outside = join(stateDir, "outside"), project = join(stateDir, "project");
+    await mkdir(outside); await mkdir(project);
+    await symlink(outside, join(project, ".orbis-uploads"), "junction");
+    const data = Buffer.from("synthetic file");
+    const request = { ...init(data), directory: join(project, ".orbis-uploads", hash(data)), importTarget: { sessionId: "selected", cwd: project } };
+    const messages: RelayToDeviceMessage[] = [];
+    await service(messages).handleInit("device-a", request, () => true);
+    expect(messages).toMatchObject([{ type: "file.upload.failed", requestId: request.requestId, code: "invalid_request" }]);
+    expect(await readdir(outside)).toEqual([]);
+  });
 
   // 这条不变量撑起「断线可续传」：`.part` 的身份必须跨进程稳定，否则 Host 一重启就找不到
   // 已经收下的字节，手机白传一遍。用「新实例 + 同一份索引」模拟重启。

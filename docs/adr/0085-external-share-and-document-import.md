@@ -64,9 +64,10 @@
 | OI-02 | iOS 文档打开、主 App 收件页与共享区存储核心（IMPORT-04/05） | OI-00 |
 | OI-03 | iOS 分享扩展、入口与签名检查（IMPORT-03） | OI-02 |
 | OI-04a | 主 App 选择已有会话、持久绑定导入草稿（IMPORT-05/06） | OI-01/02/03 |
-| OI-04b | 显式发送、附件传输与命令对账（IMPORT-06） | OI-04a |
-| OI-05 | 新建会话、附件和首句交接及恢复（IMPORT-07） | OI-04b |
-| OI-06 | Host/Relay 独立授权、加密投递与跨版本回退（IMPORT-08） | OI-04b |
+| OI-04b-H | Host 目标校验、附件归属及只读回执（IMPORT-06） | OI-04a |
+| OI-04b-iOS / OI-04b-Android | 主 App 显式发送、附件传输与命令对账（IMPORT-06） | OI-04b-H |
+| OI-05 | 新建会话、附件和首句交接及恢复（IMPORT-07） | OI-04b-iOS / OI-04b-Android |
+| OI-06 | Host/Relay 独立授权、加密投递与跨版本回退（IMPORT-08） | OI-04b-H |
 | OI-07 | iOS 扩展发送已有会话、后台上传与回执；新建目标按 OI-05 能力接入（IMPORT-08） | OI-03/05/06 |
 
 各提交只包含本 Ticket 的实现、相应测试和证据指针。A 的本地批次与持久化测试、构建和设备验证分别登记；阶段 B/C 不以 A 的结果代替。待真机回归的候选由共享 QA Case 管理，领取后由节点构建；验收以用户记录为准。
@@ -94,3 +95,11 @@ Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子�
 主 App 可从已认证的在线会话选择电脑、会话与项目。选择只在原批次清单中原子绑定目标，使它从待选列表进入「导入草稿」，可显式移回，且不复制文件、不覆盖聊天输入框、不上传。配对更换、项目变化、离线或会话归属不明确时，不替用户选择其他目标。确认发送与恢复历史会话尚未接入。
 
 [Android 存储和目标筛选](../../android/app/src/test/java/com/orbising/orbis/ExternalImportStoreTest.kt) 6/6、[iOS 存储及多电脑定向回归](../../ios/Orbis/Tests/MultiHostTests.swift)与分享回归合计 14/14 通过。见 [Android 编译及单测](../../.artifacts/external-import/oi-04a/android/run.log)、[iOS 单测](../../.artifacts/external-import/oi-04a/ios-core-first/run.log)、[iOS 模拟器构建](../../.artifacts/external-import/oi-04a/ios-app/run.log)及[租约核验](../../.artifacts/external-import/oi-04a/ios-app/cleanup-audit.json)。未安装、未分发、未验收。
+
+### OI-04b-H 实施记录
+
+[Host](../../packages/host/src/host-service.ts) 在已认证连接的 `device.ready.hostFeatures` 声明 `external-import.target-v1`。导入目标绑定会话和项目，不改原生后端命令。Host 校验目标仍在线且归属唯一；启动配置及附件检查完成后再核对目标与配对。禁止导入走 `steer`。导入附件走[现有分片传输](../../packages/host/src/artifact-upload.ts)，按设备和会话隔离续传；验哈希后落到选定项目下，不跟随上传区中的链接，不覆盖同名文件。
+
+设备可用 `external-import.result.read` 按原目标和命令身份只读核对；不会重发命令。`accepted` 表示后端确认接收或排队，不表示执行完成。回执有界且仅保留在本次 Host 进程中；重启或记录过期后的 `unknown` 不证明未发送。附件校验归属也随 Host 进程重置；若尚未提交消息，可重新上传附件。旧 Host 不使用导入信封，原有上传及聊天格式不变。
+
+[自动回归](../../.artifacts/external-import/oi-04b-host/regression.log) 156/156，[类型检查](../../.artifacts/external-import/oi-04b-host/typecheck.log)通过。隔离 E2E 使用合成配对和 Pi；目标校验及重连只读回执见 [Host 用例](../../packages/host/src/host-service.test.ts)。[发布对照](../../packages/host/src/host-protocol-compatibility.test.ts)使用 v0.1.22（`11c7a227`）自身源码和锁定依赖构建的 Host 与协议解析器，覆盖同协议号下的能力差异、原有请求及重连。首轮使用非规范临时目录别名导致验收失败的[日志](../../.artifacts/external-import/oi-04b-host/fence-results-first.log)保留。未部署、未验收。

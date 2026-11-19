@@ -11,7 +11,7 @@
  */
 import { homedir, hostname } from "node:os";
 import { readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { createProcessToolContentStore, type ToolContentStore } from "@orbis/runtime-bridge";
@@ -44,6 +44,7 @@ import {
   DeviceE2ePayloadSchema,
   DEVICE_FEATURE_DSH_DESKTOP,
   HOST_FEATURE_DEVICE_FEATURES,
+  HOST_FEATURE_IMPORT_TARGET,
   PROTOCOL_VERSION,
   type AgentKind,
   type HostProviderSummary,
@@ -53,6 +54,7 @@ import {
   type DeviceE2ePayload,
   type EnvelopeChannel,
   type EnvelopeV2,
+  type ExternalImportTarget,
   type OutboundQueueSource,
   type PathKind,
   type HostCatalogBackend,
@@ -1486,7 +1488,7 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES],
+      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, HOST_FEATURE_IMPORT_TARGET],
       sessionConfiguration: 1,
     };
   }
@@ -1821,6 +1823,7 @@ export class HostService {
     this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
     this.#downloads.releaseDevice(deviceId);
     this.#uploads.releaseDevice(deviceId, "artifact_transport_disconnected");
+    this.#uploads.forgetImportAttachments(deviceId);
     this.#sessionSync.clearDevice(deviceId);
     this.#notifications.releaseDevice(deviceId);
     this.#deviceViewFacts.forget(deviceId);
@@ -2041,7 +2044,30 @@ export class HostService {
     }
     // ── 上传（spec: 手机上传文件到电脑）：接收方驱动（ADR-0012），落地、校验、拉取都在这里。
     if (message.type === "file.upload.init") {
-      void this.#uploads.handleInit(deviceId, message);
+      const target = message.importTarget;
+      if (target === undefined) {
+        void this.#uploads.handleInit(deviceId, message);
+      } else {
+        const isCurrent = this.#externalImportFence(deviceId, message.runtimeId, target);
+        const directory = join(target.cwd, ".orbis-uploads", message.sha256);
+        if (!isAbsolute(target.cwd) || !isAbsolute(message.directory) || normalize(message.directory) !== directory || !isCurrent()) {
+          this.#sendToDevice(deviceId, { type: "file.upload.failed", protocolVersion: PROTOCOL_VERSION,
+            requestId: message.requestId, code: "import_target_changed", message: "所选会话已不可用" });
+          return;
+        }
+        void this.#uploads.handleInit(deviceId, { ...message, directory }, isCurrent);
+      }
+      return;
+    }
+    if (message.type === "external-import.result.read") {
+      if (!findActiveDeviceRecord(this.#store, deviceId)) return;
+      const { runtimeId, commandId, importTarget } = message;
+      const receipt = this.#commandOwners.importReceipt(deviceId, runtimeId, commandId, importTarget);
+      const status = receipt === undefined ? "unknown" : receipt.type === "runtime.error" ? "unconfirmed"
+        : receipt.status === "pending" ? "pending" : receipt.status === "unconfirmed" || receipt.status === "message_id_conflict" ? "unconfirmed"
+        : receipt.ok && (receipt.status === undefined || receipt.status === "success") ? "accepted" : "failed";
+      this.#sendToDeviceOn(deviceId, path, { type: "external-import.result", protocolVersion: PROTOCOL_VERSION,
+        runtimeId, commandId, importTarget, status });
       return;
     }
     if (message.type === "file.upload.cancel") {
@@ -2108,6 +2134,12 @@ export class HostService {
       return;
     }
     const command = message.command;
+    if (message.importTarget && (command.type !== "user_message" || command.messageId === undefined || command.delivery === "steer"
+      || message.commandId.length > 256)) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", code: "invalid_command", commandId: message.commandId,
+        message: "导入内容只支持发送普通消息或排队" });
+      return;
+    }
     if (this.#providerChanging && ["user_message", "slash.execute", "permissions.update"].includes(command.type) && this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(message.runtimeId))) {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "provider_switching", commandId: message.commandId, message: "正在切换供应商，请稍后重新打开会话" });
       return;
@@ -2171,6 +2203,9 @@ export class HostService {
     deviceId: string,
     message: Extract<DeviceE2ePayload, { type: "runtime.command" }>,
   ): void {
+    const importTarget = message.importTarget;
+    const importFence = importTarget === undefined ? undefined : this.#externalImportFence(deviceId, message.runtimeId, importTarget,
+      message.command.type === "user_message" && message.command.delivery === "followUp");
     if (message.command.type === "slash.execute" && message.command.optionCatalogId !== undefined) {
       const scope = this.#agentFacts.scopeOf(message.runtimeId);
       if (!scope || this.#agentStateRegistry.read(scope, "capabilities")?.availability !== "ready"
@@ -2184,13 +2219,20 @@ export class HostService {
     }
     const { runtimeId, commandId, command } = message;
     if (command.type === "user_message") {
-      const sessionId = this.#runtimesSnapshot().find(item => item.runtimeId === runtimeId)?.sessionId;
+      const rejectTarget = () => this.#sendToDevice(deviceId, { type: "protocol.error", code: "import_target_changed", commandId,
+        message: "所选会话已不可用" });
+      if (importFence && !importFence()) { rejectTarget(); return; }
+      const sessionId = importTarget?.sessionId ?? this.#runtimesSnapshot().find(item => item.runtimeId === runtimeId)?.sessionId;
       if (sessionId !== undefined) {
         // A configured launch may publish runtime.online before native settings are confirmed.
-        void this.#sessionConfigurations.blocks(sessionId).then(blocked => {
-          if (blocked) this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "command.result", commandId,
+        void this.#sessionConfigurations.blocks(sessionId).then(async blocked => {
+          const attachmentsVerified = !importTarget || blocked || await this.#uploads.ownsImportAttachments(deviceId, importTarget, command.attachments ?? []);
+          if (importFence && !importFence()) rejectTarget();
+          else if (blocked) this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "command.result", commandId,
             ok: false, status: "failure", error: "会话启动配置尚未确认，消息未发送" }));
-          else this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command);
+          else if (!attachmentsVerified) this.#sendToDevice(deviceId, { type: "protocol.error", code: "import_attachments_unverified", commandId,
+            message: "请重新上传导入附件" });
+          else this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command, importTarget);
         }).catch(() => this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId,
           { type: "command.result", commandId, ok: false, status: "unconfirmed", error: "启动配置记录无法核对，消息未发送" })));
         return;
@@ -2255,6 +2297,22 @@ export class HostService {
     this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command);
   }
 
+  /** IMPORT-06: the authenticated device and exact session/project must still own this route. */
+  #externalImportFence(deviceId: string, runtimeId: string, target: ExternalImportTarget, allowRunning = true): () => boolean {
+    const link = this.#links.get(deviceId);
+    const pairing = findActiveDeviceRecord(this.#store, deviceId);
+    return () => {
+      if (this.#serviceClosed || !link?.active || this.#links.get(deviceId) !== link || !pairing
+        || findActiveDeviceRecord(this.#store, deviceId) !== pairing) return false;
+      const matches = this.#runtimesSnapshot().filter(runtime => runtime.runtimeId === runtimeId || runtime.sessionId === target.sessionId);
+      const runtime = matches[0];
+      return matches.length === 1 && runtime?.runtimeId === runtimeId && runtime.sessionId === target.sessionId
+        && runtime.cwd === target.cwd && (runtime.status === "idle" || allowRunning && runtime.status === "running")
+        && this.#backends.filter(backend => backend.isReady() && backend.ownsRuntime(runtimeId)).length === 1
+        && !this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(runtimeId));
+    };
+  }
+
   async #readSessionEntry(deviceId: string, runtimeId: string, command: Extract<import("@orbis/protocol").RuntimeCommand, { type: "session.entry.request" }>): Promise<void> {
     const scope = this.#agentFacts.scopeOf(runtimeId), link = this.#links.get(deviceId);
     if (scope?.kind !== "agent" || scope.key.sessionId !== command.sessionId) {
@@ -2274,10 +2332,11 @@ export class HostService {
       }));
   }
 
-  #dispatchRuntimeInput(deviceId: string, runtimeId: string, commandId: string, command: import("@orbis/protocol").RuntimeCommand): void {
+  #dispatchRuntimeInput(deviceId: string, runtimeId: string, commandId: string, command: import("@orbis/protocol").RuntimeCommand,
+    importTarget?: ExternalImportTarget): void {
     const inputScope = this.#agentFacts.scopeOf(runtimeId);
     const admission = this.#commandOwners.begin(deviceId, runtimeId, commandId, command,
-      inputScope?.kind === "agent" ? agentKeyId(inputScope.key) : runtimeId);
+      inputScope?.kind === "agent" ? agentKeyId(inputScope.key) : runtimeId, importTarget);
     if (admission.kind === "reject") {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: admission.error, commandId,
         message: admission.error === "host_busy" ? "Host 命令任务过多，请稍后重试" : admission.error === "message_id_conflict" ? "消息身份已由另一个命令使用，请核对原消息" : "命令身份与已有请求冲突" });

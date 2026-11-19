@@ -38,6 +38,7 @@ import {
   applyStateDelta, type AgentStateDomainSnapshot, type CatalogQueryPage,
   LOOPBACK_PATH,
   PROTOCOL_VERSION,
+  HOST_FEATURE_IMPORT_TARGET,
   RelayToDeviceMessageSchema,
   ToolInventorySource, createToolSummary, createToolContentPage,
   selectSessionSyncSnapshot,
@@ -48,6 +49,7 @@ import {
   type CodexDesktopAttach,
   type EnvelopeV2,
   type PathKind,
+  type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
   type ToolContentReadRequest, type ToolInventorySnapshot,
@@ -852,6 +854,80 @@ describe("host end-to-end over relay", () => {
     }
     throw new Error("Expected handover business message did not arrive");
   };
+
+  // IMPORT-06: use the real paired link and loopback adapter. A target mismatch must stop both
+  // the Host file write and the agent message, even when the supplied runtime ID is valid.
+  it("fences external imports at the paired Host and retains legacy command dispatch", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-import-target-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    expect(await readMatching(device, message => message.type === "device.ready"))
+      .toMatchObject({ hostFeatures: expect.arrayContaining([HOST_FEATURE_IMPORT_TARGET]) });
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    const target = { sessionId: "intended", cwd: stateDir };
+    const runtimeId = "pi-import";
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId, name: "Import target", status: "idle", ...target } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    const receive = async (key: string, id: string) => {
+      for (let i = 0; i < 40; ++i) {
+        const message = await device!.receiveMessage();
+        if (message[key] === id || (message.event as Record<string, unknown> | undefined)?.[key] === id) return message;
+      }
+      throw new Error(`No correlated reply (${id})`);
+    };
+    const command = { type: "user_message", text: "Synthetic imported text", messageId: "import-message" } as const;
+    const submit = (commandId: string, importTarget: typeof target, body: RuntimeCommand = command) => device!.sendData(JSON.stringify({
+      type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId, commandId, command: body, importTarget,
+    }));
+    submit("wrong-session", { ...target, sessionId: "different" });
+    expect(await receive("commandId", "wrong-session")).toMatchObject({ type: "protocol.error", code: "import_target_changed" });
+    submit("steer", target, { ...command, delivery: "steer" });
+    expect(await receive("commandId", "steer")).toMatchObject({ type: "protocol.error", code: "invalid_command" });
+    submit("unverified-file", target, { ...command, attachments: [join(stateDir, "unverified.txt")] });
+    expect(await receive("commandId", "unverified-file")).toMatchObject({ type: "protocol.error", code: "import_attachments_unverified" });
+    const bytes = Buffer.from("local fixture file");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const invalidDirectory = join(stateDir, "outside-import-folder");
+    device.sendData(JSON.stringify({ type: "file.upload.init", protocolVersion: PROTOCOL_VERSION, runtimeId, requestId: "wrong-directory",
+      importTarget: target, fileName: "fixture.txt", directory: invalidDirectory, size: bytes.length, sha256 }));
+    expect(await receive("requestId", "wrong-directory")).toMatchObject({ type: "file.upload.failed", code: "import_target_changed" });
+    expect(existsSync(invalidDirectory)).toBe(false);
+
+    const directory = join(target.cwd, ".orbis-uploads", sha256);
+    device.sendData(JSON.stringify({ type: "file.upload.init", protocolVersion: PROTOCOL_VERSION, runtimeId, requestId: "safe-file",
+      importTarget: target, fileName: "fixture.txt", directory, size: bytes.length, sha256 }));
+    const { uploadId } = await receive("requestId", "safe-file");
+    expect(await readMatching(device, message => message.type === "file.upload.read")).toMatchObject({ uploadId, offset: 0 });
+    device.sendBinary(encodeArtifactChunkFrame({ runtimeId, transferId: uploadId as string, offset: 0, data: bytes }));
+    const finished = await readMatching(device, message => message.type === "file.upload.finished");
+    expect(finished).toMatchObject({ uploadId, sha256, fileName: "fixture.txt" });
+    const path = finished.path as string;
+    expect(await readFile(path)).toEqual(bytes);
+    const withFile = { ...command, attachments: [path] };
+    submit("confirmed-import", target, withFile);
+    await expect(runtime.next()).resolves.toMatchObject({ commandId: "confirmed-import", command: withFile });
+    runtime.publish(1, { type: "command.result", commandId: "confirmed-import", ok: true, status: "success" });
+    expect(await receive("commandId", "confirmed-import")).toMatchObject({ event: { ok: true, status: "success" } });
+    const read = (id: string, importTarget: typeof target) => device!.sendData(JSON.stringify({ type: "external-import.result.read",
+      protocolVersion: PROTOCOL_VERSION, runtimeId, commandId: id, importTarget }));
+    await handover("device", "ws", paired.pskRoot, paired.payload.hostId);
+    expect(await readMatching(device, message => message.type === "device.ready"))
+      .toMatchObject({ hostFeatures: expect.arrayContaining([HOST_FEATURE_IMPORT_TARGET]) });
+    await readMatching(device, message => message.type === "device.path");
+    await expect(runtime.next()).resolves.toMatchObject({ type: "runtime.resync", reason: "device_reconnected" });
+    read("confirmed-import", target);
+    expect(await receive("commandId", "confirmed-import")).toMatchObject({ type: "external-import.result", status: "accepted" });
+    read("confirmed-import", { ...target, sessionId: "different" });
+    expect(await receive("commandId", "confirmed-import")).toMatchObject({ type: "external-import.result", status: "unknown" });
+    read("unknown-import", target);
+    expect(await receive("commandId", "unknown-import")).toMatchObject({ type: "external-import.result", status: "unknown" });
+    device.sendCommand(runtimeId, "legacy-barrier", { type: "stop" });
+    await expect(runtime.next()).resolves.toMatchObject({ commandId: "legacy-barrier", command: { type: "stop" } });
+  });
 
   it.each(["device", "host"] as const)("keeps accepted commands and pending interaction results across Relay handovers without dispatching twice (%s)", async side => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-handover-command-")); relay = await startRelay(stateDir);
@@ -3471,7 +3547,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(ready.ready.agents).not.toContain("dshDesktop");
       expect(ready.ready.launchableAgents).not.toContain("dshDesktop");
       expect(ready.ready).not.toHaveProperty("dshDesktop");
-      expect(ready.ready.hostFeatures).toEqual(["device.features"]);
+      expect(ready.ready.hostFeatures).toEqual(["device.features", HOST_FEATURE_IMPORT_TARGET]);
       RelayToDeviceMessageSchema.parse(ready.ready);
       const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
         for (let i = 0; i < 80; i++) {

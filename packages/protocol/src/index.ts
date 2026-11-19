@@ -275,6 +275,7 @@ export type CodexDesktopAttach = z.infer<typeof CodexDesktopAttachSchema>;
  */
 export const HOST_FEATURE_DEVICE_FEATURES = "device.features";
 export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
+export const HOST_FEATURE_IMPORT_TARGET = "external-import.target-v1";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 
 /**
@@ -1229,6 +1230,15 @@ export const RelayDeviceClientMessageSchema = z.discriminatedUnion("type", [
  * 与 `DeviceClientMessage` 分开：后者是 Relay 看得见的**明文**设备消息，而现在那里
  * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0009）。
  */
+// Host-only fence on the device envelope. Older runtimes still receive the existing command shape.
+const ExternalImportTargetSchema = z.strictObject({ sessionId: z.string().min(1).max(256), cwd: z.string().min(1).max(4096) });
+export type ExternalImportTarget = z.infer<typeof ExternalImportTargetSchema>;
+const ExternalImportReceiptIdentity = {
+  runtimeId: z.string().min(1).max(128),
+  commandId: z.string().min(1).max(256),
+  importTarget: ExternalImportTargetSchema,
+};
+
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("session.catalog.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
   CatalogQueryRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
@@ -1253,7 +1263,10 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
     runtimeId: z.string().min(1),
     commandId: z.string().min(1),
     command: RuntimeCommandSchema,
+    importTarget: ExternalImportTargetSchema.optional(),
   }),
+  // Querying a lost receipt must never admit or re-dispatch the command.
+  z.strictObject({ type: z.literal("external-import.result.read"), protocolVersion: z.literal(PROTOCOL_VERSION), ...ExternalImportReceiptIdentity }),
   // ── 进程激活（spec §8）。请求/响应都用 requestId 关联；失败走 protocol.error 并带回 requestId。
   SessionConfigurationReadSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   SessionConfigurationSaveSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
@@ -1325,6 +1338,7 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
     size: z.number().int().nonnegative().max(MAX_UPLOAD_BYTES),
     sha256: z.string().regex(HASH_PATTERN),
     mimeType: z.string().max(255).optional(),
+    importTarget: ExternalImportTargetSchema.optional(),
   }),
   z.strictObject({
     type: z.literal("file.upload.cancel"),
@@ -1398,6 +1412,8 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
     path: PathKindSchema,
     rttMs: z.number().nonnegative().optional(),
   }),
+  z.strictObject({ type: z.literal("external-import.result"), protocolVersion: z.literal(PROTOCOL_VERSION), ...ExternalImportReceiptIdentity,
+    status: z.enum(["pending", "accepted", "failed", "unconfirmed", "unknown"]) }),
   z.strictObject({ type: z.literal("runtime.online"), runtime: RuntimeMetadataSchema }),
   z.strictObject({ type: z.literal("runtime.offline"), runtimeId: z.string(), reason: z.string() }),
   /** Host 服务不了这次范围请求：读盘失败、越界、或 artifact 身份在传输中变了。 */

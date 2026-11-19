@@ -98,6 +98,11 @@ class OldPhone {
   }
 }
 
+// Optional source build of the released reference (own dependencies, not current aliases).
+const importReferenceRoot = process.env.ORBIS_IMPORT_REFERENCE_RUNTIME;
+const importReferenceProtocol = importReferenceRoot ? (await nativeRequire(join(importReferenceRoot, "packages/protocol/dist/index.js"))) as typeof import("@orbis/protocol") : undefined;
+const importReleasedHost = importReferenceRoot ? (await nativeImport(pathToFileURL(join(importReferenceRoot, "packages/host/dist/host-service.js")).href)).HostService : undefined;
+
 describe("unchanged legacy device behavior against a compatible Host", () => {
   let directory: string;
   let relay: RelayServer;
@@ -113,7 +118,7 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     if (directory) await rm(directory, { recursive: true, force: true });
     keys.clear();
   });
-  const setup = async (): Promise<void> => {
+  const setup = async (implementation = HostService): Promise<void> => {
     directory = await mkdtemp(join(tmpdir(), "orbis-wire-compat-"));
     hostId = (await loadOrCreateHostIdentity({ dir: directory })).hostId;
     const devices = ["phone18", "phone19"].map(deviceId => {
@@ -122,7 +127,7 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     });
     await saveDeviceStore(directory, { version: 1, devices });
     relay = await createRelayServer({ port: 0, runtimeCredentials: ["isolated-runtime"], deviceCredentials: devices.map(device => ({ deviceId: device.deviceId, hostId, name: device.label, credential: device.deviceId })) });
-    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "isolated-runtime", stateDir: directory, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
+    host = await implementation.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "isolated-runtime", stateDir: directory, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
     await host.start();
   };
   const connect = async (version: 18 | 19, path: "relay" | "lan", outerVersion: 18 | 19 = version, bootstrap = true): Promise<OldPhone> => {
@@ -144,6 +149,32 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     if (bootstrap) await phone.take("device.ready");
     return phone;
   };
+
+  // IMPORT-06/ADR-0064: same release protocol number, but request admission differs.
+  // Run both implementations with the same E2E fixture, including a fresh handshake.
+  const externalImportVersions: ("candidate" | "released")[] = importReleasedHost ? ["candidate", "released"] : ["candidate"];
+  it.each(externalImportVersions)("negotiates scoped imports against %s Host without breaking the released wire", async version => {
+    await setup(version === "released" ? importReleasedHost! : HostService);
+    const phone = await connect(19, "relay", 19, false);
+    const checkedReady = async () => {
+      phone.request({ type: "host.lan.request" });
+      const ready = await phone.take("device.ready");
+      importReferenceProtocol?.RelayToDeviceMessageSchema.parse(ready);
+      expect((ready.hostFeatures as string[]).includes("external-import.target-v1")).toBe(version === "candidate");
+    };
+    await checkedReady();
+    const target = { sessionId: "missing", cwd: directory };
+    const command = { type: "user_message", text: "synthetic import", messageId: "import-message" };
+    phone.request({ type: "runtime.command", runtimeId: "missing", commandId: "fenced", importTarget: target, command });
+    expect(await phone.take("protocol.error")).toMatchObject({ commandId: "fenced",
+      code: version === "released" ? "invalid_command" : "import_target_changed" });
+    await phone.handshake(keys.get(phone.deviceId)!);
+    await checkedReady();
+    phone.request({ type: "runtime.command", runtimeId: "missing", commandId: "legacy", command });
+    expect(await phone.take("protocol.error")).toMatchObject({ commandId: "legacy", code: "runtime_offline" });
+    phone.request({ type: "session.list", requestId: "legacy-after-reconnect" });
+    await phone.take("session.list.result", "legacy-after-reconnect");
+  });
 
   it.each([[18, "relay"], [19, "relay"], [18, "lan"], [19, "lan"]] as const)("protocol %s on %s reads, receives correlated errors and transfers original bytes", async (version, path) => {
     await setup();
