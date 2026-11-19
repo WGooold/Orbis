@@ -39,6 +39,8 @@ import {
   applyStateDelta, type AgentStateDomainSnapshot, type CatalogQueryPage,
   LOOPBACK_PATH,
   DEVICE_FEATURE_MESSAGE_RENDER,
+  DEVICE_FEATURE_COMPACT_BOOTSTRAP,
+  DEVICE_FEATURE_CLAUDE_SEND_NOW,
   PROTOCOL_VERSION,
   HOST_FEATURE_IMPORT_TARGET,
   RelayToDeviceMessageSchema,
@@ -2488,7 +2490,7 @@ describe("host end-to-end over relay", () => {
 
     // FT-G10: the scoped compact menu satisfies bootstrap. The delayed legacy
     // compatibility replay must not enqueue the same 634 KB-class catalog.
-    const deadline = Date.now() + 400;
+    const deadline = Date.now() + 1_200;
     const legacyMenuEvents: Record<string, unknown>[] = [];
     while (Date.now() < deadline) {
       try {
@@ -2621,6 +2623,77 @@ describe("host end-to-end over relay", () => {
       runtimeId: "pi-restart",
       reason: "device_reconnected",
     });
+  });
+
+  it("cancels legacy bootstrap replay on state.compact-bootstrap.v1 and gates steerSupported on claude.send-now.v1", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
+    relay = await startRelay(stateDir);
+    host = await HostService.create({
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
+      credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      reconnect: false, lan: false, bootstrapReplayDelayMs: 60,
+    });
+    await host.start();
+
+    const paired = await pairDevice({ relay, host });
+    device = paired.device;
+    const descriptor = host.loopback?.descriptor;
+    if (descriptor === undefined) throw new Error("loopback 端点没有启动");
+    runtime = await TestRuntime.connect({
+      url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-compact", name: "pi", cwd: "/work/repo", status: "idle", hostname: "devbox" },
+    });
+    await expect(runtime.next()).resolves.toMatchObject({ type: "runtime.ready" });
+    runtime.publish(1, {
+      type: "runtime.capabilities",
+      capabilities: { commands: [{ name: "model", description: "切换模型", source: "builtin" }] },
+    });
+    const claudeHelloResponse = await fetch(descriptor.url.replace(/^ws/u, "http") + "/v1/claude/mods/hello", {
+      method: "POST",
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "hello", instanceId: "claude-inst", sessionId: "claude-send-now", cwd: "/work/repo",
+        claudeVersion: "2.1.312", bridgeVersion: "4", interactive: true,
+        capabilities: [
+          "prompt.submit", "prompt.sendNow", "turn.abort", "session.append",
+          "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list",
+        ],
+      }),
+    });
+    expect(await claudeHelloResponse.json()).toMatchObject({ ok: true });
+
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    const initialReady = await readMatching(device, message => message.type === "device.ready");
+    expect(initialReady.hostFeatures).toEqual(expect.arrayContaining([
+      DEVICE_FEATURE_COMPACT_BOOTSTRAP,
+      DEVICE_FEATURE_CLAUDE_SEND_NOW,
+    ]));
+    expect((initialReady.runtimes as Array<Record<string, unknown>>).find(r => r.runtimeId === "claude:claude-send-now"))
+      .not.toHaveProperty("steerSupported");
+
+    device.sendData(JSON.stringify({
+      type: "device.features", protocolVersion: PROTOCOL_VERSION,
+      features: [DEVICE_FEATURE_COMPACT_BOOTSTRAP, DEVICE_FEATURE_CLAUDE_SEND_NOW],
+    }));
+    const upgradedReady = await readMatching(device, message => message.type === "device.ready");
+    expect((upgradedReady.runtimes as Array<Record<string, unknown>>).find(r => r.runtimeId === "claude:claude-send-now"))
+      .toMatchObject({ steerSupported: true });
+
+    const deadline = Date.now() + 200;
+    const legacyMenuEvents: Record<string, unknown>[] = [];
+    while (Date.now() < deadline) {
+      try {
+        const incoming = await device.nextIncoming(deadline - Date.now());
+        if (!("payload" in incoming)) continue;
+        const message = JSON.parse(incoming.payload.toString("utf8")) as Record<string, unknown>;
+        const event = message.event as RuntimeEvent | undefined;
+        if (message.type === "runtime.event" && event?.type === "runtime.capabilities") legacyMenuEvents.push(message);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("超时")) break;
+        throw error;
+      }
+    }
+    expect(legacyMenuEvents).toEqual([]);
   });
 
   it("同局域网的设备先握 LAN 就直接走 LAN，拔掉 LAN 立刻回落 Relay", async () => {
@@ -3676,7 +3749,16 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const launch = { requestId: "launch", launchId: "kimi-launch", agentKind: "kimiCode", cwd, binding: "kimi-code:fixture:local", revision: 0, values: {}, spawnMode: "headless" };
     await handshake();
     const initial = await wait(message => message.type === "device.ready", true);
-    expect(initial.hostFeatures).toEqual(["device.features", HOST_FEATURE_IMPORT_TARGET, "message.content-render.v1", "agent.openclaw", "agent.hermes", "agent.kimiCode"]);
+    expect(initial.hostFeatures).toEqual([
+      "device.features",
+      HOST_FEATURE_IMPORT_TARGET,
+      "message.content-render.v1",
+      "agent.openclaw",
+      "agent.hermes",
+      "state.compact-bootstrap.v1",
+      "claude.send-now.v1",
+      "agent.kimiCode",
+    ]);
     expect(initial.agents).not.toContain("kimiCode");
     const hidden = await read("host-hidden");
     for (const [type, body] of [

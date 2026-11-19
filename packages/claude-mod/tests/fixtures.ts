@@ -30,8 +30,13 @@ export function setup(on: On, options: { home?: string } = {}) {
     resumed: false,
     rejection: "",
     pollError: "",
-    commands: [] as { commandId: string; command: { type: "user_message"; text: string } | { type: "stop" } | { type: "slash"; name: string; args: string } }[],
+    commands: [] as {
+      commandId: string;
+      command: { type: "user_message"; text: string; messageId?: string; delivery?: "steer" | "followUp" }
+        | { type: "stop" } | { type: "slash"; name: string; args: string };
+    }[],
     submits: 0,
+    submittedTexts: [] as string[],
     toolResult: "still working" as unknown,
     toolCalls: [] as unknown[],
     /** How long the native tool stays open, as an AskUserQuestion dialog does until someone answers. */
@@ -40,6 +45,8 @@ export function setup(on: On, options: { home?: string } = {}) {
     /** An older Host refuses the unknown question event as invalid. */
     questionRefused: false,
     denyPrompt: true,
+    abortError: "",
+    submitError: "",
     completionDelay: 0,
     aborts: [] as string[],
     requests: [] as { url: string; authorization: string | undefined; body: Record<string, unknown> }[],
@@ -73,15 +80,21 @@ export function setup(on: On, options: { home?: string } = {}) {
   on("turn.start", (_$, event) => ({ turnId: event.turnId }));
   on("classic.Stop", () => ({}));
   on("turn.complete", (_$, event) => ({ text: event.answer }));
-  on("turn.abort", (_$, event) => { world.aborts.push(event.turnId); return { value: undefined }; });
+  on("turn.abort", (_$, event) => {
+    if (world.abortError) return { deny: world.abortError };
+    world.aborts.push(event.turnId);
+    return { value: undefined };
+  });
   on("tool.call", async (_$, event) => {
     world.toolCalls.push(event);
     if (world.toolDelay > 0) await clock.sleep(world.toolDelay);
     return { result: world.toolResult };
   });
-  on("prompt.submit", async () => {
+  on("prompt.submit", async (_$, event) => {
     world.submits++;
+    world.submittedTexts.push(event.text);
     await clock.sleep(3000);
+    if (world.submitError) throw new Error(world.submitError);
     return world.denyPrompt ? { drop: "Test: no model is called" } : { text: "accepted by test" };
   });
   on("ui.status", (_$, event) => { world.statuses.push(event.text); return { value: undefined }; });

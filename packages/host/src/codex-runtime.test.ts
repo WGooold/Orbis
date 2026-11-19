@@ -3896,4 +3896,34 @@ describe("Codex all-state input lifecycle (AIN-04)", () => {
     expect(h.runtime.activeThreadIds()).toEqual(["th-1"]);
     h.server.onExit?.(0);
   });
+
+  it("fires onCatalogChange only on persistent session changes rather than transient status or token updates", async () => {
+    const h = makeHarness();
+    const metadataChanges = vi.fn();
+    const catalogChanges = vi.fn();
+    h.runtime.onMetadataChange = metadataChanges;
+    h.runtime.onCatalogChange = catalogChanges;
+    await activate(h);
+    catalogChanges.mockClear();
+    metadataChanges.mockClear();
+
+    h.notify("thread/status/changed", { threadId: "th-1", status: { type: "active" } });
+    h.notify("thread/tokenUsage/updated", { threadId: "th-1", tokenUsage: { last: { inputTokens: 42 }, modelContextWindow: 200000 } });
+    h.notify("thread/settings/updated", { threadId: "th-1", threadSettings: { approvalPolicy: "on-request" } });
+    expect(metadataChanges).toHaveBeenCalledTimes(3);
+    expect(catalogChanges).not.toHaveBeenCalled();
+
+    h.notify("thread/name/updated", { threadId: "th-1", threadName: "Renamed session" });
+    expect(catalogChanges).toHaveBeenCalledTimes(1);
+
+    h.notify("item/completed", { threadId: "th-1", turnId: "t1", item: { type: "userMessage", id: "u1", content: [{ type: "text", text: "hi" }] } });
+    expect(catalogChanges).toHaveBeenCalledTimes(2);
+
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "t1", status: "completed" } });
+    expect(catalogChanges).toHaveBeenCalledTimes(3);
+
+    h.notify("thread/settings/updated", { threadId: "th-1", threadSettings: { cwd: "/other/repo" } });
+    expect(catalogChanges).toHaveBeenCalledTimes(4);
+    h.server.onExit?.(0);
+  });
 });

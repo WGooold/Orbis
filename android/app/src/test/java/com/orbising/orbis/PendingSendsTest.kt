@@ -81,6 +81,8 @@ class PendingSendsTest {
             .withCommandResult("c-lost", CommandResult(false, "cancelled"), start)
         assertEquals(pending, pending.withCommandResult("other", CommandResult(true), start))
         assertEquals(PendingSendState.Accepted, pending["ok"]?.state)
+        assertEquals(false, pending["ok"]?.submissionConfirmed)
+        assertEquals(true, pending.withCommandResult("c-ok", CommandResult(true, "success"), start)["ok"]?.submissionConfirmed)
         assertEquals(PendingSendState.Failed("会话正在运行，请选择插入或完成后发送"), pending["busy"]?.state)
         assertEquals(PendingSendState.Unconfirmed, pending["lost"]?.state)
         pending = pending.connectionLost()

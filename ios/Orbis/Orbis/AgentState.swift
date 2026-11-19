@@ -443,6 +443,7 @@ struct AgentProjection {
                       identity.sessionId == runtime.sessionId, value["hostId"] == .null || value["hostId"].string == hostId else { return nil }
                 result.runtime.name = identity.name; result.runtime.cwd = identity.cwd; result.runtime.hostname = identity.hostname
                 result.runtime.sessionName = identity.sessionName; result.runtime.agentKind = identity.agentKind
+                result.runtime.steerSupported = identity.steerSupported
             case "execution":
                 guard let phase = value["phase"].string, ["idle", "running", "waiting_local_interaction"].contains(phase) else { return nil }
                 result.runtime.status = phase

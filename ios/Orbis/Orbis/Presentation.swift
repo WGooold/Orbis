@@ -212,7 +212,14 @@ private let kimiCodeFeature = "agent.kimiCode"
 func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
     let advertised = ready["hostFeatures"] as? [String] ?? []
     guard advertised.contains("device.features") else { return [] }
-    return ["agent.dshDesktop"] + [kimiCodeFeature, messageRenderFeature, "agent.openclaw", "agent.hermes"].filter { advertised.contains($0) }
+    return ["agent.dshDesktop"] + [
+        kimiCodeFeature,
+        messageRenderFeature,
+        "agent.openclaw",
+        "agent.hermes",
+        "state.compact-bootstrap.v1",
+        "claude.send-now.v1",
+    ].filter { advertised.contains($0) }
 }
 
 /// A full authenticated ready follows the declaration; a filtered fallback is not an acknowledgment.

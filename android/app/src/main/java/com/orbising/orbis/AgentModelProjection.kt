@@ -49,7 +49,8 @@ internal fun RemoteState.applyAgentDomainProjection(
                     val incoming = json.decodeFromJsonElement<RuntimeSummary>(hydrated)
                     require(incoming.runtimeId == id && incoming.sessionId == sessionId)
                     runtime = runtime.copy(name = incoming.name, cwd = incoming.cwd, hostname = incoming.hostname,
-                        sessionName = incoming.sessionName, agentKind = incoming.agentKind)
+                        sessionName = incoming.sessionName, agentKind = incoming.agentKind,
+                        steerSupported = incoming.steerSupported ?: runtime.steerSupported)
                 }
                 "execution" -> {
                     val phase = (value as? JsonObject)?.text("phase") ?: error(L10n.tr("execution 缺少 phase"))

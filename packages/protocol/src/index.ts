@@ -231,6 +231,8 @@ export const RuntimeMetadataSchema = z.strictObject({
   contextUsage: RuntimeContextUsageSchema.optional(),
   permissions: RuntimePermissionsSchema.optional(),
   permissionManagement: PermissionManagementSchema.optional(),
+  /** ADR-0064 / claude.send-now.v1: runtime can abort active turn and submit immediately. */
+  steerSupported: z.boolean().optional(),
 });
 export type RuntimeMetadata = z.infer<typeof RuntimeMetadataSchema>;
 
@@ -281,6 +283,10 @@ export const DEVICE_FEATURE_MESSAGE_RENDER = "message.content-render.v1";
 export const DEVICE_FEATURE_KIMI_CODE = "agent.kimiCode";
 export const DEVICE_FEATURE_OPENCLAW = "agent.openclaw";
 export const DEVICE_FEATURE_HERMES = "agent.hermes";
+/** ADR-0064: clients request compact state immediately so Host cancels legacy bootstrap replay timer. */
+export const DEVICE_FEATURE_COMPACT_BOOTSTRAP = "state.compact-bootstrap.v1";
+/** ADR-0064: clients and Claude mod support interrupting active Claude turns on busy send. */
+export const DEVICE_FEATURE_CLAUDE_SEND_NOW = "claude.send-now.v1";
 export const HOST_FEATURE_IMPORT_TARGET = "external-import.target-v1";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 

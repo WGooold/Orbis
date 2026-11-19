@@ -384,7 +384,7 @@ describe("ClaudeBackend directory, archive and phone-opened TUIs", () => {
     expect(mods.runtimeIds()).toEqual([]);
   });
 
-  it("routes slash commands the TUI listed and passes attachments as paths", async () => {
+  it("routes slash commands the TUI listed, passes attachments as paths, and gates steer on prompt.sendNow", async () => {
     const { backend, mods, events } = await fixture();
     const current = connect(mods, "live");
     mods.receiveEvent(current.runtimeId, current.generation, { type: "session.state", state: { commands: [{ name: "compact", source: "builtin" }] } });
@@ -397,6 +397,26 @@ describe("ClaudeBackend directory, archive and phone-opened TUIs", () => {
       { commandId: "c3", command: { type: "user_message", text: "看这个\n\n附件路径：\n/tmp/a.png" } },
     ] });
     expect(events).toContainEqual({ type: "command.result", commandId: "c4", ok: false, status: "failure", error: "claude_steer_unsupported" });
+
+    const capable = mods.hello({
+      type: "hello", instanceId: "claude-capable", sessionId: "capable", cwd: "/tmp",
+      claudeVersion: "2.1.310", bridgeVersion: "4", interactive: true,
+      capabilities: [...CLAUDE_BRIDGE_CAPABILITIES, "prompt.sendNow"],
+    });
+    if (!capable.ok) throw new Error(capable.error);
+    expect(backend.dispatchCommand(capable.runtimeId, "c5", { type: "user_message", text: "steer now", messageId: "m5", delivery: "steer" })).toBe("handled");
+    expect(mods.poll(capable.runtimeId, capable.generation)).toMatchObject({
+      commands: [{ commandId: "c5", command: { type: "user_message", text: "steer now", messageId: "m5", delivery: "steer" } }],
+    });
+    expect(backend.dispatchCommand(capable.runtimeId, "c6", { type: "user_message.cancel", messageId: "m5" })).toBe("handled");
+    expect(events).toContainEqual({
+      type: "command.result", commandId: "c6", ok: false, status: "not_cancelable", error: "claude_prompt_submit_not_cancelable",
+    });
+
+    mods.receiveEvent(capable.runtimeId, capable.generation, { type: "turn.start", turnId: "t1", startedAt: 1 });
+    expect(backend.dispatchCommand(capable.runtimeId, "c7", { type: "user_message", text: "after turn", messageId: "m7", delivery: "followUp" })).toBe("handled");
+    expect(backend.dispatchCommand(capable.runtimeId, "c8", { type: "user_message.cancel", messageId: "m7" })).toBe("handled");
+    expect(events).toContainEqual({ type: "command.result", commandId: "c8", ok: true, status: "cancelled" });
   });
 
   it("is not launchable without a launcher and stays out of the directory without a catalog", async () => {

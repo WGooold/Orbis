@@ -346,8 +346,19 @@ final class FileTransfers: ObservableObject {
         throw ExternalImportProblem.uploadFailed
     }
 
-    func upload(urls: [URL], runtime: RuntimeSummary) {
-        guard connected, let pairing, !preparing else { return }
+    @discardableResult
+    func upload(urls: [URL], runtime: RuntimeSummary, temporarySourceDirectories: [URL] = []) -> Bool {
+        let removeTemporarySources: @Sendable () -> Void = {
+            for directory in temporarySourceDirectories {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
+        guard connected, let pairing, !preparing else {
+            if !temporarySourceDirectories.isEmpty {
+                DispatchQueue.global(qos: .utility).async(execute: removeTemporarySources)
+            }
+            return false
+        }
         let key = hostKey, generation = UUID()
         preparing = true; preparingGeneration = generation
         var staged: [(String, TransferDiskWorker, UUID)] = []
@@ -357,6 +368,11 @@ final class FileTransfers: ObservableObject {
             staged.append((id, disk, token))
         }
         enqueueIO { [weak self] in
+            defer {
+                if !temporarySourceDirectories.isEmpty {
+                    removeTemporarySources()
+                }
+            }
             guard let self else { return }
             var prepared: [FileTransfer] = []
             do {
@@ -377,6 +393,7 @@ final class FileTransfers: ObservableObject {
                 if self.preparingGeneration == generation { self.preparing = false; self.error = error.localizedDescription }
             }
         }
+        return true
     }
     func cancel(_ id: String) {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }

@@ -12,6 +12,11 @@ struct PendingSend: Equatable, Identifiable {
         case unconfirmed
         /// ADR-0049 §6.2：已在本机创建，等附件上传或同会话前一条，尚未写入通道。断线不改变它。
         case waiting(String)
+
+        /// Hide the status row once the native session has confirmed prompt submission.
+        func showsStatus(submissionConfirmed: Bool) -> Bool {
+            !(self == .accepted && submissionConfirmed)
+        }
     }
 
     let messageId: String

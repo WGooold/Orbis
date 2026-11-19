@@ -154,6 +154,17 @@ class MessagePresentationTest {
         assertEquals(ComposerAction.Abort, composerAction(isWorking = true, input = ""))
         assertEquals(ComposerAction.Abort, composerAction(isWorking = true, input = "   "))
         assertEquals(ComposerAction.Send, composerAction(isWorking = true, input = "hello"))
+        assertEquals(ComposerAction.Send, composerAction(isWorking = true, input = "", hasAttachments = true))
+        assertEquals(ComposerAction.Send, composerAction(isWorking = true, input = "   ", hasAttachments = true))
+    }
+
+    @Test
+    fun `pending status hides only when accepted send is submissionConfirmed`() {
+        assertFalse(shouldShowPendingStatus(state = null, submissionConfirmed = false))
+        assertTrue(shouldShowPendingStatus(state = PendingSendState.Sending, submissionConfirmed = false))
+        assertTrue(shouldShowPendingStatus(state = PendingSendState.Accepted, submissionConfirmed = false))
+        assertFalse(shouldShowPendingStatus(state = PendingSendState.Accepted, submissionConfirmed = true))
+        assertTrue(shouldShowPendingStatus(state = PendingSendState.Queued, submissionConfirmed = true))
     }
 
     @Test
@@ -168,6 +179,9 @@ class MessagePresentationTest {
             ),
         )
 
+        assertFalse(canSubmitInput("", commands, selectedSlashCommandName = null, hasAttachments = false))
+        assertTrue(canSubmitInput("", commands, selectedSlashCommandName = null, hasAttachments = true))
+        assertTrue(canSubmitInput("   ", commands, selectedSlashCommandName = null, hasAttachments = true))
         assertFalse(canSubmitInput("/reload", commands, selectedSlashCommandName = null))
         assertTrue(canSubmitInput("/reload", commands, selectedSlashCommandName = "reload"))
         assertFalse(canSubmitInput("/reload unexpected", commands, selectedSlashCommandName = "reload"))

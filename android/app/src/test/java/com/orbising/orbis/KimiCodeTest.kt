@@ -17,6 +17,10 @@ class KimiCodeTest {
         assertEquals(listOf("agent.dshDesktop", "agent.kimiCode"), deviceAgentFeatures(filtered))
         assertFalse(hasNegotiatedKimiCode(filtered))
         assertTrue(hasNegotiatedKimiCode(ready("""{"hostFeatures":["device.features","agent.kimiCode"],"dshDesktop":null}""")))
+        assertEquals(
+            listOf("agent.dshDesktop", "state.compact-bootstrap.v1", "claude.send-now.v1"),
+            deviceAgentFeatures(ready("""{"hostFeatures":["device.features","state.compact-bootstrap.v1","claude.send-now.v1"]}""")),
+        )
         assertEquals("headless", kimiSpawnMode("kimiCode", "tui"))
         assertEquals("tui", kimiSpawnMode("codex", "tui"))
     }

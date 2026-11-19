@@ -2896,9 +2896,9 @@ final class HostConnection: ObservableObject {
             let restarted = transfers.tasks.filter { send.uploadIds.contains($0.id) }
             return sendWhenReady(send.text, delivery: send.delivery, uploads: restarted, runtime: runtime)
         }
-        // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
+        // Match runtime capabilities on resend: Claude supports steer only when steerSupported == true.
         let delivery: String? = runtime.status == "idle" ? nil
-            : send.delivery == "steer" && agentKind(runtime) != "claude" ? "steer" : "followUp"
+            : send.delivery == "steer" && (agentKind(runtime) != "claude" || runtime.steerSupported == true) ? "steer" : "followUp"
         pendingSends.remove(messageId)
         guard sendUserMessage(send.text, delivery: delivery, attachments: send.attachments, runtime: runtime) else {
             pendingSends.add(send); publishMessages(); return false

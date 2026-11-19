@@ -109,6 +109,7 @@ data class RuntimeSummary(
     val contextUsage: RuntimeContextUsage? = null,
     val permissions: RuntimePermissions? = null,
     val permissionManagement: RuntimePermissionManagement? = null,
+    val steerSupported: Boolean? = null,
     /** Host 模型的会话身份；不从 runtime 路由前缀推断。 */
     val agentKind: String? = null,
     /** 镜像可用性供界面区分最后已知值与当前已确认事实。 */
@@ -789,6 +790,7 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
         contextUsage = sameSession?.contextUsage,
         permissions = null,
         permissionManagement = sameSession?.permissionManagement,
+        steerSupported = steerSupported ?: sameSession?.steerSupported,
         // This reserved Host route establishes OpenClaw identity before the model read.
         agentKind = sameSession?.agentKind ?: agentKind.takeIf { it == "openclaw" && runtimeId.startsWith("openclaw:") },
         domainAvailability = sameSession?.domainAvailability.orEmpty(),

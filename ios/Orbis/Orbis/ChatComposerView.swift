@@ -1,5 +1,7 @@
 import SwiftUI
 import Observation
+import PhotosUI
+import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class ChatComposerFocus {
@@ -68,6 +70,35 @@ private struct ComposerDraftPresentation: Equatable {
 private struct ChatFileSelection {
     let actions: ChatSessionActions
     let capacity: Int
+}
+
+private struct ChatPhotoFile: Transferable {
+    let directory: URL
+    let fileURL: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            try Self.copy(received.file)
+        }
+        FileRepresentation(importedContentType: .movie) { received in
+            try Self.copy(received.file)
+        }
+    }
+
+    private static func copy(_ source: URL) throws -> ChatPhotoFile {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("orbis-photo-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileName = source.lastPathComponent.isEmpty ? "photo.dat" : source.lastPathComponent
+        let destination = directory.appendingPathComponent(fileName)
+        do {
+            try FileManager.default.copyItem(at: source, to: destination)
+            return ChatPhotoFile(directory: directory, fileURL: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
 }
 
 /// IOS-CHAT-03: every finite row width reaches the same native editor with a
@@ -145,9 +176,13 @@ struct ChatComposerView: View, Equatable {
     @State private var deliveryChoices = false
     @State private var permissionsOpen = false
     @State private var filePickerOpen = false
+    @State private var photoPickerOpen = false
+    @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var draftStorage = ComposerDraftStorage()
     @State private var draftPresentation: ComposerDraftPresentation?
     @State private var fileSelection: ChatFileSelection?
+    @State private var photoSelection: ChatFileSelection?
+    @State private var photoLoadTask: Task<Void, Never>?
     @State private var voiceInput = VoiceInputController()
     @State private var voiceCleanupInProgress = false
     @State private var voiceCleanupStatus: String?
@@ -306,16 +341,43 @@ struct ChatComposerView: View, Equatable {
             if !textOnly { AttachmentStrip(actions: actions, tasks: facts.attached, preparing: facts.preparing) }
             if slash && !textOnly { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
             ChatComposerRowLayout {
-                if textOnly && !(foldReading && focused) {
+                if foldReading && focused {
+                    OrbisIconButton(symbol: "keyboard.chevron.compact.down",
+                                    label: L10n.tr("收起键盘"), tint: accent) {
+                        composerFocus.focused = false
+                    }
+                } else if textOnly {
                     Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
                 } else {
-                    OrbisIconButton(symbol: foldReading && focused ? "keyboard.chevron.compact.down" : "paperclip",
-                                    label: L10n.tr(foldReading && focused ? "收起键盘" : "发送文件到电脑"), tint: accent) {
-                        if foldReading && focused { composerFocus.focused = false; return }
-                        guard actions.isCurrent else { return }
-                        fileSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
-                        composerFocus.focused = false; filePickerOpen = true
-                    }.disabled(!(foldReading && focused) && (!facts.canSend || facts.preparing || attachments.count >= 10))
+                    let canAttach = facts.canSend && !facts.preparing && attachments.count < 10
+                    Menu {
+                        Button {
+                            guard actions.isCurrent else { return }
+                            photoSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
+                            composerFocus.focused = false
+                            photoPickerOpen = true
+                        } label: {
+                            Label(L10n.tr("照片"), systemImage: "photo.on.rectangle")
+                        }
+                        Button {
+                            guard actions.isCurrent else { return }
+                            fileSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
+                            composerFocus.focused = false
+                            filePickerOpen = true
+                        } label: {
+                            Label(L10n.tr("文件"), systemImage: "folder")
+                        }
+                    } label: {
+                        OrbisMotionGlyph(symbol: "paperclip", size: 22, activation: 0)
+                            .foregroundStyle(canAttach ? accent : p.faint)
+                            .frame(width: 40, height: 40)
+                            .neuSurface(inset: false, radius: 20, intensity: canAttach ? 0.65 : 0, concentric: false, press: false)
+                            .overlay { if !canAttach { Circle().strokeBorder(p.outline, lineWidth: 1) } }
+                            .frame(width: 48, height: 48)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(!canAttach)
+                    .accessibilityLabel(L10n.tr("添加附件"))
                 }
                 OrbisDraftEditor(text: draft,
                                  focused: Binding(get: { focused }, set: { if composerFocus.focused != $0 { composerFocus.focused = $0 } }),
@@ -394,9 +456,19 @@ struct ChatComposerView: View, Equatable {
                 guard !textOnly, let selection = fileSelection else { fileSelection = nil; return }
                 fileSelection = nil
                 switch result {
-                case .success(let urls): selection.actions.upload(urls, capacity: selection.capacity)
+                case .success(let urls): _ = selection.actions.upload(urls, capacity: selection.capacity)
                 case .failure(let error): selection.actions.uploadFailed(error.localizedDescription)
                 }
+            }
+            .fileDialogDefaultDirectory(.documentsDirectory)
+            .photosPicker(
+                isPresented: $photoPickerOpen,
+                selection: $photoPickerItems,
+                maxSelectionCount: max(1, 10 - attachments.count),
+                matching: .any(of: [.images, .videos])
+            )
+            .onChange(of: photoPickerItems) { _, items in
+                handlePhotoSelection(items)
             }
             .orbisBottomSheet(isPresented: $permissionsOpen) {
                 PermissionsView(target: target, runtime: actions.runtime ?? fallbackRuntime).orbisSheet([.large])
@@ -411,6 +483,8 @@ struct ChatComposerView: View, Equatable {
             .onDisappear {
                 voiceInput.cancel()
                 cancelVoiceCleanup()
+                photoLoadTask?.cancel()
+                photoLoadTask = nil
                 if actions.ownsRuntime, let selectedCommand, target.runtimeId != nil { actions.cancelMenuOptions(selectedCommand) }
             }
             .onChange(of: facts.identity) { _, _ in
@@ -465,9 +539,60 @@ struct ChatComposerView: View, Equatable {
 
     private func handleReturnSubmit() {
         guard canSubmit else { return }
-        if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
+        if runtime.status == "running" && !slash && claudeComposer && runtime.steerSupported != true {
+            submit(delivery: "followUp")
+        }
         else if runtime.status == "running" && !slash { deliveryChoices.toggle() }
         else { submit() }
+    }
+
+    private func handlePhotoSelection(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        photoPickerItems = []
+        guard !textOnly, let selection = photoSelection else {
+            photoSelection = nil
+            return
+        }
+        photoSelection = nil
+        let selectedItems = Array(items.prefix(selection.capacity))
+        guard !selectedItems.isEmpty else { return }
+        photoLoadTask?.cancel()
+        photoLoadTask = Task.detached(priority: .userInitiated) {
+            var urls: [URL] = []
+            var directories: [URL] = []
+            var failed = false
+            for item in selectedItems {
+                if Task.isCancelled { break }
+                do {
+                    if let copied = try await item.loadTransferable(type: ChatPhotoFile.self) {
+                        urls.append(copied.fileURL)
+                        directories.append(copied.directory)
+                    } else {
+                        failed = true
+                    }
+                } catch {
+                    failed = true
+                }
+            }
+            if Task.isCancelled {
+                for directory in directories { try? FileManager.default.removeItem(at: directory) }
+                return
+            }
+            await MainActor.run {
+                if !urls.isEmpty {
+                    let started = selection.actions.upload(
+                        urls,
+                        capacity: selection.capacity,
+                        temporarySourceDirectories: directories
+                    )
+                    if !started || failed {
+                        selection.actions.uploadFailed(L10n.tr("无法读取所选照片"))
+                    }
+                } else if failed {
+                    selection.actions.uploadFailed(L10n.tr("无法读取所选照片"))
+                }
+            }
+        }
     }
 
     private var cachedComposer: some View {

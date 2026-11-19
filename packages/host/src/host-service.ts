@@ -48,6 +48,8 @@ import {
   DEVICE_FEATURE_KIMI_CODE,
   DEVICE_FEATURE_OPENCLAW,
   DEVICE_FEATURE_HERMES,
+  DEVICE_FEATURE_COMPACT_BOOTSTRAP,
+  DEVICE_FEATURE_CLAUDE_SEND_NOW,
   HOST_FEATURE_DEVICE_FEATURES,
   HOST_FEATURE_IMPORT_TARGET,
   PROTOCOL_VERSION,
@@ -94,7 +96,7 @@ import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.
 import { normalizeDeviceRequest } from "./device-protocol.js";
 import { FieldTrafficMeter } from "./field-traffic-meter.js";
 import { SessionWireContent } from "./session-wire-content.js";
-import { encodeDeviceMessage, projectCompactDeviceMessage } from "./device-message-projection.js";
+import { encodeDeviceMessage, omitRuntimeSendNow, projectCompactDeviceMessage, type DeviceMessageProjectionOptions } from "./device-message-projection.js";
 import { CompactStateModel } from "./compact-state-model.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
@@ -1078,8 +1080,8 @@ export class HostService {
       const runtimeId = threadId === undefined ? codex.runtimeId : codex.runtimeIdFor(threadId);
       this.#publishRuntimeEvent(runtimeId, event);
     });
+    codex.onCatalogChange = () => this.#invalidateCatalog();
     codex.onMetadataChange = () => {
-      if (codex.kind === "codexDesktop") this.#invalidateCatalog();
       for (const runtime of codex.directoryEntries()) {
         if (!this.#notifications.has(runtime.runtimeId) || this.#notifications.needsAttach(runtime.runtimeId)) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
         this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
@@ -1196,6 +1198,7 @@ export class HostService {
     const index = this.#backends.indexOf(runtime);
     if (index < 0 || runtime.kind !== "codex") return;
     runtime.onMetadataChange = undefined;
+    runtime.onCatalogChange = undefined;
     runtime.onOffline = undefined;
     runtime.onArchiveChange = undefined;
     this.#backends.splice(index, 1);
@@ -1219,6 +1222,7 @@ export class HostService {
     const index = this.#backends.indexOf(runtime);
     if (index < 0 || runtime.kind !== "codexDesktop") return;
     runtime.onMetadataChange = undefined;
+    runtime.onCatalogChange = undefined;
     runtime.onOffline = undefined;
     runtime.onArchiveChange = undefined;
     runtime.onDesktopThread = undefined;
@@ -1359,6 +1363,10 @@ export class HostService {
    * 「这台电脑不知道这个会话」。
    */
   async #handleAgentStateRequest(deviceId: string, request: Extract<DeviceE2ePayload, { type: "agent.state.request" }>): Promise<void> {
+    const compact = request.stateFormat === "compact-v1" || request.stateFormat === "compact-v2";
+    // Cancel the fallback replay timer synchronously before any async work so slow
+    // cold connections never emit redundant legacy bootstrap events mid-handshake.
+    if (compact) this.#cancelBootstrapReplay(deviceId);
     const authenticatedLink = this.#links.get(deviceId);
     const view = this.#agentView(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
     this.refreshHostFacts();
@@ -1396,7 +1404,6 @@ export class HostService {
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
     if (request.runtimeId && request.domains?.includes("records")) this.#agentFacts.refreshRecords(request.runtimeId);
-    const compact = request.stateFormat === "compact-v1" || request.stateFormat === "compact-v2";
     const registry = compact ? this.#compactState.ensure(scope) : this.#agentStateRegistry;
     const subscriptions = compact ? this.#compactStateSubscriptions : this.#agentStateSubscriptions;
     if (request.subscribe !== undefined) (compact ? this.#agentStateSubscriptions : this.#compactStateSubscriptions).register(deviceId, scope, { ...request, subscribe: false });
@@ -1438,6 +1445,10 @@ export class HostService {
   }
 
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
+    if (scope.kind === "agent" && domain === "identity"
+      && !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW)) {
+      return omitRuntimeSendNow(value);
+    }
     const view = this.#agentView(deviceId);
     if (!view) return value;
     if (scope.kind === "host") {
@@ -1654,17 +1665,34 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, HOST_FEATURE_IMPORT_TARGET, DEVICE_FEATURE_MESSAGE_RENDER, DEVICE_FEATURE_OPENCLAW, DEVICE_FEATURE_HERMES, ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : []), ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : [])],
+      hostFeatures: [
+        HOST_FEATURE_DEVICE_FEATURES,
+        HOST_FEATURE_IMPORT_TARGET,
+        DEVICE_FEATURE_MESSAGE_RENDER,
+        DEVICE_FEATURE_OPENCLAW,
+        DEVICE_FEATURE_HERMES,
+        DEVICE_FEATURE_COMPACT_BOOTSTRAP,
+        DEVICE_FEATURE_CLAUDE_SEND_NOW,
+        ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : []),
+        ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : []),
+      ],
       sessionConfiguration: 1,
       ...(features?.has(DEVICE_FEATURE_OPENCLAW) ? { deviceFeatures: [...features] } : {}),
     };
   }
 
+  #cancelBootstrapReplay(deviceId: string): void {
+    const old = this.#bootstrapReplayTimers.get(deviceId);
+    if (old === undefined) return;
+    clearTimeout(old);
+    this.#bootstrapReplayTimers.delete(deviceId);
+  }
+
   /** Give compact clients time to request their scoped model after device.ready;
    * strict old clients still receive the full menu after the bounded grace period. */
   #scheduleBootstrapReplay(deviceId: string, kind: PathKind): void {
-    const old = this.#bootstrapReplayTimers.get(deviceId);
-    if (old !== undefined) clearTimeout(old);
+    this.#cancelBootstrapReplay(deviceId);
+    if (this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_COMPACT_BOOTSTRAP)) return;
     const timer = setTimeout(() => {
       if (this.#bootstrapReplayTimers.get(deviceId) !== timer) return;
       this.#bootstrapReplayTimers.delete(deviceId);
@@ -1679,7 +1707,7 @@ export class HostService {
         this.#sendToDeviceOn(deviceId, kind, { type: "runtime.event", protocolVersion: PROTOCOL_VERSION, runtimeId,
           sequence: this.#nextEventSequence(runtimeId, channelForDeviceMessage({ type: "runtime.event", event })), event });
       }
-    }, Math.max(0, Math.min(1_000, this.#options.bootstrapReplayDelayMs ?? 250)));
+    }, Math.max(0, Math.min(1_000, this.#options.bootstrapReplayDelayMs ?? 1_000)));
     this.#bootstrapReplayTimers.set(deviceId, timer);
   }
 
@@ -2148,10 +2176,14 @@ export class HostService {
     }
     if (message.type === "device.features") {
       const before = this.#agentView(deviceId);
-      const hadRender = this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_MESSAGE_RENDER) ?? false;
+      const previousFeatures = this.#deviceFeatures.get(deviceId);
+      const hadRender = previousFeatures?.has(DEVICE_FEATURE_MESSAGE_RENDER) ?? false;
+      const hadClaudeSendNow = previousFeatures?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ?? false;
       this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature => feature !== DEVICE_FEATURE_KIMI_CODE || this.#options.kimiCodeRuntime !== undefined)));
+      if (message.features.includes(DEVICE_FEATURE_COMPACT_BOOTSTRAP)) this.#cancelBootstrapReplay(deviceId);
       const after = this.#agentView(deviceId);
-      if (before === after && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER)) return;
+      if (before === after && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER)
+        && hadClaudeSendNow === message.features.includes(DEVICE_FEATURE_CLAUDE_SEND_NOW)) return;
       this.#resetAgentView(deviceId);
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
       for (const runtime of this.#runtimesSnapshot()) {
@@ -2707,27 +2739,38 @@ export class HostService {
 
   /** 实际扫一遍所有后端（`#catalogWithCache` 的唯一慢路径）。 */
   async #collectCatalogs(epoch: number): Promise<AgentSessionSummary[]> {
-    const sessions: AgentSessionSummary[] = [];
+    // Query ready backends concurrently so one slow backend does not stall the whole catalog.
     // 逐后端记结果：拉取失败或后端没就绪，在模型里都不能退化成「它没有会话」（ADR-0032 模块 03）。
-    const backends: HostCatalogBackend[] = [];
-    for (const backend of this.#backends) {
+    const results = await Promise.all(this.#backends.map(async (backend): Promise<{
+      sessions: AgentSessionSummary[];
+      summary: HostCatalogBackend;
+    }> => {
       if (!backend.isReady()) {
-        backends.push({ kind: backend.kind, ready: false, sessions: 0, complete: false, elapsedMs: 0 });
-        continue;
+        return { sessions: [], summary: { kind: backend.kind, ready: false, sessions: 0, complete: false, elapsedMs: 0 } };
       }
       const started = Date.now();
       try {
         const load = (archived: boolean) => backend.catalogCoverage?.(archived)
           ?? (archived ? backend.catalog(true) : backend.catalog()).then(sessions => ({ sessions, complete: true }));
-        const [active, archived] = await Promise.all([load(false), backend.archivedCatalogSupported === false ? Promise.resolve({ sessions: [], complete: true }) : load(true)]);
+        const [active, archived] = await Promise.all([
+          load(false),
+          backend.archivedCatalogSupported === false ? Promise.resolve({ sessions: [], complete: true }) : load(true),
+        ]);
         const catalog = [...new Map([...active.sessions, ...archived.sessions].map((entry) => [entry.sessionId, entry])).values()];
         this.#options.log?.(`[debug] session.list：${backend.kind} 返回 ${catalog.length} 条（${Date.now() - started}ms）`);
-        sessions.push(...catalog);
         const complete = typeof backend.catalogComplete === "function" ? backend.catalogComplete() : backend.catalogComplete !== false;
-        const reasons = [ ...(backend.archivedCatalogSupported === false ? ["archived_catalog_unsupported"] : []),
-          ...(!complete ? ["catalog_limit_reached"] : []) ];
-        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: active.complete && archived.complete && reasons.length === 0,
-          elapsedMs: Date.now() - started, ...(reasons.length ? { error: reasons.join(",") } : {}) });
+        const reasons = [
+          ...(backend.archivedCatalogSupported === false ? ["archived_catalog_unsupported"] : []),
+          ...(!complete ? ["catalog_limit_reached"] : []),
+        ];
+        return {
+          sessions: catalog,
+          summary: {
+            kind: backend.kind, ready: true, sessions: catalog.length,
+            complete: active.complete && archived.complete && reasons.length === 0,
+            elapsedMs: Date.now() - started, ...(reasons.length ? { error: reasons.join(",") } : {}),
+          },
+        };
       } catch (error) {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
@@ -2735,9 +2778,14 @@ export class HostService {
           scope: "host", agentKind: backend.kind, sessionId: null, category: "catalog", severity: "error",
           message: `拉取 ${backend.kind} 会话目录失败`, detail: { agentKind: backend.kind, reason: detail.slice(0, 256) },
         });
-        backends.push({ kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail });
+        return {
+          sessions: [],
+          summary: { kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail },
+        };
       }
-    }
+    }));
+    const sessions = results.flatMap(result => result.sessions);
+    const backends = results.map(result => result.summary);
     const desktopIds = this.#desktopOwnedIds;
     const visible = sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId));
 
@@ -3295,14 +3343,16 @@ export class HostService {
     const backend = codex && rich && scope?.kind === "agent" ? this.#backends.find(candidate => candidate.kind === scope.key.agentKind) as CodexRuntime | undefined : undefined;
     const rendered = this.#deviceMessageRendering.project(deviceId, message, { rich, codex, ...(cwd === undefined ? {} : { cwd }),
       ...(backend && runtimeId ? { generatedImagePath: (id: string) => backend.generatedImagePath?.(runtimeId, id) } : {}) });
+    const claudeSendNow = this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) === true;
     return this.#encodeMeasured(this.#compactStateSubscriptions.supportsSharedContent(deviceId)
-      ? (rich ? this.#richSessionWireContent : this.#sessionWireContent).project(projectCompactDeviceMessage(rendered), rich ? deviceId : undefined) : rendered);
+      ? (rich ? this.#richSessionWireContent : this.#sessionWireContent).project(projectCompactDeviceMessage(rendered), rich ? deviceId : undefined)
+      : rendered, { claudeSendNow });
   }
 
   readTransportFields(): ReturnType<FieldTrafficMeter["snapshot"]> { return this.#fieldTraffic.snapshot(); }
 
-  #encodeMeasured(message: object): Buffer {
-    const payload = encodeDeviceMessage(message);
+  #encodeMeasured(message: object, options?: DeviceMessageProjectionOptions): Buffer {
+    const payload = encodeDeviceMessage(message, options);
     this.#measurePayload(payload, message); return payload;
   }
 

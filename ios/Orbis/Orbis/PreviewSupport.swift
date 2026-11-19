@@ -1248,9 +1248,12 @@ private final class PreviewTransport: OrbisTransport {
                         self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "failure", "error": "runtime_busy"], runtimeId: runtime)
                         return
                     }
+                    if mode == "pi" {
+                        self.event(["type": "command.result", "commandId": commandId, "ok": true, "status": "pending"], runtimeId: runtime)
+                        // Long enough for UI automation to observe the pending row before the Host commits it.
+                        try? await Task.sleep(nanoseconds: 3_600_000_000)
+                    }
                     self.event(["type": "command.result", "commandId": commandId, "ok": true, "status": "success"], runtimeId: runtime)
-                    // Long enough for UI automation to observe the pending row before the Host commits it.
-                    if mode == "pi" { try? await Task.sleep(nanoseconds: 4_000_000_000) }
                     self.commitSent(text: text, clientId: clientId, runtime: runtime)
                 }
             } else if type == "slash.execute" {

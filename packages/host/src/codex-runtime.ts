@@ -424,6 +424,7 @@ export class CodexRuntime implements AgentBackend {
   onFileChangeEvidence: ((runtimeId: string, evidence: import("./codex-turn-file-changes.js").CodexFileChangeEvidence) => void) | undefined;
   fileChangeTurnUnconfirmed: ((runtimeId: string) => Promise<void>) | undefined;
   onMetadataChange: (() => void) | undefined;
+  onCatalogChange: (() => void) | undefined;
   onArchiveChange: ((sessionId: string, archived: boolean) => void) | undefined;
   onDesktopThread: ((threadId: string) => void) | undefined;
   /**
@@ -1041,6 +1042,7 @@ export class CodexRuntime implements AgentBackend {
     this.#desktopThreads.add(id);
     this.#rememberDesktopThread(id);
     await this.#initializeTuiThread(thread, snapshot);
+    if (this.#threads.get(id) === thread) this.onCatalogChange?.();
     this.#options.log?.(`Codex 桌面会话已接入：thread=${id}`);
   }
 
@@ -2956,6 +2958,7 @@ export class CodexRuntime implements AgentBackend {
           thread.sourceReady = true;
           this.#touchSource(thread);
           this.#publishMetadataEvent(thread);
+          this.onCatalogChange?.();
         } else {
           // Activity can be stale even when the canonical history signature has not changed.
           this.#reconcileCompaction(thread, turns);
@@ -3024,6 +3027,7 @@ export class CodexRuntime implements AgentBackend {
         thread.sourceReady = true;
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
+        this.onCatalogChange?.();
       }, true);
       await this.#waitForReconcile(thread);
       if (isDesktopAppServer(this.#server)) await this.#refreshDesktopClient(thread);
@@ -3673,16 +3677,22 @@ export class CodexRuntime implements AgentBackend {
         return;
       case "thread/name/updated": {
         if (record.threadName !== undefined && record.threadName !== null && typeof record.threadName !== "string") return;
-        thread.name = codexSessionName(record.threadName);
+        const nextName = codexSessionName(record.threadName);
+        const changed = nextName !== thread.name;
+        thread.name = nextName;
         this.#publishMetadataEvent(thread);
+        if (changed) this.onCatalogChange?.();
         return;
       }
       case "thread/settings/updated": {
+        const previousCwd = thread.cwd;
+        const previousProvider = thread.modelProvider;
         const settings = object(record.threadSettings ?? record);
         this.#applyNativeSettings(thread, settings);
         if (typeof settings.cwd === "string") thread.cwd = settings.cwd;
         thread.permissions = codexPermissions(settings) ?? thread.permissions;
         this.#publishMetadataEvent(thread);
+        if (thread.cwd !== previousCwd || thread.modelProvider !== previousProvider) this.onCatalogChange?.();
         return;
       }
       case "thread/status/changed": {
@@ -3849,7 +3859,10 @@ export class CodexRuntime implements AgentBackend {
         }
         // item 通知自带 turnId（`ItemCompletedNotification` 的 required 字段），条目归属由此确定。
         this.#completeItem(thread, data, typeof record.turnId === "string" ? record.turnId : undefined);
-        if (data.type === "userMessage") this.#confirmQueuedMessage(thread, data.clientId);
+        if (data.type === "userMessage") {
+          this.#confirmQueuedMessage(thread, data.clientId);
+          this.onCatalogChange?.();
+        }
         this.#pruneCanonicalLive(thread);
         const raw = toolCallMessage(data) ?? itemToMessage(data);
         if (raw !== undefined) {
@@ -4009,6 +4022,7 @@ export class CodexRuntime implements AgentBackend {
         this.#pruneCanonicalLive(thread);
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
+        this.onCatalogChange?.();
         // turn 结束（含被 steer/interrupt 打断）：补跑排队的下一条消息。
         this.#drainQueue(thread);
         return;

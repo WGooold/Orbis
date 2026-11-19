@@ -2110,10 +2110,10 @@ internal class HostConnection(
         }
         // 附件没传成的失败：从原文件重新上传，作为一条新的等待消息（L6：新操作、新身份）。
         if (send.uploadIds.isNotEmpty() && send.attachments.isEmpty()) return resendAfterUpload(runtimeId, send)
-        // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
+        // Match runtime capabilities on resend: Claude supports steer only when steerSupported == true.
         val delivery = when {
             runtime.status == "idle" -> null
-            send.delivery == "steer" && runtime.agentKind != "claude" -> "steer"
+            send.delivery == "steer" && (runtime.agentKind != "claude" || runtime.steerSupported == true) -> "steer"
             else -> "followUp"
         }
         val commandId = sendUserMessage(runtimeId, send.text, delivery, send.attachments) ?: return null
@@ -2182,7 +2182,12 @@ internal class HostConnection(
      */
     fun detachUploads(taskIds: Set<String>) {
         if (taskIds.isEmpty()) return
-        updateState { it.copy(uploads = it.uploads - taskIds) }
+        updateState { state ->
+            val waitingIds = state.pendingSends.values
+                .filter { it.state is PendingSendState.Waiting }
+                .flatMapTo(linkedSetOf()) { it.uploadIds }
+            state.copy(uploads = state.uploads - (taskIds - waitingIds))
+        }
     }
 
     /**

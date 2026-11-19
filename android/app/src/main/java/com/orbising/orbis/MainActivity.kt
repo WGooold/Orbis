@@ -13,6 +13,7 @@ import androidx.activity.viewModels
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.togetherWith
@@ -1780,7 +1781,6 @@ internal fun ChatScreen(
         mutableStateOf(model.loadDraft(runtimeId))
     }
     val openClawComposer = (runtime?.agentKind ?: state.launchPage?.agentKind) == "openclaw"
-    val composerMode = composerAction(isWorking = runtime?.status == "running", input = if (openClawComposer || kimiCode) "" else input)
     var selectedSlashCommandName by remember(runtimeId) { mutableStateOf<String?>(null) }
     var modelConfigurationOpen by remember(runtimeId) { mutableStateOf(false) }
     var modelConfigurationSetting by remember(runtimeId) { mutableStateOf<String?>(null) }
@@ -1938,20 +1938,37 @@ internal fun ChatScreen(
     val attachablePaths = attachedUploads.filter { it.status == "completed" }.mapNotNull(UploadTask::remotePath)
     // 基础协议支持附件路径，不使用 `messageAttachments` 能力位（ADR-0012）。
     val canAttachFiles = !kimiCode && !openClawComposer && runtime != null && state.hostId != null
-    val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris ->
-        if (!canAttachFiles) return@rememberLauncherForActivityResult
-        uris.take(MAX_ATTACHMENTS_PER_MESSAGE).forEach { uri ->
+    val hasComposerAttachments = canAttachFiles && attachedTaskIds.isNotEmpty()
+    val composerMode = composerAction(
+        isWorking = runtime?.status == "running",
+        input = if (openClawComposer || kimiCode) "" else input,
+        hasAttachments = hasComposerAttachments,
+    )
+    var attachmentMenuExpanded by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    LaunchedEffect(canAttachFiles) {
+        if (!canAttachFiles) attachmentMenuExpanded = false
+    }
+    val queueSelectedAttachments: (List<android.net.Uri>) -> Unit = queueAttachments@{ uris ->
+        if (!canAttachFiles || uris.isEmpty()) return@queueAttachments
+        val remaining = (MAX_ATTACHMENTS_PER_MESSAGE - attachedTaskIds.size).coerceAtLeast(0)
+        uris.take(remaining).forEach { uri ->
             // 登记完立刻把任务挂到 composer 的附件 chip 上——上传进度必须可见，
             // 否则用户不知道文件正在传、也不知道为什么发送键是灰的。
             model.queueUpload(uri, runtimeId) { taskId -> updateAttachedTaskIds(attachedTaskIds + taskId) }
         }
-        if (uris.size > MAX_ATTACHMENTS_PER_MESSAGE) {
+        if (uris.size > remaining) {
             commandFeedbackTransient = false
             commandFeedback = L10n.tr("一次最多发送 {0} 个文件", MAX_ATTACHMENTS_PER_MESSAGE)
         }
     }
+    val filePicker = rememberLauncherForActivityResult(
+        LocalDocumentsPicker(),
+        onResult = queueSelectedAttachments,
+    )
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(MAX_ATTACHMENTS_PER_MESSAGE),
+        onResult = queueSelectedAttachments,
+    )
     // Refresh replaces the visible conversation with a fresh projection. Remember the row the
     // user is looking at so the viewport can stay put instead of jumping to the newest message.
     var refreshAnchorMessageId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
@@ -1976,6 +1993,22 @@ internal fun ChatScreen(
         input = ""
         selectedSlashCommandName = null
         model.clearDraft(runtimeId)
+    }
+    fun submitComposerMessage(delivery: String? = null) {
+        showDeliveryChoices = false
+        val commandId = model.sendMessage(
+            input,
+            delivery = delivery,
+            attachments = attachablePaths,
+            uploadTaskIds = attachedTaskIds.toList(),
+        )
+        // 附件已经交给消息，chip 就不该继续挂在输入框上；仍在上传的继续上传，
+        // 写入通道后再从上传列表移走（ADR-0049 §6.2）。
+        if (commandId != null) {
+            if (attachedUploads.all { it.status == "completed" }) model.detachUploads(attachedTaskIds)
+            updateAttachedTaskIds(emptySet())
+        }
+        submitMessage(commandId)
     }
     fun trackSubmission(commandId: String?) {
         if (commandId == null) return
@@ -2358,8 +2391,7 @@ internal fun ChatScreen(
                             NeumorphTextButton(
                                 text = queuedMessageDeliveryText("followUp"),
                                 onClick = {
-                                    showDeliveryChoices = false
-                                    submitMessage(model.sendMessage(input, "followUp"))
+                                    submitComposerMessage("followUp")
                                 },
                                 enabled = pendingMessageCommandId == null,
                                 filled = true,
@@ -2368,8 +2400,7 @@ internal fun ChatScreen(
                             NeumorphTextButton(
                                 text = queuedMessageDeliveryText("steer"),
                                 onClick = {
-                                    showDeliveryChoices = false
-                                    submitMessage(model.sendMessage(input, "steer"))
+                                    submitComposerMessage("steer")
                                 },
                                 enabled = pendingMessageCommandId == null,
                                 filled = true,
@@ -2493,13 +2524,35 @@ internal fun ChatScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                     if (canAttachFiles) {
-                        NeumorphIconButton(
-                            onClick = { filePicker.launch(arrayOf("*/*")) },
-                            icon = OrbisSymbols.AttachFile,
-                            contentDescription = L10n.tr("发送文件到电脑"),
-                            enabled = attachedTaskIds.size < MAX_ATTACHMENTS_PER_MESSAGE,
-                            modifier = Modifier.padding(bottom = 4.dp),
-                        )
+                        Box(Modifier.padding(bottom = 4.dp)) {
+                            NeumorphIconButton(
+                                onClick = { attachmentMenuExpanded = true },
+                                icon = OrbisSymbols.AttachFile,
+                                contentDescription = L10n.tr("添加附件"),
+                                enabled = attachedTaskIds.size < MAX_ATTACHMENTS_PER_MESSAGE,
+                            )
+                            DropdownMenu(
+                                expanded = attachmentMenuExpanded,
+                                onDismissRequest = { attachmentMenuExpanded = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(L10n.tr("照片")) },
+                                    onClick = {
+                                        attachmentMenuExpanded = false
+                                        photoPicker.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
+                                        )
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(L10n.tr("文件")) },
+                                    onClick = {
+                                        attachmentMenuExpanded = false
+                                        filePicker.launch(arrayOf("*/*"))
+                                    },
+                                )
+                            }
+                        }
                     }
                     OutlinedTextField(
                         value = input,
@@ -2546,6 +2599,7 @@ internal fun ChatScreen(
                             input,
                             state.capabilities[runtimeId]?.commands.orEmpty(),
                             selectedSlashCommandName,
+                            hasAttachments = hasComposerAttachments,
                         ) && pendingMessageCommandId == null &&
                             // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
                             attachedUploads.none { it.status == "failed" || it.status == "cancelled" }
@@ -2587,23 +2641,12 @@ internal fun ChatScreen(
                                             } else trackSubmission(
                                                 executeSlash(selectedCommand.name, slash.second),
                                             )
-                                        } else if (runtime?.status == "running" && runtime.agentKind == "claude") {
-                                            // Claude Code 只有「等当前回合结束后提交」，没有 Steer 可选。
-                                            showDeliveryChoices = false
-                                            submitMessage(model.sendMessage(input, "followUp"))
+                                        } else if (runtime?.status == "running" && runtime.agentKind == "claude" && runtime.steerSupported != true) {
+                                            submitComposerMessage("followUp")
                                         } else if (runtime?.status == "running") {
                                             showDeliveryChoices = true
                                         } else {
-                                            showDeliveryChoices = false
-                                            val commandId = model.sendMessage(input, attachments = attachablePaths,
-                                                uploadTaskIds = attachedTaskIds.toList())
-                                            // 附件已经交给消息，chip 就不该继续挂在输入框上；仍在上传的继续上传，
-                                            // 写入通道后再从上传列表移走（ADR-0049 §6.2）。
-                                            if (commandId != null) {
-                                                if (attachedUploads.all { it.status == "completed" }) model.detachUploads(attachedTaskIds)
-                                                updateAttachedTaskIds(emptySet())
-                                            }
-                                            submitMessage(commandId)
+                                            submitComposerMessage()
                                         }
                                     }
                                 }
@@ -2722,6 +2765,7 @@ internal fun ChatScreen(
                             runtimeId = runtimeId,
                             message = item.message,
                             pending = state.pendingSends[item.message.messageId]?.state,
+                            pendingSubmissionConfirmed = state.pendingSends[item.message.messageId]?.submissionConfirmed == true,
                             uploads = state.pendingSends[item.message.messageId]?.uploadIds.orEmpty().mapNotNull(state.uploads::get),
                             canResend = state.e2eReady && runtime != null,
                             onPendingAction = { action ->
@@ -3001,9 +3045,10 @@ internal fun canSubmitInput(
     input: String,
     commands: List<RuntimeSlashCommand>,
     selectedSlashCommandName: String?,
+    hasAttachments: Boolean = false,
 ): Boolean {
     val trimmed = input.trim()
-    if (trimmed.isBlank()) return false
+    if (trimmed.isBlank()) return hasAttachments
     if (!trimmed.startsWith("/")) return true
     val (name, args) = parseSlashInvocation(trimmed) ?: return false
     if (name != selectedSlashCommandName) return false
@@ -3981,6 +4026,7 @@ internal fun UserMessageCard(
     rewindEnabled: Boolean = false,
     /** ADR-0049：本地待确认发送的状态；权威行为 null。 */
     pending: PendingSendState? = null,
+    pendingSubmissionConfirmed: Boolean = false,
     /** ADR-0049 §6.1：本地待发送消息带的附件（上传任务），气泡内显示缩略图 / 文件名与上传进度。 */
     uploads: List<UploadTask> = emptyList(),
     canResend: Boolean = false,
@@ -4009,8 +4055,8 @@ internal fun UserMessageCard(
                 }
             }
             }
-            if (pending != null) {
-                PendingSendStatus(pending, canResend, onPendingAction)
+            if (shouldShowPendingStatus(pending, pendingSubmissionConfirmed)) {
+                PendingSendStatus(requireNotNull(pending), canResend, onPendingAction)
             }
         }
     }
@@ -4024,9 +4070,13 @@ private fun PendingSendStatus(state: PendingSendState, canResend: Boolean, onAct
     Row(Modifier.testTag("pending-send-status"), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         val muted = MaterialTheme.colorScheme.onSurfaceVariant
         when (state) {
-            PendingSendState.Sending, PendingSendState.Accepted -> {
+            PendingSendState.Sending -> {
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
                 Text(L10n.tr("发送中"), style = MaterialTheme.typography.labelSmall, color = muted)
+            }
+            PendingSendState.Accepted -> {
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
+                Text(L10n.tr("电脑已接收，等待处理"), style = MaterialTheme.typography.labelSmall, color = muted)
             }
             is PendingSendState.Waiting -> {
                 // ADR-0049 §6.2：标明在等什么（上传中的附件名、等待前一条）。

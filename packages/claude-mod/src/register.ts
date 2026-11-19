@@ -10,7 +10,9 @@ type QuestionAnswer = { toolCallId: string; answers: Record<string, string> } | 
 type ToolCall = Parameters<Hook<"tool.call">>[1];
 type ToolNext = Parameters<Hook<"tool.call">>[2];
 type BridgeEvent = Record<string, unknown>;
-type RemoteCommand = { type: "user_message"; text: string; messageId?: string } | { type: "slash"; name: string; args: string } | { type: "stop" };
+type RemoteCommand = {
+  type: "user_message"; text: string; messageId?: string; delivery?: "steer" | "followUp";
+} | { type: "slash"; name: string; args: string } | { type: "stop" };
 type CachedCommand = { state: "running"; commandType: "user_message" | "slash" } |
   { state: "running"; commandType: "stop"; turnId: string } | { state: "result"; event: BridgeEvent };
 
@@ -442,7 +444,7 @@ async function connectOnce($: Api): Promise<Connection | undefined> {
     ...(configDir === undefined || configDir.length === 0 ? {} : { configDir }),
     ...(launchId === undefined || launchId.length === 0 ? {} : { launchId }),
     interactive: true, claudeVersion: version.version, bridgeVersion: "4",
-    capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list", "configuration.turn", "configuration.observed", "configuration.effort.snapshot"],
+    capabilities: ["prompt.submit", "prompt.sendNow", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list", "configuration.turn", "configuration.observed", "configuration.effort.snapshot"],
   }, descriptor);
   if (!response.ok || response.body?.ok !== true) {
     const error = response.body !== undefined && "error" in response.body ? response.body.error : undefined;
@@ -544,12 +546,15 @@ async function runCommand($: Api, target: Connection, commandId: string,
     return;
   }
   if (cached?.state === "running") return;
+  const sendNow = command.type === "user_message" && command.delivery === "steer";
   // prompt.submit waits for native idle. Leave the command on the Host until
   // the next idle poll instead of starting an idle-waiting Mods call during
-  // native execution. Reserve one submission at a time so
-  // a batch cannot start several idle-waiting calls before turn.start arrives.
-  if (command.type === "user_message" && (activeTurnId !== undefined || activeCompactions.size > 0 ||
-      [...commands.values()].some(item => item.state === "running" && item.commandType !== "stop"))) return;
+  // native execution (unless steer explicitly interrupts the running turn).
+  // Wait for any already-running command (including `stop`) so concurrent polls
+  // never double-abort an active turn.
+  if (command.type === "user_message" && (activeCompactions.size > 0 ||
+      (!sendNow && activeTurnId !== undefined) ||
+      [...commands.values()].some(item => item.state === "running"))) return;
   if (command.type === "slash" && ((!['model', 'effort'].includes(command.name) && (activeTurnId !== undefined || activeCompactions.size > 0)) ||
       [...commands.values()].some(item => item.state === "running" && item.commandType !== "stop"))) {
     await finishCommand($, target, commandId, { type: "command.result", commandId, ok: false,
@@ -561,18 +566,7 @@ async function runCommand($: Api, target: Connection, commandId: string,
     : { state: "running", commandType: command.type === "slash" ? "slash" : "user_message" });
   trimCommands();
   if (command.type === "user_message") {
-    try {
-      const result = await $.prompt.submit({ text: command.text, asUser: true });
-      const denied = "drop" in result && typeof result.drop === "string";
-      await finishCommand($, target, commandId, {
-        type: "command.result", commandId, ok: !denied, status: denied ? "failure" : "success",
-        ...(denied ? { error: clipText(result.drop, 4_000) } : {}),
-        ...(command.messageId === undefined ? {} : { result: { messageId: command.messageId } }),
-      });
-    } catch (error) {
-      await finishCommand($, target, commandId, { type: "command.result", commandId, ok: false,
-        status: "unconfirmed", error: errorText(error) });
-    }
+    await submitNativePrompt($, target, commandId, command);
     return;
   }
   if (command.type === "slash") {
@@ -623,6 +617,43 @@ async function finishCommand($: Api, target: Connection, commandId: string, even
   commands.set(commandId, { state: "result", event });
   trimCommands();
   await postEvent($, target, event);
+}
+
+async function submitNativePrompt($: Api, target: Connection, commandId: string,
+  command: Extract<RemoteCommand, { type: "user_message" }>): Promise<void> {
+  if (command.text.trim().length === 0) {
+    await finishCommand($, target, commandId, {
+      type: "command.result", commandId, ok: false, status: "failure", error: "prompt_empty",
+    });
+    return;
+  }
+  if (command.delivery === "steer" && activeTurnId !== undefined) {
+    const turnId = activeTurnId;
+    try {
+      await $.turn.abort({ turnId });
+    } catch (error) {
+      // Prompt was never submitted if abort failed while a turn is still running.
+      if (activeTurnId !== undefined) {
+        await finishCommand($, target, commandId, {
+          type: "command.result", commandId, ok: false, status: "failure", error: errorText(error),
+        });
+        return;
+      }
+    }
+  }
+  try {
+    const result = await $.prompt.submit({ text: command.text, asUser: true });
+    const denied = "drop" in result && typeof result.drop === "string";
+    await finishCommand($, target, commandId, {
+      type: "command.result", commandId, ok: !denied, status: denied ? "failure" : "success",
+      ...(denied ? { error: clipText(result.drop, 4_000) } : {}),
+      ...(command.messageId === undefined ? {} : { result: { messageId: command.messageId } }),
+    });
+  } catch (error) {
+    await finishCommand($, target, commandId, {
+      type: "command.result", commandId, ok: false, status: "unconfirmed", error: errorText(error),
+    });
+  }
 }
 
 async function finishStep($: Api): Promise<void> {

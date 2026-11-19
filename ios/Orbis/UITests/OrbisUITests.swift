@@ -3238,7 +3238,7 @@ final class OrbisUITests: XCTestCase {
             XCTAssertEqual(sample.editor.maxY, sample.rowSize.height, accuracy: 0.5)
             XCTAssertEqual(sample.trailing.maxY, sample.rowSize.height, accuracy: 0.5)
         }
-        XCTAssertEqual(app.buttons["发送文件到电脑"].firstMatch.frame.width, 48, accuracy: 0.5)
+        XCTAssertEqual(app.buttons["添加附件"].firstMatch.frame.width, 48, accuracy: 0.5)
         XCTAssertEqual(app.buttons["发送消息"].firstMatch.frame.width, 48, accuracy: 0.5)
         // No extra tap: Capture must retain the real editor and its focus.
         composer.typeText("!")

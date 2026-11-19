@@ -1765,5 +1765,9 @@
   "图片内容暂不可显示": "Image unavailable",
   "附件内容暂不可显示": "Attachment unavailable",
   "引用来源暂不可显示": "Source unavailable",
-  "发给 {0}": "Message {0}"
+  "发给 {0}": "Message {0}",
+  "添加附件": "Add attachment",
+  "照片": "Photos",
+  "无法读取所选照片": "Could not load selected photo",
+  "电脑已接收，等待处理": "Received by computer, waiting"
 }

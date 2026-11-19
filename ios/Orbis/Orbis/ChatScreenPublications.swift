@@ -110,9 +110,11 @@ struct ChatComposerRuntimeFacts: Equatable {
     let contextUsage: RuntimeContextUsage?
     let permissionManagement: PermissionManagement?
     let backgroundTasks: BackgroundTaskInventory?
+    let steerSupported: Bool?
     init(_ r: RuntimeSummary) {
         runtimeId = r.runtimeId; sessionId = r.sessionId; status = r.status; cwd = r.cwd
         contextUsage = r.contextUsage; permissionManagement = r.permissionManagement; backgroundTasks = r.backgroundTasks
+        steerSupported = r.steerSupported
     }
 }
 struct ChatWorkingBranch: Equatable {
