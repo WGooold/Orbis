@@ -154,7 +154,7 @@ function projectEntry(entry: RemoteSessionEntry): ChatMessage | undefined {
 }
 function hasSpecialBlock(entry: RemoteSessionEntry): boolean {
   const content = object(entry.data.message)?.content ?? (entry.type === "custom_message" ? entry.data.content : undefined);
-  return Array.isArray(content) && content.some(block => ["image", "input_image", "document", "attachment", "citation"].includes(String(object(block)?.type)));
+  return Array.isArray(content) && content.some(block => ["image", "input_image", "document", "attachment", "citation", "render"].includes(String(object(block)?.type)));
 }
 function entryContainsDirective(entry: RemoteSessionEntry): boolean {
   const content = object(entry.data.message)?.content;

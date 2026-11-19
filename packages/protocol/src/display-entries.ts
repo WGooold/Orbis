@@ -1,5 +1,5 @@
 import {
-  RemoteArtifactSchema, type ChatMessage, type DisplayBatch, type DisplayEntry, type RemoteContent,
+  RemoteArtifactSchema, RemoteContentSchema, type ChatMessage, type DisplayBatch, type DisplayEntry, type RemoteContent,
   type RemoteSessionEntry,
 } from "./index.js";
 
@@ -357,6 +357,11 @@ function contentBlocks(value: unknown): RemoteContent[] {
           ...(block["summary"] === undefined ? { arguments: block["arguments"] } : { summary: block["summary"] as Extract<RemoteContent, { type: "tool_call" }>["summary"] }),
         });
         break;
+      case "render": {
+        const normalized = RemoteContentSchema.safeParse(block);
+        if (normalized.success) blocks.push(normalized.data);
+        break;
+      }
       case "image":
       case "input_image":
         blocks.push({ type: "render", renderKind: "image", text: "图片内容暂不可显示" });

@@ -167,6 +167,30 @@ describe("DeepSeek Harness backend", () => {
     expect(runtime.directoryEntries()[0]?.status).toBe("idle");
   });
 
+  // MSG-RENDER-01: the ACP boundary must retain an image's position without forwarding its data.
+  it("matches the ACP image placeholder to its persisted message", async () => {
+    const { client, command, events, log } = await fixture();
+    const image = { type: "image", data: "fixture-secret-image", mimeType: "image/png" };
+    const content = [{ type: "text", text: "before" }, image, { type: "text", text: "after" }];
+    vi.mocked(client.request).mockImplementation(async method => {
+      if (method !== "session/prompt") return {};
+      for (const block of content) client.onNotification?.("session/update", { sessionId: "one",
+        update: { sessionUpdate: "agent_message_chunk", messageId: "a1", content: block } });
+      log.events = [{ seq: 1, type: "assistant/message", data: { message: { id: "a1", content } } },
+        { seq: 2, type: "turn/end", data: { turn: 1, reason: { kind: "completed" } } }];
+      return { stopReason: "end_turn" };
+    });
+    const expected = [content[0], { type: "render", renderKind: "image", text: "图片内容暂不可显示" }, content[2]];
+    expect((await command({ type: "user_message", text: "show image" })).ok).toBe(true);
+    const patches = events.flatMap(({ event }) => event.type === "session.patch" ? [event] : []);
+    expect(patches.some(event => event.live.messages.some(row => JSON.stringify(row.message.content) === JSON.stringify(expected)))).toBe(true);
+    await command({ type: "session.sync", sessionId: "dsh:one", syncId: "media", range: "preview" }, "sync");
+    expect(events.find(({ event }) => event.type === "session.snapshot" && event.syncId === "media")?.event).toMatchObject({
+      display: { entries: [{ message: { content: expected } }] }, live: { messages: [] },
+    });
+    expect(JSON.stringify(events)).not.toContain("fixture-secret-image");
+  });
+
   it("keeps stop usable while a prompt waits and reports prompt failure", async () => {
     const { runtime, client, command, events } = await fixture();
     let rejectPrompt: ((error: Error) => void) | undefined;

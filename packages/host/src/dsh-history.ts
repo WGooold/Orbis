@@ -152,6 +152,15 @@ export async function openDshHistory(cliEntry: string, root = process.env.ORBIS_
   };
 }
 
+/** Both the stream and committed log use the same display-only labels for media. */
+export function dshMediaContent(value: unknown): Extract<RemoteContent, { type: "render" }> | undefined {
+  switch (record(value).type) {
+    case "image": return { type: "render", renderKind: "image", text: "图片内容暂不可显示" };
+    case "file": return { type: "render", renderKind: "document", text: "附件内容暂不可显示" };
+    default: return undefined;
+  }
+}
+
 export function dshContent(value: unknown): RemoteContent[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((raw): RemoteContent[] => {
@@ -163,9 +172,8 @@ export function dshContent(value: unknown): RemoteContent[] {
       if (typeof args === "string") { try { args = JSON.parse(args); } catch { /* Preserve malformed model output. */ } }
       return [{ type: "tool_call", toolCallId: String(block.id), toolName: String(block.name), arguments: args ?? {} }];
     }
-    if (block.type === "image") return [{ type: "text", text: "[图片：请在 DeepSeek Harness 中查看]" }];
-    if (block.type === "file") return [{ type: "text", text: `[文件：${String(record(block.attachment).name ?? "请在 DeepSeek Harness 中查看")}]` }];
-    return [];
+    const media = dshMediaContent(block);
+    return media ? [media] : [];
   });
 }
 

@@ -14,7 +14,7 @@ import {
 } from "@orbis/protocol";
 import type { AgentActivateTarget, AgentActivateContext, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshAcpClient, DshUnconfirmedError, dshPackageEntry, record, resolveDshCommand, type DshConnection, type DshRequest, type JsonObject } from "./dsh-client.js";
-import { dshEntries, openDshHistory, type DshHistory } from "./dsh-history.js";
+import { dshEntries, dshMediaContent, openDshHistory, type DshHistory } from "./dsh-history.js";
 import { DshWebClient, DshWebIncompatibleError, loadDshWebProtocol, type DshWebConnection, type DshWebProtocol, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
 import { DSH_DESKTOP_FLAVOR, DshWebRuntime, STREAM_COALESCE_MS, type DshFlavor } from "./dsh-web-runtime.js";
 import { ensureDshWebService, findDshWebService, type DshWebService } from "./dsh-web-service.js";
@@ -450,17 +450,25 @@ export class DshAcpRuntime implements AgentBackend {
       const type = update.sessionUpdate;
       if (type === "agent_message_chunk" || type === "agent_thought_chunk") {
         const content = record(update.content);
-        if (typeof update.messageId !== "string" || content.type !== "text" || typeof content.text !== "string") return;
+        const chunk = content.type === "text" && typeof content.text === "string" ? content.text : undefined;
+        const media = type === "agent_message_chunk" && content.type === "image" ? dshMediaContent(content) : undefined;
+        if (typeof update.messageId !== "string" || (chunk === undefined && media === undefined)) return;
         let message = session.streamed.get(update.messageId);
         if (!message) {
           message = { messageId: update.messageId, role: "assistant", content: [], timestamp: 0 };
           session.streamed.set(update.messageId, message);
           this.#emit(session, { type: "message.started", message: { ...message, content: [] } });
         }
-        const contentType = type === "agent_thought_chunk" ? "thinking" : "text";
-        const index = message.content.length;
-        message.content.push({ type: contentType, text: content.text });
-        this.#emit(session, { type: "message.delta", messageId: message.messageId, contentType, contentIndex: index, delta: content.text });
+        if (media) {
+          message.content.push(media);
+          // Old delta frames are text-only. Update the same live message at this block boundary.
+          this.#emit(session, { type: "message.started", message: { ...message, content: [...message.content] } });
+        } else if (chunk !== undefined) {
+          const contentType = type === "agent_thought_chunk" ? "thinking" : "text";
+          const index = message.content.length;
+          message.content.push({ type: contentType, text: chunk });
+          this.#emit(session, { type: "message.delta", messageId: message.messageId, contentType, contentIndex: index, delta: chunk });
+        }
       } else if (type === "tool_call" && typeof update.toolCallId === "string") {
         const name = typeof update.title === "string" ? update.title : "tool";
         session.tools.set(update.toolCallId, { name, input: undefined });

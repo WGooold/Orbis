@@ -16,6 +16,7 @@ import {
 import type { AgentActivateTarget, AgentActivateContext, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import { DshWebClient, DshWebUnconfirmedError, type DshWebConnection, type DshWebEvent, type DshWebTransportDiagnostic } from "./dsh-web-client.js";
 import { dshErrorText, dshWebEntries, dshWebEntryId, dshWebEntryText, dshWebIsUserMessage, dshWebMessage, dshWebTreeOptions, type DshStreamDecoder, type DshWebLogEvent } from "./dsh-web-history.js";
+import { dshMediaContent } from "./dsh-history.js";
 import { localHostname } from "./sessions.js";
 import { dshPermissionOptions, dshPermissions } from "./dsh-permissions.js";
 import { dshUserQuestionInteraction, dshUserQuestionAnswer } from "./dsh-user-questions.js";
@@ -1264,6 +1265,13 @@ export class DshWebRuntime implements AgentBackend {
       if (chunk.type === "chunk" && chunk.chunk !== undefined) chunk = object(chunk.chunk);
       if (this.#decoder && (chunk.type === "text-chunks" || chunk.type === "reasoning-chunks" || chunk.type === "tool-call-chunks")) {
         chunk = object(this.#decoder([frame.chunk])[0]?.chunk);
+      }
+      const media = chunk.type === "block-end" ? dshMediaContent(chunk.block) : undefined;
+      if (media) {
+        message.content.push(media);
+        session.source.upsertMessage({ message: this.#toolProducer(session).message(message), finished: false,
+          contentComplete: session.source.snapshot().live.messages.find(item => item.message.messageId === attempt)?.contentComplete ?? false });
+        return;
       }
       const text = chunk.type === "text-delta" || chunk.type === "reasoning-delta"
         ? String(chunk.text ?? "") : chunk.type === "tool-call-delta" ? String(chunk.argumentsDelta ?? "") : "";

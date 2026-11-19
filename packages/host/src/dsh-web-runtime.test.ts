@@ -1031,6 +1031,34 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event).toMatchObject({ live: { turn: expect.objectContaining({ durationMs: expect.any(Number) }), messages: [] } });
   });
 
+  // MSG-RENDER-01: prefix replay, live completion and durable history all retain the same media order.
+  it("restores DSH media at its block boundary without exposing attachment data", async () => {
+    const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
+    const follow = f.follows()[0]!;
+    const image = { type: "image", attachment: { id: "private-image" } };
+    const file = { type: "file", attachment: { id: "private-file", name: "private-path" } };
+    const before = { type: "text", text: "before" }, after = { type: "text", text: "after" };
+    follow.frame({ type: "snapshot", header: { createdAt: 1000, cwd: "D:/work" }, cursor: 0,
+      records: [{ type: "event", event: { seq: 0, time: 1000, type: "turn/start", data: { turn: 1 } } }],
+      assistantStream: { revision: 2, activeAttempt: { attemptId: "media", turn: 1, step: 1, nextIndex: 2, startedAfterSeq: 0,
+        stream: [{ time: 1001, chunk: { type: "text-delta", text: "before" } },
+          { time: 1002, chunk: { type: "block-end", block: image } }] } } });
+    for (const [index, chunk] of [[2, { type: "block-end", block: file }], [3, { type: "text-delta", text: "after" }]] as const) {
+      follow.frame({ type: "assistant-stream", frame: { type: "chunk", attemptId: "media", index, chunk } });
+    }
+    const expected = [before, { type: "render", renderKind: "image", text: "图片内容暂不可显示" },
+      { type: "render", renderKind: "document", text: "附件内容暂不可显示" }, after];
+    expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event).toMatchObject({
+      live: { messages: [{ message: { messageId: "media", content: expected } }] },
+    });
+    follow.frame({ type: "assistant-stream", frame: { type: "end", attemptId: "media", outcome: { kind: "committed", seq: 1 } } });
+    follow.frame({ type: "event", event: { seq: 1, time: 1090, type: "assistant/message", data: { message: { id: "native", content: [before, image, file, after] } } } });
+    expect(f.events.filter(({ event }) => event.type === "session.patch").at(-1)?.event).toMatchObject({
+      display: { entries: [{ message: { content: expected } }] }, live: { messages: [] },
+    });
+    expect(JSON.stringify(f.events)).not.toMatch(/private-image|private-file|private-path/);
+  });
+
   it("repairs silently missed native completion on a periodic check and rejects the replaced follow's late frames", async () => {
     const f = discoveryFixture(); f.list([f.live("browser", true)]); await f.runtime.start();
     const opening = f.follows()[0]!;
