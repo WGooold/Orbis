@@ -15,6 +15,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/p
 import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { type RawData } from "ws";
 
@@ -3543,10 +3544,20 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     } finally { await webRuntime.stop(); await desktopRuntime.stop(); }
   });
 
-  // HERMES-GATEWAY-01 / HERMES-COMPAT-01: exercise the real E2E Host/Relay router without touching a user Gateway.
+  // HERMES-COMPAT-01: run the same encrypted fixture against the candidate or a separately built release Relay.
+  // ORBIS_HERMES_COMPAT_RELEASE_ROOT points to a compiled, isolated checkout of the comparison tag.
+  const releaseRoot = process.env.ORBIS_HERMES_COMPAT_RELEASE_ROOT;
+  const startHermesCompatRelay = async (dir: string): Promise<RelayServer> => {
+    if (!releaseRoot) return startRelayLocal(dir);
+    const released = await import(pathToFileURL(join(releaseRoot, "packages/relay/dist/index.js")).href) as typeof import("@orbis/relay");
+    return released.createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret",
+      stateFile: join(dir, "relay-state.json") });
+  };
+
+  // HERMES-GATEWAY-01: exercise the real E2E Host/Relay router without touching a user Gateway.
   it("connects Hermes only for negotiated requests and resets its visibility on rehandshake", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-hermes-host-"));
-    relay = await startRelayLocal(stateDir);
+    relay = await startHermesCompatRelay(stateDir);
     const profile_id = join(stateDir, "fixture-hermes");
     const sessionId = "hermes-private-id";
     const endpoint = { profile_id, instance_id: "fixture", authority_epoch: 1, runtime_protocol: 1,
@@ -3554,6 +3565,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const close = vi.fn(async () => undefined);
     const request = vi.fn(async (method: string, args: Record<string, unknown>) => {
       if (method === "session.list") return { sessions: args.scope === "live" ? [] : [{ id: sessionId, title: "Synthetic Hermes", started_at: 1000 }] };
+      if (method === "prompt.submit") return { admission_id: "hermes-fixture-admission", status: "started" };
       if (method === "session.resume") return { session_id: sessionId, stored_session_id: sessionId, running: false,
         messages: [], prompts: [], last_sequence: 0, execution_generation: 0, replay_epoch: "initial", authority_epoch: 1,
         info: { cwd: stateDir } };
@@ -3561,7 +3573,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     });
     const client = { request, close, closed: false, readyState: 1 } as unknown as HermesGatewayRpcClient;
     const connectHermes = vi.fn(async () => ({ client, endpoint, serverRequests: [], runtime: {
-      ...endpoint, session_create: { sources: ["tui"], parameters: ["cwd"] },
+      ...endpoint, capabilities: [...endpoint.capabilities, "durable-admission-v1"], session_create: { sources: ["tui"], parameters: ["cwd"] },
     } }));
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
       adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
@@ -3612,6 +3624,11 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(runtimeId).toMatch(/^hermes:/u);
     expect(connectHermes).toHaveBeenCalledTimes(1);
 
+    send({ type: "runtime.command", runtimeId, commandId: "allowed-send", command: { type: "user_message", text: "fixture prompt" } });
+    expect(await next(row => row.type === "runtime.event" && (row.event as RuntimeEvent).type === "command.result")).toMatchObject({
+      runtimeId, event: { commandId: "allowed-send", ok: true, status: "success" },
+    });
+
     const both = await declare(["agent.hermes", "agent.dshDesktop"]);
     expect(both.agents).toContain("hermes");
     expect(both).toHaveProperty("dshDesktop", null);
@@ -3626,9 +3643,46 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(downgraded.agents).not.toContain("hermes");
     send({ type: "runtime.command", runtimeId, commandId: "blocked-send", command: { type: "user_message", text: "must not send" } });
     expect(await next(row => row.commandId === "blocked-send")).toMatchObject({ type: "protocol.error", code: "agent_unsupported" });
-    expect(request.mock.calls.every(([method]) => ["session.list", "session.resume"].includes(method))).toBe(true);
+    expect(request.mock.calls.filter(([method]) => method === "prompt.submit").map(([method, params]) => [method, params])).toEqual([
+      ["prompt.submit", { session_id: sessionId, submission_id: "allowed-send", text: "fixture prompt" }],
+    ]);
     await host.stop(); host = undefined;
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  // A current device declaration remains legal against a pre-Hermes Host; a reconnect receives its normal catalog.
+  it.skipIf(!releaseRoot)("preserves current device negotiation and fallback on the released Host and Relay", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-hermes-fallback-"));
+    relay = await startHermesCompatRelay(stateDir);
+    const released = await import(pathToFileURL(join(releaseRoot!, "packages/host/dist/host-service.js")).href) as { HostService: typeof HostService };
+    const oldHost = await released.HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false });
+    host = oldHost;
+    await oldHost.start();
+    const opened = await oldHost.openPairingWindow();
+    device = (await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Rollback fixture" })).device;
+    const pskRoot = await device.pair(opened.payload);
+    const next = async (predicate: (row: Record<string, unknown>) => boolean) => {
+      for (let i = 0; i < 40; i++) {
+        const row = await device!.receiveMessage() as Record<string, unknown>;
+        expect(row.type).not.toBe("protocol.error");
+        if (predicate(row)) return row;
+      }
+      throw new Error("Released Host fixture reply not received");
+    };
+    for (const requestId of ["fallback-one", "fallback-reconnected"]) {
+      await device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+      const ready = await next(row => row.type === "device.ready");
+      expect(ready.hostFeatures).toEqual(["device.features"]);
+      expect(ready.launchableAgents).not.toContain("hermes");
+      sendRequest(device, { type: "device.features", protocolVersion: PROTOCOL_VERSION, features: ["agent.dshDesktop", "agent.hermes"] });
+      const negotiated = await next(row => row.type === "device.ready");
+      expect(negotiated).toHaveProperty("dshDesktop", null);
+      expect(negotiated.launchableAgents).not.toContain("hermes");
+      sendRequest(device, { type: "session.list", protocolVersion: PROTOCOL_VERSION, requestId });
+      expect(await next(row => row.requestId === requestId)).toMatchObject({ type: "session.list.result", sessions: [] });
+    }
   });
 
   it("reopens a quit DSH browser session over E2E when Codex is also enabled", async () => {

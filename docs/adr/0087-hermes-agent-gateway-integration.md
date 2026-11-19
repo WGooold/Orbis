@@ -2,7 +2,7 @@
 
 日期：2026-11-19
 
-Status: proposed（采用 Hermes 官方 TUI Gateway 作为自定义 Host 的原型路线；transport、bootstrap 与隔离 backend 已实现；Host 发布、跨端接入和兼容验证分开推进，不代表已发布）
+Status: proposed（采用 Hermes 官方 TUI Gateway 作为自定义 Host 的原型路线；Host 与客户端入口已实现，发版源码兼容验证通过；真实 Gateway、设备与发布门禁待验收）
 
 关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0056](0056-agent-startup-readiness-and-consent.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0072](0072-session-configuration-and-recoverable-launch.md)、[ADR-0077](0077-cli-host-and-headless-validation.md)。
 
@@ -61,7 +61,7 @@ Ticket 合并前分别审查并提交；没有可配置 issue tracker 的工作�
 
 ### 1. 来源身份与能力协商
 
-新增 `AgentKind = "hermes"`，作为 Hermes Agent 独立来源。设备能力使用新的 `DEVICE_FEATURE_HERMES_GATEWAY = "agent.hermes"`（最终常量名可随实现调整，线上值发布后保持稳定）；只有声明该能力的 App 才接收 `hermes` 枚举、目录与命令。依 ADR-0064 同时适配注册帧和后续更新，旧 App 不得收到未知 AgentKind。所有新交互场景使用新 ID。
+新增 `AgentKind = "hermes"`，作为 Hermes Agent 独立来源。设备能力使用新的 `DEVICE_FEATURE_HERMES = "agent.hermes"`；只有声明该能力的 App 才接收 `hermes` 枚举、目录与命令。依 ADR-0064 同时适配注册帧和后续更新，旧 App 不得收到未知 AgentKind。所有新交互场景使用新 ID。
 
 Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.describe` 握手通过后报告后端可用。未知方法、未公布的 session source 或配置能力都按 unsupported 处理，不静默退化到 ACP、直接 API 或另一个 Agent。旧版与后续版本需按能力而非只按字符串版本分支。
 
@@ -83,7 +83,7 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 
 ### 4. 能力、安全与失败语义
 
-- Prompt、文本/图片内容、stream、reasoning、工具活动、文件变化、终态和取消均按 Hermes Gateway 当前公布能力映射到 Orbis 既有 RuntimeEvent / AgentState。事件序号、回放边界、重复帧和断线重连须保持幂等。
+- 文本 prompt、stream、reasoning、工具摘要、终态和取消按 Hermes Gateway 实际能力映射到 Orbis 既有 RuntimeEvent / AgentState。未验证的图片输入、原始工具正文、文件 diff 和 steer 不开放。事件序号、回放边界、重复帧和断线重连须保持幂等。
 - approval / interaction 经既有 `InteractionRequest` 送至用户；拒绝、超时、Host 离线、未知选项及不支持的审批请求都 fail closed。不得自动选择允许、提升到永久 allowlist、启动 `--yolo` 或后台运行交互式 setup。
 - Hermes Gateway 所在主机执行文件、终端、MCP、浏览器等工具；这不是 Orbis 沙箱。Orbis UI 明确显示该后端以及工作目录，错误报告不把远端执行说成本机执行。
 - 模型、mode、toolset、权限和 provider 状态只通过 Gateway live API / capabilities 读取与变更；只有收到 native confirmation 后才发布成功状态。不直接编辑 Hermes config、凭据或 SessionDB。
@@ -129,3 +129,9 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 - 自动验证：[后端 fixture](../../packages/host/src/hermes-agent-backend.test.ts)，[HERMES-04 定向测试证据](../../.artifacts/hermes/h04-tests.txt)（6 文件、60 项通过），TypeScript 类型、定向 ESLint 与 `git diff --check` 通过。源码对照本机 v0.22.5 `bf0203a794` 的 `gateway/session_controls.py`、`gateway/session_mutations.py`、`gateway/session_deferred_pick.py`，不是实际 Gateway 联动。
 - HERMES-05：CLI／桌面 Host 后台发现 Hermes，只有点名的目录、配置或激活请求才连接；停止只关闭 Orbis socket。`agent.hermes` 与 `agent.dshDesktop` 独立，按设备投影启动公告、运行时、请求、目录游标、Host 快照和推送；不在无设备协商的 Live Activity 旁路公告。iOS／Android 进入既有新建与目录筛选，Windows Host 总览只显示状态，不提供安装器。归档继续不可用。
 - 自动验证：[Host E2E fixture](../../packages/host/src/host-service.test.ts)（91 项通过）、[定向测试](../../.artifacts/hermes/h05-unit-final.txt)（69 项通过）及 [Swift Store 回归](../../.artifacts/hermes/h05-swift/run.log)（2 项通过）。实际 Gateway 联动、已发布客户端互通、Android／Windows 原生构建、打包、部署和用户验收不在这些结果内。
+
+### HERMES-06 兼容验证
+
+- **Host／Relay**：以 `v0.1.22`（`11c7a227`）原始源码独立构建。候选 Host 经发版 Relay 完成 E2E 配对、会话目录、恢复、发一条合成消息、重握手与降级隔离；对照为候选 Host／Relay。同一设备能力声明向发版 Host 发出时，重连前后均只返回原有 Agent 和目录。[发版对照](../../.artifacts/hermes/h06-old-node-send-final.txt)（2 项通过）、[候选回归](../../.artifacts/hermes/h06-candidate-node.txt)（136 项通过，1 项发版专属测试按设计跳过）。复现测试见 `host-service.test.ts`，将独立发版运行 `npm ci && npm run build` 后的根目录传给 `ORBIS_HERMES_COMPAT_RELEASE_ROOT`。首次仅运行 `tsc` 缺少 Relay web 构建产物，失败证据保留在 `.artifacts/hermes/h06-old-node.txt`。
+- **移动端**：候选 Host 的混合目录投影以 `v0.1.22` 原始 iOS parser 和 `android-v0.1.60`（`20cf37fc`）原始 Android reducer 回放，均接受过滤后的 112 条、22 个续页；iOS 负对照拒绝未过滤的 Hermes 页。[iOS 证据](../../.artifacts/hermes/h06-old-ios/release-app-compat.json)、[Android 证据](../../.artifacts/hermes/h06-old-android/test-result.xml)。候选 Swift Store 2 项、Android 目录 21 项通过。这是发版源码对照，不是已安装包、生产 Relay 或完整真机互通。
+- **待用户验证**：候选安装包就绪后，用支持 Gateway 的 Hermes CLI 启动电脑端 Host，手机在现有新建入口选择 Hermes，选工作目录并发送文本；从会话目录恢复同一会话，确认历史、工具摘要和单次审批；重连后确认未重复发送。还未运行实际 Hermes Gateway 联动、Windows 安装包、设备安装或部署，本次未操作用户 Hermes profile。
