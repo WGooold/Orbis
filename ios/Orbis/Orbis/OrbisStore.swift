@@ -53,7 +53,13 @@ final class HostConnection: ObservableObject {
         let enabled: Bool
     }
     private static let agentEnablementFeature = "agent.enablement.v1"
-    @Published private(set) var agentEnablementRows: [AgentEnablementRow] = []
+    @Published private(set) var agentEnablementRows: [AgentEnablementRow] = [] {
+        didSet { if oldValue != agentEnablementRows { directoryViewRevision &+= 1 } }
+    }
+    /// Nil is the legacy/unknown view; an empty set means the Host disabled every source.
+    var enabledAgentKinds: Set<String>? {
+        agentEnablementRevision.map { _ in Set(agentEnablementRows.filter(\.enabled).map(\.id)) }
+    }
     @Published private(set) var agentEnablementPending: String?
     @Published private(set) var agentEnablementAvailable = false
     @Published private(set) var agentEnablementFailed = false
@@ -266,7 +272,7 @@ final class HostConnection: ObservableObject {
     var sessionConfigurationValues: SessionConfigurationValues { proposedSessionConfiguration ?? sessionConfiguration?.values ?? SessionConfigurationValues() }
 
     func supportsSessionConfiguration(for agent: String) -> Bool {
-        sessionConfigurationSupported && (agent != "openclaw" || openClawNegotiated) && (agent != kimiCodeKind || kimiCodeSupported)
+        enabledAgentKinds?.contains(agent) != false && sessionConfigurationSupported && (agent != "openclaw" || openClawNegotiated) && (agent != kimiCodeKind || kimiCodeSupported)
     }
 
     func loadSessionConfiguration(agent: String, cwd: String) {
@@ -330,7 +336,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func createConfiguredSession(agent: String, cwd: String, firstMessage: String) -> Bool {
-        guard connection == .secured, activationRequestId == nil, let config = sessionConfiguration,
+        guard enabledAgentKinds?.contains(agent) != false, connection == .secured, activationRequestId == nil, let config = sessionConfiguration,
               config.agentKind == agent, config.cwd == cwd, sessionConfigurationError == nil, agent != kimiCodeKind || kimiCodeSupported else { return false }
         guard !hasLaunchJournal else { recoverConfiguredLaunch(); sessionLaunchError = L10n.tr("请先核对上一次启动及首句结果"); return false }
         let id = UUID().uuidString, placeholder = "launch:" + id
@@ -528,9 +534,9 @@ final class HostConnection: ObservableObject {
     private func externalImportRuntimes() -> [RuntimeSummary] {
         guard connection == .secured, homeDirectoryReceived else { return [] }
         let counts = Dictionary(grouping: runtimes.compactMap(\.sessionId), by: { $0 }).mapValues(\.count)
-        let closing = closingRuntimeIds, archiving = OperationKinds.archiveOverrides(ledger)
+        let closing = closingRuntimeIds, archiving = OperationKinds.archiveOverrides(ledger), enabled = enabledAgentKinds
         return runtimes.filter { runtime in
-            guard let id = runtime.sessionId, !id.isEmpty, counts[id] == 1, !runtime.cwd.isEmpty,
+            guard enabled?.contains(agentKind(runtime) ?? "pi") != false, let id = runtime.sessionId, !id.isEmpty, counts[id] == 1, !runtime.cwd.isEmpty,
                   ["idle", "running"].contains(runtime.status), !closing.contains(runtime.runtimeId),
                   archiving[id] == nil else { return false }
             guard let session = sessionIndex[id] else { return true }
@@ -566,7 +572,7 @@ final class HostConnection: ObservableObject {
                               agent: String, cwd: String, instruction: String) async throws {
         guard !importDeliveryActive else { throw ExternalImportProblem.busy }
         guard canLaunchExternalImport, let host = selectedHost else { throw ExternalImportProblem.hostUpgrade }
-        guard let config = sessionConfiguration, config.agentKind == agent, config.cwd == cwd,
+        guard enabledAgentKinds?.contains(agent) != false, let config = sessionConfiguration, config.agentKind == agent, config.cwd == cwd,
               sessionConfigurationRequest == nil, sessionConfigurationError == nil,
               (launchableAgents ?? supportedAgents ?? []).contains(agent), !cwd.isEmpty else { throw ExternalImportProblem.launchConfiguration }
         importDeliveryActive = true; defer { importDeliveryActive = false }
@@ -579,7 +585,8 @@ final class HostConnection: ObservableObject {
             try inbox.reserveLaunch(batch.id, launch: launch)
         }.value
         guard matchesImportLaunch(launch), generation == connectionGeneration, history == historyGeneration, epoch == admittedModelEpoch,
-              config == sessionConfiguration, sessionConfigurationRequest == nil, sessionConfigurationError == nil else {
+              enabledAgentKinds?.contains(agent) != false, config == sessionConfiguration,
+              sessionConfigurationRequest == nil, sessionConfigurationError == nil else {
             try await Task.detached { try inbox.failLaunch(batch.id, launchId: launch.id) }.value
             throw ExternalImportProblem.launchConfiguration
         }
@@ -2239,7 +2246,8 @@ final class HostConnection: ObservableObject {
     #endif
 
     private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String? = nil, displayTitle: String? = nil) {
-        guard connection == .secured, activationRequestId == nil else { return }
+        guard connection == .secured, activationRequestId == nil,
+              (target["agentKind"] as? String).map({ enabledAgentKinds?.contains($0) != false }) != false else { return }
         let requestId = UUID().uuidString
         let placeholder = "launch:" + requestId
         let creation = ledger.create(opId: requestId, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,

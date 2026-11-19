@@ -131,6 +131,28 @@ struct MultiHostTests {
         #expect(first.externalImportRuntime(offered.target) == nil)
     }
 
+    // A policy snapshot can precede the updated runtime projection.
+    @Test func disabledSourceCannotReceiveExternalImportFromStaleCatalog() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let owner = try #require(fixture.store.connection(for: "host-1"))
+        let transport = try #require(fixture.transports["host-1"])
+        let offered = try #require(owner.externalImportDestinations().first)
+        await transport.emit(["type": "device.ready", "hostFeatures": ["device.features", "agent.enablement.v1"],
+            "deviceFeatures": ["agent.enablement.v1"], "dshDesktop": NSNull(), "runtimes": [[
+                "runtimeId": "shared-runtime", "name": "Shared runtime", "cwd": "/repo", "status": "idle", "sessionId": "shared-session"
+            ]]])
+        func snapshot(_ revision: Int, _ enabled: Bool) -> [String: Any] {
+            ["type": "agent.enablement.snapshot", "snapshot": ["revision": revision, "agents": [["kind": "pi", "label": "Pi", "enabled": enabled]]]]
+        }
+        await transport.emit(snapshot(1, false))
+        #expect(owner.enabledAgentKinds == [])
+        #expect(owner.externalImportDestinations().isEmpty)
+        #expect(owner.externalImportRuntime(offered.target) == nil)
+        await transport.emit(snapshot(2, true))
+        #expect(owner.externalImportRuntime(offered.target)?.sessionId == "shared-session")
+    }
+
     // IMPORT-06: no legacy fallback, no early command, exact upload verification,
     // and a read-only recovery after the original command loses its connection.
     @Test func externalImportSendsOnlyAfterVerifiedUploadAndRecoversWithoutReplay() async throws {

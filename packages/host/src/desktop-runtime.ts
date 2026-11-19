@@ -229,7 +229,7 @@ export class DesktopRuntime {
     this.#usage = new ProviderUsageCache(() => this.#providers.usageProfiles(), (profile, usage) => {
       this.#emit({ event: "providerUsageChanged", kind: profile.kind, providerId: profile.id, usage });
       void this.#service?.refreshProviderFacts();
-    });
+    }, undefined, undefined, profile => this.#providerCurrent(profile.kind));
   }
 
   async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled" | "dshEnabled" | "codexEnabled" | "piIntegrationEnabled" | "kimiCodeEnabled"> & { legacyClaudeEnabled?: boolean } = {}): Promise<unknown> {
@@ -1365,9 +1365,14 @@ export class DesktopRuntime {
   }
   piDefaultProvider(): Promise<string> { return this.#providers.piDefaultProvider(); }
   async checkProvider(kind: string, id: string): Promise<unknown> {
-    return checkProviderEndpoint(providerFields(await this.#providers.get(agentKind(kind), id)).baseUrl);
+    const selected = agentKind(kind);
+    const current = await this.#requireProviderEnabled(selected);
+    const { baseUrl } = providerFields(await this.#providers.get(selected, id));
+    current();
+    return checkProviderEndpoint(baseUrl);
   }
   async fetchProviderModels(params: Record<string, unknown>): Promise<unknown> {
+    await this.#requireProviderEnabled(agentKind(params.kind));
     if (params.fields && typeof params.fields === "object") {
       const fields = params.fields as ProviderFields;
       if ([fields.baseUrl, fields.apiKey, fields.api].some(value => typeof value !== "string")) throw new ProviderError("模型查询配置无效");
@@ -1376,16 +1381,23 @@ export class DesktopRuntime {
     const preview = this.providerPreview(params) as { fields: ProviderFields };
     return fetchProviderModels(preview.fields);
   }
-  querySubscription(kind: string, id: string): ReturnType<ProviderManager["querySubscription"]> {
-    return this.#providers.querySubscription(agentKind(kind), id);
+  async querySubscription(kind: string, id: string): ReturnType<ProviderManager["querySubscription"]> {
+    const selected = agentKind(kind);
+    const current = await this.#requireProviderEnabled(selected);
+    return this.#providers.querySubscription(selected, id, current);
   }
   async queryProviderUsage(kind: string, id: string): Promise<unknown> {
-    const profile = await this.#providers.get(agentKind(kind), id);
+    const selected = agentKind(kind);
+    const current = await this.#requireProviderEnabled(selected);
+    const profile = await this.#providers.get(selected, id);
+    current();
     if (!profile.usageScript) throw new ProviderError("请先配置用量查询脚本");
     return this.#usage.refresh(profile);
   }
   async saveProviderUsage(kind: string, id: string, script: unknown): Promise<void> {
-    await this.#providers.updateMetadata(agentKind(kind), id, { usageScript: script });
+    const selected = agentKind(kind);
+    await this.#requireProviderEnabled(selected);
+    await this.#providers.updateMetadata(selected, id, { usageScript: script });
     this.#usage.invalidate(kind, id);
     this.#emit({ event: "providerUsageChanged", kind, providerId: id, usage: {} });
     void this.#usage.tick().catch(() => {});
@@ -1427,6 +1439,7 @@ export class DesktopRuntime {
   proxyStatus(): Promise<object> { return this.#providers.proxyStatus(); }
   async resetProxyHealth(id: string): Promise<object> { this.#providers.resetProxyHealth(id); return this.proxyStatus(); }
   async saveProxyPreferences(params: Record<string, unknown>): Promise<object> {
+    await this.#requireProviderEnabled("codex");
     if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
     if (!this.#service) await this.#checkExistingHost();
     const work = () => this.#providers.saveProxyPreferences(params);
@@ -1435,6 +1448,7 @@ export class DesktopRuntime {
     return result;
   }
   async saveCodexPreferences(params: Record<string, unknown>): Promise<CodexPreferences> {
+    await this.#requireProviderEnabled("codex");
     if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
     const work = async (): Promise<CodexPreferences> => {
       const result = await this.#providers.saveCodexPreferences(params as CodexPreferences);
@@ -1498,12 +1512,18 @@ export class DesktopRuntime {
     this.#scheduleClaudeDetection();
   }
 
-  async #requireProviderEnabled(kind: AgentKind): Promise<void> {
-    if (kind === "codex") {
-      await this.#agentEnablement.read();
-      if (this.#agentEnablement.allows("codexDesktop")) return;
-    }
-    await this.#requireAgentEnabled(kind);
+  #providerCurrent(kind: AgentKind): () => boolean {
+    const lease = this.#agentEnablement.lease(kind);
+    const desktop = kind === "codex" ? this.#agentEnablement.lease("codexDesktop") : undefined;
+    return () => lease?.isCurrent() === true || desktop?.isCurrent() === true;
+  }
+
+  async #requireProviderEnabled(kind: AgentKind): Promise<() => void> {
+    await this.#agentEnablement.read();
+    const current = this.#providerCurrent(kind);
+    const requireCurrent = () => { if (!current()) throw new ProviderError("请先在 Agent 设置中启用此接入"); };
+    requireCurrent();
+    return requireCurrent;
   }
 
   async #requireAgentEnabled(kind: AgentKind): Promise<void> {

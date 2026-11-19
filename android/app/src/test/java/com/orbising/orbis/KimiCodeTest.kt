@@ -41,6 +41,15 @@ class KimiCodeTest {
         assertEquals(emptySet<String>(), state.launchableAgents)
     }
 
+    @Test fun `managed source gate uses saved choice without changing legacy fallback`() {
+        val legacy = RemoteState(sessionConfigurationSupported = true)
+        assertTrue(legacy.supportsSessionConfiguration("codex"))
+        val managed = legacy.copy(agentEnablementRevision = 1, agentEnablementRows = listOf(
+            AgentEnablementRow("codex", "Codex CLI", false), AgentEnablementRow("codexDesktop", "Codex Desktop", true)))
+        assertFalse(managed.supportsSessionConfiguration("codex"))
+        assertTrue(managed.supportsSessionConfiguration("codexDesktop"))
+    }
+
     @Test fun `OpenCode declares its feature only to a Host that advertises it`() {
         assertEquals(listOf("agent.dshDesktop", "agent.opencode"), deviceAgentFeatures(ready("""{"hostFeatures":["device.features","agent.opencode"]}""")))
         assertEquals(emptyList<String>(), deviceAgentFeatures(ready("""{"hostFeatures":["agent.opencode"]}""")))

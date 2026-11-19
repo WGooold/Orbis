@@ -1325,6 +1325,11 @@ internal fun RemoteState.sessionHost(language: AppLanguage): SessionHost? {
 internal val RemoteState.canOperateSessions: Boolean
     get() = !hostId.isNullOrBlank() && connection == RelayConnection.ONLINE && e2eReady
 
+/** Null means no policy has been received (including legacy Hosts); an empty set is authoritative. */
+internal fun RemoteState.enabledAgentKinds(): Set<String>? = agentEnablementRevision?.let {
+    agentEnablementRows.filter { row -> row.enabled }.mapTo(mutableSetOf()) { row -> row.kind }
+}
+
 internal fun RemoteState.canCreateSessionOn(expectedHostId: String?): Boolean =
     canOperateSessions && expectedHostId == hostId && sessionActivateRequests.isEmpty()
 
@@ -3767,8 +3772,11 @@ internal fun runtimeStatusText(status: String): String = when (status) {
     else -> L10n.tr("未知状态")
 }
 
+internal fun RemoteState.allowsAgentSource(kind: String): Boolean =
+    agentEnablementRevision == null || agentEnablementRows.any { it.kind == kind && it.enabled }
+
 internal fun RemoteState.supportsSessionConfiguration(agentKind: String): Boolean =
-    sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated) && (agentKind != KIMI_CODE_KIND || kimiCodeSupported)
+    allowsAgentSource(agentKind) && sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated) && (agentKind != KIMI_CODE_KIND || kimiCodeSupported)
 
 internal fun RemoteState.canLaunchOpenClaw(): Boolean =
     supportsSessionConfiguration("openclaw") && (launchableAgents ?: supportedAgents)?.contains("openclaw") == true

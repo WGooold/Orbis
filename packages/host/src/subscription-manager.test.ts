@@ -39,6 +39,26 @@ describe("Host subscription query ownership", () => {
     expect(query).toHaveBeenCalledOnce();
   });
 
+  it("rechecks Agent admission after waiting for native credentials", async () => {
+    const { manager } = await fixture();
+    const official = (await manager.list("claude"))[0]!;
+    let release!: (value: { claudeAiOauth: { accessToken: string } }) => void;
+    const credentials = vi.spyOn(subscriptions, "claudeSubscriptionCredentials")
+      .mockImplementationOnce(() => new Promise(resolve => { release = resolve; }))
+      .mockResolvedValue({ claudeAiOauth: { accessToken: "local-only" } });
+    const query = vi.spyOn(subscriptions, "querySubscriptionQuota").mockResolvedValue(quota);
+    let enabled = true;
+    const requireCurrent = () => { if (!enabled) throw new Error("disabled"); };
+    const pending = expect(manager.querySubscription("claude", official.id, requireCurrent)).rejects.toThrow("disabled");
+    await vi.waitFor(() => expect(credentials).toHaveBeenCalledOnce());
+    enabled = false;
+    release({ claudeAiOauth: { accessToken: "local-only" } });
+    await pending;
+    expect(query).not.toHaveBeenCalled();
+    enabled = true;
+    expect(await manager.querySubscription("claude", official.id, requireCurrent)).toEqual(quota);
+  });
+
   it("queries Claude native OAuth only for an official card, never trusting category labels", async () => {
     const { manager, paths } = await fixture();
     const credentials = vi.spyOn(subscriptions, "claudeSubscriptionCredentials").mockResolvedValue({ claudeAiOauth: { accessToken: "local-only" } });

@@ -23,7 +23,8 @@ async function evaluate(code: string, response?: unknown): Promise<unknown> {
     worker.once("exit", code => { clearTimeout(timeout); if (code !== 0) reject(new ProviderError("用量脚本进程已结束")); });
   });
 }
-export async function queryProviderUsage(script: UsageScript, credentials: { apiKey: string; baseUrl: string }): Promise<unknown[]> {
+export async function queryProviderUsage(script: UsageScript, credentials: { apiKey: string; baseUrl: string }, requireCurrent = () => {}): Promise<unknown[]> {
+  requireCurrent();
   validateUsageScript(script);
   if (!script.enabled) throw new ProviderError("用量查询未启用");
   let baseUrl = script.baseUrl?.trim() || credentials.baseUrl;
@@ -46,12 +47,14 @@ export async function queryProviderUsage(script: UsageScript, credentials: { api
   const headers = new Headers(request.headers);
   const body = request.body === undefined ? undefined : typeof request.body === "string" ? request.body : JSON.stringify(request.body);
   let response: Response;
+  requireCurrent();
   try { response = await fetch(url, { method, headers, ...(body === undefined ? {} : { body }), redirect: "error", signal: AbortSignal.timeout(script.timeout * 1000) }); }
   catch { throw new UsageQueryError("用量请求失败，请检查网络与脚本配置", true); }
   if (!response.ok) { await response.body?.cancel(); throw new UsageQueryError(`用量请求失败（HTTP ${response.status}）`, response.status >= 500 || response.status === 429); }
   let data: unknown;
   try { data = await responseJson(response); }
   catch (error) { throw new UsageQueryError(error instanceof ProviderError ? error.message : "读取用量响应失败", !(error instanceof ProviderError)); }
+  requireCurrent();
   const output = await evaluate(code, data);
   const rows = Array.isArray(output) ? output : [output];
   if (!rows.length || rows.some(row => !row || typeof row !== "object" || Array.isArray(row) || ["remaining", "total", "used"].some(key => row[key] !== undefined && (typeof row[key] !== "number" || !Number.isFinite(row[key]))))) throw new ProviderError("用量脚本返回的额度格式无效");

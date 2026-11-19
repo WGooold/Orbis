@@ -84,18 +84,21 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     var configurationPanel by remember { mutableStateOf<String?>(null) }
     var permissionCategory by remember { mutableStateOf<String?>(null) }
     var proposedPermissions by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    val supported = state.launchableAgents ?: state.supportedAgents
-    val openCode = state.openCodeAvailability.takeIf { state.e2eReady }
+    val enabledAgentKinds = state.enabledAgentKinds()
+    val supported: Set<String>? = (state.launchableAgents ?: state.supportedAgents)?.filterTo(mutableSetOf()) { enabledAgentKinds?.contains(it) != false }
+        ?: enabledAgentKinds?.let { emptySet() }
+    val openCode = state.openCodeAvailability.takeIf { state.e2eReady && enabledAgentKinds?.contains("opencode") != false }
     val showOpenCode = openCode != null || (state.e2eReady && supported?.contains("opencode") == true)
     val canChooseOpenCode = state.e2eReady && openCode?.ready != false && supported?.contains("opencode") == true
-    val canUseSelectedAgent = kind != "opencode" || canChooseOpenCode
+    val canUseSelectedAgent = supported?.contains(kind) != false && (kind != "opencode" || canChooseOpenCode)
     val config = state.sessionConfiguration.takeIf { it.agentKind == kind && it.cwd == cwd }
     LaunchedEffect(open, kind, cwd, state.e2eReady, state.supportsSessionConfiguration(kind), canUseSelectedAgent) {
         if (open && state.e2eReady && state.supportsSessionConfiguration(kind) && cwd.isNotBlank() && canUseSelectedAgent) onLoadConfiguration(kind, cwd)
     }
     val kinds = listOf("codex", "claude", "dsh", "openclaw", "pi", KIMI_CODE_KIND, "hermes", "opencode").filter {
-        when (it) { "opencode" -> showOpenCode; "hermes" -> supported?.contains("hermes") == true; "openclaw" -> state.canLaunchOpenClaw(); KIMI_CODE_KIND -> state.kimiCodeSupported; else -> true }
+        (enabledAgentKinds == null || agentVariants(it).any(enabledAgentKinds::contains)) && when (it) { "opencode" -> showOpenCode; "hermes" -> supported?.contains("hermes") == true; "openclaw" -> state.canLaunchOpenClaw(); KIMI_CODE_KIND -> state.kimiCodeSupported; else -> true }
     }
+    val allDisabled = enabledAgentKinds?.isEmpty() == true
     val canStart = canUseSelectedAgent && cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) &&
         (kind != "openclaw" || state.canLaunchOpenClaw() && config?.snapshot != null && config.error == null) &&
         (kind != KIMI_CODE_KIND || state.kimiCodeSupported && config?.snapshot != null) &&
@@ -129,8 +132,8 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     }
     LaunchedEffect(state.sessionBrowse?.path) { if (!importMode && cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
     LaunchedEffect(supported, kinds) { if (supported != null && (kind !in supported || agentFamily(kind) !in kinds))
-        kind = listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, "hermes", "opencode")
-            .firstOrNull { it in supported && agentFamily(it) in kinds } ?: "pi"
+        listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, "hermes", "opencode")
+            .firstOrNull { it in supported && agentFamily(it) in kinds }?.let { kind = it }
     }
     AgentTheme(agentBrand(kind)) {
         NeumorphSurface(Modifier.fillMaxWidth().testTag("session-draft").onGloballyPositioned { bounds = it.boundsInWindow() },
@@ -186,16 +189,18 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                                     tintOverride = if (selected) null else LocalOrbisPalette.current.faint)
                             }
                             if (variants.size > 1) NeumorphMenu(agentMenu == agent, { agentMenu = null }) {
-                                variants.forEach { value ->
+                                variants.filter { enabledAgentKinds?.contains(it) != false }.forEach { value ->
                                     NeumorphMenuItem(text = { Text(agentVariantTitle(value)) },
                                         onClick = { kind = value; agentMenu = null }, enabled = supported?.contains(value) != false)
                                 }
                             }
                         }
                     }
-                    if (kinds.size <= 5) agentLabel(Modifier.weight(1f))
+                    if (kinds.size <= 5 && enabledAgentKinds?.contains(kind) != false) agentLabel(Modifier.weight(1f))
                 }
-                if (kinds.size > 5) agentLabel(Modifier.fillMaxWidth())
+                if (kinds.size > 5 && enabledAgentKinds?.contains(kind) != false) agentLabel(Modifier.fillMaxWidth())
+                if (allDisabled) Text(L10n.tr("没有已启用的 Agent"), Modifier.testTag("draft-no-enabled-agents"),
+                    style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 openCode?.message()?.let { message ->
                     Text(message, Modifier.testTag("draft-opencode-unavailable"), style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -209,7 +214,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (state.supportsSessionConfiguration(kind) && kind != "openclaw") {
+                if (!canUseSelectedAgent) {
+                    // Keep the draft, but do not show stale settings for a retired source.
+                } else if (state.supportsSessionConfiguration(kind) && kind != "openclaw") {
                     if (kind != KIMI_CODE_KIND) {
                         val permissionSummary = config?.snapshot?.catalog?.permissions?.mapNotNull { setting ->
                             setting.options.firstOrNull { it.value == config.values.permissions[setting.id] }?.label
@@ -254,7 +261,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                                 !event.nativeKeyEvent.isAltPressed) { submit(); true }
                             else false
                         },
-                        placeholder = { Text(L10n.tr("让 {0} 做什么？", agentBrand(kind).title)) }, maxLines = 6,
+                        placeholder = { Text(if (canUseSelectedAgent) L10n.tr("让 {0} 做什么？", agentBrand(kind).title) else L10n.tr("输入消息")) }, maxLines = 6,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(onSend = { if (fieldValue.composition == null) submit() }))
                     NeumorphIconButton(onClick = ::submit,

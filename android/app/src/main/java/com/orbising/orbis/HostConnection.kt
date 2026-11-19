@@ -224,6 +224,7 @@ internal class HostConnection(
 
     private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String? = null, firstMessage: String = ""): Boolean {
         val state = mutableState.value; val config = state.sessionConfiguration; val snapshot = config.snapshot
+        if (!state.allowsAgentSource(kind)) return false
         if (kind == KIMI_CODE_KIND && (!state.kimiCodeSupported || !state.sessionConfigurationSupported)) return false
         val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded, configuredLaunchJournal.snapshot != null)
         if (!admission.allowed) {
@@ -940,14 +941,15 @@ internal class HostConnection(
             val state = mutableState.value
             val config = state.sessionConfiguration
             val snapshot = config.snapshot ?: reject(ImportProblem.LAUNCH_CONFIGURATION)
-            if (config.requestId != null || config.error != null || snapshot.agentKind != agent || snapshot.cwd != cwd ||
+            if (!state.allowsAgentSource(agent) || config.requestId != null || config.error != null || snapshot.agentKind != agent || snapshot.cwd != cwd ||
                 agent !in (state.launchableAgents ?: state.supportedAgents).orEmpty()) reject(ImportProblem.LAUNCH_CONFIGURATION)
             val launch = ExternalImportLaunch("import-launch:" + UUID.randomUUID(), hostId, externalImportPairingKey(pairing),
                 pairing.hostName ?: hostId, agent, cwd, instruction)
             externalImportMessage(batch.text, instruction, L10n.tr("请查看附件。"), L10n.tr("导入的内容："))
             inbox.reserveLaunch(batch.id, launch)
-            if (!matchesImportLaunch(launch) || relay.externalImportChannel() !== channel || mutableState.value.agentModelEpoch != state.agentModelEpoch ||
-                mutableState.value.sessionConfiguration != config) {
+            val current = mutableState.value
+            if (!matchesImportLaunch(launch) || relay.externalImportChannel() !== channel || current.agentModelEpoch != state.agentModelEpoch ||
+                !current.allowsAgentSource(agent) || current.sessionConfiguration != config) {
                 inbox.failLaunch(batch.id, launch.id)
                 reject(ImportProblem.LAUNCH_CONFIGURATION)
             }
@@ -1280,6 +1282,8 @@ internal class HostConnection(
     }
 
     private fun activateTarget(target: JsonObject, spawnMode: String? = null): Boolean {
+        val kind = (target["agentKind"] as? JsonPrimitive)?.contentOrNull
+        if (kind != null && !mutableState.value.allowsAgentSource(kind)) return false
         lastSessionRestorer.cancel()
         val requestId = UUID.randomUUID().toString()
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”，草稿和消息先归属启动请求。
@@ -2019,7 +2023,7 @@ internal class HostConnection(
 
     internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =
         synchronized(stateWriterLock) {
-            if (kind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return@synchronized null
+            if (!mutableState.value.allowsAgentSource(kind) || kind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return@synchronized null
             if (!mutableState.value.supportsSessionConfiguration(kind)) updateState { it.copy(sessionConfiguration =
                 it.sessionConfiguration.copy(agentKind = kind, cwd = cwd)) }
             // S49 / SC70: an empty first message launches without a send operation.

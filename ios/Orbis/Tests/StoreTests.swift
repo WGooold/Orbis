@@ -97,6 +97,10 @@ struct StoreTests {
             ["revision": revision, "agents": [["kind": "futureAgent", "label": "Future Agent", "enabled": enabled]]]
         }
         await transport.emit(["type": "agent.enablement.snapshot", "requestId": read, "snapshot": snapshot(1, false)])
+        #expect(owner.enabledAgentKinds == [])
+        let oldCount = transport.sent.count
+        owner.createSession(agentKind: "futureAgent", cwd: "/repo")
+        #expect(transport.sent.count == oldCount)
         owner.setAgentEnabled("futureAgent", enabled: true, expectedRevision: 1)
         let write = try #require(transport.sent.last { $0["type"] as? String == "agent.enablement.write" })
         #expect(write["expectedRevision"] as? Int == 1)
@@ -105,9 +109,11 @@ struct StoreTests {
         await transport.emit(["type": "agent.enablement.snapshot", "snapshot": snapshot(1, false)])
         #expect(owner.agentEnablementPending == nil)
         #expect(owner.agentEnablementRows.first?.enabled == true)
+        #expect(owner.enabledAgentKinds == ["futureAgent"])
         transport.state?(.offline, nil)
         #expect(!owner.agentEnablementAvailable)
         #expect(owner.agentEnablementRows.isEmpty)
+        #expect(owner.enabledAgentKinds == nil)
     }
 
     @Test func pathAnnouncementsUpdateLatencyAndDisconnectClearsTheSample() async {

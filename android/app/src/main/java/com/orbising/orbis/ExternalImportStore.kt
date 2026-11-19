@@ -216,7 +216,8 @@ internal fun RemoteState.externalImportRuntimes(): List<RuntimeSummary> {
     val archiving = archivingSessionIds
     return runtimes.values.filter { runtime ->
         val session = runtime.sessionId ?: return@filter false
-        session.isNotBlank() && counts[session] == 1 && runtime.cwd.isNotBlank() &&
+        val agent = runtime.agentKind ?: sessions[session]?.agentKind ?: "pi"
+        allowsAgentSource(agent) && session.isNotBlank() && counts[session] == 1 && runtime.cwd.isNotBlank() &&
             runtime.status in setOf("idle", "running") && runtime.runtimeId !in closing && session !in archiving &&
             sessions[session]?.archived != true && codexProviderMismatch(session) == null
     }

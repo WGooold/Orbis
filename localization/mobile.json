@@ -985,6 +985,8 @@
   "未保存": "Not saved",
   "未发现文件变化": "No file changes found",
   "未启用": "Disabled",
+  "没有已启用的 Agent": "No Agents enabled",
+  "输入消息": "Enter a message",
   "未启用供应商": "Provider disabled",
   "未安装": "Not installed",
   "未完成": "Incomplete",

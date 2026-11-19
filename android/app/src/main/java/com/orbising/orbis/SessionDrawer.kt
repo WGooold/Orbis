@@ -124,6 +124,7 @@ private fun DrawerAgentFilterMenu(
     openClaw: Boolean = false,
     hermes: Boolean = false,
     openCode: Boolean = false,
+    enabledAgentKinds: Set<String>? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
@@ -162,6 +163,7 @@ private fun DrawerAgentFilterMenu(
             } else {
             // The Desktop entry is listed only where this Host offers it (ADR-0076).
             DrawerAgentFilter.values().filter { filter ->
+                if (filter != DrawerAgentFilter.All && enabledAgentKinds?.contains(filter.key) == false) return@filter false
                 when (filter) {
                     DrawerAgentFilter.DeepSeekDesktop -> desktopDeepSeek || filter == selected
                     DrawerAgentFilter.Kimi -> kimiCode
@@ -239,7 +241,11 @@ internal fun SessionDrawer(
     // 只列当前电脑的目录：多台电脑不合并成一棵树，切换在页脚的电脑行（ADR-0030 修订）。
     val activeHostState = hosts.firstOrNull { it.hostId == activeHostId }?.state
     var savedAgentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
-    val agentFilterKey = savedAgentFilterKey.takeUnless { it == KIMI_CODE_KIND && !state.kimiCodeSupported || it == "openclaw" && !state.openClawNegotiated } ?: DrawerAgentFilter.All.key
+    val enabledAgentKinds = state.enabledAgentKinds()
+    val agentFilterKey = savedAgentFilterKey.takeUnless {
+        it != DrawerAgentFilter.All.key && enabledAgentKinds?.contains(it) == false ||
+            it == KIMI_CODE_KIND && !state.kimiCodeSupported || it == "openclaw" && !state.openClawNegotiated
+    } ?: DrawerAgentFilter.All.key
     val agentFilter = drawerAgentFilter(agentFilterKey)
     val openCodeUnavailable = state.openCodeAvailability
         ?.takeIf { state.e2eReady && agentFilter == DrawerAgentFilter.OpenCode }?.message()
@@ -251,7 +257,7 @@ internal fun SessionDrawer(
     var query by rememberSaveable { mutableStateOf("") }
     val searchTerm = query.trim()
     val request = DrawerCatalogRequest(activeHostState, AppLocalization.language, DrawerCatalogFilter(
-        agentFilterKey, showArchived, requestedProviderKey, currentProvider, hostProvider, searchTerm), preparedCatalog)
+        agentFilterKey, showArchived, requestedProviderKey, currentProvider, hostProvider, searchTerm, enabledAgentKinds), preparedCatalog)
     val projection = rememberDrawerCatalog(request)
     val providerOptions = projection?.options ?: codexProviderOptions(emptyList(), currentProvider, agentFilter.key)
     val providerKey = projection?.providerKey ?: requestedProviderKey
@@ -260,8 +266,8 @@ internal fun SessionDrawer(
     val listState = rememberSaveable(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, saver = LazyListState.Saver) {
         LazyListState()
     }
-    val viewportIdentity = remember(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived) {
-        listOf(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived)
+    val viewportIdentity = remember(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, enabledAgentKinds) {
+        listOf(activeHostId, searchTerm, agentFilterKey, providerKey, currentProvider, showArchived, enabledAgentKinds?.sorted()?.joinToString(","))
     }
     val emptyContent = remember { DrawerCatalogContent(emptyList()) }
     val content = rememberDrawerViewport(projection?.content ?: emptyContent, listState, viewportIdentity)
@@ -418,6 +424,7 @@ internal fun SessionDrawer(
                         onRequestProviders = onRequestProviders,
                         // Same rule as iOS: the Host offers DeepSeek Desktop, or this computer already has its sessions.
                         kimiCode = state.kimiCodeSupported,
+                        enabledAgentKinds = enabledAgentKinds,
                         desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it } ||
                             state.sessions.values.any { it.agentKind == "dshDesktop" },
                         openClaw = state.openClawNegotiated && (state.supportedAgents?.contains("openclaw") == true ||

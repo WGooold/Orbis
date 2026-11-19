@@ -53,6 +53,16 @@ class DrawerCatalogWorkerTest {
         assertEquals(1, worker.resolve(request(state, filter.copy(query = "/other"))).content.directoryCount)
     }
 
+    @Test fun `host enablement hides cached rows without deleting them and retires the old view`() = runBlocking {
+        val worker = DrawerCatalogWorker()
+        val cached = worker.resolve(request())
+        assertEquals(setOf("s"), cached.content.ids)
+        val disabled = request(filter = filter.copy(enabledAgentKinds = emptySet()))
+        assertFalse(cached.identity.matches(disabled))
+        assertTrue(worker.resolve(disabled).content.ids.isEmpty())
+        assertEquals(setOf("s"), worker.resolve(request(filter = filter.copy(enabledAgentKinds = setOf("codex")))).content.ids)
+    }
+
     @Test fun `UI request equality never traverses maps and old hosts filters and languages are rejected`() {
         val guarded = object : Map<String, SessionCatalogEntry> by initial.sessions {
             override fun equals(other: Any?): Boolean = error("No collection equality on UI")

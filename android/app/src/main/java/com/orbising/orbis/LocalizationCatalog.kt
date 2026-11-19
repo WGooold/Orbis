@@ -1368,6 +1368,7 @@ internal object LocalizationCatalog {
         "没有可导入的内容" to "Nothing to import",
         "没有可用的模型列表，请手动填写模型名称" to "No models available. Enter a model name manually.",
         "没有可读取的会话" to "No readable sessions",
+        "没有已启用的 Agent" to "No Agents enabled",
         "没有已归档的会话" to "No archived sessions",
         "没有找到匹配的目录或会话" to "No matching folders or sessions",
         "没有文件" to "No files",
@@ -1383,9 +1384,9 @@ internal object LocalizationCatalog {
         "沿指针外拉并松手以{0}" to "Pull the pointer outward and release to {0}",
         "浅色" to "Light",
         "测试失败，请检查地址、Key 和返回格式" to "Test failed. Check the endpoint, key, and response format.",
-        "测试返回" to "Test response",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "测试返回" to "Test response",
         "浏览此会话历史并回退到指定位置" to "Browse this session's history and rewind to a point",
         "浏览电脑文件" to "Browse computer files",
         "消息不能超过 100,000 个字符。" to "Messages must be 100,000 characters or fewer.",
@@ -1535,9 +1536,9 @@ internal object LocalizationCatalog {
         "端到端加密连接尚未就绪，请连接成功后重试。" to "Encrypted connection is not ready. Connect and try again.",
         "第 {0} / {1} 题，{2}" to "Question {0} / {1}, {2}",
         "第 {0} 次" to "Attempt {0}",
-        "第 {0} 轮" to "Turn {0}",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "第 {0} 轮" to "Turn {0}",
         "等待" to "Waiting",
         "等待{0}切换" to "Waiting for {0} switch",
         "等待中" to "Waiting",
@@ -1687,9 +1688,9 @@ internal object LocalizationCatalog {
         "请重试" to "Try again",
         "请重试。" to "Try again.",
         "读取下一段差异" to "Load next diff section",
-        "读取下一页" to "Load next page",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "读取下一页" to "Load next page",
         "读取中…" to "Loading…",
         "读取位置已失效，请关闭后重新打开" to "Read position expired. Close and reopen.",
         "读取失败：" to "Read failed: ",
@@ -1730,6 +1731,7 @@ internal object LocalizationCatalog {
         "载入更多文件" to "Load more files",
         "较早内容已清空" to "Earlier content cleared",
         "输入内容" to "Enter text",
+        "输入消息" to "Enter a message",
         "输出" to "Output",
         "过大" to "Too large",
         "运行中" to "Running",
@@ -1838,10 +1840,10 @@ internal object LocalizationCatalog {
         "配对信息不完整，请重新配对。" to "Pairing information is incomplete. Pair again.",
         "配对响应格式无效或主机身份不匹配" to "Invalid pairing response or Host identity mismatch",
         "配对失败（HTTP {0}{1}）" to "Pairing failed (HTTP {0}{1})",
-        "配对失败，请检查中继服务器地址、配对码和网络连接" to "Pairing failed. Check the relay address, pairing code and network.",
-        "配对未完成，请确认电脑上的配对窗口仍打开后重试" to "Pairing did not complete. Keep the pairing window open on your computer and try again.",
     )
     private fun part12(): Map<String, String> = mapOf(
+        "配对失败，请检查中继服务器地址、配对码和网络连接" to "Pairing failed. Check the relay address, pairing code and network.",
+        "配对未完成，请确认电脑上的配对窗口仍打开后重试" to "Pairing did not complete. Keep the pairing window open on your computer and try again.",
         "配对未完成：连接在电脑确认之前断开。请确认电脑上的配对窗口还开着，再扫一次" to "Pairing incomplete: disconnected before the computer confirmed. Make sure its pairing window is open and scan again.",
         "配对材料无效，请重新扫码" to "Invalid pairing material. Scan again.",
         "配对没有完成：电脑没有回确认（配对窗口可能已关闭或过期）。" to "Pairing incomplete: the computer did not confirm. The pairing window may be closed or expired.",

@@ -92,3 +92,11 @@ Pi 与 Claude 的原生桥在接纳和接收请求时核对策略；停用只撤
 OpenCode 只在当前启用租约内创建连接监视器和会话适配器。停用撤销订阅和重试；重新启用新建连接代次，不复用已关闭的连接或重发历史操作。会话能力仍按 `agent.opencode` 单独协商。Kimi Code 的 Web／Desktop 是同一个会话来源的两种互斥接入方式，保留来源选择，去掉旧的重复启用控件；显式的旧桌面关闭在首次迁移时优先于继承配置。Linux 保留无头启动策略，不启用桌面发现或原生窗口。
 
 本轮自动证据：[Node 和隔离 OpenCode 加密往返](../../.artifacts/agent-enablement-all/node-integration-final.log)、[桌面控制器](../../.artifacts/agent-enablement-all/qt-integration-final.log)、[Swift 定向回归](../../.artifacts/agent-enablement-all/swift-integration/run.log)、[iOS 模拟器构建](../../.artifacts/agent-enablement-all/ios-integration/run.log)、[Android 定向回归](../../.artifacts/agent-enablement-all/android-integration-final/build.log)。待同一 QA Case 的新候选安装验收；未部署。
+
+## HOST-AGENT-11｜停用后的旧入口与后台任务
+
+收到 Host 的启用快照后，App 新建页、目录筛选和导入目标立即使用该快照，不等下一份业务目录。已确认全部关闭与没有管理能力是不同状态；旧 Host 保留原入口规则。目录投影视图以启用集合区分，含已知来源的停用缓存行暂不展示，无法归类的旧条目不据此删除。已有草稿和历史保留；重新启用后可按原标识使用。App 在发送新建、恢复及新导入请求前检查当前策略；已发送的导入仍可查询原回执，不重复启动或投递。
+
+桌面供应商用量轮询和手动查询复用 Agent 启用代次；停用后不再请求，旧代次的用量结果不回填。Codex 终端与 Desktop 仍可共享供应商设置，只要任一来源保持启用即可。
+
+验证：[Node 类型检查及 64 项定向回归](../../.artifacts/agent-enablement-all/node-policy-delivery.log)、[Swift 14 项](../../.artifacts/agent-enablement-all/swift-policy-delivery/run.log)、[Android 23 项](../../.artifacts/agent-enablement-all/android-policy-delivery-final/build.log)、[iOS 无签名模拟器构建](../../.artifacts/agent-enablement-all/ios-policy-delivery/run.log)。未操作测试设备，仍待候选包安装与双向同步验收。

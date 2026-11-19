@@ -53,6 +53,21 @@ struct ScreenPublicationTests {
         #expect(counter.value == 2)
     }
 
+    @Test func disabledSourcesRetireTheCatalogProjectionWithoutErasingRows() async {
+        let session = SessionSummary(sessionId: "s", cwd: "/repo", createdAt: 1, modifiedAt: 10, messageCount: 1, agentKind: "codex")
+        let catalog = SessionDirectoryCatalog(sessions: [session])
+        let worker = SessionDirectoryWorker()
+        let legacy = SessionDirectoryFilter(hostId: "host", catalogRevision: catalog.revision, query: "", kind: nil,
+            archived: false, provider: "all", currentProvider: nil, language: "en")
+        var managed = legacy
+        managed.enabledAgentKinds = []
+        #expect(!legacy.sameView(as: managed))
+        #expect((await worker.resolve(catalog: catalog, filter: legacy)).sessions.map(\.sessionId) == ["s"])
+        #expect((await worker.resolve(catalog: catalog, filter: managed)).sessions.isEmpty)
+        managed.enabledAgentKinds = ["codex"]
+        #expect((await worker.resolve(catalog: catalog, filter: managed)).sessions.map(\.sessionId) == ["s"])
+    }
+
     // Assistant chunks must skip catalog row preparation; title corrections and archive overlays stay authoritative.
     @Test @MainActor func stableChunksReuseCatalogAndBackgroundFiltersLeaveMainActorAvailable() async throws {
         let counter = PreparationCounter(), gate = DispatchSemaphore(value: 0)

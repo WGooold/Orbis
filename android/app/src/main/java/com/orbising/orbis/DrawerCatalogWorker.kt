@@ -25,6 +25,7 @@ internal data class DrawerCatalogFilter(
     val currentProvider: String?,
     val hostProvider: String?,
     val query: String,
+    val enabledAgentKinds: Set<String>? = null,
 )
 
 /** Equality is deliberately constant-time on the UI thread, even with long loaded transcripts. */
@@ -86,7 +87,8 @@ internal class DrawerCatalogWorker(
             val directories = host.directories.mapNotNull { directory ->
                 val matchesPath = filter.query.isEmpty() || directory.cwd.contains(filter.query, ignoreCase = true)
                 val sessions = directory.sessions.filter { row ->
-                    agent.matches(row) && row.isArchived == filter.archived &&
+                    (row.catalogEntry?.agentKind?.let { filter.enabledAgentKinds?.contains(it) != false } ?: true) &&
+                        agent.matches(row) && row.isArchived == filter.archived &&
                         (!agent.hasProviderFilter || host.hostId != request.state?.hostId ||
                             matchesCodexProvider(row, provider, filter.hostProvider)) &&
                         (matchesPath || row.title.contains(filter.query, ignoreCase = true))
