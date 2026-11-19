@@ -172,7 +172,7 @@ function syncHistory(h: ReturnType<typeof makeHarness>, options: Partial<Session
   const command: SessionSyncRequest = {
     type: "session.sync", sessionId: "th-1", syncId: "sync", range: "preview", ...options,
   };
-  h.runtime.handleCommand(command, "sync-command", command.sessionId);
+  h.runtime.dispatchCommand(command.sessionId.startsWith("codex-desktop:") ? command.sessionId : `codex:${command.sessionId}`, "sync-command", command);
   return h.events.slice(start).find((event) => event.type === "session.snapshot");
 }
 
@@ -1387,14 +1387,16 @@ describe("Codex recoverable source checkpoints", () => {
 describe("Codex bounded canonical history", () => {
   const item = (id: string, text = id) => ({ id, type: "agentMessage", text });
 
-  it.each(["", "（code=-32600）"])("syncs an unmaterialized app-created thread as empty, then accepts its first message (%s)", async suffix => {
-    const h = makeHarness({ initialHistoryError: new Error(
+  it.each([false, true].flatMap(desktop => ["", "（code=-32600）"].map(suffix => ({ desktop, suffix }))))(
+    "syncs a pre-created App thread before its first message (desktop=$desktop, error suffix=$suffix)", async ({ desktop, suffix }) => {
+    const h = makeHarness({ desktop, initialHistoryError: new Error(
       `thread th-1 is not materialized yet; thread/turns/list is unavailable before first user message${suffix}`,
     ) });
     const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" });
     h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", path: null, turns: [] } });
-    await activating;
-    expect(syncHistory(h)).toMatchObject({ entries: [], complete: true, source: { ready: true } });
+    const sessionId = desktop ? "codex-desktop:th-1" : "th-1";
+    expect(await activating).toMatchObject({ sessionId });
+    expect(syncHistory(h, { sessionId })).toMatchObject({ entries: [], complete: true, source: { ready: true } });
     expect(h.events.at(-1)).toMatchObject({ type: "command.result", commandId: "sync-command", ok: true });
 
     h.runtime.handleCommand({ type: "user_message", text: "Hello", messageId: "phone-1" }, "send-1", "th-1");
@@ -1406,7 +1408,7 @@ describe("Codex bounded canonical history", () => {
     } });
     h.notify("item/completed", { threadId: "th-1", turnId: "first", item: item("reply-1", "Hi") });
     h.notify("turn/completed", { threadId: "th-1", turn: { id: "first" } });
-    expect(syncHistory(h)).toMatchObject({ source: { ready: true }, cursor: { leafId: "reply-1" }, entries: [
+    expect(syncHistory(h, { sessionId })).toMatchObject({ source: { ready: true }, cursor: { leafId: "reply-1" }, entries: [
       { entryId: "user-1", parentId: null }, { entryId: "reply-1", parentId: "user-1" },
     ] });
     h.server.onExit?.(0);

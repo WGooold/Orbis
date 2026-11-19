@@ -25,6 +25,7 @@ function harness(desktop = false) {
   const read = vi.fn((): Promise<unknown> => Promise.resolve({ data: native }));
   const request = vi.fn(async (method: string, params?: { threadId?: string }) => {
     if (method === "thread/loaded/list") return { data: desktop ? ["session"] : [] };
+    if (method === "thread/list") return { data: desktop ? [{ id: "session" }] : [] };
     if (method === "thread/turns/list") return read();
     if (["thread/resume", "thread/start", "thread/fork", "thread/read"].includes(method)) return {
       thread: { id: method === "thread/fork" ? "forked" : params?.threadId ?? "session", cwd: root,

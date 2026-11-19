@@ -3462,13 +3462,14 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
 
   // S51 / SC73: the durable snapshot precedes native create; lost receipts and
   // failed configuration recover the same native identity without a second start.
-  it("recovers configured launch by exact identity after a lost receipt and configuration refusal", async () => {
+  it.each(["codex", "codexDesktop"] as const)("recovers configured %s launch by exact identity after a lost receipt and configuration refusal", async kind => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-configured-host-"));
     relay = await startRelayLocal(stateDir);
     let refuse = true; let created = false;
     const settings = { model: "model-a", reasoningEffort: "high", modelProvider: "fixture", approvalPolicy: "never",
       approvalsReviewer: "user", sandboxPolicy: { type: "readOnly", networkAccess: false } };
     const thread = { id: "configured-thread", cwd: stateDir, status: { type: "idle" }, turns: [] };
+    const sessionId = kind === "codexDesktop" ? `codex-desktop:${thread.id}` : thread.id;
     const request = vi.fn(async (method: string) => {
       if (method === "model/list") return { data: [{ id: "model-a", model: "model-a", displayName: "Fixture A", isDefault: true,
         defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }] }] };
@@ -3483,10 +3484,10 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       if (method === "thread/loaded/list") return { data: created ? [thread.id] : [] };
       return { data: [] };
     });
-    const runtime = new CodexRuntime({ server: { request, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+    const runtime = new CodexRuntime({ server: { mode: kind === "codexDesktop" ? "desktop" : "owned", request, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
       onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts") });
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
-      stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, codexRuntime: runtime });
+      stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, ...(kind === "codexDesktop" ? { codexDesktopRuntime: runtime } : { codexRuntime: runtime }) });
     await host.start();
     const connected = await readyDeviceCapturing({ host, relay }); device = connected.device;
     expect(connected.ready.sessionConfiguration).toBe(1);
@@ -3497,17 +3498,17 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       }
       throw new Error(`missing configured launch result ${id} ${phase}`);
     };
-    sendRequest(device, { type: "session.configuration.read", protocolVersion: PROTOCOL_VERSION, requestId: "config", agentKind: "codex", cwd: stateDir });
+    sendRequest(device, { type: "session.configuration.read", protocolVersion: PROTOCOL_VERSION, requestId: "config", agentKind: kind, cwd: stateDir });
     const config = await response("config");
-    const launch = { type: "session.launch", protocolVersion: PROTOCOL_VERSION, requestId: "launch", launchId: "stable-launch", agentKind: "codex",
+    const launch = { type: "session.launch", protocolVersion: PROTOCOL_VERSION, requestId: "launch", launchId: "stable-launch", agentKind: kind,
       cwd: stateDir, binding: config.binding, revision: config.revision, values: config.values, spawnMode: "tui" };
     sendRequest(device, launch);
-    expect(await response("launch", "unknown")).toMatchObject({ sessionId: "configured-thread", error: "synthetic managed refusal" });
+    expect(await response("launch", "unknown")).toMatchObject({ sessionId, error: "synthetic managed refusal" });
     refuse = false;
     sendRequest(device, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "lost-receipt", launchId: "stable-launch" });
-    expect(await response("lost-receipt", "ready")).toMatchObject({ sessionId: "configured-thread", values: config.values });
+    expect(await response("lost-receipt", "ready")).toMatchObject({ sessionId, values: config.values });
     sendRequest(device, { ...launch, requestId: "duplicate" });
-    expect(await response("duplicate", "ready")).toMatchObject({ sessionId: "configured-thread" });
+    expect(await response("duplicate", "ready")).toMatchObject({ sessionId });
     expect(request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(1);
     expect(request.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(1);
     sendRequest(device, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "absent", launchId: "never-sent" });
@@ -4924,20 +4925,29 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     }
   });
 
-  it.each(["codex", "codexDesktop"] as const)("new %s sessions complete homepage model reads and retries without reconnecting", async kind => {
+  // CODEX-DESKTOP-DRAFT-01: Both mobile launch APIs must keep the empty runtime
+  // usable without a native history row, including the first input on that ID.
+  it.each((["codex", "codexDesktop"] as const).flatMap(kind => [false, true].map(configured => ({ kind, configured }))))(
+    "pre-creates $kind over the device protocol (configured=$configured), syncs and sends on the same thread", async ({ kind, configured }) => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-desktop-new-home-"));
     relay = await startRelayLocal(stateDir);
-    const thread = { id: "desktop-new", cwd: "D:/work/demo", status: { type: "idle" }, turns: [] };
+    const thread = { id: "desktop-new", cwd: stateDir, status: { type: "idle" }, turns: [] };
     let created = false;
+    const request = vi.fn(async (method: string, _params?: unknown) => {
+      if (method === "thread/loaded/list") return { data: created ? [thread.id] : [] };
+      if (method === "thread/start") { created = true; return { thread }; }
+      if (method === "thread/read" || method === "thread/resume") return { thread };
+      if (method === "thread/turns/list") throw new Error(
+        `thread ${thread.id} is not materialized yet; thread/turns/list is unavailable before first user message`,
+      );
+      if (method === "turn/start") return { turn: { id: "first", status: "inProgress" } };
+      if (method === "config/read") return { config: {} };
+      if (["model/list", "thread/list", "skills/list", "mcpServerStatus/list"].includes(method)) return { data: [] };
+      throw new Error(`unexpected Codex RPC: ${method}`);
+    });
     const desktop = new CodexRuntime({
-      server: { mode: kind === "codexDesktop" ? "desktop" : "owned", request: vi.fn(async (method: string) => {
-        if (method === "thread/loaded/list") return { data: created ? [thread.id] : [] };
-        if (method === "thread/start") { created = true; return { thread }; }
-        if (method === "thread/read" || method === "thread/resume") return { thread };
-        if (method === "config/read") return { config: {} };
-        if (["model/list", "thread/list", "thread/turns/list", "skills/list", "mcpServerStatus/list"].includes(method)) return { data: [] };
-        throw new Error(`unexpected desktop RPC: ${method}`);
-      }), notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+      server: { mode: kind === "codexDesktop" ? "desktop" : "owned", request, notify: vi.fn(),
+        stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
       onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts"),
     });
     try {
@@ -4948,19 +4958,34 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       const connected = await readyDeviceCapturing({ host, relay });
       device = connected.device;
       expect(connected.ready).toMatchObject({ runtimes: [] });
-      const response = async (requestId: string): Promise<Record<string, unknown>> => {
-        for (let i = 0; i < 30; i += 1) {
+      const until = async (predicate: (message: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> => {
+        for (let i = 0; i < 40; i += 1) {
           const message = await device!.receiveMessage() as Record<string, unknown>;
-          if (message.requestId === requestId) return message;
+          expect(message.type).not.toBe("protocol.error");
+          if (predicate(message)) return message;
         }
-        throw new Error(`no response for ${requestId}`);
+        throw new Error("missing Codex device response");
       };
-      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "desktop-create",
-        target: { type: "new", agentKind: kind, cwd: thread.cwd } });
+      const response = (requestId: string) => until(message => message.requestId === requestId);
       const sessionId = kind === "codexDesktop" ? "codex-desktop:desktop-new" : "desktop-new";
       const runtimeId = desktop.runtimeIdFor(thread.id);
-      expect(await response("desktop-create")).toMatchObject({ type: "session.activated",
-        agentKind: kind, sessionId });
+      if (configured) {
+        sendRequest(device, { type: "session.configuration.read", protocolVersion: PROTOCOL_VERSION, requestId: "config", agentKind: kind, cwd: thread.cwd });
+        const config = await response("config");
+        const launch = { type: "session.launch", protocolVersion: PROTOCOL_VERSION, requestId: "launch",
+          launchId: "pre-create", agentKind: kind, cwd: thread.cwd, binding: config.binding, revision: config.revision, values: config.values,
+          spawnMode: "headless" };
+        sendRequest(device, launch);
+        expect(await until(message => message.requestId === "launch" && message.phase === "ready")).toMatchObject({ sessionId, agentKind: kind });
+        sendRequest(device, { ...launch, requestId: "retry" });
+        expect(await response("retry")).toMatchObject({ phase: "ready", sessionId });
+      } else {
+        sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "desktop-create",
+          target: { type: "new", agentKind: kind, cwd: thread.cwd }, spawnMode: "headless" });
+        expect(await response("desktop-create")).toMatchObject({ type: "session.activated", agentKind: kind, sessionId });
+      }
+      expect(request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(1);
+      expect(request.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
       for (const requestId of ["desktop-first-read", "desktop-retry"]) {
         sendRequest(device, { type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId,
           scope: "agent", runtimeId, sessionId, ...(requestId === "desktop-retry" ? { agentKind: kind } : {}),
@@ -4978,6 +5003,19 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         expect(domains.get("identity")?.value).toMatchObject({ runtimeId, sessionId, agentKind: kind });
         expect(domains.get("interactions")?.value).toEqual({});
       }
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId, commandId: "sync-empty",
+        command: { type: "session.sync", sessionId, syncId: "empty", range: "preview" } });
+      expect(await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.snapshot"))
+        .toMatchObject({ runtimeId, event: { syncId: "empty", sessionId, entries: [], source: { ready: true } } });
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId, commandId: "first-send",
+        command: { type: "user_message", text: "fixture first message", messageId: "phone-1" } });
+      expect(await until(message => {
+        const event = message.event as RuntimeEvent | undefined;
+        return event?.type === "command.result" && event.commandId === "first-send" && event.status !== "pending";
+      })).toMatchObject({ runtimeId, event: { type: "command.result", ok: true, status: "success" } });
+      expect(request).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: thread.id }));
+      expect(request.mock.calls.filter(([method]) => method === "thread/start" || method === "thread/resume").map(([method]) => method))
+        .toEqual(["thread/start"]);
     } finally {
       await desktop.stop();
     }

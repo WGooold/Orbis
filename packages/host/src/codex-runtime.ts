@@ -24,7 +24,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { open, readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -977,6 +977,9 @@ export class CodexRuntime implements AgentBackend {
     }
     this.#desktopRefreshing = true;
     try {
+      // An App activation can finish while loaded/list is in flight. Do not
+      // detach a thread that did not exist when this snapshot was requested.
+      const previouslyAttached = new Map([...this.#desktopThreads].map(id => [id, this.#threads.get(id)]));
       const result = object(await this.#server.request("thread/loaded/list", {}));
       if (!this.#started) return;
       if (!Array.isArray(result.data)) throw new Error("thread/loaded/list 响应缺少 data");
@@ -984,28 +987,52 @@ export class CodexRuntime implements AgentBackend {
       for (const id of this.#desktopSuppressed.keys()) {
         if (!loaded.has(id)) this.#desktopSuppressed.delete(id);
       }
-      for (const id of this.#desktopThreads) {
-        if (!loaded.has(id) && !this.#desktopClientProtected.has(id)) this.#deactivateThread(id, "Codex 桌面会话已卸载");
+      for (const [id, thread] of previouslyAttached) {
+        if (this.#threads.get(id) === thread && !loaded.has(id) && !this.#desktopClientProtected.has(id)) {
+          this.#deactivateThread(id, "Codex 桌面会话已卸载");
+        }
       }
       const children: Record<string, unknown>[] = [];
+      const idleCandidates: Array<[string, Record<string, unknown>]> = [];
       for (const id of loaded) {
         if (this.#desktopClientProtected.has(id)) continue;
         if (this.#threads.has(id) && !this.#threads.get(id)?.tuiAttachPending) continue;
-        const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: false }));
-        if (!this.#started || !loaded.has(id)) return;
-        const snapshot = object(result.thread);
+        let snapshot: Record<string, unknown>;
+        try {
+          const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: false }, 5_000));
+          snapshot = object(result.thread);
+        } catch { continue; } // A thread may close between loaded/list and read.
+        if (!this.#started) return;
+        if (snapshot.id !== id) continue;
         if (isCodexSubagentSource(snapshot.source, snapshot.parentThreadId)) { children.push(snapshot); continue; }
         if (snapshot.ephemeral === true || typeof snapshot.cwd !== "string"
           || (typeof snapshot.path === "string" && snapshot.path.split(/[\\/]/).includes("archived_sessions"))) continue;
         const status = object(snapshot.status);
         if (status.type !== "active" && status.type !== "idle") continue;
+        // The explicit launch/resume/fork path owns its in-flight native thread.
+        if (this.#activating > 0) continue;
         const suppressed = this.#desktopSuppressed.get(id);
         if (suppressed !== undefined) {
           if (status.type === "idle") this.#desktopSuppressed.set(id, "idle");
           if (status.type !== "active" || suppressed !== "idle") continue;
           this.#desktopSuppressed.delete(id);
         }
-        await this.#adoptDesktopThread(id, snapshot);
+        if (status.type === "idle" && !this.#threads.has(id)) idleCandidates.push([id, snapshot]);
+        else await this.#adoptDesktopThread(id, snapshot);
+      }
+      if (idleCandidates.length > 0) {
+        const listed = await this.#listedDesktopThreads();
+        for (const [id, snapshot] of idleCandidates) {
+          if (!this.#started) return;
+          if (this.#threads.has(id) || this.#desktopSuppressed.has(id) || this.#desktopClientProtected.has(id)) continue;
+          // A loaded desktop draft (even one with a rollout path) is not yet a
+          // conversation. A catalog hit or a real turn qualifies the same ID,
+          // regardless of whether Desktop reuses it or creates a second thread.
+          if (!listed.has(id) && !await this.#desktopThreadHasTurn(id)) continue;
+          if (!this.#started) return;
+          if (this.#activating === 0 && !this.#threads.has(id) && !this.#desktopSuppressed.has(id)
+            && !this.#desktopClientProtected.has(id)) await this.#adoptDesktopThread(id, snapshot);
+        }
       }
       // loaded/list can place a nested child before its root. Adopt roots first, then
       // resolve only proven ancestry; missing/unloaded children never clear tasks.
@@ -1025,6 +1052,38 @@ export class CodexRuntime implements AgentBackend {
         this.#desktopRefreshPending = false;
         void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
       }
+    }
+  }
+
+  async #listedDesktopThreads(): Promise<Set<string>> {
+    try {
+      const page = object(await this.#server.request("thread/list", { limit: 200, modelProviders: [] }, 5_000));
+      return new Set(Array.isArray(page.data) ? page.data.flatMap(value => {
+        const thread = object(value);
+        return typeof thread.id === "string" && thread.ephemeral !== true
+          && !isCodexSubagentSource(thread.source, thread.parentThreadId) ? [thread.id] : [];
+      }) : []);
+    } catch {
+      // A failed or partial catalog is not proof that the thread is empty.
+      return new Set();
+    }
+  }
+
+  async #desktopThreadHasTurn(id: string): Promise<boolean> {
+    try {
+      const page = object(await this.#server.request("thread/turns/list", {
+        threadId: id, itemsView: "summary", sortDirection: "asc", limit: 1,
+      }, 5_000));
+      return Array.isArray(page.data) && page.data.some(turn => typeof object(turn).id === "string");
+    } catch (error) {
+      if (!/code=-32601|method not found|unknown (?:rpc )?method/iu.test(describeError(error))) return false;
+      // Older app-servers may only support thread/read with embedded turns.
+      try {
+        const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: true }, 5_000,
+          { maxResponseBytes: 4 * 1024 * 1024 }));
+        const thread = object(result.thread);
+        return thread.id === id && Array.isArray(thread.turns) && thread.turns.some(turn => typeof object(turn).id === "string");
+      } catch { return false; }
     }
   }
 
@@ -1370,7 +1429,7 @@ export class CodexRuntime implements AgentBackend {
         data?: Array<Record<string, unknown>>;
       };
       live = (result.data ?? []).flatMap((thread): AgentSessionSummary[] => {
-        if (isCodexSubagentSource(thread.source, thread.parentThreadId)) return [];
+        if (thread.ephemeral === true || isCodexSubagentSource(thread.source, thread.parentThreadId)) return [];
         const id = thread.id;
         const cwd = thread.cwd;
         const createdAt = toMillis(thread.createdAt);
@@ -1400,9 +1459,9 @@ export class CodexRuntime implements AgentBackend {
       // app-server 暂时没就绪（启动中/已退出）不拖垮整个目录：磁盘 rollout 还在。
       this.#options.log?.(`thread/list 失败，目录只含磁盘 rollout：${describeError(error)}`);
     }
-    const disk = await this.#diskCatalog(archived);
-    const diskById = new Map(disk.map((entry) => [entry.sessionId, entry]));
     const liveIds = new Set(live.map((entry) => entry.sessionId));
+    const disk = await this.#diskCatalog(archived, liveIds);
+    const diskById = new Map(disk.map((entry) => [entry.sessionId, entry]));
     return [
       ...live.map((entry) => {
         const modelProvider = entry.modelProvider ?? diskById.get(entry.sessionId)?.modelProvider;
@@ -1413,7 +1472,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   /** 扫磁盘 rollout 目录。同名会话（fork/重复）取 modifiedAt 最新的那份。 */
-  async #diskCatalog(archived = false): Promise<AgentSessionSummary[]> {
+  async #diskCatalog(archived: boolean, liveIds: ReadonlySet<string>): Promise<AgentSessionSummary[]> {
     const sessionsRoot = this.#options.rolloutRoot ?? join(homedir(), ".codex", "sessions");
     const root = archived ? join(dirname(sessionsRoot), "archived_sessions") : sessionsRoot;
     let names: string[];
@@ -1426,8 +1485,12 @@ export class CodexRuntime implements AgentBackend {
     }
     const byId = new Map<string, AgentSessionSummary>();
     await Promise.all(names.map(async (name) => {
-      const entry = await readRolloutSummary(join(root, name));
-      if (entry === undefined) return;
+      const rollout = await readRolloutSummary(join(root, name));
+      if (rollout === undefined) return;
+      const { entry, desktopMetadataOnly } = rollout;
+      // The terminal and desktop share rollouts. Do not reintroduce a desktop
+      // draft (including one in an old ownership ledger) via disk-only history.
+      if (desktopMetadataOnly && !liveIds.has(entry.sessionId) && !this.#threads.has(entry.sessionId)) return;
       const existing = byId.get(entry.sessionId);
       if (existing === undefined || existing.modifiedAt < entry.modifiedAt) byId.set(entry.sessionId, entry);
     }));
@@ -1516,12 +1579,16 @@ export class CodexRuntime implements AgentBackend {
     if (typeof id !== "string" || typeof cwd !== "string") {
       throw new Error(`app-server 的 ${method} 响应缺少 thread.id/cwd`);
     }
-    const actualSpawnMode = isDesktopAppServer(this.#server) ? "headless" : spawnMode;
-    await context?.onCreated?.({ sessionId: this.#publicSessionId(id), spawnMode: actualSpawnMode });
-    if (selection !== undefined) result = await this.#configureLaunch(id, selection, object(result));
     if (isCodexSubagentSource(threadJson?.source, threadJson?.parentThreadId)) {
       throw new ActivationError("session_not_found", "不属于 Codex 的用户会话");
     }
+    const desktop = isDesktopAppServer(this.#server);
+    const actualSpawnMode = desktop ? "headless" : spawnMode;
+    // Record the exact App-created Desktop identity before configuring it. A
+    // failed configuration can then resume this ID without passive discovery.
+    if (desktop && target.type === "new") this.#rememberDesktopThread(id);
+    await context?.onCreated?.({ sessionId: this.#publicSessionId(id), spawnMode: actualSpawnMode });
+    if (selection !== undefined) result = await this.#configureLaunch(id, selection, object(result));
     if (existing !== undefined && !this.#isCurrentReconcile(existing, existingGeneration!)) {
       // A native turn/revert observed while resume was pending owns the newer projection.
       await this.#waitForReconcile(existing);
@@ -3383,7 +3450,7 @@ export class CodexRuntime implements AgentBackend {
       && object(record.status).type === "idle" && this.#desktopSuppressed.has(threadId)) {
       this.#desktopSuppressed.set(threadId, "idle");
     }
-    if (method === "thread/started" || method === "thread/status/changed") {
+    if (method === "thread/started" || method === "thread/status/changed" || method === "turn/started") {
       void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
     }
   }
@@ -3617,7 +3684,12 @@ export class CodexRuntime implements AgentBackend {
         return;
       }
       const archived = method === "thread/archived";
-      if (archived) this.#deactivateThread(threadId, "会话已归档");
+      if (archived) {
+        if (isDesktopAppServer(this.#server)) this.#desktopSuppressed.set(threadId, "active");
+        this.#deactivateThread(threadId, "会话已归档");
+      } else {
+        this.#desktopSuppressed.delete(threadId);
+      }
       this.onArchiveChange?.(this.#publicSessionId(threadId), archived);
       return;
     }
@@ -5040,18 +5112,21 @@ function toMillis(value: unknown): number | undefined {
  * `{"type":"event_msg","payload":{"type":"user_message","message":"…"}}`。
  * 只读头部 128KB：前面是长篇 developer/permissions 指令，用户消息紧随其后。
  */
-async function readRolloutSummary(file: string): Promise<AgentSessionSummary | undefined> {
+async function readRolloutSummary(file: string): Promise<{ entry: AgentSessionSummary; desktopMetadataOnly: boolean } | undefined> {
   let head: string;
+  let complete: boolean;
   let modifiedAt: number;
   try {
-    const [statInfo, handle] = await Promise.all([stat(file), open(file, "r")]);
+    const handle = await open(file, "r");
     try {
       const { buffer, bytesRead } = await handle.read(Buffer.alloc(ROLLOUT_HEAD_BYTES), 0, ROLLOUT_HEAD_BYTES, 0);
+      const statInfo = await handle.stat();
       head = buffer.toString("utf8", 0, bytesRead);
+      complete = statInfo.size === bytesRead;
+      modifiedAt = Math.round(statInfo.mtimeMs); // 协议要求 int；mtimeMs 在 Windows 上常带小数。
     } finally {
       await handle.close();
     }
-    modifiedAt = Math.round(statInfo.mtimeMs); // 协议要求 int；mtimeMs 在 Windows 上常带小数。
   } catch {
     return undefined; // 并发删除/权限问题：跳过这份文件，不拖垮整个目录。
   }
@@ -5062,6 +5137,7 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
     timestamp?: unknown;
     model_provider?: unknown;
     source?: unknown;
+    originator?: unknown;
   } | undefined;
   let firstMessage: string | undefined;
   for (const line of lines) {
@@ -5074,6 +5150,7 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
             timestamp?: unknown;
             model_provider?: unknown;
             source?: unknown;
+            originator?: unknown;
           })
         : undefined;
       if (payload !== undefined) meta = payload;
@@ -5096,18 +5173,25 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
   const parsedCreatedAt = typeof meta?.timestamp === "string" ? Date.parse(meta.timestamp) : NaN;
   const createdAt = Number.isFinite(parsedCreatedAt) && parsedCreatedAt >= 0 ? parsedCreatedAt : modifiedAt;
   const modelProvider = codexProviderId(meta?.model_provider);
+  // A missing text preview alone says nothing about history (attachments, a
+  // long prefix, etc.). Only a complete, metadata-only Desktop file is a draft.
+  const desktopMetadataOnly = meta?.originator === "Codex Desktop" && complete && firstMessage === undefined
+    && lines.every(line => line.trim() === "" || parseJsonLine(line)?.type === "session_meta");
   return {
-    sessionId: id,
-    cwd,
-    hostname: localHostname(),
-    // 目录预览只当「这条会话是干嘛的」的提示：200 字符足够，整段 firstMessage
-    // 会把 session.list 响应撑大（见 #diskCatalog 的尺寸注释）。
-    ...(firstMessage === undefined ? {} : { firstMessage: firstMessage.slice(0, 200) }),
-    createdAt,
-    modifiedAt,
-    messageCount: 0,
-    agentKind: "codex",
-    ...(modelProvider === undefined ? {} : { modelProvider }),
+    desktopMetadataOnly,
+    entry: {
+      sessionId: id,
+      cwd,
+      hostname: localHostname(),
+      // 目录预览只当「这条会话是干嘛的」的提示：200 字符足够，整段 firstMessage
+      // 会把 session.list 响应撑大（见 #diskCatalog 的尺寸注释）。
+      ...(firstMessage === undefined ? {} : { firstMessage: firstMessage.slice(0, 200) }),
+      createdAt,
+      modifiedAt,
+      messageCount: 0,
+      agentKind: "codex",
+      ...(modelProvider === undefined ? {} : { modelProvider }),
+    },
   };
 }
 
