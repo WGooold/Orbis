@@ -597,6 +597,7 @@ enum LocalizationCatalog {
         "启动未确认": "Start unconfirmed",
         "启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。": "Start unconfirmed: the computer has not reported the session online. Check the session list shortly.",
         "启动权限": "Startup permissions",
+        "启动结果待核对": "Launch result unconfirmed",
         "启动配置已失效，请返回新建卡片刷新": "Startup settings are no longer available. Return to the new-session card and refresh.",
         "启用": "Enable",
         "启用 {0}": "Enable {0}",

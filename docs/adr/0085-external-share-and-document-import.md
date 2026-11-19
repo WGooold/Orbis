@@ -2,7 +2,7 @@
 
 日期：2026-11-19
 
-状态：本地入口和向已有在线会话发送已实现；新建目标、扩展直投待实施。独立工作树 `codex/external-import-20261119`。未部署、未验收。
+状态：本地入口和向已有在线会话发送已实现；iOS 主 App 新建目标已实现；Android 新建目标、扩展直投待实施。独立工作树 `codex/external-import-20261119`。未部署、未验收。
 
 关联：[ADR-0049 乐观发送](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0051 移动 UI 基线](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055 Agent 输入生命周期](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0064 兼容性](0064-protocol-compatibility.md)、[ADR-0072 会话配置与可恢复启动](0072-session-configuration-and-recoverable-launch.md)、[ADR-0083 反馈等级](0083-feedback-levels-and-stale-replies.md)。
 
@@ -66,7 +66,7 @@
 | OI-04a | 主 App 选择已有会话、持久绑定导入草稿（IMPORT-05/06） | OI-01/02/03 |
 | OI-04b-H | Host 目标校验、附件归属及只读回执（IMPORT-06） | OI-04a |
 | OI-04b-iOS / OI-04b-Android | 主 App 显式发送、附件传输与命令对账（IMPORT-06） | OI-04b-H |
-| OI-05 | 新建会话、附件和首句交接及恢复（IMPORT-07） | OI-04b-iOS / OI-04b-Android |
+| OI-05-iOS / OI-05-Android | 新建会话、附件和首句交接及恢复（IMPORT-07） | OI-04b-iOS / OI-04b-Android |
 | OI-06 | Host/Relay 独立授权、加密投递与跨版本回退（IMPORT-08） | OI-04b-H |
 | OI-07 | iOS 扩展发送已有会话、后台上传与回执；新建目标按 OI-05 能力接入（IMPORT-08） | OI-03/05/06 |
 
@@ -115,3 +115,9 @@ Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子�
 主 App 的[导入草稿](../../android/app/src/main/java/com/orbising/orbis/ExternalImportSheet.kt)可补充要求并明确发送。[发送事务](../../android/app/src/main/java/com/orbising/orbis/ExternalImportDelivery.kt)与聊天输入框独立：能力按当前认证路径核对，附件从本地批次按 Host 拉取读取；所有校验完成后才记录命令身份并提交。仅已确认失败可再发送，结果未知时只读核对原命令。断线或路径变化不会将其排入下一次握手的发送队列。
 
 [Android 定向回归](../../.artifacts/external-import/oi-04b-android/verified/run.log) 43/43，[平台用例已编译](../../.artifacts/external-import/oi-04b-android/verified/test-results/)。覆盖旧 Host 回退、附件校验及发送先后、重开后的对账，以及 LAN/Relay 路径切换和既有发送回归。未安装、未分发，待用户验证。
+
+### OI-05-iOS 实施记录
+
+主 App 从导入收件箱选择电脑，在现有[新建卡片](../../ios/Orbis/Orbis/SessionViews.swift)明确选择 Agent 和工作目录。启动前原子保留批次和启动 ID；只使用已确认的配置，收到匹配的就绪回执才绑定新会话并走导入附件和首句发送。重连后查询原启动 ID，不重新创建。
+
+[Swift 定向回归](../../.artifacts/external-import/oi-05-ios/verified/run.log) 31/31；[通用模拟器构建](../../.artifacts/external-import/oi-05-ios/app/run.log)通过，[租约已释放](../../.artifacts/external-import/oi-05-ios/app/cleanup-audit.json)。未安装、未分发、未验收。

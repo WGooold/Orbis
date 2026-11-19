@@ -57,14 +57,33 @@ import SwiftUI
     }
 
     func deliver(_ batch: ExternalImportBatch, via connection: HostConnection?, instruction: String? = nil) {
+        runDelivery(batch, via: connection) { connection, inbox in
+            if let instruction { try await connection.sendExternalImport(batch, from: inbox, instruction: instruction) }
+            else if batch.destination == nil { try await connection.recoverExternalLaunch(batch, in: inbox) }
+            else { try await connection.checkExternalImport(batch, in: inbox) }
+        }
+    }
+
+    func launch(_ batch: ExternalImportBatch, via connection: HostConnection, agent: String, cwd: String, instruction: String) {
+        runDelivery(batch, via: connection) { connection, inbox in
+            try await connection.launchExternalImport(batch, from: inbox, agent: agent, cwd: cwd, instruction: instruction)
+        }
+    }
+
+    func clearFailedLaunch(_ batch: ExternalImportBatch, launch: ExternalImportLaunch) {
+        guard !busy, delivering != batch.id else { return }
+        perform { try ExternalImportStore.applicationInbox().clearFailedLaunch(batch.id, launchId: launch.id); return batch.id }
+    }
+
+    private func runDelivery(_ batch: ExternalImportBatch, via connection: HostConnection?,
+                             action: @escaping @MainActor (HostConnection, ExternalImportStore) async throws -> Void) {
         guard !busy, delivering == nil else { return }
         guard let connection else { problem = .targetUnavailable; return }
         delivering = batch.id; problem = nil
         Task {
             do {
                 let inbox = try await Task.detached { try ExternalImportStore.applicationInbox() }.value
-                if let instruction { try await connection.sendExternalImport(batch, from: inbox, instruction: instruction) }
-                else { try await connection.checkExternalImport(batch, in: inbox) }
+                try await action(connection, inbox)
             } catch {
                 if selected == batch.id { problem = (error as? ExternalImportProblem) ?? .unreadable }
             }
@@ -136,6 +155,8 @@ struct ExternalImportInboxView: View {
     let store: OrbisStore
     @State private var targets: [ExternalImportDestination]?
     @State private var instruction = ""
+    @State private var choosingComputer = false
+    @State private var launchHost: String?
 
     private var selected: ExternalImportBatch? { model.batches.first { $0.id == model.selected } }
     var body: some View {
@@ -143,7 +164,8 @@ struct ExternalImportInboxView: View {
             OrbisPageHeader(title: L10n.tr(targets == nil ? "待导入" : "选择已有会话"), closes: true, back: { dismiss() }) {
                 if selected != nil {
                     OrbisIconButton(symbol: "chevron.left", label: L10n.tr("返回")) {
-                        if targets != nil { targets = nil } else { model.select(nil) }
+                        if launchHost != nil { launchHost = nil } else if choosingComputer { choosingComputer = false }
+                        else if targets != nil { targets = nil } else { model.select(nil) }
                     }.disabled(model.busy)
                 }
             }
@@ -151,13 +173,26 @@ struct ExternalImportInboxView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if let problem = model.problem { OrbisNotice(text: importProblemText(problem), error: true) }
                     if model.busy || (selected != nil && model.delivering == selected?.id) { ProgressView(L10n.tr("正在处理导入…")) }
-                    if let selected, let targets { targetList(targets, batch: selected) }
+                    if let selected, let launchHost, let owner = store.connection(for: launchHost) {
+                        if let host = store.hosts.first(where: { $0.id == launchHost }) { Text(host.name).font(.orbisLabel()) }
+                        SessionDraftView(owner: owner, presetCwd: nil, closeRequest: 0, onSubmitted: { _, _ in },
+                                         onCancel: { _ in self.launchHost = nil }, onImportSubmit: { agent, cwd, instruction in
+                            self.launchHost = nil; choosingComputer = false
+                            model.launch(selected, via: owner, agent: agent, cwd: cwd, instruction: instruction)
+                        }).id(launchHost)
+                    } else if choosingComputer {
+                        let hosts = store.hosts.filter { $0.connection.connection == .secured }
+                        if hosts.isEmpty { Text(L10n.tr("暂无可加入的会话")).font(.orbisBody()) }
+                        ForEach(hosts) { host in
+                            OrbisActionButton(title: host.name) { launchHost = host.id }.disabled(!host.connection.canLaunchExternalImport)
+                        }
+                    } else if let selected, let targets { targetList(targets, batch: selected) }
                     else if let selected { detail(selected) }
                     else if model.batches.isEmpty && !model.busy && model.problem == nil {
                         Text(L10n.tr("暂无待导入内容")).font(.orbisBody())
                     } else {
-                        ForEach(model.batches.filter { $0.destination == nil }, content: batchRow)
-                        let drafts = model.batches.filter { $0.destination != nil }
+                        ForEach(model.batches.filter { $0.destination == nil && $0.launch == nil }, content: batchRow)
+                        let drafts = model.batches.filter { $0.destination != nil || $0.launch != nil }
                         if !drafts.isEmpty {
                             Text(L10n.tr("导入草稿")).font(.orbisLabel())
                             ForEach(drafts, content: batchRow)
@@ -166,7 +201,7 @@ struct ExternalImportInboxView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
             }
         }
-        .onChange(of: model.selected) { _, _ in targets = nil; instruction = selected?.attempt?.instruction ?? "" }
+        .onChange(of: model.selected) { _, _ in targets = nil; choosingComputer = false; launchHost = nil; instruction = selected?.attempt?.instruction ?? selected?.launch?.instruction ?? "" }
         .accessibilityIdentifier("external-import-sheet")
     }
 
@@ -176,6 +211,8 @@ struct ExternalImportInboxView: View {
                 Text(batch.files.first?.name ?? String((batch.text ?? "").prefix(120))).font(.orbisBody()).lineLimit(2)
                 if let destination = batch.destination {
                     Text(L10n.tr("{0} · {1}", destination.hostName, destination.sessionName)).font(.orbisCaption()).lineLimit(1)
+                } else if let launch = batch.launch {
+                    Text(L10n.tr("{0} · {1}", launch.hostName, launch.cwd)).font(.orbisCaption()).lineLimit(1)
                 } else if !batch.files.isEmpty {
                     Text(L10n.tr("{0} 个文件", batch.files.count)).font(.orbisCaption())
                 }
@@ -229,12 +266,24 @@ struct ExternalImportInboxView: View {
                         .lineLimit(2...5).disabled(model.busy || model.delivering == batch.id)
                     OrbisActionButton(title: L10n.tr("发送")) { model.deliver(batch, via: connection, instruction: instruction) }
                         .disabled(model.busy || model.delivering != nil).accessibilityIdentifier("external-import-send")
-                    OrbisActionButton(title: L10n.tr("移回待导入")) { model.unassign(batch.id, from: destination.target) }.disabled(model.busy || model.delivering == batch.id)
+                    if batch.launch == nil {
+                        OrbisActionButton(title: L10n.tr("移回待导入")) { model.unassign(batch.id, from: destination.target) }.disabled(model.busy || model.delivering == batch.id)
+                    }
+                }
+            } else if let launch = batch.launch {
+                Text(L10n.tr("{0} · {1}", launch.hostName, launch.cwd)).font(.orbisCaption())
+                Text(L10n.tr(launch.failed ? "启动失败" : "启动结果待核对")).font(.orbisLabel())
+                if launch.failed {
+                    OrbisActionButton(title: L10n.tr("移回待导入")) { model.clearFailedLaunch(batch, launch: launch) }.disabled(model.delivering != nil)
+                } else {
+                    OrbisActionButton(title: L10n.tr("核对结果")) { model.deliver(batch, via: store.connection(for: launch.hostId)) }.disabled(model.delivering != nil)
                 }
             } else {
                 OrbisActionButton(title: L10n.tr("加入会话草稿")) {
                     targets = store.hosts.flatMap { $0.connection.externalImportDestinations() }
                 }.disabled(model.busy).accessibilityIdentifier("external-import-choose-target")
+                OrbisActionButton(title: L10n.tr("新建会话")) { choosingComputer = true }
+                    .disabled(model.busy || model.delivering != nil).accessibilityIdentifier("external-import-new-session")
             }
             Button(L10n.tr("删除")) {
                 overlay.showDialog(L10n.tr("删除待导入内容？"), actions: [

@@ -19,6 +19,7 @@
   "导入的内容：": "Imported content:",
   "补充要求（可选）": "Instructions (optional)",
   "会话已接收": "Accepted by session",
+  "启动结果待核对": "Launch result unconfirmed",
   "发送结果待核对": "Send result unconfirmed",
   "核对结果": "Check result",
   "更新电脑端后可发送导入内容": "Update Orbis on your computer to send imports",

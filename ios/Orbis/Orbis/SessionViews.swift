@@ -602,7 +602,6 @@ private func agentVariantTitle(_ kind: String) -> String {
 /// A local draft is the first step of creating a session. Nothing is sent to the
 /// computer until starting explicitly, with an optional first sentence through the existing ledgers.
 struct SessionDraftView: View {
-    @EnvironmentObject private var store: OrbisStore
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduced
     @Environment(\.orbisVisible) private var visible
@@ -611,11 +610,12 @@ struct SessionDraftView: View {
     @Environment(\.orbisAppearance) private var appearance
     @AppStorage("orbis.lastDraftAgent") private var agent = "codex"
     @State private var text = ""
-    let owner: HostConnection
+    @ObservedObject var owner: HostConnection
     let presetCwd: String?
     let closeRequest: Int
     let onSubmitted: (HostConnection.LaunchState, CGRect) -> Void
     let onCancel: (Bool) -> Void
+    let onImportSubmit: ((String, String, String) -> Void)?
     @State private var path: String?
     @State private var choosingDirectory = false
     @State private var cancelling = false
@@ -627,39 +627,41 @@ struct SessionDraftView: View {
     @State private var choosingConfiguration = false
     @State private var configurationPanel = "model"
     @State private var proposedPermissions: [String: String] = [:]
-    init(owner: HostConnection, presetCwd: String?, closeRequest: Int, onSubmitted: @escaping (HostConnection.LaunchState, CGRect) -> Void, onCancel: @escaping (Bool) -> Void) {
+    init(owner: HostConnection, presetCwd: String?, closeRequest: Int, onSubmitted: @escaping (HostConnection.LaunchState, CGRect) -> Void, onCancel: @escaping (Bool) -> Void, onImportSubmit: ((String, String, String) -> Void)? = nil) {
         self.owner = owner; self.presetCwd = presetCwd; self.closeRequest = closeRequest; self.onSubmitted = onSubmitted; self.onCancel = onCancel
+        self.onImportSubmit = onImportSubmit
         _path = State(initialValue: presetCwd)
     }
     private var draftRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session", name: "", cwd: "", status: "idle", sessionId: "local-new-session", agentKind: agent) }
     private var pathRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session-path", name: "", cwd: "", status: "idle", sessionId: "local-new-session-path", agentKind: agent) }
-    private var allowed: [String] { store.launchableAgents ?? store.supportedAgents ?? ["pi", "codex"] }
+    private var allowed: [String] { owner.launchableAgents ?? owner.supportedAgents ?? ["pi", "codex"] }
     private var family: String { agentFamily(agent) }
     /// Both native entries of this family can start here, so the variant is a real choice.
     private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).allSatisfy(allowed.contains) }
-    private var currentPath: String? { path ?? presetCwd ?? store.browse?.path }
-    private var hasMessage: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var currentPath: String? { path ?? presetCwd ?? (onImportSubmit == nil ? owner.browse?.path : nil) }
+    private var hasMessage: Bool { onImportSubmit != nil || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var configuration: SessionConfigurationSnapshot? {
-        store.sessionConfiguration.flatMap { $0.agentKind == agent && $0.cwd == currentPath ? $0 : nil }
+        owner.sessionConfiguration.flatMap { $0.agentKind == agent && $0.cwd == currentPath ? $0 : nil }
     }
     private var configurationModel: SessionConfigurationModel? {
-        configuration?.catalog.models.first { $0.value == store.sessionConfigurationValues.model }
+        configuration?.catalog.models.first { $0.value == owner.sessionConfigurationValues.model }
     }
     private var thinkingTitle: String {
-        (configurationModel?.thinking.first { $0.value == store.sessionConfigurationValues.thinking }?.label)
-            .map { L10n.hostText($0) } ?? store.sessionConfigurationValues.thinking ?? L10n.tr("默认深度")
+        (configurationModel?.thinking.first { $0.value == owner.sessionConfigurationValues.thinking }?.label)
+            .map { L10n.hostText($0) } ?? owner.sessionConfigurationValues.thinking ?? L10n.tr("默认深度")
     }
     private var permissionSummary: String {
         guard let config = configuration else { return L10n.tr("权限") }
         let labels = config.catalog.permissions.compactMap { setting in
-            setting.options.first { $0.value == store.sessionConfigurationValues.permissions?[setting.id] }?.label
+            setting.options.first { $0.value == owner.sessionConfigurationValues.permissions?[setting.id] }?.label
         }
         return labels.isEmpty ? L10n.tr("电脑端默认") : labels.map { L10n.hostText($0) }.joined(separator: " · ")
     }
 
     private var canStart: Bool {
         currentPath?.isEmpty == false &&
-            store.connection == .secured && store.activatingSessionId == nil && allowed.contains(agent)
+            owner.connection == .secured && owner.activatingSessionId == nil && allowed.contains(agent) &&
+            (onImportSubmit == nil || owner.canLaunchExternalImport && configuration != nil && owner.sessionConfigurationRequest == nil)
     }
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -708,7 +710,7 @@ struct SessionDraftView: View {
                     Spacer(minLength: 0); Image(systemName: "chevron.down").font(.orbisCaption())
                 }.foregroundStyle(p.secondary).frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("draft-directory")
-            if store.sessionConfigurationSupported {
+            if owner.sessionConfigurationSupported {
                 // S55 / SC79: the model owns a row; permission text cannot resize either value.
                 VStack(spacing: 8) {
                     configurationButton(L10n.tr("模型"), value: configurationModel?.label ?? L10n.tr(configuration == nil ? "模型" : "电脑端默认"),
@@ -718,16 +720,16 @@ struct SessionDraftView: View {
                         configurationButton(L10n.tr("权限"), value: nil, panel: "permissions", enabled: configuration != nil)
                     }
                 }
-                if let error = store.sessionConfigurationError {
+                if let error = owner.sessionConfigurationError {
                     OrbisStatusWithInfo(title: L10n.tr("设置未确认"), message: L10n.hostText(error), error: true)
                     OrbisMotionButton { loadConfiguration() } label: { Text(L10n.tr("刷新")) }.buttonStyle(.plain)
-                } else if store.sessionConfigurationRequest != nil {
+                } else if owner.sessionConfigurationRequest != nil {
                     Text(L10n.tr("正在确认配置…")).font(.orbisCaption()).foregroundStyle(p.secondary)
                 }
             } else {
                 OrbisStatusWithInfo(title: L10n.tr("电脑端默认"), message: L10n.tr("升级电脑端后可在此选择模型、思考深度和权限"))
             }
-            if let error = store.sessionLaunchError {
+            if let error = owner.sessionLaunchError {
                 Text(L10n.hostText(error)).font(.orbisCaption()).foregroundStyle(p.error)
             }
             HStack(alignment: .bottom, spacing: 8) {
@@ -737,7 +739,7 @@ struct SessionDraftView: View {
                     onEdit: { value, marked, _ in
                         text = value
                         owner.clearSessionLaunchValidationError()
-                        owner.editDraft(value, for: draftRuntime, persist: !marked)
+                        if onImportSubmit == nil { owner.editDraft(value, for: draftRuntime, persist: !marked) }
                     }, onSubmit: submit, onCancel: cancel)
                     .padding(.horizontal, 12).padding(.vertical, 10)
                     .fixedSize(horizontal: false, vertical: true).frame(minHeight: 56)
@@ -754,38 +756,40 @@ struct SessionDraftView: View {
                 // The home list is lazy and keeps this card's state under its fixed id, so a card
                 // reopened after closing would come back still cancelling and never rise.
                 cancelling = false; risen = false
-                text = owner.draft(for: draftRuntime)
-                let rememberedPath = owner.draft(for: pathRuntime)
-                if presetCwd == nil && !rememberedPath.isEmpty { path = rememberedPath }
-                if currentPath == nil { path = store.selectedRuntime?.cwd ?? store.sessions.first?.cwd }
+                if onImportSubmit == nil {
+                    text = owner.draft(for: draftRuntime)
+                    let rememberedPath = owner.draft(for: pathRuntime)
+                    if presetCwd == nil && !rememberedPath.isEmpty { path = rememberedPath }
+                    if currentPath == nil { path = owner.selectedRuntime?.cwd ?? owner.sessions.first?.cwd }
+                }
                 if !allowed.contains(agent), let first = allowed.first { agent = first }
-                if currentPath == nil { store.browseDirectory() }
+                if currentPath == nil && onImportSubmit == nil { owner.browseDirectory() }
             }
             .task {
                 if !reduced { try? await Task.sleep(for: .milliseconds(200)) }
                 guard !Task.isCancelled, !cancelling else { return }
                 withAnimation(reduced ? nil : InteractionMotion.selection) { risen = true }
                 if !reduced { try? await Task.sleep(for: .milliseconds(120)) }
-                if !cancelling && visible && scenePhase == .active { focused = true }
+                if onImportSubmit == nil && !cancelling && visible && scenePhase == .active { focused = true }
             }
             // PERF-12: the native editor persists committed text without publishing each IME mark.
             .onChange(of: presetCwd) { _, value in if let value { path = value } }
-            .onChange(of: path) { _, value in owner.editDraft(value ?? "", for: pathRuntime) }
+            .onChange(of: path) { _, value in if onImportSubmit == nil { owner.editDraft(value ?? "", for: pathRuntime) } }
             .onChange(of: closeRequest) { _, _ in cancel() }
             .onChange(of: visible) { _, active in if !active { focused = false } }
             .onChange(of: scenePhase) { _, phase in if phase != .active { focused = false } }
-            .task(id: "\(agent)|\(currentPath ?? "")|\(store.connection == .secured)|\(store.sessionConfigurationSupported)") { loadConfiguration() }
+            .task(id: "\(agent)|\(currentPath ?? "")|\(owner.connection == .secured)|\(owner.sessionConfigurationSupported)") { loadConfiguration() }
             .onKeyPress(.escape) { cancel(); return .handled }
             .orbisBottomSheet(isPresented: $choosingDirectory) { directorySheet.orbisSheet([.large]) }
             .orbisBottomSheet(isPresented: $choosingConfiguration) { configurationSheet.orbisSheet(configurationPanel == "permissions" ? [.large] : [.medium, .large]) }
     }
     private func loadConfiguration() {
-        if owner === store.activeConnection, let cwd = currentPath { store.loadSessionConfiguration(agent: agent, cwd: cwd) }
+        if let cwd = currentPath { owner.loadSessionConfiguration(agent: agent, cwd: cwd) }
     }
     private func configurationButton(_ title: String, value: String?, panel: String, enabled: Bool) -> some View {
         OrbisMotionButton {
             focused = false; configurationPanel = panel
-            proposedPermissions = store.sessionConfigurationValues.permissions ?? [:]; choosingConfiguration = true
+            proposedPermissions = owner.sessionConfigurationValues.permissions ?? [:]; choosingConfiguration = true
         } label: {
             HStack(spacing: 8) {
                 if let value {
@@ -801,7 +805,7 @@ struct SessionDraftView: View {
                 Image(systemName: "chevron.down").font(.system(size: 14)).accessibilityHidden(true)
             }.foregroundStyle(OrbisPalette(scheme).secondary).padding(.horizontal, 12).padding(.vertical, 8)
                 .frame(maxWidth: .infinity, minHeight: 56).contentShape(Rectangle())
-        }.buttonStyle(NeuButtonStyle(radius: 16)).disabled(!enabled || store.sessionConfigurationRequest != nil)
+        }.buttonStyle(NeuButtonStyle(radius: 16)).disabled(!enabled || owner.sessionConfigurationRequest != nil)
             .frame(maxWidth: .infinity)
             .accessibilityLabel(title).accessibilityValue(panel == "permissions" ? permissionSummary : value ?? "")
             .accessibilityIdentifier("draft-config-" + panel)
@@ -816,15 +820,15 @@ struct SessionDraftView: View {
             }
             if configurationPanel == "permissions", let config = configuration {
                 OrbisPermissionChoices(settings: config.catalog.permissions, values: proposedPermissions,
-                    currentValues: store.sessionConfigurationValues.permissions ?? [:], enabled: store.connection == .secured && store.sessionConfigurationRequest == nil) { id, value in
+                    currentValues: owner.sessionConfigurationValues.permissions ?? [:], enabled: owner.connection == .secured && owner.sessionConfigurationRequest == nil) { id, value in
                         proposedPermissions[id] = value
                         if id == "sandbox" && value == "dangerFullAccess" { proposedPermissions["network"] = "enabled" }
                     }
                 if !config.catalog.permissions.isEmpty {
                     OrbisActionButton(title: L10n.tr("应用到新会话")) {
-                        var value = store.sessionConfigurationValues; value.permissions = proposedPermissions
-                        choosingConfiguration = false; store.saveSessionConfiguration(value)
-                    }.disabled(store.connection != .secured || store.sessionConfigurationRequest != nil || proposedPermissions == (store.sessionConfigurationValues.permissions ?? [:]))
+                        var value = owner.sessionConfigurationValues; value.permissions = proposedPermissions
+                        choosingConfiguration = false; owner.saveSessionConfiguration(value)
+                    }.disabled(owner.connection != .secured || owner.sessionConfigurationRequest != nil || proposedPermissions == (owner.sessionConfigurationValues.permissions ?? [:]))
                         .padding(.horizontal, 16).padding(.bottom, 16).accessibilityIdentifier("draft-permissions-apply")
                 }
             } else {
@@ -832,18 +836,18 @@ struct SessionDraftView: View {
                     VStack(spacing: 10) {
                         if configurationPanel == "model", let config = configuration {
                             ForEach(config.catalog.models) { model in
-                                OrbisChoiceRow(title: model.label, subtitle: "", selected: store.sessionConfigurationValues.model == model.value) {
-                                    var value = store.sessionConfigurationValues; value.model = model.value
+                                OrbisChoiceRow(title: model.label, subtitle: "", selected: owner.sessionConfigurationValues.model == model.value) {
+                                    var value = owner.sessionConfigurationValues; value.model = model.value
                                     if !model.thinking.contains(where: { $0.value == value.thinking }) { value.thinking = model.defaultThinking }
-                                    choosingConfiguration = false; store.saveSessionConfiguration(value)
+                                    choosingConfiguration = false; owner.saveSessionConfiguration(value)
                                 }
                             }
                         } else {
                             ForEach(configurationModel?.thinking ?? []) { option in
                                 HStack(spacing: 0) {
-                                    OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: "", selected: store.sessionConfigurationValues.thinking == option.value) {
-                                        var value = store.sessionConfigurationValues; value.thinking = option.value
-                                        choosingConfiguration = false; store.saveSessionConfiguration(value)
+                                    OrbisChoiceRow(title: L10n.hostText(option.label), subtitle: "", selected: owner.sessionConfigurationValues.thinking == option.value) {
+                                        var value = owner.sessionConfigurationValues; value.thinking = option.value
+                                        choosingConfiguration = false; owner.saveSessionConfiguration(value)
                                     }
                                     if let description = option.description, !description.isEmpty {
                                         OrbisInfoButton(title: L10n.hostText(option.label), message: L10n.hostText(description))
@@ -859,12 +863,12 @@ struct SessionDraftView: View {
     private var directorySheet: some View {
         VStack(spacing: 16) {
             OrbisPageHeader(title: L10n.tr("在哪个目录里开始"), closes: true, back: { choosingDirectory = false }) { EmptyView() }
-            ScrollView { RemoteDirectoryView() }
+            ScrollView { RemoteDirectoryView(owner: owner) }
             OrbisActionButton(title: L10n.tr("选择这个目录"), symbol: "checkmark") {
-                path = store.browse?.path; choosingDirectory = false
-            }.disabled(store.browse?.path?.isEmpty != false || store.browse?.loading != false || store.browse?.error != nil)
-        }.padding(16).onAppear { store.browseDirectory(currentPath) }
-            .onDisappear { store.dismissBrowse() }
+                path = owner.browse?.path; choosingDirectory = false
+            }.disabled(owner.browse?.path?.isEmpty != false || owner.browse?.loading != false || owner.browse?.error != nil)
+        }.padding(16).onAppear { owner.browseDirectory(currentPath) }
+            .onDisappear { owner.dismissBrowse() }
     }
     /// Desktop entries stay variants of their Agent family instead of extra primary Agents.
     private func showVariantChoices(_ family: String, from anchor: CGRect? = nil) {
@@ -883,50 +887,51 @@ struct SessionDraftView: View {
         else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { onCancel(retained) } }
     }
     private func submit() {
-        guard owner === store.activeConnection, canStart, let cwd = currentPath else { return }
+        guard canStart, let cwd = currentPath else { return }
         let sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard store.createSession(agentKind: agent, cwd: cwd, firstMessage: sentence), let launch = store.launching else { return }
+        if let onImportSubmit { focused = false; onImportSubmit(agent, cwd, sentence); return }
+        guard owner.createSession(agentKind: agent, cwd: cwd, firstMessage: sentence), let launch = owner.launching else { return }
         owner.saveDraft("", for: draftRuntime)
         text = ""; focused = false; OrbisHaptics.commit(); onSubmitted(launch, frame)
     }
 }
 
 struct RemoteDirectoryView: View {
-    @EnvironmentObject private var store: OrbisStore
+    @ObservedObject var owner: HostConnection
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     var body: some View {
         VStack(spacing: 14) {
             HStack(spacing: 8) {
                 OrbisActionSymbol(systemName: "folder").foregroundStyle(OrbisPalette(scheme).accent)
-                Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
+                Text(owner.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
                     .font(.orbisCaption(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
                 // Spinner and refresh share one fixed slot so the path never reflows while loading.
                 ZStack {
-                    if store.browse?.loading == true { ProgressView().controlSize(.small) }
-                    else { OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) { store.browseDirectory(store.browse?.path) }.disabled(store.connection != .secured) }
+                    if owner.browse?.loading == true { ProgressView().controlSize(.small) }
+                    else { OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) { owner.browseDirectory(owner.browse?.path) }.disabled(owner.connection != .secured) }
                 }.frame(width: 48, height: 48)
             }
-            if store.browse?.path?.isEmpty == false {
-                OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") { store.browseDirectory(store.browse?.parent) }
-                    .disabled(store.browse?.loading == true || store.connection != .secured)
+            if owner.browse?.path?.isEmpty == false {
+                OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") { owner.browseDirectory(owner.browse?.parent) }
+                    .disabled(owner.browse?.loading == true || owner.connection != .secured)
             }
-            if let error = store.browse?.error {
+            if let error = owner.browse?.error {
                 OrbisNotice(text: error, error: true)
-                OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { store.browseDirectory(store.browse?.path) }
-                    .disabled(store.connection != .secured)
-            } else if store.browse?.loading == false {
-                let entries = (store.browse?.entries ?? []).filter(\.isDir).sorted { ($0.hasSessions ? 0 : 1, $0.name) < ($1.hasSessions ? 0 : 1, $1.name) }
+                OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { owner.browseDirectory(owner.browse?.path) }
+                    .disabled(owner.connection != .secured)
+            } else if owner.browse?.loading == false {
+                let entries = (owner.browse?.entries ?? []).filter(\.isDir).sorted { ($0.hasSessions ? 0 : 1, $0.name) < ($1.hasSessions ? 0 : 1, $1.name) }
                 if entries.isEmpty { Text(L10n.tr("此目录没有子目录")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(16) }
                 ForEach(entries) { entry in
-                    OrbisMotionButton { store.browseDirectory(remoteBrowsePath(parent: store.browse?.path, name: entry.name)) } label: {
+                    OrbisMotionButton { owner.browseDirectory(remoteBrowsePath(parent: owner.browse?.path, name: entry.name)) } label: {
                         HStack(spacing: 10) {
                             OrbisActionSymbol(systemName: "folder").foregroundStyle(OrbisPalette(scheme).accent)
                             Text(entry.name).font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
                             if entry.hasSessions { Text(L10n.tr("有历史")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).accent) }
                             OrbisActionSymbol(systemName: "chevron.right").imageScale(.small)
                         }.padding(14).frame(minHeight: 52)
-                    }.buttonStyle(NeuButtonStyle()).disabled(store.connection != .secured)
+                    }.buttonStyle(NeuButtonStyle()).disabled(owner.connection != .secured)
                 }
             }
         }

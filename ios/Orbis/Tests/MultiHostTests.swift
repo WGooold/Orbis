@@ -195,6 +195,53 @@ struct MultiHostTests {
         #expect(other.sent.count == otherBaseline)
     }
 
+    // IMPORT-07: only the original ready launch can bind the first message, even after a lost reply.
+    @Test func externalImportLaunchDoesNotCreateAgainAfterReconnect() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        await fixture.ready()
+        let connection = try #require(fixture.store.connection(for: "host-1"))
+        let transport = try #require(fixture.transports["host-1"])
+        let inbox = ExternalImportStore(root: fixture.root.appendingPathComponent("inbox"))
+        let stage = try inbox.begin(); defer { inbox.discard(stage) }
+        let batch = try inbox.publish(stage, text: "first message", files: [])
+        let cwd = "/repo"
+        let old = ["runtimeId": "shared-runtime", "name": "Existing", "cwd": cwd, "status": "idle", "sessionId": "old-session", "agentKind": "pi"]
+        let new = ["runtimeId": "new-runtime", "name": "New", "cwd": cwd, "status": "idle", "sessionId": "new-session", "agentKind": "pi"]
+        func ready(_ runtimes: [[String: String]]) async {
+            await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion,
+                "hostFeatures": ["external-import.target-v1"], "sessionConfiguration": 1, "agents": ["pi"], "runtimes": runtimes])
+        }
+        await ready([old])
+        connection.loadSessionConfiguration(agent: "pi", cwd: cwd)
+        let config = try await transport.awaitWire { $0["type"] as? String == "session.configuration.read" }
+        await transport.emit(["type": "session.configuration.result", "requestId": try #require(config["requestId"]), "agentKind": "pi", "cwd": cwd,
+            "binding": "configuration", "revision": 1, "values": [:], "catalog": ["binding": "configuration", "defaults": [:], "models": [], "permissions": []]])
+        let creating = Task { try await connection.launchExternalImport(batch, from: inbox, agent: "pi", cwd: cwd, instruction: "") }
+        let create = try await transport.awaitWire { $0["type"] as? String == "session.launch" }
+        let launch = try #require(inbox.list().first?.launch)
+        #expect(create["launchId"] as? String == launch.id)
+        await transport.emit(["type": "runtime.online", "runtime": new])
+        #expect(try inbox.list().first?.destination == nil)
+        #expect(!transport.commands.contains { $0["type"] as? String == "user_message" })
+        transport.state?(.offline, nil)
+        try await creating.value
+        await ready([old, new])
+        let saved = try #require(inbox.list().first)
+        let recovering = Task { try await connection.recoverExternalLaunch(saved, in: inbox) }
+        let read = try await transport.awaitWire { $0["type"] as? String == "session.launch.read" }
+        #expect(read["launchId"] as? String == launch.id)
+        await transport.emit(["type": "session.launch.result", "requestId": try #require(read["requestId"]), "launchId": launch.id,
+            "phase": "ready", "agentKind": "pi", "cwd": cwd, "sessionId": "new-session"])
+        let sent = try await transport.awaitWire { ($0["command"] as? [String: Any])?["type"] as? String == "user_message" }
+        #expect(sent["runtimeId"] as? String == "new-runtime")
+        #expect((sent["importTarget"] as? [String: String])?["sessionId"] == "new-session")
+        #expect(transport.sent.filter { $0["type"] as? String == "session.launch" }.count == 1)
+        await transport.emit(["type": "runtime.event", "runtimeId": "new-runtime", "event": ["type": "command.result",
+            "commandId": try #require(sent["commandId"]), "status": "success", "ok": true]])
+        try await recovering.value
+        #expect(try inbox.list().first?.attempt?.receipt == .accepted)
+    }
+
     // S29 / SC49: all three modes are saved per Host; policy changes retain the live adapter.
     @Test func relayTransportModeIsSavedPerSelectedHostWithoutReplacingTheActiveLink() async throws {
         let fixture = try MultiHostFixture(); defer { fixture.cleanup() }

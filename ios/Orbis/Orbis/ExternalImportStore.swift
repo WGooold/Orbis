@@ -34,6 +34,18 @@ struct ExternalImportAttempt: Codable, Equatable, Sendable {
     var instruction: String? = nil
 }
 
+/// This reservation is durable before launch, with no creation retry path after a lost reply.
+struct ExternalImportLaunch: Codable, Equatable, Sendable {
+    let id: String
+    let hostId: String
+    let pairingKey: String
+    let hostName: String
+    let agent: String
+    let cwd: String
+    let instruction: String
+    var failed = false
+}
+
 struct ExternalImportBatch: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let createdAt: Date
@@ -41,10 +53,11 @@ struct ExternalImportBatch: Codable, Equatable, Identifiable, Sendable {
     let files: [ExternalImportedFile]
     var destination: ExternalImportDestination? = nil
     var attempt: ExternalImportAttempt? = nil
+    var launch: ExternalImportLaunch? = nil
 }
 
 enum ExternalImportProblem: Error, Equatable {
-    case empty, unsupported, limit, full, busy, unreadable, targetUnavailable, alreadyAssigned, hostUpgrade, uploadFailed
+    case empty, unsupported, limit, full, busy, unreadable, targetUnavailable, alreadyAssigned, hostUpgrade, uploadFailed, launchConfiguration
 }
 
 /// Retains ownership across asynchronous provider callbacks and across process death.
@@ -185,6 +198,7 @@ struct ExternalImportStore: Sendable {
     /// Replaces only the manifest. The original payload and batch identity never move or duplicate.
     func assign(_ id: UUID, to destination: ExternalImportDestination) throws -> ExternalImportBatch {
         try update(id) { batch in
+            guard batch.launch == nil else { throw ExternalImportProblem.alreadyAssigned }
             if let assigned = batch.destination {
                 guard assigned.target == destination.target else { throw ExternalImportProblem.alreadyAssigned }
             } else {
@@ -195,9 +209,43 @@ struct ExternalImportStore: Sendable {
 
     func unassign(_ id: UUID, from target: ExternalImportTarget) throws -> ExternalImportBatch {
         try update(id) { batch in
-            guard batch.destination?.target == target else { throw ExternalImportProblem.targetUnavailable }
+            guard batch.destination?.target == target, batch.launch == nil else { throw ExternalImportProblem.targetUnavailable }
             guard batch.attempt == nil || batch.attempt?.receipt == .failed else { throw ExternalImportProblem.busy }
             batch.destination = nil; batch.attempt = nil
+        }
+    }
+
+    func reserveLaunch(_ id: UUID, launch: ExternalImportLaunch) throws {
+        _ = try update(id) { batch in
+            guard batch.destination == nil, batch.launch == nil, batch.attempt == nil else { throw ExternalImportProblem.alreadyAssigned }
+            batch.launch = launch
+        }
+    }
+
+    func failLaunch(_ id: UUID, launchId: String) throws {
+        _ = try update(id) { batch in
+            guard batch.launch?.id == launchId, batch.destination == nil else { return }
+            batch.launch?.failed = true
+        }
+    }
+
+    func clearFailedLaunch(_ id: UUID, launchId: String) throws {
+        _ = try update(id) { batch in
+            guard batch.launch?.id == launchId, batch.launch?.failed == true, batch.destination == nil else {
+                throw ExternalImportProblem.targetUnavailable
+            }
+            batch.launch = nil
+        }
+    }
+
+    func bindLaunch(_ id: UUID, launch: ExternalImportLaunch, destination: ExternalImportDestination) throws -> ExternalImportBatch {
+        try update(id) { batch in
+            let target = destination.target
+            guard batch.launch == launch, !launch.failed, target.hostId == launch.hostId, target.pairingKey == launch.pairingKey,
+                  target.cwd == launch.cwd, !target.sessionId.isEmpty, batch.destination?.target == nil || batch.destination?.target == target else {
+                throw ExternalImportProblem.targetUnavailable
+            }
+            batch.destination = destination
         }
     }
 
