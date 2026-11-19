@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadHostConfig } from "./config.js";
+import { loadHostConfig, loadKimiCodeConfig } from "./config.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -23,6 +23,17 @@ describe("Orbis Host configuration", () => {
     } });
     expect(configured).toMatchObject({ kimiCodeEnabled: true, kimiCodeHome: join(stateDir, "kimi"), kimiCodeEndpoint: "http://127.0.0.1:58627" });
     expect((await loadHostConfig({ stateDir, env: { ...required, ORBIS_KIMI_CODE_ENABLED: "true" } })).kimiCodeEnabled).toBe(false);
+  });
+  // Desktop settings supply Relay credentials independently; a Kimi-only file enables the same connector.
+  it("reads the desktop Kimi opt-in without any Relay settings", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "orbis-desktop-kimi-config-"));
+    temporaryDirectories.push(stateDir);
+    expect((await loadKimiCodeConfig(stateDir, {})).kimiCodeEnabled).toBe(false);
+    const settings = { kimiCodeEnabled: true, kimiCodeHome: join(stateDir, "kimi"), kimiCodeEndpoint: "http://127.0.0.1:58627" };
+    await writeFile(join(stateDir, "config.json"), JSON.stringify(settings));
+    expect(await loadKimiCodeConfig(stateDir, {})).toEqual(settings);
+    expect(await loadKimiCodeConfig(stateDir, { KIMI_CODE_HOME: join(stateDir, "other") }))
+      .toEqual({ ...settings, kimiCodeHome: join(stateDir, "other") });
   });
   // 尾网链路本身已加密，隔离环境的中继就在尾网里，用 ws:// 是安全的。
   it("accepts an unencrypted relay only on loopback or inside the tailnet", async () => {

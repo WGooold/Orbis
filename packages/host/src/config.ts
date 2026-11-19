@@ -30,7 +30,9 @@ export type HostConfig = {
    * LAN 监听端口。缺省时用 `DEFAULT_LAN_PORT`（见 `lan-server.ts` 为什么要固定）。
    */
   lanPort: number | undefined;
-  /** Kimi's user-managed Web service is opt-in and never launched by Orbis. */
+} & KimiCodeConfig;
+
+type KimiCodeConfig = {
   kimiCodeEnabled: boolean;
   kimiCodeHome: string;
   kimiCodeEndpoint: string | undefined;
@@ -56,10 +58,6 @@ export async function loadHostConfig(options: LoadHostConfigOptions): Promise<Ho
   const runtimeCredential = configuredCredential ?? stringField(agentConfig, "runtimeCredential");
   const adminToken = orbisEnvironment(env, "ADMIN_TOKEN") ?? stringField(hostConfig, "adminToken");
   const lanPort = numberField(orbisEnvironment(env, "LAN_PORT")) ?? numberField(hostConfig?.["lanPort"]);
-  const kimiCodeEnabled = env["ORBIS_KIMI_CODE_ENABLED"] === "1" || hostConfig?.["kimiCodeEnabled"] === true;
-  const kimiCodeHome = env["KIMI_CODE_HOME"] || stringField(hostConfig, "kimiCodeHome") || join(homedir(), ".kimi-code");
-  const kimiCodeEndpoint = env["ORBIS_KIMI_CODE_ENDPOINT"] || stringField(hostConfig, "kimiCodeEndpoint");
-
   if (relayUrl === undefined) {
     throw new Error(
       `未找到 Relay 地址。请在 ${hostConfigPath} 里配置 relayUrl，或设置 ORBIS_RELAY_URL`,
@@ -74,7 +72,20 @@ export async function loadHostConfig(options: LoadHostConfigOptions): Promise<Ho
   const relayTransport = relayTransportMode(env["ORBIS_RELAY_TRANSPORT"] ?? hostConfig?.["relayTransport"]);
   const historyMode = relayHistoryMode(env["ORBIS_RELAY_HISTORY_MODE"] ?? hostConfig?.["relayHistoryMode"]);
 
-  return { relayUrl: relayUrl.replace(/\/$/, ""), relayTransport, relayHistoryMode: historyMode, runtimeCredential, adminToken, lanPort, kimiCodeEnabled, kimiCodeHome, kimiCodeEndpoint };
+  return { relayUrl: relayUrl.replace(/\/$/, ""), relayTransport, relayHistoryMode: historyMode, runtimeCredential, adminToken, lanPort, ...resolveKimiCodeConfig(hostConfig, env) };
+}
+
+/** Desktop already has Relay credentials; opt-in must not depend on CLI/Pi Relay configuration. */
+export async function loadKimiCodeConfig(stateDir: string, env = process.env): Promise<KimiCodeConfig> {
+  return resolveKimiCodeConfig(await readJsonFile(join(stateDir, HOST_CONFIG_FILE)), env);
+}
+
+function resolveKimiCodeConfig(config: Record<string, unknown> | undefined, env: Record<string, string | undefined>): KimiCodeConfig {
+  return {
+    kimiCodeEnabled: env["ORBIS_KIMI_CODE_ENABLED"] === "1" || config?.["kimiCodeEnabled"] === true,
+    kimiCodeHome: env["KIMI_CODE_HOME"] || stringField(config, "kimiCodeHome") || join(homedir(), ".kimi-code"),
+    kimiCodeEndpoint: env["ORBIS_KIMI_CODE_ENDPOINT"] || stringField(config, "kimiCodeEndpoint"),
+  };
 }
 
 /**
