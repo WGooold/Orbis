@@ -2987,6 +2987,7 @@ final class HostConnection: ObservableObject {
         case "device.ready":
             guard channel != nil, let values = message["runtimes"] as? [[String: Any]] else { return }
             let features = deviceAgentFeatures(message)
+            let supportsRender = features.contains(messageRenderFeature)
             // A Host that can show DeepSeek Desktop first sends the view released Apps parse (no `dshDesktop` key).
             // Declare the feature and wait for the full view, so a selected Desktop session is never dropped.
             if !features.isEmpty, message["dshDesktop"] == nil,
@@ -3046,7 +3047,9 @@ final class HostConnection: ObservableObject {
             if let selectedRuntime { saveLastSession(selectedRuntime) }
             setHistoryConnection(true)
             connection = .secured
+            for condition in FeedbackCondition.allCases { feedback.resolve(condition) }
             if sessionLaunchErrorAwaitsConnection { sessionLaunchError = nil }
+            if browse?.error == L10n.tr("未连接到电脑，连接恢复后可重试。") { browse = nil }
             hostState.setConnection(selectedHost, connected: true)
             agentState.setConnection(selectedHost, connected: true)
             notifications.setConnection(selectedHost, connected: true)

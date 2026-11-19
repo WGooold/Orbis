@@ -2177,6 +2177,10 @@ extension StoreTests {
         store.dismissFeedbackBanner()
         await transport.emit(["type": "protocol.error", "code": "unauthorized", "message": "unauthorized"], channel: nil)
         #expect(store.feedback.banner?.action == .reconnect)
+        store.presentFeedback(.banner, L10n.tr("电脑端 Orbis 未打开，打开后会自动连接"), condition: .computerClosed, action: .reconnect)
+        #expect(store.feedback.banner?.text == L10n.tr("电脑端 Orbis 未打开，打开后会自动连接"))
+        await transport.ready([runtime("a")])
+        #expect(store.feedback.banner == nil)
     }
 
     // SC95: the reader consumes its nonfatal error before the stale conn: policy, then the menu owns recovery.

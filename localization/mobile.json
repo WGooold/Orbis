@@ -1667,5 +1667,6 @@
   "子代理": "Subagents",
   "后台命令": "Background commands",
   "命令": "Command",
-  "监听": "Monitor"
+  "监听": "Monitor",
+  "内容暂不可显示": "Content cannot be displayed"
 }

@@ -3079,7 +3079,13 @@ internal class HostConnection(
                             e2eReady = ready,
                             relayTransportKind = relay.relayTransportKind,
                             connection = if (!ready && current.connection == RelayConnection.ONLINE) RelayConnection.RECONNECTING else current.connection,
-                            feedback = if (ready) current.feedback.resolve(FeedbackCondition.COMPUTER_UNAVAILABLE.name).resolve(FeedbackCondition.PAIRING.name).resolve(FeedbackCondition.VERSION.name).resolve("computer-disabled") else current.feedback,
+                            feedback = if (ready) current.feedback
+                                .resolve(FeedbackCondition.COMPUTER_UNAVAILABLE.name)
+                                .resolve(FeedbackCondition.PAIRING.name)
+                                .resolve(FeedbackCondition.VERSION.name)
+                                .resolve(FeedbackCondition.OTHER.name)
+                                .resolve("computer-disabled") else current.feedback,
+                            sessionListError = if (ready) null else current.sessionListError,
                         ).let { if (ready) it.ledgerOpenConnection() else it }
                     }
                 }

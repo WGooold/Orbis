@@ -235,10 +235,6 @@ internal object LocalizationCatalog {
         "下载数据超过文件大小" to "Download data exceeds the file size",
         "下载数据长度无效" to "Invalid download data length",
         "下载文件" to "Download file",
-        "图片内容暂不可显示" to "Image unavailable",
-        "附件内容暂不可显示" to "Attachment unavailable",
-        "引用来源暂不可显示" to "Source unavailable",
-        "内容暂不可显示" to "Content unavailable",
         "下载文件名无效" to "Invalid download file name",
         "下载文件大小无效" to "Invalid download file size",
         "下载文件大小校验失败" to "Download file size verification failed",
@@ -429,6 +425,7 @@ internal object LocalizationCatalog {
         "内容存在缺失范围，未导出不完整文件" to "Content has gaps. An incomplete file was not exported.",
         "内容存在缺失范围，未导出不完整文件。" to "Content has gaps. An incomplete file was not exported.",
         "内容已截断" to "Content truncated",
+        "内容暂不可显示" to "Content cannot be displayed",
         "内容版本已变化，请关闭并重新打开详情" to "Content version changed. Close and reopen the details.",
         "内容版本已变化，请重新打开详情。" to "Content version changed. Reopen the details.",
         "内容版本或范围不匹配，请重新打开详情。" to "Content version or range mismatch. Reopen the details.",
@@ -474,9 +471,9 @@ internal object LocalizationCatalog {
         "剩余 " to "Remaining ",
         "剩余 {0} 秒" to "{0} seconds remaining",
         "剩余 {0}{1}" to "{0}{1} remaining",
-        "加密帧 {0} 缺少 hdr.ch" to "Encrypted frame {0} is missing hdr.ch",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "加密帧 {0} 缺少 hdr.ch" to "Encrypted frame {0} is missing hdr.ch",
         "加密帧 {0} 缺少 hdr.ch，无法判断它的 channel" to "Encrypted frame {0} is missing hdr.ch; channel is unknown",
         "加密帧类型或序号无效" to "Invalid encrypted frame type or sequence",
         "加密帧缺少 channel" to "Encrypted frame is missing channel",
@@ -626,9 +623,9 @@ internal object LocalizationCatalog {
         "命令" to "Command",
         "命令 /{0} 不接受参数" to "Command /{0} does not accept arguments",
         "命令 /{0} 需要参数" to "Command /{0} requires arguments",
-        "命令发送到了错误的会话" to "The command was sent to a different session",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "命令发送到了错误的会话" to "The command was sent to a different session",
         "命令发送到了错误的运行实例" to "Command was sent to the wrong runtime",
         "命令已取消" to "Command cancelled",
         "命令执行失败" to "Command failed",
@@ -778,9 +775,9 @@ internal object LocalizationCatalog {
         "差异读取未送达，请连接电脑后重试。" to "Diff request was not delivered. Connect to the computer and try again.",
         "差异读取超时，可重试" to "Diff read timed out. You can retry.",
         "已" to "Done",
-        "已{0}" to "Confirmed: {0}",
     )
     private fun part5(): Map<String, String> = mapOf(
+        "已{0}" to "Confirmed: {0}",
         "已上传" to "Uploaded",
         "已保存到手机" to "Saved to phone",
         "已保存的配置" to "Saved profile",
@@ -930,9 +927,9 @@ internal object LocalizationCatalog {
         "所选路径不是普通文件" to "Selected path is not a regular file",
         "所选：{0}" to "Selected: {0}",
         "手动输入" to "Enter manually",
-        "手机无法安全处理此下载项，请在电脑端处理" to "This download cannot be handled safely on the phone. Use the computer.",
     )
     private fun part6(): Map<String, String> = mapOf(
+        "手机无法安全处理此下载项，请在电脑端处理" to "This download cannot be handled safely on the phone. Use the computer.",
         "手机无法安全处理此运行时事件，请在电脑端处理" to "This runtime event cannot be handled safely on the phone. Use the computer.",
         "手机无法安全渲染此交互，请在电脑端处理。" to "This interaction cannot be displayed safely on the phone. Use the computer.",
         "手机系统“下载”目录，{0}" to "Phone's Downloads folder, {0}",
@@ -1082,9 +1079,9 @@ internal object LocalizationCatalog {
         "暂无可用选项" to "No options available",
         "暂无在线会话" to "No sessions online",
         "暂时无法读取此轮文件变化。" to "This turn's file changes are temporarily unavailable.",
-        "暂时无法读取轮次差异，请稍后重试" to "This turn's diff is temporarily unavailable. Try again shortly.",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "暂时无法读取轮次差异，请稍后重试" to "This turn's diff is temporarily unavailable. Try again shortly.",
         "暂时无法连接电脑，请检查网络并确认电脑上的 Orbis Host 已打开" to "Could not connect to the computer. Check the network and make sure Orbis Host is running.",
         "更新" to "Update",
         "更早的历史尚未缓存，连接原会话后可继续同步。" to "Earlier history is not cached. Connect to the original session to sync more.",
@@ -1234,9 +1231,9 @@ internal object LocalizationCatalog {
         "正在切换配置" to "Switching provider",
         "正在切换：" to "Switching: ",
         "正在刷新" to "Refreshing",
-        "正在加载会话" to "Loading sessions",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "正在加载会话" to "Loading sessions",
         "正在加载会话…" to "Loading sessions…",
         "正在加载更早的历史…" to "Loading earlier history…",
         "正在发送" to "Sending",
@@ -1386,9 +1383,9 @@ internal object LocalizationCatalog {
         "电脑端拒绝了请求（{0}）" to "Computer rejected the request ({0})",
         "电脑端拒绝了请求（{0}）：{1}" to "Computer rejected the request ({0}): {1}",
         "电脑端拒绝了请求，但没有说明原因" to "Computer rejected the request without a reason",
-        "电脑端拒绝了这条消息" to "Computer rejected this message",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "电脑端拒绝了这条消息" to "Computer rejected this message",
         "电脑端文件不可用" to "File unavailable on computer",
         "电脑端文件不存在或已被删除" to "File on the computer is missing or deleted",
         "电脑端文件大小无效" to "Invalid file size on computer",
@@ -1538,9 +1535,9 @@ internal object LocalizationCatalog {
         "设备公钥长度不对" to "Invalid device public key length",
         "设备尚未配对" to "Device is not paired",
         "设置" to "Settings",
-        "设置思考强度" to "Set reasoning effort",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "设置思考强度" to "Set reasoning effort",
         "设置思考强度（当前 {0}）" to "Set reasoning effort (current: {0})",
         "设置未发送，请检查连接后重试" to "Settings were not sent. Check the connection and try again.",
         "设置未确认" to "Settings unconfirmed",
@@ -1690,9 +1687,9 @@ internal object LocalizationCatalog {
         "连接已断开，连接后可重试" to "Disconnected. Retry after reconnecting.",
         "连接延迟" to "Connection latency",
         "连接建立后会自动读一次" to "Loaded automatically after connecting",
-        "连接方式" to "Connection method",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "连接方式" to "Connection method",
         "连接无法继续，请重新连接" to "The connection cannot continue. Connect again.",
         "连接状态" to "Connection status",
         "连接状态 {0}    加密通道 {1}" to "Connection {0}    Encrypted channel {1}",

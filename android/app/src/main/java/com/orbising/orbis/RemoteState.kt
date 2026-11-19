@@ -2181,7 +2181,13 @@ class RelayReducer(
                         }
                         .map { it.runtimeId }
                         .toSet(),
-                    feedback = state.feedback.resolve(FeedbackCondition.PAIRING.name).resolve(FeedbackCondition.VERSION.name).resolve("computer-disabled"),
+                    feedback = state.feedback
+                        .resolve(FeedbackCondition.PAIRING.name)
+                        .resolve(FeedbackCondition.VERSION.name)
+                        .resolve(FeedbackCondition.COMPUTER_UNAVAILABLE.name)
+                        .resolve(FeedbackCondition.OTHER.name)
+                        .resolve("computer-disabled"),
+                    sessionListError = null,
                 // 新连接的首个 device.ready 是因果晚于旧连接上所有操作的完整在线列表（L2、L5）。
                 ).ledgerOpenConnection().ledgerExpireStaleNotices().ledgerRuntimeList(read = null, complete = true)
             }
