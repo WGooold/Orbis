@@ -54,7 +54,7 @@ internal class ExternalImportViewModel(app: Application) : AndroidViewModel(app)
         }
     }
 
-    fun show() { mutableUi.update { it.copy(open = true, selected = null) } }
+    fun show() { mutableUi.update { it.copy(open = true, selected = it.batches.singleOrNull()?.id, problem = null) } }
     fun select(id: String?) { mutableUi.update { it.copy(selected = id, problem = null) } }
     fun close() { mutableUi.update { it.copy(open = false, problem = null) } }
 

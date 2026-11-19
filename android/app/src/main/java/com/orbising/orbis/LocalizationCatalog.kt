@@ -116,6 +116,7 @@ internal object LocalizationCatalog {
         "{0} 个子代理" to "{0} subagents",
         "{0} 个子代理{1}" to "{1}: {0} subagents",
         "{0} 个文件" to "{0} files",
+        "{0} 个文件 · {1}" to "{0} files · {1}",
         "{0} 个文件已更改" to "{0} files changed",
         "{0} 个文件正在下载" to "{0} files downloading",
         "{0} 个目录" to "{0} directories",
@@ -167,9 +168,9 @@ internal object LocalizationCatalog {
         "{0}：按 provider 筛选" to "{0}: filter by provider",
         "──── 当前电脑 ────" to "──── Current computer ────",
         "──── 最近事件（新 → 旧）────" to "──── Recent events (newest first) ────",
-        "、" to ", ",
     )
     private fun part1(): Map<String, String> = mapOf(
+        "、" to ", ",
         "一次最多发送 {0} 个文件" to "Send up to {0} files at a time",
         "上一个 Agent" to "Previous Agent",
         "上一个供应商" to "Previous provider",
@@ -292,6 +293,7 @@ internal object LocalizationCatalog {
         "交互请求已取消" to "Interaction cancelled",
         "交互请求已失效或不可用" to "Interaction expired or unavailable",
         "交互请求已超时" to "Interaction timed out",
+        "仅保存到此设备" to "Save on this device only",
         "仅用户" to "User only",
         "仅记录 Codex 文件工具变更" to "Only Codex file tool changes are recorded",
         "仅记录部分范围" to "Only part of the scope is recorded",
@@ -318,10 +320,10 @@ internal object LocalizationCatalog {
         "会话同步来自已替换的来源。" to "Session sync came from a replaced source.",
         "会话同步范围或检查点无效，请重试。" to "Invalid session sync range or checkpoint. Try again.",
         "会话启动未完成，消息未发送" to "Session failed to start. Message was not sent.",
-        "会话响应目标不匹配，请重试" to "The session response does not match. Try again.",
-        "会话头节点尚未提交" to "Session head has not been committed",
     )
     private fun part2(): Map<String, String> = mapOf(
+        "会话响应目标不匹配，请重试" to "The session response does not match. Try again.",
+        "会话头节点尚未提交" to "Session head has not been committed",
         "会话密钥未建立" to "Session key is not established",
         "会话尚未就绪，请稍后重试" to "Session is not ready. Try again shortly.",
         "会话工具清单的归属或版本无效，请刷新重试。" to "Invalid session tool inventory ownership or version. Refresh and try again.",
@@ -441,6 +443,7 @@ internal object LocalizationCatalog {
         "内容读取超时，请重试。" to "Content read timed out. Try again.",
         "再显示 {0} 个会话" to "Show {0} more sessions",
         "分享" to "Share",
+        "分享内容" to "Shared content",
         "分享导出文件" to "Share exported file",
         "分享文字" to "Shared text",
         "分支会停在这条回复之后，接着往下聊" to "The branch will move after this reply so you can continue chatting",
@@ -469,11 +472,11 @@ internal object LocalizationCatalog {
         "刷新" to "Refresh",
         "刷新 Git 工作分支，" to "Refresh Git branch, ",
         "刷新会话" to "Refresh session",
+    )
+    private fun part3(): Map<String, String> = mapOf(
         "刷新会话目录" to "Refresh sessions",
         "刷新供应商" to "Refresh providers",
         "刷新目录" to "Refresh folders",
-    )
-    private fun part3(): Map<String, String> = mapOf(
         "刷新配额" to "Refresh quota",
         "前置操作已失效" to "Prerequisite operation expired",
         "剩余 " to "Remaining ",
@@ -564,6 +567,7 @@ internal object LocalizationCatalog {
         "发送中" to "Sending",
         "发送中 {0}%" to "Sending {0}%",
         "发送内容为空" to "The message is empty",
+        "发送到会话" to "Send to session",
         "发送失败" to "Send failed",
         "发送异常" to "Send error",
         "发送文件到电脑" to "Send files to computer",
@@ -620,12 +624,12 @@ internal object LocalizationCatalog {
         "启动未确认" to "Start unconfirmed",
         "启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。" to "Start unconfirmed: the computer has not reported the session online. Check the session list shortly.",
         "启动权限" to "Startup permissions",
+    )
+    private fun part4(): Map<String, String> = mapOf(
         "启动结果待核对" to "Launch result unconfirmed",
         "启动配置已失效，请返回新建卡片刷新" to "Startup settings are no longer available. Return to the new-session card and refresh.",
         "启用" to "Enable",
         "启用 {0}" to "Enable {0}",
-    )
-    private fun part4(): Map<String, String> = mapOf(
         "启用供应商" to "Enable provider",
         "启用后可查询官方额度" to "Enable the official provider to check its quota",
         "启用后可查询配额" to "Enable to view quota",
@@ -715,6 +719,7 @@ internal object LocalizationCatalog {
         "导入内容超过大小或数量上限" to "The import exceeds the size or item limit",
         "导入的内容：" to "Imported content:",
         "导入草稿" to "Import drafts",
+        "导入记录" to "Import activity",
         "导出失败" to "Export failed",
         "导出已取消" to "Export cancelled",
         "导出已取消。" to "Export cancelled.",
@@ -771,13 +776,13 @@ internal object LocalizationCatalog {
         "工具清单版本或大小无效。" to "Invalid tool inventory version or size.",
         "工具清单等待任务已满。" to "Tool inventory waiting task limit reached.",
         "工具清单读取未送达。" to "Tool inventory request was not delivered.",
+    )
+    private fun part5(): Map<String, String> = mapOf(
         "工具清单读取超时" to "Tool inventory read timed out",
         "工具清单读取超时，请重试。" to "Tool inventory read timed out. Try again.",
         "工具清单超过预算" to "Tool inventory exceeds the budget",
         "工具清单身份不匹配" to "Tool inventory identity mismatch",
         "工具清单身份不匹配。" to "Tool inventory identity mismatch.",
-    )
-    private fun part5(): Map<String, String> = mapOf(
         "工具清单需要重新读取" to "Tool inventory needs to be reloaded",
         "工具清单页无效" to "Invalid tool inventory page",
         "工具清单顺序无效" to "Invalid tool inventory order",
@@ -817,6 +822,7 @@ internal object LocalizationCatalog {
         "已拒绝" to "Rejected",
         "已排队" to "Queued",
         "已接入" to "Connected",
+        "已接收" to "Received",
         "已提交" to "Submitted",
         "已提交，等待电脑确认…" to "Submitted. Waiting for the computer to confirm…",
         "已提交，等待电脑端确认" to "Submitted. Waiting for the computer to confirm.",
@@ -912,6 +918,7 @@ internal object LocalizationCatalog {
         "当前连接" to "Current connection",
         "当前连接没有端到端加密通道，会话操作未发送" to "No encrypted channel is available. Session action was not sent.",
         "当前选择" to "Selected",
+        "待发送" to "Ready to send",
         "待发送的消息过多，请稍后重试" to "Too many pending messages. Try again shortly.",
         "待发送的消息过多，请稍后重试。" to "Too many pending messages. Try again shortly.",
         "待处理 {0} 项" to "{0} pending",
@@ -921,6 +928,8 @@ internal object LocalizationCatalog {
         "待导入空间已满" to "The import inbox is full",
         "待查询" to "Not queried",
         "待核对" to "Needs checking",
+    )
+    private fun part6(): Map<String, String> = mapOf(
         "待确认" to "Awaiting confirmation",
         "思考" to "Reasoning",
         "思考中…" to "Thinking…",
@@ -928,8 +937,6 @@ internal object LocalizationCatalog {
         "思考级别" to "Reasoning level",
         "思考过程" to "Reasoning",
         "恢复另一个 Codex 会话" to "Resume a different Codex session",
-    )
-    private fun part6(): Map<String, String> = mapOf(
         "恢复未完成：" to "Restore did not complete: ",
         "恢复选中会话" to "Restore selected sessions",
         "所有操作都不再询问" to "No operations request approval",
@@ -1073,6 +1080,8 @@ internal object LocalizationCatalog {
         "无法创建导出文件。" to "Could not create the export file.",
         "无法创建手机下载文件" to "Could not create the download file on the phone",
         "无法启动相机，可返回粘贴配对内容。" to "Could not start the camera. Go back to paste the pairing data.",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "无法打开网页，请在电脑端完成操作。" to "Could not open the webpage. Complete this action on the computer.",
         "无法撤回" to "Cannot withdraw",
         "无法读取传输记录：{0}" to "Could not read transfer records: {0}",
@@ -1080,8 +1089,6 @@ internal object LocalizationCatalog {
         "无法读取导入内容" to "Could not read the import",
         "无法读取所选文件" to "Could not read the selected file",
         "无法读取所选文件：{0}" to "Could not read the selected file: {0}",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "无法读取电脑端消息，请更新手机和电脑端 Orbis" to "The message from your computer could not be read. Update Orbis on your phone and computer.",
         "旧 {0}" to "Old {0}",
         "昨天 HH:mm" to "'Yesterday' HH:mm",
@@ -1097,12 +1104,14 @@ internal object LocalizationCatalog {
         "暂无下载" to "No downloads yet",
         "暂无会话" to "No sessions yet",
         "暂无可加入的会话" to "No sessions available",
+        "暂无可用电脑" to "No available computers",
         "暂无可用选项" to "No options available",
         "暂无在线会话" to "No sessions online",
         "暂无待导入内容" to "No pending imports",
         "暂时无法读取此轮文件变化。" to "This turn's file changes are temporarily unavailable.",
         "暂时无法读取轮次差异，请稍后重试" to "This turn's diff is temporarily unavailable. Try again shortly.",
         "暂时无法连接电脑，请检查网络并确认电脑上的 Orbis Host 已打开" to "Could not connect to the computer. Check the network and make sure Orbis Host is running.",
+        "更换会话" to "Change session",
         "更新" to "Update",
         "更新电脑端后可发送导入内容" to "Update Orbis on your computer to send imports",
         "更早的历史尚未缓存，连接原会话后可继续同步。" to "Earlier history is not cached. Connect to the original session to sync more.",
@@ -1212,6 +1221,7 @@ internal object LocalizationCatalog {
         "查看会话目录" to "View sessions",
         "查看全部 {0} 个工作目录" to "View all {0} working directories",
         "查看全部 {0} 条" to "View all {0} entries",
+        "查看分享内容" to "View shared content",
         "查看只读历史" to "View read-only history",
         "查看完整内容" to "View full content",
         "查看已归档会话" to "View archived sessions",
@@ -1222,6 +1232,8 @@ internal object LocalizationCatalog {
         "查看详情，{0}" to "View details, {0}",
         "查看说明" to "Show information",
         "查看这个分支的缓存" to "View this branch's cache",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "查询 {0} 订阅配额" to "Check {0} subscription quota",
         "查询中" to "Querying",
         "查询中…" to "Querying…",
@@ -1232,8 +1244,6 @@ internal object LocalizationCatalog {
         "核对结果" to "Check result",
         "核对送达状态" to "Check delivery status",
         "核对配置" to "Check configuration",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "桌面版" to "Desktop",
         "检查更新" to "Check for updates",
         "模型" to "Model",
@@ -1374,6 +1384,8 @@ internal object LocalizationCatalog {
         "由 Codex 判断何时申请额外授权。" to "Codex decides when to request additional authorization.",
         "由 Codex 自动审查风险并决定是否允许。" to "Codex automatically reviews the risk and decides whether to allow the operation.",
         "由 DSH 自动审查操作，审查仍可能拒绝。" to "DSH automatically reviews operations and may still reject them.",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "由分类器批准或拒绝权限请求" to "A classifier approves or rejects permission requests",
         "由我处理" to "Review myself",
         "电脑" to "Computer",
@@ -1384,8 +1396,6 @@ internal object LocalizationCatalog {
         "电脑上的原文件不受影响。" to "Original files on the computer are unaffected.",
         "电脑尚未报告这个状态领域" to "The computer has not reported this state domain",
         "电脑尚未核对" to "Not yet checked by computer",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "电脑尚未核对可用命令，请稍后重试" to "The computer has not checked available commands. Try again shortly.",
         "电脑尚未核对此 Agent 的供应商配置" to "The computer has not checked this Agent's provider configuration",
         "电脑已离线，以下为最后读取的状态" to "Computer is offline. Showing the last loaded state.",
@@ -1526,6 +1536,8 @@ internal object LocalizationCatalog {
         "聊天记录已更新，正在重新同步" to "Chat history updated. Syncing again.",
         "聊天记录已更新，请连接后重新同步" to "Chat history updated. Connect to sync again.",
         "联网操作受沙箱限制，可否申请放行取决于审批策略。" to "Network operations are restricted by the sandbox. Whether access can be requested depends on the approval policy.",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "自动" to "Auto",
         "自动审查" to "Automatic review",
         "自动接受编辑" to "Accept edits automatically",
@@ -1536,8 +1548,6 @@ internal object LocalizationCatalog {
         "至少输入 {0} 个字符" to "Enter at least {0} characters",
         "至少选择 {0} 项" to "Select at least {0} items",
         "范围：Codex 文件工具" to "Scope: Codex file tools",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "范围：已跟踪及非忽略文件" to "Scope: tracked and non-ignored files",
         "范围：当前目录，已排除缓存" to "Scope: current folder, cache excluded",
         "草稿已保留" to "Draft saved",
@@ -1678,6 +1688,8 @@ internal object LocalizationCatalog {
         "还有更新的没读" to "Newer records remain unread",
         "还有更早的历史" to "More history available",
         "还没有供应商" to "No providers yet",
+    )
+    private fun part11(): Map<String, String> = mapOf(
         "还没有可显示的会话" to "No sessions to display yet",
         "还没有已配对的电脑，无法下载" to "No paired computer. Cannot download.",
         "还没有已配对的电脑，无法继续下载" to "No paired computer. Cannot resume download.",
@@ -1688,8 +1700,6 @@ internal object LocalizationCatalog {
         "这台手机的配对不完整" to "This phone's pairing is incomplete",
         "这台手机的配对已失效" to "This phone's pairing is no longer valid",
         "这台电脑不认识这个领域" to "This computer does not recognize this domain",
-    )
-    private fun part11(): Map<String, String> = mapOf(
         "这台电脑没启用 Codex 后端" to "Codex backend is not enabled on this computer",
         "这台电脑的连接已停用，请联系管理员" to "Connections to this computer are disabled. Contact your administrator.",
         "这张图片里没有找到二维码" to "No QR code was found in this image",
@@ -1738,6 +1748,7 @@ internal object LocalizationCatalog {
         "选择下载" to "Select downloads",
         "选择会话" to "Select sessions",
         "选择供应商" to "Select provider",
+        "选择发送目标" to "Choose destination",
         "选择工作目录" to "Choose a working directory",
         "选择已有会话" to "Select an existing session",
         "选择文字" to "Select text",
@@ -1829,6 +1840,8 @@ internal object LocalizationCatalog {
         "默认（需要时询问）" to "Default (ask when needed)",
         "（" to " (",
         "（{0}）" to " ({0})",
+    )
+    private fun part12(): Map<String, String> = mapOf(
         "（上传已取消）" to " (upload cancelled)",
         "（当前）" to " (current)",
         "）" to ")",
@@ -1840,8 +1853,6 @@ internal object LocalizationCatalog {
         "，进行中" to ", in progress",
         "，重置 " to ", resets ",
         "：" to ": ",
-    )
-    private fun part12(): Map<String, String> = mapOf(
         "：{0}" to ": {0}",
     )
     val singular: Map<String, String> = mapOf(

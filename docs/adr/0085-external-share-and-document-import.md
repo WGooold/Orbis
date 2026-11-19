@@ -127,3 +127,17 @@ Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子�
 从导入收件箱选定电脑后，复用[新建卡片](../../android/app/src/main/java/com/orbising/orbis/SessionDraft.kt)的 Agent、项目及配置选择，不覆盖普通新建草稿。先保留批次和启动 ID，再请求启动；只接受同一启动、Agent 和项目的就绪回执，绑定真实会话后才上传附件及提交首句。启动结果未知时只查询原启动，不重新创建。
 
 [Android 定向回归](../../.artifacts/external-import/oi-05-android/verified/run.log) 14/14，平台用例已编译。未安装、未分发、未验收。共享 QA MCP 连接被拒，未登记；iOS 真机候选还需核对 QA 签名配方，确保主 App 和扩展各自的 bundle ID、Info.plist 以及 `.imports` App Group 不被全局覆盖。
+
+### OI-06 双端导入交互
+
+单项从收件箱直接进入，多个批次保留列表。导入内容默认收起，已有会话与新建入口同屏；选中已有会话只绑定本地草稿，明确发送后才上传。新建只有一个合格电脑时直达配置。收件记录区分待发送、待核对、失败和已接收。iOS 分享扩展仅保存至本地收件箱。
+
+实现：[iOS 收件箱](../../ios/Orbis/Orbis/ExternalImportInboxView.swift)、[Android 收件箱](../../android/app/src/main/java/com/orbising/orbis/ExternalImportSheet.kt)。[本轮自动验证记录](../../.artifacts/external-import/oi-06/)；未部署、未做设备交互验收。共享 QA MCP 无法连接，待登记、待用户验证。
+
+### OI-07 分享与导入流程重做
+
+替代 OI-06 的同屏目标选择。双端首次打开单批内容先显示可预览的原文和附件，下一页按已配对电脑分组选择会话；选中会话只绑定本地草稿，确认页固定显示发送操作，允许补充要求。新建分支继续复用原生会话配置。回执不明确时不显示发送，只能核对原结果。iOS 系统分享扩展保留可编辑正文，并在底部明确区分本机保存与主 App 内发送。
+
+验证：[Android 导入回归](../../.artifacts/external-import/oi-07/android-final/build.log) 10/10；[Android UI 用例](../../android/app/src/androidTest/java/com/orbising/orbis/ExternalImportSheetInstrumentedTest.kt)已[编译](../../.artifacts/external-import/oi-07/android-ui-final/build.log)，未在设备运行；[iOS 模拟器目标及扩展构建](../../.artifacts/external-import/oi-07/ios-final/run.log)通过，[收件箱单测](../../.artifacts/external-import/oi-07/ios-tests/run.log) 5/5。共享 QA MCP 无法连接，未登记、未分发，待用户验证。
+
+本机安装：Redmi K70 Ultra 已覆盖安装 ARM64 Release `0.1.60 (61)`，设备 APK SHA-256 与候选包完全匹配。见[安装记录](../../.artifacts/external-import/oi-07/phone-install/command.log)和[包审计](../../.artifacts/external-import/oi-07/phone-package/Orbis-0.1.60-OI-07-arm64.audit.json)。仅此设备，待用户验收。
