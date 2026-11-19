@@ -288,6 +288,7 @@ export const DEVICE_FEATURE_COMPACT_BOOTSTRAP = "state.compact-bootstrap.v1";
 /** ADR-0064: clients and Claude mod support interrupting active Claude turns on busy send. */
 export const DEVICE_FEATURE_CLAUDE_SEND_NOW = "claude.send-now.v1";
 export const HOST_FEATURE_IMPORT_TARGET = "external-import.target-v1";
+export const DEVICE_FEATURE_OPENCODE = "agent.opencode";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 
 /**

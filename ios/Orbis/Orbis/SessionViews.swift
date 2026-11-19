@@ -380,9 +380,10 @@ struct SessionDrawerView: View, Equatable {
 
     private var filterMenuItems: [OrbisMenuItem] {
         [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: state.kind == nil) { selectFilter(nil) }]
-        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind, "hermes"].filter { kind in
+        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind, "hermes", "opencode"].filter { kind in
+            if kind == "opencode", store.activeConnection.openCodeAvailability != nil { return true }
             if kind == kimiCodeKind { return store.activeConnection.kimiCodeSupported }; if kind == "openclaw", !store.openClawNegotiated { return false }
-            return !["dshDesktop", "openclaw", "hermes"].contains(kind) || store.supportedAgents?.contains(kind) == true
+            return !["dshDesktop", "openclaw", "hermes", "opencode"].contains(kind) || store.supportedAgents?.contains(kind) == true
                 || store.launchableAgents?.contains(kind) == true || catalog.sessions.contains { $0.agentKind == kind }
         }.map { kind in
             let providers = kind == "codex" || kind == "codexDesktop"
@@ -430,6 +431,7 @@ struct SessionDrawerView: View, Equatable {
     }
 
     private var emptyTitle: String {
+        if state.kind == "opencode", store.connection == .secured, let message = store.activeConnection.openCodeAvailability?.message { return message }
         if searching { return L10n.tr("没有找到匹配的目录或会话") }
         if state.archived { return L10n.tr("没有已归档的会话") }
         if hasProviderFilter && effectiveProviderKey == "current" && store.currentProvider(for: state.kind ?? "codex") == nil { return L10n.tr("尚未获取当前 provider") }
@@ -657,6 +659,12 @@ struct SessionDraftView: View {
         return choices.filter { $0 != kimiCodeKind || owner.kimiCodeSupported }.filter { $0 != "openclaw" || owner.openClawNegotiated }
     }
     private var family: String { agentFamily(agent) }
+    private var openCode: OpenCodeAvailability? { owner.connection == .secured ? owner.openCodeAvailability : nil }
+    private var showsOpenCode: Bool { openCode != nil || (owner.connection == .secured && allowed.contains("opencode")) }
+    private var agentChoices: [String] { ["codex", "claude", "dsh", "pi"] + [kimiCodeKind, "openclaw", "hermes"].filter { allowed.contains($0) } + (showsOpenCode ? ["opencode"] : []) }
+    private func canChoose(_ kind: String) -> Bool {
+        (kind != "opencode" || (owner.connection == .secured && openCode?.ready != false)) && agentVariants(kind).contains(where: allowed.contains)
+    }
     /// Both native entries of this family can start here, so the variant is a real choice.
     private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).allSatisfy(allowed.contains) }
     private var currentPath: String? { path ?? presetCwd ?? (onImportSubmit == nil ? owner.browse?.path : nil) }
@@ -681,49 +689,28 @@ struct SessionDraftView: View {
 
     private var canStart: Bool {
         currentPath?.isEmpty == false &&
-            owner.connection == .secured && owner.activatingSessionId == nil && allowed.contains(agent) &&
+            owner.connection == .secured && owner.activatingSessionId == nil && allowed.contains(agent) && canChoose(family) &&
             (agent != kimiCodeKind || configuration != nil) && (agent != "openclaw" || configuration != nil && owner.sessionConfigurationError == nil) &&
             (onImportSubmit == nil || owner.canLaunchExternalImport && configuration != nil && owner.sessionConfigurationRequest == nil && owner.sessionConfigurationError == nil)
     }
     var body: some View {
         let p = OrbisPalette(scheme)
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 4) {
-                ForEach(["codex", "claude", "dsh", "pi"] + [kimiCodeKind, "openclaw", "hermes"].filter { allowed.contains($0) }, id: \.self) { kind in
-                    let variants = agentVariants(kind), chosen = family == kind
-                    OrbisMotionButton { agent = variants.first(where: allowed.contains) ?? kind } label: {
-                        AgentEmblem(kind: kind, size: 20, recessed: false)
-                            .saturation(chosen ? 1 : 0).opacity(chosen ? 1 : 0.4)
-                            .frame(width: 36, height: 36)
-                            .neuSurface(inset: chosen, radius: 18, intensity: chosen ? 0.4 : 0, concentric: false)
-                            .frame(width: 48, height: 48).contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(!variants.contains(where: allowed.contains))
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { familyFrames[kind] = $0 }
-                        .simultaneousGesture(LongPressGesture().onEnded { _ in if variants.count > 1 { showVariantChoices(kind) } })
-                        .accessibilityActions {
-                            ForEach(variants.dropFirst().filter(allowed.contains), id: \.self) { variant in
-                                Button(agentVariantTitle(variant)) { agent = variant }
-                            }
-                        }
-                        .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(chosen ? .isSelected : [])
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) {
+                    agentButtons(agentChoices)
+                    Spacer(minLength: 0)
+                    agentLabel
                 }
-                Spacer(minLength: 0)
-                if agentVariants(family).count > 1 {
-                    OrbisMotionButton { showVariantChoices(family, from: codexLabelFrame) } label: {
-                        HStack(spacing: 6) {
-                            Text(agentTitle(agent)).font(.orbisLabel(.semibold)).lineLimit(1)
-                            Image(systemName: agent == "codexDesktop" || agent == "dshDesktop" ? "desktopcomputer" : agent == "dsh" ? "globe" : "terminal")
-                                .font(.system(size: 18)).accessibilityHidden(true)
-                        }.foregroundStyle(p.agent(agent)).frame(maxWidth: .infinity, minHeight: 48, alignment: .trailing)
-                            .contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(!hasVariants)
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { codexLabelFrame = $0 }
-                        .accessibilityLabel(agentTitle(agent)).accessibilityValue(agentVariantTitle(agent))
-                        .accessibilityIdentifier(family == "codex" ? "draft-codex-version" : "draft-\(family)-version")
-                } else {
-                    Text(agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                VStack(alignment: .leading, spacing: 4) {
+                    agentButtons(Array(agentChoices.prefix(5)))
+                    if agentChoices.count > 5 { agentButtons(Array(agentChoices.dropFirst(5))) }
+                    agentLabel.frame(maxWidth: .infinity, alignment: .trailing)
                 }
+            }
+            if let message = openCode?.message {
+                Text(message).font(.orbisCaption()).foregroundStyle(p.secondary)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("draft-opencode-unavailable")
             }
             OrbisMotionButton { focused = false; choosingDirectory = true } label: {
                 HStack(spacing: 8) {
@@ -740,7 +727,9 @@ struct SessionDraftView: View {
                             panel: "model", enabled: configuration?.catalog.models.isEmpty == false)
                         HStack(spacing: 8) {
                             configurationButton(L10n.tr("思考深度"), value: thinkingTitle, panel: "thinking", enabled: configurationModel?.thinking.isEmpty == false)
-                            configurationButton(L10n.tr("权限"), value: nil, panel: "permissions", enabled: configuration != nil)
+                            if agent != "opencode" {
+                                configurationButton(L10n.tr("权限"), value: nil, panel: "permissions", enabled: configuration != nil)
+                            }
                         }
                     }
                 }
@@ -808,14 +797,57 @@ struct SessionDraftView: View {
             .onChange(of: closeRequest) { _, _ in cancel() }
             .onChange(of: visible) { _, active in if !active { focused = false } }
             .onChange(of: scenePhase) { _, phase in if phase != .active { focused = false } }
-            .task(id: "\(agent)|\(currentPath ?? "")|\(owner.connection == .secured)|\(owner.supportsSessionConfiguration(for: agent))|\(allowed.contains(agent))") { loadConfiguration() }
+            .task(id: "\(agent)|\(currentPath ?? "")|\(owner.connection == .secured)|\(owner.supportsSessionConfiguration(for: agent))|\(canChoose(family))") { loadConfiguration() }
             .onKeyPress(.escape) { cancel(); return .handled }
             .orbisBottomSheet(isPresented: $choosingDirectory) { directorySheet.orbisSheet([.large]) }
             .orbisBottomSheet(isPresented: $choosingConfiguration) { configurationSheet.orbisSheet(configurationPanel == "permissions" ? [.large] : [.medium, .large]) }
     }
-    private func loadConfiguration() {
-        if allowed.contains(agent), let cwd = currentPath { owner.loadSessionConfiguration(agent: agent, cwd: cwd) }
+    private func agentButtons(_ kinds: [String]) -> some View {
+        HStack(spacing: 4) {
+        ForEach(kinds, id: \.self) { kind in
+            let variants = agentVariants(kind), chosen = family == kind
+            OrbisMotionButton { agent = variants.first(where: allowed.contains) ?? kind } label: {
+                AgentEmblem(kind: kind, size: 20, recessed: false)
+                    .saturation(chosen ? 1 : 0).opacity(chosen ? 1 : 0.4)
+                    .frame(width: 36, height: 36)
+                    .neuSurface(inset: chosen, radius: 18, intensity: chosen ? 0.4 : 0, concentric: false)
+                    .frame(width: 48, height: 48).contentShape(Rectangle())
+            }.buttonStyle(.plain).disabled(!canChoose(kind))
+                .accessibilityLabel(agentTitle(kind))
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { familyFrames[kind] = $0 }
+                .simultaneousGesture(LongPressGesture().onEnded { _ in if variants.count > 1 { showVariantChoices(kind) } })
+                .accessibilityActions {
+                    ForEach(variants.dropFirst().filter(allowed.contains), id: \.self) { variant in
+                        Button(agentVariantTitle(variant)) { agent = variant }
+                    }
+                }
+                .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(chosen ? .isSelected : [])
+        }
+        }
     }
+    private func loadConfiguration() {
+        if allowed.contains(agent), canChoose(family), let cwd = currentPath { owner.loadSessionConfiguration(agent: agent, cwd: cwd) }
+    }
+    @ViewBuilder private var agentLabel: some View {
+        let p = OrbisPalette(scheme)
+        if agentVariants(family).count > 1 {
+            OrbisMotionButton { showVariantChoices(family, from: codexLabelFrame) } label: {
+                HStack(spacing: 6) {
+                    Text(agentTitle(agent)).font(.orbisLabel(.semibold)).lineLimit(1)
+                    Image(systemName: agent == "codexDesktop" || agent == "dshDesktop" ? "desktopcomputer" : agent == "dsh" ? "globe" : "terminal")
+                        .font(.system(size: 18)).accessibilityHidden(true)
+                }.foregroundStyle(p.agent(agent)).frame(maxWidth: .infinity, minHeight: 48, alignment: .trailing)
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain).disabled(!hasVariants)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { codexLabelFrame = $0 }
+                .accessibilityLabel(agentTitle(agent)).accessibilityValue(agentVariantTitle(agent))
+                .accessibilityIdentifier(family == "codex" ? "draft-codex-version" : "draft-\(family)-version")
+        } else {
+            Text(agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
     private func configurationButton(_ title: String, value: String?, panel: String, enabled: Bool) -> some View {
         OrbisMotionButton {
             focused = false; configurationPanel = panel

@@ -28,7 +28,7 @@ struct OrbisLiveActivityState: Codable, Hashable, Sendable {
               (0...9_007_199_254_740_991).contains(updatedAt),
               startedAt.map({ $0 >= 0 && $0 <= updatedAt }) != false,
               focusKey.map({ $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }) != false,
-              agentKind.map({ ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop"].contains($0) }) != false,
+              agentKind.map({ ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "opencode"].contains($0) }) != false,
               outcome.map({ ["completed", "failed", "cancelled", "unknown"].contains($0) }) != false,
               phase == "ended" || outcome == nil else { return false }
         switch phase {
@@ -90,6 +90,7 @@ struct OrbisLiveActivityPresentation {
         case "claude": return "Claude"
         case "dsh", "dshDesktop": return "DeepSeek"
         case "pi": return "Pi"
+        case "opencode": return "OpenCode"
         default: return "Orbis"
         }
     }

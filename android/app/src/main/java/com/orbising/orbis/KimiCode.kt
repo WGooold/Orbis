@@ -16,6 +16,7 @@ internal fun deviceAgentFeatures(ready: JsonObject): List<String> {
         MESSAGE_RENDER_FEATURE,
         "agent.openclaw",
         "agent.hermes",
+        "agent.opencode",
         "state.compact-bootstrap.v1",
         "claude.send-now.v1",
     ).filter { it in advertised }

@@ -188,6 +188,7 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
         fun kinds(key: String) = (value[key] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }?.toSet()
         state = state.copy(supportedAgents = kinds("agents") ?: state.supportedAgents,
             launchableAgents = kinds("launchableAgents") ?: state.launchableAgents,
+            openCodeAvailability = openCodeAvailability(value),
             codexDesktop = value["codexDesktop"]?.takeUnless { it is JsonNull }?.let {
                 runCatching { json.decodeFromJsonElement<CodexDesktopAttach>(it) }.getOrNull()
             })

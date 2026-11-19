@@ -217,6 +217,7 @@ func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
         messageRenderFeature,
         "agent.openclaw",
         "agent.hermes",
+        "agent.opencode",
         "state.compact-bootstrap.v1",
         "claude.send-now.v1",
     ].filter { advertised.contains($0) }
@@ -245,6 +246,7 @@ func runtimeAgentKind(_ runtimeId: String) -> String? {
     if runtimeId.hasPrefix("claude:") { return "claude" }
     if isKimiCode(kind: nil, id: runtimeId) { return kimiCodeKind }
     if runtimeId.hasPrefix("openclaw:") { return "openclaw" }
+    if runtimeId.hasPrefix("opencode:") { return "opencode" }
     return nil
 }
 

@@ -110,8 +110,10 @@ import { ClaudeModsBridge } from "./claude-mods-bridge.js";
 import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { OpenCodeServiceConnection, type OpenCodeServiceStatus } from "./opencode-service-connection.js";
+import { OpenCodeBackend } from "./opencode-backend.js";
 import type { DshRuntime } from "./dsh-runtime.js";
-import { DSH_DESKTOP_KIND, agentViews, allowsAgent, allowsAgentIdentity, allowsAgentRequest, allowsRuntime, applyDeviceViewEpoch, deviceAgentView,
+import { DSH_DESKTOP_KIND, OPENCODE_KIND, OPENCODE_RUNTIME_PREFIX, agentViews, allowsAgent, allowsAgentIdentity, allowsAgentRequest, allowsRuntime, applyDeviceViewEpoch, deviceAgentView,
   hiddenKinds, projectAgentMessage, projectBackendDomain, type AgentView } from "./device-agent-visibility.js";
 import { OpenClawBackend } from "./openclaw-backend.js";
 import { loadOpenClawConfig, type OpenClawConfig } from "./openclaw-gateway.js";
@@ -248,6 +250,8 @@ export type HostServiceOptions = {
    */
   codexRuntime?: CodexRuntime;
   codexDesktopRuntime?: CodexRuntime;
+  /** Read-only connection monitor for the already-running OpenCode shared service. */
+  opencodeConnection?: OpenCodeServiceConnection;
   /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
   ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
   /** Codex 桌面版已安装，可在手机新建会话时按需启动；不代表 GUI 当前在线。 */
@@ -616,13 +620,14 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#options.kimiCodeRuntime ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", OPENCODE_KIND, ...(this.#options.kimiCodeRuntime ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
     if (this.#hermes?.installed) kinds.push("hermes");
+    const openCodeReason = this.#opencodeConnection.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "event_stream_unavailable";
     facts.backends({ backends: kinds.map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
-        reason: backend === undefined ? "backend_not_attached" : backend.isReady() ? null
+        reason: kind === OPENCODE_KIND ? (backend?.isReady() ? null : openCodeReason) : backend === undefined ? "backend_not_attached" : backend.isReady() ? null
           : kind === KIMI_KIND ? this.#options.kimiCodeRuntime?.reason ?? "backend_not_ready" : "backend_not_ready" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
     const catalog = this.#hostStateFacts.read();
@@ -738,6 +743,10 @@ export class HostService {
   #providerFactsGeneration = 0;
   #providerFactsClosing = false;
   #serviceClosed = false;
+  readonly #opencodeConnection: OpenCodeServiceConnection;
+  readonly #openCodeBackend: OpenCodeBackend;
+  readonly #openCodePublishedRuntimes = new Set<string>();
+  readonly #unsubscribeOpenCodeStatus: () => void;
   readonly #providerFactsPending = new Set<Promise<void>>();
   #modelLifecycle: HostManagementState["lifecycle"] = "stopped";
   #activationsPending = 0;
@@ -752,6 +761,7 @@ export class HostService {
   readonly #kimiConfigurations: SessionConfigurationStore;
   // Published Hosts strictly decode their launch journal. New Agent records cannot poison it on rollback.
   readonly #openClawLaunches: SessionConfigurationStore;
+  readonly #openCodeConfigurations: SessionConfigurationStore;
   readonly #hermesConfigurations: SessionConfigurationStore;
   #desktopLedgerWrite: Promise<void> = Promise.resolve();
 
@@ -762,11 +772,18 @@ export class HostService {
     store: DeviceStore,
   ) {
     this.#options = { ...options, relayHistoryMode: relayHistoryMode(options.relayHistoryMode) };
+    this.#opencodeConnection = options.opencodeConnection ?? new OpenCodeServiceConnection();
+    this.#unsubscribeOpenCodeStatus = this.#opencodeConnection.subscribe(() => {
+      if (this.#serviceClosed || this.#providerFactsClosing) return;
+      this.refreshHostFacts();
+      this.#invalidateCatalog();
+    });
     this.#stateDir = stateDir;
     this.#sessionConfigurations = new SessionConfigurationStore(join(stateDir, "session-configuration.json"));
     // Released Hosts parse every launch entry strictly; never mix new kinds into their file.
     this.#kimiConfigurations = new SessionConfigurationStore(join(stateDir, "kimi-session-configuration.json"));
     this.#openClawLaunches = new SessionConfigurationStore(join(stateDir, "openclaw-session-configuration.json"));
+    this.#openCodeConfigurations = new SessionConfigurationStore(join(stateDir, "opencode-session-configuration.json"));
     this.#hermesConfigurations = new SessionConfigurationStore(join(stateDir, "hermes-session-configuration.json"));
     // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
     this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
@@ -1007,6 +1024,16 @@ export class HostService {
     if (options.dshRuntime !== undefined) this.#attachDshBackend(options.dshRuntime);
     if (options.dshDesktopRuntime !== undefined) this.#attachDshBackend(options.dshDesktopRuntime);
     if (options.kimiCodeRuntime !== undefined) this.#attachKimiBackend(options.kimiCodeRuntime);
+    this.#openCodeBackend = new OpenCodeBackend({
+      connection: this.#opencodeConnection,
+      hostId: this.#identity.hostId,
+      onRuntimeOnline: runtime => this.#registerOpenCodeRuntime(runtime),
+      onRuntimeOffline: (runtimeId, reason) => this.#unregisterOpenCodeRuntime(runtimeId, reason),
+      onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+      onCatalogChange: () => this.#invalidateCatalog(),
+      onAvailabilityChange: () => { if (!this.#providerFactsClosing) this.#broadcastDeviceReady(); },
+    });
+    this.#backends.push(this.#openCodeBackend);
     this.refreshHostFacts();
   }
 
@@ -1148,6 +1175,26 @@ export class HostService {
     this.#dsh[kind].runtime = dsh;
   }
 
+  #registerOpenCodeRuntime(runtime: RuntimeMetadata): void {
+    const alreadyPublished = this.#openCodePublishedRuntimes.has(runtime.runtimeId);
+    const displaced = this.#agentFacts.displacedRuntime(runtime.runtimeId, runtime);
+    if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
+    this.#openCodePublishedRuntimes.add(runtime.runtimeId);
+    this.#agentFacts.observe(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
+    if (!alreadyPublished) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
+    if (alreadyPublished) this.#publishRuntimeEvent(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
+    else this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+    this.refreshHostFacts();
+  }
+
+  #unregisterOpenCodeRuntime(runtimeId: string, reason: string): void {
+    if (!this.#openCodePublishedRuntimes.delete(runtimeId) && this.#agentFacts.scopeOf(runtimeId) === undefined) return;
+    this.#notifications.end(runtimeId);
+    this.#markRuntimeOffline(runtimeId, reason);
+    this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
+    this.refreshHostFacts();
+  }
+
   /** Attach a newly connected DeepSeek backend and publish the changed capability. */
   async attachDshRuntime(runtime: DshRuntime): Promise<void> {
     const existing = this.#backends.find(backend => backend.kind === runtime.kind);
@@ -1268,6 +1315,8 @@ export class HostService {
   get relayState(): HostRelayState {
     return this.#relay?.state ?? "closed";
   }
+
+  get opencodeServiceStatus(): OpenCodeServiceStatus { return this.#opencodeConnection.status; }
 
   /** 本机 loopback 端点。未启用或未启动时为 `undefined`。 */
   get loopback(): HostLoopbackServer | undefined {
@@ -1871,6 +1920,9 @@ export class HostService {
     this.#modelLifecycle = "running";
     this.#options.kimiCodeRuntime?.start();
     void this.#startOpenClaw();
+    // Discovery is read-only; a missing service does not block Relay or Host startup.
+    this.#openCodeBackend.start();
+    void this.#opencodeConnection.start();
     // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
     // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
     // prestarted backend settled, so it cannot open a second connection beside one still starting.
@@ -1925,6 +1977,8 @@ export class HostService {
     // Close publication gates before the first await: pending provider reads can
     // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
+    this.#openCodeBackend.close();
+    this.#opencodeConnection.close(); this.#unsubscribeOpenCodeStatus();
     clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
@@ -2528,7 +2582,8 @@ export class HostService {
       if (sessionId !== undefined) {
         // A configured launch may publish runtime.online before native settings are confirmed.
         const epoch = this.#deviceViewEpochs.get(deviceId);
-        void (isKimiId(sessionId) ? this.#kimiConfigurations : sessionId.startsWith(OPENCLAW_PREFIX) ? this.#openClawLaunches : this.#sessionConfigurations).blocks(sessionId).then(async blocked => {
+        void (isKimiId(sessionId) ? this.#kimiConfigurations : sessionId.startsWith(OPENCLAW_PREFIX) ? this.#openClawLaunches
+          : runtimeId.startsWith(OPENCODE_RUNTIME_PREFIX) ? this.#openCodeConfigurations : this.#sessionConfigurations).blocks(sessionId).then(async blocked => {
           const attachmentsVerified = !importTarget || blocked || await this.#uploads.ownsImportAttachments(deviceId, importTarget, command.attachments ?? []);
           if (epoch !== this.#deviceViewEpochs.get(deviceId) || !allowsRuntime(this.#agentView(deviceId), runtimeId)) return;
           if (importFence && !importFence()) rejectTarget();
@@ -2865,7 +2920,7 @@ export class HostService {
     if (!current() || !allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message); return; }
     const kind = "agentKind" in message ? message.agentKind : undefined;
     let ledger = kind === KIMI_KIND ? this.#kimiConfigurations : kind === OPENCLAW_KIND ? this.#openClawLaunches
-      : kind === "hermes" ? this.#hermesConfigurations : this.#sessionConfigurations;
+      : kind === "hermes" ? this.#hermesConfigurations : kind === OPENCODE_KIND ? this.#openCodeConfigurations : this.#sessionConfigurations;
     const sendLaunch = async (launchId: string) => {
       const observed = await ledger.result(deviceId, launchId, message.requestId);
       if (!current()) return;
@@ -2881,6 +2936,8 @@ export class HostService {
         if (allowsAgent(this.#agentView(deviceId), OPENCLAW_KIND) && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#openClawLaunches;
         if (!current()) return;
         if (allowsAgent(this.#agentView(deviceId), "hermes") && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#hermesConfigurations;
+        if (!current()) return;
+        if (allowsAgent(this.#agentView(deviceId), OPENCODE_KIND) && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#openCodeConfigurations;
         if (!current()) return;
         await this.#recoverSessionLaunch(ledger, deviceId, message.launchId, current);
         await sendLaunch(message.launchId); return;
@@ -3047,7 +3104,8 @@ export class HostService {
     const receipted = message.type === "session.archive" || message.type === "session.activate";
     const operationRuntimeId = message.type === "session.archive" ? message.sessionId : message.type === "session.activate"
       ? message.target.type === "resume" ? message.target.sessionId : message.target.agentKind === DSH_DESKTOP_KIND ? "dsh-desktop:launch"
-        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : message.target.agentKind === OPENCLAW_KIND ? "openclaw:launch" : message.target.agentKind === "hermes" ? "hermes:launch" : this.#identity.hostId
+        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : message.target.agentKind === OPENCLAW_KIND ? "openclaw:launch" : message.target.agentKind === "hermes" ? "hermes:launch"
+        : message.target.agentKind === OPENCODE_KIND ? `${OPENCODE_RUNTIME_PREFIX}launch` : this.#identity.hostId
       : this.#identity.hostId;
     // Scope receipts for gated runtimes before a device reconnects with an older build.
     const receiptRuntimeId = allowsRuntime(deviceAgentView(), operationRuntimeId) ? this.#identity.hostId : operationRuntimeId;
@@ -3209,7 +3267,7 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND || backend.kind === OPENCLAW_KIND || backend.kind === "hermes")) continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND || backend.kind === OPENCLAW_KIND || backend.kind === "hermes" || backend.kind === OPENCODE_KIND)) continue;
         try {
           const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, context);
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。

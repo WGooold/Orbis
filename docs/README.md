@@ -16,6 +16,8 @@ This directory is organized by authority and maintenance horizon. The root `READ
 - [ADR-0083](adr/0083-feedback-levels-and-stale-replies.md)：错误与提示分级（F0–F5，规范见[设计规范](design/orbis-design-system.md)§8）；SC91 迟到回包静默，以及 SC92–SC95 的底部短反馈、顶部横幅、连接状态、对象原位错误和菜单读取归属迁移。两端实施与定向自动验证完成，作为 r59 候选，未部署，待用户验证。
 - [ADR-0084](adr/0084-host-normalized-message-content-rendering.md)：Host 统一解析来源特有的消息内容，各 App 对已支持类型原生渲染，对暂不支持的用户可见内容就地显示安全占位符；文件引用、旧端兼容、流式解析与回归边界，尚待实现。
 - [ADR-0087](adr/0087-hermes-agent-gateway-integration.md)：Hermes Agent Gateway 接入提案与 HERMES-01–06 分票；transport、bootstrap、AgentBackend 与工具／交互／模型映射已有隔离验证；Host 与客户端入口已接通，发版源码兼容对照通过；真实 Gateway 联动、原生打包及用户验收待完成。
+- [ADR-0090](adr/0090-zcode-cli-integration.md)：ZCode 独立 CLI 接入；V4 stdio 协议、Orbis-owned session DB 与 Desktop 隔离、设备 feature gate，按 ZCODE-02–05 实现与验证。
+- [ADR-0091](adr/0091-opencode-shared-service-integration.md)：OpenCode 共享服务接入；Host 只读发现已运行服务、经官方 API 映射 Agent state、不启动或停止 OpenCode，按 OPENCODE-02–06 实现与验证。
 
 - [QUIC 诊断复核](architecture/native-quic-peer-project-review.md)。
 

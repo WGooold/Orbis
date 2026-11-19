@@ -1,6 +1,8 @@
-import { DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_KIMI_CODE, DEVICE_FEATURE_OPENCLAW, DEVICE_FEATURE_HERMES, type AgentKind } from "@orbis/protocol";
+import { DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_KIMI_CODE, DEVICE_FEATURE_OPENCLAW, DEVICE_FEATURE_HERMES, DEVICE_FEATURE_OPENCODE, type AgentKind } from "@orbis/protocol";
 import { isKimiId, KIMI_KIND } from "./kimi-sessions.js";
 export const DSH_DESKTOP_KIND = "dshDesktop" satisfies AgentKind;
+export const OPENCODE_KIND = "opencode" satisfies AgentKind;
+export const OPENCODE_RUNTIME_PREFIX = "opencode:";
 const isDshDesktopRuntime = (value: unknown): boolean => typeof value === "string" && value.startsWith("dsh-desktop:");
 
 type Obj = Record<string, unknown>;
@@ -8,7 +10,7 @@ const object = (value: unknown): Obj | undefined => value && typeof value === "o
 
 /** Each distinct hidden-kind set is one directory/cursor projection. */
 const negotiatedAgents = [
-  [KIMI_KIND, DEVICE_FEATURE_KIMI_CODE], [DSH_DESKTOP_KIND, DEVICE_FEATURE_DSH_DESKTOP], ["openclaw", DEVICE_FEATURE_OPENCLAW], ["hermes", DEVICE_FEATURE_HERMES],
+  [KIMI_KIND, DEVICE_FEATURE_KIMI_CODE], [DSH_DESKTOP_KIND, DEVICE_FEATURE_DSH_DESKTOP], ["openclaw", DEVICE_FEATURE_OPENCLAW], ["hermes", DEVICE_FEATURE_HERMES], [OPENCODE_KIND, DEVICE_FEATURE_OPENCODE],
 ] as const;
 export type AgentView = number;
 export const agentViews = Array.from({ length: 1 << negotiatedAgents.length }, (_, view) => view);
@@ -20,7 +22,8 @@ export const allowsAgent = (view: AgentView, kind: unknown): boolean => !hiddenK
 export const allowsRuntime = (view: AgentView, id: unknown): boolean =>
   (!(view & 1) || !isKimiId(id)) && (!(view & 2) || !isDshDesktopRuntime(id)) &&
   (!(view & 4) || typeof id !== "string" || !id.startsWith("openclaw:")) &&
-  (!(view & 8) || typeof id !== "string" || !id.startsWith("hermes:"));
+  (!(view & 8) || typeof id !== "string" || !id.startsWith("hermes:")) &&
+  (!(view & 16) || typeof id !== "string" || !id.startsWith(OPENCODE_RUNTIME_PREFIX));
 export function allowsAgentIdentity(view: AgentView, value: object): boolean {
   const row = value as Obj;
   return allowsAgent(view, row.agentKind) && allowsAgent(view, row.kind) && allowsRuntime(view, row.sessionId) && allowsRuntime(view, row.runtimeId);

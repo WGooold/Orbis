@@ -615,6 +615,7 @@ data class RemoteState(
      * 它比 [launchableAgents] 多回答一个问题：桌面版装了但没打开、还是打开了却接入失败。
      */
     val codexDesktop: CodexDesktopAttach? = null,
+    val openCodeAvailability: OpenCodeAvailability? = null,
     /** Native backend modelProvider keys, keyed by agentKind; never Host-managed profile ids. */
     val currentProviders: Map<String, String> = emptyMap(),
     val providerCatalogs: Map<String, List<AgentProvider>> = emptyMap(),
@@ -2144,6 +2145,7 @@ class RelayReducer(
                     supportedAgents = if (openClawNegotiated || projectionChanged) supportedAgents else state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     launchableAgents = if (openClawNegotiated || projectionChanged) launchableAgents else state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     codexDesktop = state.codexDesktop.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    openCodeAvailability = state.openCodeAvailability.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     sessionListRequests = emptySet(),
                     sessionListRequestEpochs = emptyMap(),
                     runtimeSessionViews = runtimeViews,
@@ -2329,6 +2331,7 @@ class RelayReducer(
                     activatedSessionToOpen = null,
                     runtimes = emptyMap(),
                     codexDesktop = null,
+                    openCodeAvailability = null,
                     pendingCommands = emptyMap(),
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith {
                         CommandResult(ok = false, status = "cancelled")
