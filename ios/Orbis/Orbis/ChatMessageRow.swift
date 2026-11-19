@@ -394,6 +394,20 @@ private struct MessageContentView: View {
                             }
                         }
                     }
+                case "render":
+                    if let reference = content.fileAction {
+                        OrbisMotionButton {
+                            if fileActions?.download(path: reference, displayName: content.file?.fileName) == true { downloadFlight?.launch() }
+                        } label: {
+                            HStack(spacing: 8) {
+                                OrbisActionSymbol(systemName: "arrow.down.doc")
+                                FileNameText(name: content.renderLabel)
+                            }.font(.orbisLabel()).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 12)
+                        }.buttonStyle(NeuButtonStyle()).accessibilityIdentifier("message-file-reference")
+                    } else {
+                        Text(content.renderLabel).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
+                            .textSelection(.enabled).accessibilityIdentifier("message-content-placeholder")
+                    }
                 case "artifact":
                     if let file = content.artifact {
                         OrbisMotionButton { if fileActions?.download(artifact: file) == true { downloadFlight?.launch() } } label: {

@@ -2,6 +2,13 @@ import Foundation
 import CoreFoundation
 import CryptoKit
 
+let messageRenderFeature = "message.content-render.v1"
+let legacyDisplayProjectionVersion = 3
+let messageDisplayProjectionVersion = 4
+func supportsDisplayProjection(_ version: Int?) -> Bool {
+    version == legacyDisplayProjectionVersion || version == messageDisplayProjectionVersion
+}
+
 /// Immutable inputs captured by the UI owner. Foundation JSON containers are only read here.
 struct SessionChatProjectionInput: @unchecked Sendable {
     let event: [String: Any]
@@ -39,7 +46,7 @@ actor SessionChatProjectionWorker {
                  displayIds: [String: String], timings: [String: SessionTurnTiming], replacing: Bool) -> CachedPageProjection {
         beforeResolve?()
         var graph = page.graph
-        if !replacing, var previous = previousGraph, previous.epoch == page.graph.epoch {
+        if !replacing, var previous = previousGraph, previous.epoch == page.graph.epoch, previous.displayVersion == page.graph.displayVersion {
             let retained = Set(previous.path(to: previous.leafId).suffix(256).map(\.entryId)).union(page.entries.map(\.entryId))
             for entry in page.entries where (page.graph.entryVersions[entry.entryId] ?? -1) >= (previous.entryVersions[entry.entryId] ?? -1) {
                 previous.entries[entry.entryId] = entry
@@ -226,8 +233,14 @@ struct CachedSessionGraph: Codable {
             checked.formUnion(visiting)
         }
         if let batch = event["display"] as? [String: Any], let rows = batch["entries"] as? [[String: Any]] {
-            guard sessionInteger(batch["projectionVersion"]) == 3 else { throw SessionHistoryError.invalid(L10n.tr("历史显示投影版本不兼容")) }
-            next.displayVersion = 3
+            guard let projection = sessionInteger(batch["projectionVersion"]), supportsDisplayProjection(Int(projection)) else {
+                throw SessionHistoryError.invalid(L10n.tr("历史显示投影版本不兼容"))
+            }
+            if let previous = next.displayVersion, previous != Int(projection) {
+                guard activate else { throw SessionHistoryError.invalid(L10n.tr("历史显示投影版本不兼容")) }
+                next.display.removeAll(); next.displayVersions.removeAll()
+            }
+            next.displayVersion = Int(projection)
             var seen: Set<String> = []
             for row in rows {
                 guard let id = (row["entryId"] as? String) ?? (row["displayId"] as? String) else { continue }
@@ -264,7 +277,7 @@ final class SessionHistoryCache {
     private func file(_ host: HostPairing, _ sessionId: String) -> URL { directory(host).appendingPathComponent(hash(sessionId) + ".json") }
     func contains(_ host: HostPairing, sessionId: String) -> Bool { FileManager.default.fileExists(atPath: file(host, sessionId).path) }
     func load(_ host: HostPairing, sessionId: String) -> CachedSessionGraph? {
-        guard let data = try? Data(contentsOf: file(host, sessionId)), let graph = try? JSONDecoder().decode(CachedSessionGraph.self, from: data), graph.sessionId == sessionId, graph.displayVersion == 3 else { return nil }
+        guard let data = try? Data(contentsOf: file(host, sessionId)), let graph = try? JSONDecoder().decode(CachedSessionGraph.self, from: data), graph.sessionId == sessionId, supportsDisplayProjection(graph.displayVersion) else { return nil }
         return graph
     }
     func save(_ graph: CachedSessionGraph, host: HostPairing) throws {

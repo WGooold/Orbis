@@ -41,6 +41,7 @@ struct SessionHistoryCommit {
     let committedDisplay: [String: CachedSessionGraph.Display]
     let turnTimings: [SessionTurnTiming]
     let epochChanged: Bool
+    let displayChanged: Bool
 }
 
 struct SessionHistoryWork: Equatable {
@@ -395,7 +396,16 @@ private final class SessionHistoryDatabase {
             let retired = try query("SELECT 1 FROM retired_epochs WHERE host=? AND session=? AND epoch=? LIMIT 1", [.text(key), .text(sessionId), .text(epoch)]) { _ in true }
             guard retired.isEmpty else { throw SessionHistoryError.invalid(L10n.tr("历史来源已被替换")) }
             let changedEpoch = previous?.epoch != nil && previous?.epoch != epoch
-            if changedEpoch || !incoming.entries.isEmpty || !incoming.display.isEmpty || !timings.isEmpty {
+            let changedDisplay = !changedEpoch && previous?.displayVersion != nil && incoming.displayVersion != nil &&
+                previous?.displayVersion != incoming.displayVersion
+            if changedDisplay {
+                // Only a current checkpoint may change display semantics; delayed pages stay on their original version.
+                guard activate, object["type"] as? String != "session.patch", object["mode"] as? String != "append" else {
+                    throw SessionHistoryError.invalid(L10n.tr("历史显示投影版本不兼容"))
+                }
+                try execute("DELETE FROM display WHERE host=? AND session=?", [.text(key), .text(sessionId)])
+            }
+            if changedEpoch || changedDisplay || !incoming.entries.isEmpty || !incoming.display.isEmpty || !timings.isEmpty {
                 invalidateReadCaches()
             }
             if activate {
@@ -423,7 +433,7 @@ private final class SessionHistoryDatabase {
             if incoming.displayVersion != nil {
                 if activate, meta.window != incoming.windowStart { try execute("DELETE FROM display WHERE host=? AND session=? AND entry_id IS NULL", [.text(key), .text(sessionId)]) }
                 for value in incoming.display.values where value.entryId != nil || seq >= meta.sourceSeq { try storeDisplay(value, seq: seq, key: key, session: sessionId) }
-                meta.displayVersion = 3
+                meta.displayVersion = incoming.displayVersion
                 if activate { meta.window = incoming.windowStart }
             }
             for timing in timings { try storeTiming(timing, seq: seq, key: key, session: sessionId) }
@@ -461,7 +471,7 @@ private final class SessionHistoryDatabase {
             try beforeCommit()
             committedPage = (pageKey, page)
             return SessionHistoryCommit(graph: graph, page: page, committedEntries: committed, committedDisplay: committedDisplay,
-                turnTimings: committedTimings, epochChanged: changedEpoch)
+                turnTimings: committedTimings, epochChanged: changedEpoch, displayChanged: changedDisplay)
         } catch { invalidateReadCaches(); try? execute("ROLLBACK"); throw error }
     }
     private func timing(key: String, session: String, id: String) throws -> (SessionTurnTiming, Int64)? {
@@ -499,12 +509,12 @@ private final class SessionHistoryDatabase {
             // Bounded graphs do not contain every ancestor of windowStart; explicitly omit these
             // older display rows so their projection obeys the same SQLite ancestry proof.
             for id in excluded { graph.display[id] = nil }
-            let displayComplete = meta?.displayVersion == 3 && entries.allSatisfy { excluded.contains($0.entryId) || graph.display[$0.entryId] != nil }
+            let displayComplete = supportsDisplayProjection(meta?.displayVersion) && entries.allSatisfy { excluded.contains($0.entryId) || graph.display[$0.entryId] != nil }
             var page = SessionHistoryPage(graph: graph, entries: entries, display: graph.display, turnTimings: timings,
                 hasOlder: hasOlder, complete: complete, status: status, displayComplete: displayComplete)
             if let leaf {
                 let coverage = try coverage(key: key, session: sessionId, leaf: leaf, window: meta?.window)
-                page.targetCovered = coverage.0 && meta?.displayVersion == 3
+                page.targetCovered = coverage.0 && supportsDisplayProjection(meta?.displayVersion)
                 page.coverageGap = coverage.1
             } else { page.targetCovered = meta != nil }
             return page
@@ -634,7 +644,7 @@ private final class SessionHistoryDatabase {
         let folder = root.appendingPathComponent(historyStorageHash(hostKeyPrefix(host)))
         guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
         for file in files where file.pathExtension == "json" {
-            guard let graph = try? JSONDecoder().decode(CachedSessionGraph.self, from: Data(contentsOf: file)), graph.displayVersion == 3 else { continue }
+            guard let graph = try? JSONDecoder().decode(CachedSessionGraph.self, from: Data(contentsOf: file)), supportsDisplayProjection(graph.displayVersion) else { continue }
             try migrateLegacy(host: host, sessionId: graph.sessionId)
         }
     }
@@ -644,7 +654,7 @@ private final class SessionHistoryDatabase {
         let file = root.appendingPathComponent(historyStorageHash(key)).appendingPathComponent(historyStorageHash(sessionId) + ".json")
         guard FileManager.default.fileExists(atPath: file.path) else { return }
         let graph = try JSONDecoder().decode(CachedSessionGraph.self, from: Data(contentsOf: file))
-        guard graph.sessionId == sessionId, graph.displayVersion == 3 else { return }
+        guard graph.sessionId == sessionId, supportsDisplayProjection(graph.displayVersion) else { return }
         invalidateReadCaches()
         try execute("BEGIN IMMEDIATE")
         do {
@@ -652,7 +662,7 @@ private final class SessionHistoryDatabase {
             try validateCycles(key: key, session: sessionId, changed: Array(graph.entries.keys))
             for (id, display) in graph.display { try storeDisplay(display, seq: graph.displayVersions[id] ?? 0, key: key, session: sessionId) }
             let seq = graph.entryVersions.values.max() ?? 0
-            try saveMetadata(SessionHistoryMetadata(epoch: graph.epoch, leaf: graph.leafId, window: graph.windowStart, displayVersion: 3, sourceSeq: seq,
+            try saveMetadata(SessionHistoryMetadata(epoch: graph.epoch, leaf: graph.leafId, window: graph.windowStart, displayVersion: graph.displayVersion, sourceSeq: seq,
                 modifiedAt: Int64(Date().timeIntervalSince1970 * 1000)), key: key, sessionId: sessionId)
             try commit()
         } catch { try? execute("ROLLBACK"); throw error }

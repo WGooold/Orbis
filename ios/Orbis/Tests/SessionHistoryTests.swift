@@ -93,7 +93,7 @@ struct SessionHistoryTests {
             "display": ["projectionVersion": 3, "entries": [["entryId": "a", "message": message("stale")]]]]
         #expect(try graph.merging(older, activate: false).messages.isEmpty)
         var unsupported = older
-        unsupported["display"] = ["projectionVersion": 4, "entries": []]
+        unsupported["display"] = ["projectionVersion": 5, "entries": []]
         #expect(throws: (any Error).self) { try graph.merging(unsupported, activate: false) }
     }
     @Test func wireIntegersDoNotCoerceBooleansFractionsOrUnsafeValues() {
@@ -145,6 +145,30 @@ struct SessionHistoryTests {
         if let patchBase { event["type"] = "session.patch"; event["baseSeq"] = patchBase; event["seq"] = seq; event["head"] = cursor; event["headCompleteness"] = "complete" }
         return try JSONSerialization.data(withJSONObject: event)
     }
+    // Upgrading or rolling back the Host reuses canonical entries, but never mixes display encodings.
+    @Test func switchingDisplayVersionAtSameSourceSequenceReplacesCachedRows() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = SessionHistoryWorker(root: root), pairing = host(), generation = UUID()
+        worker.setGeneration(generation, host: pairing)
+        let legacy = try packet([1, 2])
+        let initial = try await worker.ingest(host: pairing, sessionId: "s", event: legacy, activate: true, generation: generation)
+        var next = try #require(JSONSerialization.jsonObject(with: packet([2])) as? [String: Any])
+        next["display"] = ["projectionVersion": 4, "entries": [["entryId": "e2", "message": message("rich")]]]
+        let rich = try JSONSerialization.data(withJSONObject: next)
+        let activated = try await worker.ingest(host: pairing, sessionId: "s", event: rich, activate: true, generation: generation)
+        #expect(activated.displayChanged && !activated.epochChanged)
+        #expect(activated.graph.displayVersion == 4)
+        #expect(activated.graph.entries["e1"] == initial.graph.entries["e1"])
+        #expect(activated.graph.messages.map(\.messageId) == ["rich"])
+        await #expect(throws: SessionHistoryError.self) {
+            try await worker.ingest(host: pairing, sessionId: "s", event: legacy, activate: false, generation: generation)
+        }
+        let rolledBack = try await worker.ingest(host: pairing, sessionId: "s", event: legacy, activate: true, generation: generation)
+        #expect(rolledBack.displayChanged && rolledBack.graph.displayVersion == 3)
+        #expect(rolledBack.graph.messages.map(\.messageId) == ["m1", "m2"])
+    }
+
     @Test func liveOnlyCommitsReuseHistoryButCorrectionsAndRollbackInvalidateIt() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

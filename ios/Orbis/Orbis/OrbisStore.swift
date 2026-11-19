@@ -704,6 +704,7 @@ final class HostConnection: ObservableObject {
     private var modelCatalogReceived = false
     /// ADR-0076: the filtered `device.ready` this App answered with `device.features`; the full one replaces it.
     private var filteredReady: (id: UUID, message: [String: Any], channel: String?)?
+    private var expectedMessageDisplayVersion: Int?
 
     init(secure: SecureStorage = SecureStore.shared, transport: OrbisTransport? = nil, deviceName: String? = nil, autoConnect: Bool = true, preferences: UserDefaults? = .standard, transferRoot: URL? = nil, initialPairing: HostPairing? = nil, isolated: Bool = false, historyWorker: SessionHistoryWorker? = nil, localStores: HostLocalStores? = nil) {
         self.secure = secure
@@ -1260,7 +1261,9 @@ final class HostConnection: ObservableObject {
         seedCachedHistory(runtime)
         let syncId = UUID().uuidString, commandId = "session-sync:" + UUID().uuidString
         var command: [String: Any] = ["type": "session.sync", "sessionId": sessionId, "syncId": syncId, "range": "preview", "maxEntries": 30]
-        let known = appliedBaselines[runtime.runtimeId]
+        let loadedProjection = graphs[sessionId]?.displayVersion
+        let known = loadedProjection == nil || expectedMessageDisplayVersion == nil || loadedProjection == expectedMessageDisplayVersion
+            ? appliedBaselines[runtime.runtimeId] : nil
         if let known { command["knownState"] = known.wire }
         guard let owner = readOwner(runtime), let operation = sessionReads.begin(kind: .source, owner: owner, targetLeafId: nil).operationId else { return }
         startSync(syncId, runtime: runtime, commandId: commandId, range: "preview", boundary: nil, leaf: nil, command: command, known: known, readId: operation)
@@ -1634,7 +1637,8 @@ final class HostConnection: ObservableObject {
         let generation = historyGeneration, branch = branchGenerations[runtimeId] ?? 0
         let sourceRevision = sessionRevisions[sessionId] ?? 0
         while !Task.isCancelled {
-            if !replacing, let graph = graphs[sessionId], graph.epoch != page.graph.epoch { return false }
+            if !replacing, let graph = graphs[sessionId],
+               graph.epoch != page.graph.epoch || graph.displayVersion != page.graph.displayVersion { return false }
             let revision = projectionInputRevision
             let next = await sessionProjectionWorker.install(page: page, previousGraph: graphs[sessionId],
                 messages: conversations[runtimeId] ?? [], displayIds: displayMessageIds[runtimeId] ?? [:],
@@ -2956,9 +2960,11 @@ final class HostConnection: ObservableObject {
             guard channel != nil, let values = message["runtimes"] as? [[String: Any]] else { return }
             // A Host that can show DeepSeek Desktop first sends the view released Apps parse (no `dshDesktop` key).
             // Declare the feature and wait for the full view, so a selected Desktop session is never dropped.
-            if (message["hostFeatures"] as? [String])?.contains("device.features") == true, message["dshDesktop"] == nil,
-               message["_orbisFilteredFallback"] == nil,
-               transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": ["agent.dshDesktop"]]) {
+            let hostFeatures = message["hostFeatures"] as? [String] ?? []
+            let supportsRender = hostFeatures.contains(messageRenderFeature)
+            let supportedFeatures = ["agent.dshDesktop"] + (supportsRender ? [messageRenderFeature] : [])
+            if hostFeatures.contains("device.features"), message["dshDesktop"] == nil, message["_orbisFilteredFallback"] == nil,
+               transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": supportedFeatures]) {
                 let id = UUID()
                 filteredReady = (id, message, channel)
                 Task { [weak self] in
@@ -2971,6 +2977,10 @@ final class HostConnection: ObservableObject {
                 return
             }
             filteredReady = nil
+            let previousDisplayVersion = expectedMessageDisplayVersion
+            expectedMessageDisplayVersion = !supportsRender ? legacyDisplayProjectionVersion :
+                (message["dshDesktop"] == nil ? nil : messageDisplayProjectionVersion)
+            let displayVersionChanged = previousDisplayVersion != expectedMessageDisplayVersion
             let catalogWasConnected = hostState.connected
             historyWindowSupported = false
             historyInterest = HistoryWindowInterest()
@@ -3027,7 +3037,7 @@ final class HostConnection: ObservableObject {
             })
             for runtime in runtimes { agentState.subscribe(runtime: runtime) }
             publishMessages()
-            if let selectedRuntime { seedCachedHistory(selectedRuntime); publishMessages(); agentState.subscribe(runtime: selectedRuntime); syncSession(selectedRuntime, force: hostRestarted || selectedLeafChanged) }
+            if let selectedRuntime { seedCachedHistory(selectedRuntime); publishMessages(); agentState.subscribe(runtime: selectedRuntime); syncSession(selectedRuntime, force: hostRestarted || selectedLeafChanged || displayVersionChanged) }
             refreshSessions()
         case "runtime.online":
             if let object = message["runtime"] as? [String: Any], let incoming: RuntimeSummary = jsonDecode(object) {
@@ -3570,7 +3580,7 @@ final class HostConnection: ObservableObject {
             appliedBaselines[runtimeId] = nil
         }
         var prefix: [ChatMessage] = []
-        if let source = event["source"] as? [String: Any], source["epoch"] as? String == sourcePositions[runtimeId]?.epoch,
+        if !committed.displayChanged, let source = event["source"] as? [String: Any], source["epoch"] as? String == sourcePositions[runtimeId]?.epoch,
            let display = event["display"] as? [String: Any], let rows = display["entries"] as? [[String: Any]],
            let firstRaw = rows.first(where: { $0["message"] is [String: Any] })?["message"] as? [String: Any],
            let firstId = firstRaw["messageId"] as? String,
@@ -3826,7 +3836,7 @@ final class HostConnection: ObservableObject {
         while content.count <= index { content.append(ChatContent(type: kind, text: "", toolName: nil, artifact: nil)) }
         let item = content[index]
         content[index] = ChatContent(type: item.type, text: (item.text ?? "") + delta, toolName: item.toolName, artifact: item.artifact, summary: item.summary, toolCallId: item.toolCallId,
-            truncated: item.truncated, originalBytes: item.originalBytes, arguments: item.arguments)
+            truncated: item.truncated, originalBytes: item.originalBytes, arguments: item.arguments, renderKind: item.renderKind, file: item.file)
         upsert(ChatMessage(messageId: id, role: previous?.role ?? "assistant", content: content,
             timestamp: previous?.timestamp ?? Int64(Date().timeIntervalSince1970 * 1000), isError: previous?.isError,
             toolSummary: previous?.toolSummary, toolCallId: previous?.toolCallId, toolName: previous?.toolName), runtimeId: runtimeId)

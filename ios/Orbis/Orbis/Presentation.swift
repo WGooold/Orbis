@@ -331,7 +331,7 @@ func fullMessageText(_ message: ChatMessage) -> String {
         if ["tool_call", "toolCall"].contains(content.type) {
             return "[工具] " + (content.toolName ?? message.toolName ?? L10n.tr("工具")) + "\n" + (toolArgumentsText(content) ?? "")
         }
-        return content.text
+        return content.visibleText
     }.joined(separator: "\n\n")
 }
 

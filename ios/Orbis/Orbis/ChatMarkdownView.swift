@@ -111,8 +111,11 @@ struct MarkdownMessage: View {
                 else { clock = RevealClock(known: prepared.length) }
             }
             .environment(\.openURL, OpenURLAction { url in
-                if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") { return .systemAction }
+                let scheme = url.scheme?.lowercased() ?? ""
+                if ["http", "https", "mailto"].contains(scheme) { return .systemAction }
                 let path = url.isFileURL ? url.path : url.absoluteString.removingPercentEncoding ?? url.absoluteString
+                if messageFileReferenceId(path) == nil && !url.isFileURL &&
+                    path.range(of: #"^(?:/(?!/)|[A-Za-z]:[\\/])"#, options: .regularExpression) == nil { return .discarded }
                 if fileActions?.download(path: path) == true { downloadFlight?.launch() }
                 return .handled
             })

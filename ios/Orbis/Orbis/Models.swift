@@ -422,6 +422,34 @@ struct SessionSummary: Codable, Hashable, Identifiable {
     var id: String { sessionId }
 }
 
+struct MessageFileReference: Codable, Hashable {
+    let fileName: String
+    let referenceId: String?
+    let line: Int64?
+    let endLine: Int64?
+}
+
+private let messageFileTarget = try! NSRegularExpression(pattern: #"\Aorbis-message-file:[a-f0-9]{64}\z"#)
+private let messageFileLink = try! NSRegularExpression(pattern: #"\[((?:\\.|[^\\\[\]\r\n])+)\]\(<orbis-message-file:[a-f0-9]{64}>\)"#)
+private let escapedMessageLabel = try! NSRegularExpression(pattern: #"\\([\\`*_{}\[\]<>!~|&$])"#)
+
+/// The App handles an Orbis action target; provider markup stays on the Host.
+func messageFileReferenceId(_ target: String?) -> String? {
+    guard let target, messageFileTarget.firstMatch(in: target, range: NSRange(target.startIndex..., in: target)) != nil else { return nil }
+    return target
+}
+
+func copyableMessageText(_ text: String) -> String {
+    guard text.contains("orbis-message-file:") else { return text }
+    var result = text
+    for match in messageFileLink.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+        let label = (text as NSString).substring(with: match.range(at: 1))
+        let unescaped = escapedMessageLabel.stringByReplacingMatches(in: label, range: NSRange(label.startIndex..., in: label), withTemplate: "$1")
+        if let range = Range(match.range, in: result) { result.replaceSubrange(range, with: unescaped) }
+    }
+    return result
+}
+
 struct ChatContent: Codable, Hashable {
     let type: String
     let text: String?
@@ -432,9 +460,18 @@ struct ChatContent: Codable, Hashable {
     var truncated: Bool? = nil
     var originalBytes: Int64? = nil
     var arguments: RemoteJSONValue? = nil
+    var renderKind: String? = nil
+    var file: MessageFileReference? = nil
+
+    var renderLabel: String {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return L10n.tr("内容暂不可显示") }
+        return renderKind == "file_reference" ? text : L10n.tr(text)
+    }
+    var fileAction: String? { type == "render" && renderKind == "file_reference" ? messageFileReferenceId(file?.referenceId) : nil }
+    var visibleText: String? { type == "render" ? renderLabel : text.map(copyableMessageText) }
 
     enum CodingKeys: String, CodingKey {
-        case type, text, toolName, artifact, summary, toolCallId, truncated, originalBytes, arguments
+        case type, text, toolName, artifact, summary, toolCallId, truncated, originalBytes, arguments, renderKind, file
     }
 }
 
@@ -445,6 +482,8 @@ extension ChatContent {
         text = try values.decodeIfPresent(String.self, forKey: .text)
         toolName = try values.decodeIfPresent(String.self, forKey: .toolName)
         artifact = try values.decodeIfPresent(RemoteArtifact.self, forKey: .artifact)
+        renderKind = try values.decodeIfPresent(String.self, forKey: .renderKind)
+        file = renderKind == "file_reference" ? (try? values.decodeIfPresent(MessageFileReference.self, forKey: .file)) : nil
         summary = try values.decodeIfPresent(ToolSummary.self, forKey: .summary)
         toolCallId = try values.decodeIfPresent(String.self, forKey: .toolCallId)
         truncated = try values.decodeIfPresent(Bool.self, forKey: .truncated)
@@ -619,7 +658,7 @@ struct ChatMessage: Codable, Hashable, Identifiable {
     var id: String { messageId }
     var text: String {
         content.compactMap { item -> String? in
-            if let text = item.text, !text.isEmpty { return text }
+            if let text = item.visibleText, !text.isEmpty { return text }
             if item.type == "tool_call" { return L10n.tr("使用工具：{0}", item.toolName ?? L10n.tr("工具")) }
             if item.type == "artifact", let file = item.artifact?.fileName { return L10n.tr("附件：{0}", file) }
             return nil
