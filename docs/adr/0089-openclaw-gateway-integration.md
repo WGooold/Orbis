@@ -1,8 +1,8 @@
 # ADR-0089｜OpenClaw Gateway 接入
 
 - 日期：2026-11-19
-- 状态：三阶段已实现；未发布，待用户验证
-- 范围：OPENCLAW-01（#39）、OPENCLAW-02（#40）、OPENCLAW-03（#41）
+- 状态：四阶段已实现；未发布，待用户验证
+- 范围：OPENCLAW-01（#39）、OPENCLAW-02（#40）、OPENCLAW-03（#41）、OPENCLAW-04（#57）
 - 关联：[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0051](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0072](0072-session-configuration-and-recoverable-launch.md)
 
 ## OPENCLAW-01｜连接所有权与授权
@@ -35,3 +35,10 @@ iOS 和 Android 在加密握手内声明能力，按 Host 回显启用 OpenClaw�
 实现：iOS [`OrbisStore.swift`](../../ios/Orbis/Orbis/OrbisStore.swift) / [`SessionViews.swift`](../../ios/Orbis/Orbis/SessionViews.swift)，Android [`HostConnection.kt`](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt) / [`SessionDraft.kt`](../../android/app/src/main/java/com/orbising/orbis/SessionDraft.kt)。自动验证：iOS [`StoreTests.swift`](../../ios/Orbis/Tests/StoreTests.swift)、[`LaunchLedgerTests.swift`](../../ios/Orbis/Tests/LaunchLedgerTests.swift)；Android [`OpenClawIntegrationTest.kt`](../../android/app/src/test/java/com/orbising/orbis/OpenClawIntegrationTest.kt)。本机定向回归 iOS 173 项、Android 37 项通过；无签名 iOS Simulator 构建成功。Android 首次缺少 Go 路径、首轮运行首次身份投影失败及测试缺少 `ledgerWritten` 的证据保留，修正后同组选例通过。见 `.artifacts/openclaw-20261119/ios-swift-final/`、`ios-xcode-final/`、`android-unit-first/`、`android-unit-final/`、`android-unit-rerun/`。
 
 部署：未发布、未签发设备安装包。设备／用户验收：待用户验证；本轮未使用真机或模拟器。共享 `orbis-qa` 在本机配置端口拒绝连接，未登记或领取。恢复 QA 后，在同一候选轮次安装对应包、配对独立 Host 并连接带可用模型的隔离 Gateway；核对新建及首句、回复与停止、归档恢复、重连、旧 App／Host 回退与现有 Agent 对照。
+
+
+## OPENCLAW-04｜桌面 Host 基础连接操作
+
+macOS 与 Windows 共用 Qt Agent 卡配置本机 Gateway 地址和可选令牌。概览显示已配置的 OpenClaw，并跳转到该卡。连接状态取自当前运行的后端；保存成功后，运行中的 Host 沿用暂停／恢复流程，已暂停的 Host 保持暂停。停用移除 Host 配置，不停止 Gateway 或删除原生会话、配对身份；环境变量配置只读。令牌由 Node 核心写入既有 Host 私有状态文件，不回传 Qt；留空仅对同一规范化地址保留原令牌。QA Host 不读取或写入真实配置。桌面不管理 Gateway 进程、模型、权限或会话。
+
+实现：[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)、[`HostController.cpp`](../../packages/windows-host/src/HostController.cpp)、[`openclaw-gateway.ts`](../../packages/host/src/openclaw-gateway.ts)。验证：[`HostLiveChangeTest.cpp`](../../packages/windows-host/src/tests/HostLiveChangeTest.cpp)、[`openclaw-gateway.test.ts`](../../packages/host/src/openclaw-gateway.test.ts)；`.artifacts/openclaw-20261119/desktop/` 保留 TypeScript 检查、20 项定向测试、Qt 构建及生命周期测试结果、隔离桥接数据的 macOS 最小窗口截图。Windows 安装包和真实 Gateway 上的桌面流程待用户验证；未发布。共享 QA 连接被拒，未登记或领取。

@@ -1,11 +1,11 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { afterEach, expect, test, vi } from "vitest";
 import { buildDeviceAuthPayloadV3 } from "@openclaw/gateway-client";
-import { loadOpenClawConfig, OpenClawGateway, openClawUrl } from "./openclaw-gateway.js";
+import { loadOpenClawConfig, OpenClawGateway, openClawUrl, readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -30,6 +30,29 @@ test("OPENCLAW-01 admits only loopback and keeps credential sources scoped", asy
     await chmod(join(dir, "openclaw-gateway.json"), 0o644);
     await expect(loadOpenClawConfig(dir, {})).rejects.toThrow(/private regular file/);
   }
+});
+
+// OPENCLAW-04: neither desktop settings nor failed writes leak or move the shared token.
+test("desktop saves the private config, retains the token only on the same endpoint and honors environment overrides", async () => {
+  const dir = await stateDir();
+  const endpoint = "ws://127.0.0.1:18789", path = join(dir, "openclaw-gateway.json");
+  const save = (url: string, token = "") => saveOpenClawDesktopSettings(dir, url, token, {});
+  expect(await save(endpoint, "desktop-token")).toEqual({ source: "file", url: endpoint, hasToken: true, invalid: false });
+  if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
+  await expect(save("ws://example.com", "wrong")).rejects.toThrow(/Gateway 地址/);
+  expect(await save(`${endpoint}/`)).toHaveProperty("hasToken", true);
+  expect(await loadOpenClawConfig(dir, {})).toEqual({ url: endpoint, token: "desktop-token" });
+  for (const env of [{ ORBIS_OPENCLAW_URL: "" }, { ORBIS_OPENCLAW_TOKEN: "environment-token" }]) {
+    expect(await readOpenClawDesktopSettings(dir, env)).toHaveProperty("source", "environment");
+    await expect(saveOpenClawDesktopSettings(dir, "", "", env)).rejects.toThrow(/环境变量/);
+  }
+  const other = "ws://[::1]:18789";
+  expect(await save(other)).toHaveProperty("hasToken", false);
+  expect(await loadOpenClawConfig(dir, {})).toEqual({ url: other });
+  await writeFile(path, "invalid");
+  expect(await readOpenClawDesktopSettings(dir, {})).toEqual({ source: "file", url: "", hasToken: false, invalid: true });
+  expect(await save("")).toEqual({ source: "file", url: "", hasToken: false, invalid: false });
+  expect(await loadOpenClawConfig(dir, {})).toBeUndefined();
 });
 
 // Exercise the published SDK against real WebSocket frames, not a mocked SDK method.

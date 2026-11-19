@@ -56,6 +56,7 @@ input.on("line", line => {
           const range = AgentStateRangeRequestSchema.parse({ type: "agent.state.range.request", requestId: "desktop:host-range", ...p });
           result = await runtime.readRange(range); break;
         }
+        case "openclaw.save": result = await runtime.saveOpenClaw(p.url, p.token); break;
         case "start": await runtime.start(p as DesktopSettings); break;
         case "stop": await runtime.stop(); break;
         case "pair": result = await runtime.pair(); break;

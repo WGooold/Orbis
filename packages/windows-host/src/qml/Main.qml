@@ -57,8 +57,12 @@ ApplicationWindow {
             // DSH-DESKTOP-09: only a Desktop Orbis opened can be attached, so its single action is always opening it from here.
             {kind: "dshDesktop", name: "DeepSeek 桌面版", mark: "dsh", installed: dsh.desktopInstalled === true,
              broken: window.dshDesktopBlocked(), opensToFix: true}
-        ]
+        ].concat(host.openClaw.url ? [{kind: "openclaw", name: "OpenClaw", mark: "openclaw", installed: true, broken: false}] : [])
     }
+    readonly property bool openClawReady: window.backendFor("openclaw")?.ready === true && host.desiredRunning
+    readonly property string openClawStateText: host.openClaw.invalid ? "配置无效"
+        : !host.openClaw.url ? "未启用" : host.resumePending ? "正在重新连接"
+        : window.openClawReady ? "已连接" : host.desiredRunning ? "Gateway 未就绪" : "Host 未连接"
     // HOST-ACTIVITY-05: while the saved activation is still being read, "not activated" is not known yet.
     readonly property string nextStep: !host.activated ? (host.credentialsLoading ? "" : "activate")
         : !host.desiredRunning && !host.resumePending ? "connect"
@@ -71,9 +75,11 @@ ApplicationWindow {
         // 该 Agent 的后端在后台准备时手机还用不了它；其余 Agent 不受影响。
         if (window.preparing(agent.kind)) return false
         var backend = window.backendFor(agent.kind)
+        if (agent.kind === "openclaw") return window.openClawReady
         return backend === undefined || backend.launchable === true || backend.ready === true
     }
     function agentPhoneState(agent, sessions) {
+        if (agent.kind === "openclaw" && !window.agentReachable(agent)) return window.openClawStateText
         // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。Claude 有自己的检测。
         if (agent.kind === "claude" ? host.claudeDetecting : window.activityKinds.indexOf("agents") >= 0) return "检测中"
         if (!agent.installed) return "未安装"
@@ -110,7 +116,15 @@ ApplicationWindow {
         return host.claudeVersion ? "需升级" : "版本未确认"
     }
     function openOverviewAgent(kind) {
-        if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
+        if (kind === "openclaw") {
+            window.selectPage(2)
+            Qt.callLater(function() {
+                if (window.page !== 2) return
+                var flick = scroll.contentItem
+                var y = openClawCard.mapToItem(flick.contentItem, 0, 0).y
+                flick.contentY = Math.max(0, Math.min(y - 16, flick.contentHeight - flick.height))
+            })
+        } else if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
         else host.openAgent(kind)
     }
     function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek"})[kind] || kind }
@@ -927,7 +941,7 @@ ApplicationWindow {
                                         ActionButton {
                                             objectName: "overviewAgent-" + agentRow.modelData.kind
                                             Layout.preferredWidth: 112
-                                            text: agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken) ? (agentRow.modelData.broken ? "修复" : "安装") : "打开"
+                                            text: agentRow.modelData.kind === "openclaw" ? "配置" : agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken) ? (agentRow.modelData.broken ? "修复" : "安装") : "打开"
                                             primary: agentRow.modelData.installed && (!agentRow.modelData.broken || agentRow.modelData.opensToFix === true) ? window.nextStep === "open" : agentRow.installable && window.nextStep === "install"
                                             enabled: host.bridgeReady && !host.busy && (agentRow.modelData.installed || agentRow.installable)
                                             loading: host.agentInstalling && host.agentInstallKind === agentRow.modelData.kind
@@ -1046,6 +1060,61 @@ ApplicationWindow {
                                     ActionButton { objectName: "updateClaude"; text: host.claudeLatestVersion && !host.claudeUpdateAvailable && !!host.claudeVersion ? "已是最新版本" : "更新到最新版本"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled && !host.claudeDetecting && !host.claudeLatestChecking && (!host.claudeLatestVersion || host.claudeUpdateAvailable || !host.claudeVersion); loading: host.agentInstalling && host.agentInstallKind === "claude"; onClicked: window.showAgentInstaller({kind: "claude", installed: true, version: host.claudeVersion, latestVersion: host.claudeLatestVersion}) }
                                     ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders("claude") }
                                     ActionButton { text: "打开 Claude Code"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled; onClicked: host.openAgentTui("claude") }
+                                }
+                            }
+                        }
+                        // OPENCLAW-04: configure the local Gateway without managing its process.
+                        Card {
+                            id: openClawCard
+                            objectName: "openClawCard"
+                            Layout.fillWidth: true
+                            visible: host.bridgeReady && !!host.openClaw.source
+                            readonly property bool editable: host.openClaw.source === "file"
+                            readonly property bool dirty: clawUrl.text.trim() !== (host.openClaw.url || "") || clawToken.text.length > 0
+                            function reset() { clawUrl.text = host.openClaw.url || ""; clawToken.clear() }
+                            onVisibleChanged: reset()
+                            Component.onCompleted: reset()
+                            Connections { target: host; function onOpenClawChanged() { openClawCard.reset() } }
+                            ColumnLayout {
+                                anchors.fill: parent; spacing: 12
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    AgentMark { kind: "openclaw" }
+                                    Heading { text: "OpenClaw"; Layout.fillWidth: true }
+                                    StatusDot { idle: !window.openClawReady; color: window.openClawReady ? Theme.success : host.openClaw.invalid ? Theme.warning : Theme.inkFaint }
+                                    Hint { objectName: "openClawState"; text: window.openClawStateText }
+                                }
+                                Field { id: clawUrl; objectName: "openClawUrl"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "ws://127.0.0.1:18789"; Accessible.name: "OpenClaw Gateway 地址" }
+                                Field {
+                                    id: clawToken; objectName: "openClawToken"
+                                    visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
+                                    marksProviderDirty: false; maximumLength: 4096; echoMode: TextInput.Password
+                                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                                    placeholderText: host.openClaw.hasToken && clawUrl.text.trim() === host.openClaw.url ? "已保存令牌" : "Gateway 令牌（可选）"
+                                    Accessible.name: "OpenClaw Gateway 令牌"
+                                }
+                                Hint { visible: !openClawCard.editable; text: "由环境变量配置" }
+                                RowLayout {
+                                    ActionButton {
+                                        objectName: "applyOpenClaw"
+                                        visible: openClawCard.editable
+                                        text: host.desiredRunning ? "应用并重新连接" : "保存配置"
+                                        enabled: !host.busy && openClawCard.dirty && clawUrl.text.trim().length > 0
+                                        loading: window.activityKinds.indexOf("openClaw") >= 0
+                                        onClicked: { host.saveOpenClaw(clawUrl.text, clawToken.text); clawToken.clear() }
+                                    }
+                                    ActionButton {
+                                        objectName: "reconnectOpenClaw"; text: "重新连接 Host"
+                                        visible: !!host.openClaw.url && !host.openClaw.invalid && host.desiredRunning
+                                        enabled: !host.busy && !openClawCard.dirty
+                                        onClicked: host.reconnectOpenClaw()
+                                    }
+                                    ActionButton {
+                                        objectName: "disableOpenClaw"; text: "停用"
+                                        visible: openClawCard.editable && (!!host.openClaw.url || host.openClaw.invalid)
+                                        enabled: !host.busy
+                                        onClicked: { clawToken.clear(); host.saveOpenClaw("", "") }
+                                    }
                                 }
                             }
                         }

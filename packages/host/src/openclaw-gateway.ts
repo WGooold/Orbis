@@ -53,6 +53,39 @@ export async function loadOpenClawConfig(stateDir: string, env: NodeJS.ProcessEn
   return { url: openClawUrl(config.url), ...(token ? { token } : {}) };
 }
 
+/** OPENCLAW-04: the desktop bridge returns only the endpoint and whether a token is set. */
+export async function readOpenClawDesktopSettings(stateDir: string, env: NodeJS.ProcessEnv = process.env) {
+  const source = env.ORBIS_OPENCLAW_URL !== undefined || env.ORBIS_OPENCLAW_TOKEN !== undefined ? "environment" : "file";
+  try {
+    const config = await loadOpenClawConfig(stateDir, env);
+    return { source, url: config?.url ?? "", hasToken: !!config?.token, invalid: false };
+  } catch {
+    return { source, url: "", hasToken: false, invalid: true };
+  }
+}
+
+export async function saveOpenClawDesktopSettings(stateDir: string, url: unknown, token: unknown, env: NodeJS.ProcessEnv = process.env) {
+  if (env.ORBIS_OPENCLAW_URL !== undefined || env.ORBIS_OPENCLAW_TOKEN !== undefined) throw new Error("OpenClaw 由环境变量配置");
+  if (typeof url !== "string" || url.length > 2048 || typeof token !== "string" || token.length > 4096) throw new Error("OpenClaw 配置无效");
+  const path = join(stateDir, "openclaw-gateway.json");
+  const input = url.trim();
+  if (!input) {
+    await unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+  } else {
+    let endpoint: string;
+    try { endpoint = openClawUrl(input); }
+    catch { throw new Error("Gateway 地址须为本机根地址：ws(s)://127.0.0.1 或 ws(s)://[::1]"); }
+    const saved = token.trim() ? undefined : await loadOpenClawConfig(stateDir, {}).catch(() => undefined);
+    // A blank field retains the saved credential only for the exact same normalized endpoint.
+    const credential = token.trim() || (saved?.url === endpoint ? saved.token : undefined);
+    const text = JSON.stringify({ url: endpoint, ...(credential ? { token: credential } : {}) });
+    if (Buffer.byteLength(text) > 16_384) throw new Error("OpenClaw 配置过长");
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await writePrivate(path, text);
+  }
+  return readOpenClawDesktopSettings(stateDir, env);
+}
+
 async function readPrivate(path: string): Promise<string | undefined> {
   const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT") throw error;

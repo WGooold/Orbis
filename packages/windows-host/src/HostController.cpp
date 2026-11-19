@@ -122,7 +122,9 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_hostPub = obj.value("hostPub").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
             refreshDeviceUpdateIndicators();
+            m_openClaw = obj.value("openClaw").toObject().toVariantMap();
             m_bridgeReady = true;
+            emit openClawChanged();
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
             detectAgents(true);
             checkUpdatesInternal(false);
@@ -239,6 +241,7 @@ static QPair<QString, QString> activityFor(const QString &method, const QJsonObj
     if (method == "activateInstallation") return { "agentVersion", "正在切换 Agent 版本" };
     if (method == "claudeIntegration") return { "claude", "正在更新 Claude Code 插件" };
     if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
+    if (method == "openclaw.save") return { "openClaw", "正在保存 OpenClaw 配置" };
     if (method == "rename") return { "host", "正在保存电脑名称" };
     if (method.startsWith("provider.")) {
         if (method == "provider.save") return { "provider", "正在保存供应商" };
@@ -304,7 +307,7 @@ int HostController::command(const QString &method, const QJsonObject &params, Ca
     if (m_exiting && method != "shutdown") return -1;
     if (m_bridge.state() != QProcess::Running) { setMessage("Host 核心尚未就绪"); return -1; }
     int id = m_nextId++;
-    m_pending.insert(id, std::move(done)); m_methods.insert(id, method); m_requestParams.insert(id, params);
+    m_pending.insert(id, std::move(done)); m_methods.insert(id, method); if (method != "openclaw.save") m_requestParams.insert(id, params);
     if (!isBackgroundRequest(method)) ++m_busy;
     const auto activity = activityFor(method, params);
     if (!activity.first.isEmpty() || !activity.second.isEmpty()) { m_activity.insert(id, activity); m_activityOrder.append(id); }
@@ -789,6 +792,20 @@ void HostController::startHost() {
     params.insert("dshEnabled", dshEnabled()); params.insert("piIntegrationEnabled", piIntegrationEnabled());
     params.insert("claudeIntegrationEnabled", claudeIntegrationEnabled());
     command("start", params);
+}
+void HostController::saveOpenClaw(const QString &url, const QString &token) {
+    if (!m_bridgeReady || busy() || m_openClaw.value("source").toString() != "file") return;
+    command("openclaw.save", {{"url", url}, {"token", token}}, [this](const QJsonValue &result) {
+        m_openClaw = result.toObject().toVariantMap();
+        emit openClawChanged();
+        // Preserve the current connection when validation or persistence failed.
+        reconnectOpenClaw();
+        setMessage(m_openClaw.value("url").toString().isEmpty() ? "OpenClaw 已停用" : "OpenClaw 配置已保存");
+    });
+}
+void HostController::reconnectOpenClaw() {
+    if (!m_bridgeReady || busy() || m_openClaw.isEmpty()) return;
+    if (pauseForChange()) afterQueuedCommands([this] { resumeAfterChange(); });
 }
 void HostController::stopHost() { m_desiredRunning = false; m_resumePending = false; m_settings.setValue("runHost", false); m_qr.clear(); command("stop"); }
 void HostController::pair() { command("pair", {}, [this](const QJsonValue &value) { m_qr = value.toObject().value("qr").toString(); m_pairExpires = qint64(value.toObject().value("expiresAt").toDouble()); emit changed(); }); }
