@@ -2,7 +2,7 @@
 
 日期：2026-11-19
 
-Status: accepted（KIMI-01 Host 发现与认证通道已实现并通过定向自动验证；目录/交互/移动端及发布验收仍按票据待完成）
+Status: accepted（适配已实现；隔离链路自动验证通过；移动端安装、浏览器 UI 与发布验收待完成）
 
 关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0045](0045-tool-summaries-and-on-demand-content.md)、[ADR-0049](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0067](0067-host-app-field-transport-rules.md)、[ADR-0072](0072-session-configuration-and-recoverable-launch.md)、[ADR-0081](0081-host-startup-blocking-and-feedback.md)。
 
@@ -22,7 +22,7 @@ Status: accepted（KIMI-01 Host 发现与认证通道已实现并通过定向自
 
 Host 本地启用后，按配置的 Kimi 数据根和可选显式回环地址选择一个服务。默认数据根沿用 `KIMI_CODE_HOME` / `~/.kimi-code`。版本化读取[官方实例登记][instances]，只使用它提供候选端口和身份；对有效且未过期的登记，仍需在认证后的 `/api/v1/meta` 核对产品版本、能力、启动时间和受支持的 API 契约。Kimi 2.6.3 的登记 `server_id` 与 `/meta.server_id` 是两个不同作用域、不能直接比较；使用登记版本与 `/meta.server_version` 精确相同且启动时间相差不超过 10 秒来绑定本次监听，两个不透明 ID 分别保留，不互相充当会话身份。只接受字面回环地址，拒绝重定向、无认证实例和不匹配的启动身份；找不到或有多个匹配而未指定时不自动选。诊断区分未启用、未运行、未授权、歧义和版本不支持，不把探针失败写成「没有会话」。
 
-REST / WS 使用本机的 Bearer 凭据，限定 Host 内部使用，不写入日志、请求回执、App 或 Relay。探测、连接和重连在 Host 启动关键路径之外，使用独立超时、字节预算和有限退避；默认禁用，用户通过 `orbis host --kimi-code` 或 `ORBIS_KIMI_CODE_ENABLED=1` 明确启用，可用 `KIMI_CODE_HOME` 和 `ORBIS_KIMI_CODE_ENDPOINT` 指定数据根和唯一实例。Host 停止、取消接入或断线只解除订阅、关闭自己的连接；不启动第二个 `kimi web`，不发送 `shutdown` / `takeover`，不释放原生锁、改变工作区信任或接管 TUI。首版要求用户先用 Kimi 官方方式安装、登录（或配置模型）并开启本机 Web 服务。
+REST / WS 使用本机的 Bearer 凭据，限定 Host 内部使用，不写入日志、请求回执、App 或 Relay。探测、连接和重连在 Host 启动关键路径之外，使用独立超时、字节预算和有限退避；默认禁用，用户通过 `orbis host --kimi-code` 或 `ORBIS_KIMI_CODE_ENABLED=1` 明确启用，可用 `KIMI_CODE_HOME` 和 `ORBIS_KIMI_CODE_ENDPOINT` 指定数据根和唯一实例。桌面 Host 同样读取环境变量或 Host 状态目录 `config.json` 的 `kimiCodeEnabled`、`kimiCodeHome`、`kimiCodeEndpoint`，重启 Host 生效；不增加管理入口，QA 桌面 Host 不继承正式 Kimi 配置。Host 停止、取消接入或断线只解除订阅、关闭自己的连接；不启动第二个 `kimi web`，不发送 `shutdown` / `takeover`，不释放原生锁、改变工作区信任或接管 TUI。首版要求用户先用 Kimi 官方方式安装、登录（或配置模型）并开启本机 Web 服务。
 
 ### 2. 目录、激活与会话身份
 
@@ -58,12 +58,13 @@ Kimi 作为独立 `AgentBackend`（`agentKind: "kimiCode"`）接入 Host。`sess
 | [`KIMI-08` (#55)](https://github.com/WGooold/Orbis/issues/55) | iOS 使用原有目录、草稿、会话与交互组件接入。 | `KIMI-03`–`06` |
 | [`KIMI-09` (#56)](https://github.com/WGooold/Orbis/issues/56) | 原生服务、浏览器与移动端闭环；用实际发布旧版本验证互通和回退，分别记录构建、自动验证、部署与人工验收。 | `KIMI-07`、`KIMI-08` |
 
-## 已有证据与未完成项
+## 验证与交付状态
 
-- 在 macOS arm64 / Node `22.23.2` 下，以独立 `KIMI_CODE_HOME`、隔离目录和本机合成模型启动真实 Kimi Code `2.6.3`。已观察：健康探针与认证边界、OpenAPI / AsyncAPI 可读取、新建与查回 metadata、两个原生 WS 订阅者收到同一回合、相同 `prompt_id` 重提交只调用一次合成模型、REST 历史与 WS 重订阅的条目身份一致、归档 / 恢复。无生产账号、会话、外部模型或 Orbis Relay 参与。
-- 第一轮探针将结束状态错断言为 `completed`，实测为 `status: ended`、`outcome: completed`。双订阅探针第一次在一个 WS 尚未关闭时，服务未在 4 秒内退出；关闭两个测试订阅后复测通过。保留首轮和复核记录。证据在 [`.artifacts/kimi-code-adaptation-20261119/verification.json`](../../.artifacts/kimi-code-adaptation-20261119/verification.json)（本机）。
-- KIMI-01 的 TypeScript 客户端以隔离 `KIMI_CODE_HOME` 启动实际 Kimi Code 2.6.3，确认凭据权限、认证 `/meta`、REST / WS schema SHA-256 和字面回环 WS 连通。实测发现登记 ULID 与 `/meta.server_id` 不同；实现依据精确产品版本及 10 秒内启动时间关联，并各自保留 ID。客户端只关闭自己的 WebSocket，不调用 shutdown；测试服务由本次验证单独启动并清理。
-- KIMI-01 的 Host 发现、认证、契约核验、有限重连与隔离停止已实现；目录、双端构建、已发布 App / Host / Relay 对照、其他平台、真实网页 UI、真实问答及用户安装验收仍未执行。候选包验收走共享 QA；固定版本、安装方法、独立环境与结果在对应 ticket 记录，不以本探针充当发布或用户验收。
+- **实现。** Host 的入口是 [`cli.ts`](../../packages/host/src/cli.ts) 与 [`desktop-runtime.ts`](../../packages/host/src/desktop-runtime.ts)。原生适配见 [`kimi-runtime.ts`](../../packages/host/src/kimi-runtime.ts)、[`kimi-input.ts`](../../packages/host/src/kimi-input.ts)、[`kimi-interactions.ts`](../../packages/host/src/kimi-interactions.ts)，能力门禁见 [`device-agent-visibility.ts`](../../packages/host/src/device-agent-visibility.ts)。移动端复用目录、启动、草稿和交互组件。
+- **自动验证。** [Host 加密链路测试](../../packages/host/src/host-service.test.ts) 使用 macOS arm64、真实 Kimi Code 2.6.3、隔离 HOME、合成本机模型、真实 Host / Relay 和参考客户端。当前 Relay 与 2026-11-18 发布的 Relay `20cf37fcb59e41c02e017fda7798e91bff870119` 均通过：配置、新建及恢复同一会话、发消息、审批拒绝、历史和重连、未协商隔离、精确停止及后继队列继续执行。另在旧 Windows Host `v0.1.22` 发布包的原始 JS runtime 上验证回退：同身份重连、无 Kimi 能力、旧目录仍可读取、独立 Kimi 账本不变。这不是 Windows GUI、发布版 App 或 QUIC 的实测。
+- **原生验证。** 真实 Kimi 与第二个原生 WS 客户端验证了同回合订阅、审批允许／拒绝、问答多选与自由文本、另一端先答、归档／恢复及进程重启后的身份。探针首轮的终态断言错误、订阅退出超时、目录字段与索引时序差异、审批工具时间更新及联调夹具失败均保留在本机证据索引 [`.artifacts/kimi-code-adaptation-20261119/verification.json`](../../.artifacts/kimi-code-adaptation-20261119/verification.json)。
+- **构建。** Android Debug APK 与本地签名的 iOS arm64 模拟器包已构建，未安装；移动端定向测试分别通过 38 项和 24 项。候选哈希、首次失败和复测记录见证据索引。未部署生产，未提交 TestFlight。
+- **待验收。** 浏览器 UI 与 Android / iOS 安装闭环、实际发布版 App 的互通矩阵仍待确认，不以参考客户端或本地构建代替。共享 QA 服务当前不可用，未创建或领取本轮 Case；恢复后按 #56 绑定候选和隔离环境，由用户领取验证。
 
 [release]: https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai%2Fkimi-code%402.6.3
 [api]: https://github.com/MoonshotAI/kimi-code/blob/b0de2fbd2de04d87689225aafd3912e5d193b62d/docs/en/reference/server-api.md
