@@ -35,7 +35,7 @@ import { CodexToolContentReader } from "./codex-tool-content-reader.js";
 import { CodexAgentTasks, codexChildThread } from "./codex-agent-tasks.js";
 import { CodexTaskRegistry } from "./codex-task-registry.js";
 import { readCodexTurnConfiguration } from "./codex-turn-configuration.js";
-import { codexToolContents, codexToolContentText, codexToolSummary } from "./codex-tool-projection.js";
+import { codexToolContents, codexToolContentText, codexToolSummary, isCodexToolItem as isToolItem } from "./codex-tool-projection.js";
 
 import type {
   AgentKind,
@@ -4573,10 +4573,6 @@ type CodexToolInfo = {
   isError: boolean;
   summary: ToolSummary;
 };
-
-function isToolItem(item: Record<string, unknown>): boolean {
-  return item.type === "commandExecution" || item.type === "fileChange" || item.type === "mcpToolCall";
-}
 
 function toolCallInfo(item: Record<string, unknown>): CodexToolInfo | undefined {
   const id = item.id;

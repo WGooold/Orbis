@@ -11,13 +11,15 @@ export type CodexToolProjectionContext = {
   contentSources?: Partial<Record<Part, Pick<ToolSummary["contents"][number], "availability" | "readCapability">>>;
 };
 export type CodexToolContent = { part: Part; format: Format; value: unknown };
-const isTool = (item: Item): boolean => typeof item.type === "string" && ["commandExecution", "fileChange", "mcpToolCall"].includes(item.type);
+export const isCodexToolItem = (item: Item): boolean => typeof item.type === "string" && ["commandExecution", "fileChange", "mcpToolCall", "webSearch", "imageView", "dynamicToolCall"].includes(item.type);
 const has = (item: Item, key: string): boolean => item[key] !== undefined && item[key] !== null;
 const text = (item: Item, key: string): string | undefined => typeof item[key] === "string" ? item[key] : undefined;
 const finiteInteger = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 
 function nativeArguments(item: Item): unknown {
   switch (item.type) {
+    case "webSearch": return text(item, "query") ? { query: item.query } : undefined;
+    case "dynamicToolCall": return has(item, "arguments") ? { arguments: item.arguments } : undefined;
     case "commandExecution": return { ...(has(item, "command") ? { command: item.command } : {}), ...(has(item, "cwd") ? { cwd: item.cwd } : {}) };
     case "fileChange": return has(item, "changes") ? { changes: item.changes } : undefined;
     case "mcpToolCall": return { ...(has(item, "server") ? { server: item.server } : {}), ...(has(item, "tool") ? { tool: item.tool } : {}),
@@ -28,9 +30,20 @@ function nativeArguments(item: Item): unknown {
 
 /** Raw native values are exposed solely to producer storage/native readers, never to shared state. */
 export function* codexToolContents(item: Item): Generator<CodexToolContent> {
-  if (!isTool(item)) return;
+  if (!isCodexToolItem(item)) return;
   const argumentsValue = nativeArguments(item);
   if (argumentsValue !== undefined && Object.keys(argumentsValue as object).length > 0) yield { part: "arguments", format: "json", value: argumentsValue };
+  if (item.type === "webSearch" || item.type === "imageView") return;
+  if (item.type === "dynamicToolCall") {
+    if (Array.isArray(item.contentItems)) yield { part: "result", format: "text", value: item.contentItems.flatMap(raw => {
+      if (raw === null || typeof raw !== "object") return [];
+      const block = raw as Item;
+      if (block.type === "inputText" && typeof block.text === "string") return [block.text];
+      if (block.type === "inputImage") return ["图片内容暂不可显示"];
+      return [];
+    }).join("\n") };
+    return;
+  }
   // aggregatedOutput is the final command output in app-server's full item view.
   const output = ["aggregatedOutput", "output", "outputText", "stdout"].find(key => has(item, key));
   if (output) yield { part: "output", format: typeof item[output] === "string" ? "text" : "json", value: item[output] };
@@ -45,19 +58,24 @@ export function* codexToolContents(item: Item): Generator<CodexToolContent> {
 
 /** ADR-0045 §3：只取已知原生字段生成摘要，不 stringify 原始参数、输出或 MCP 结果。 */
 export function codexToolSummary(context: CodexToolProjectionContext, item: Item): ToolSummary | undefined {
-  if (!isTool(item)) return undefined;
+  if (!isCodexToolItem(item)) return undefined;
   if (typeof item.id !== "string") throw new Error("tool_identity_unrepresentable");
   if (context.agent.agentKind !== "codex" && context.agent.agentKind !== "codexDesktop") throw new Error("tool_agent_mismatch");
   const terminal = context.phase === "finished" || context.phase === "cancelled";
   const result = item.result !== null && typeof item.result === "object" ? item.result as Item : undefined;
-  const explicitError = item.status === "failed" || item.status === "error" || has(item, "error") || item.isError === true ||
+  const explicitError = item.status === "failed" || item.status === "error" || has(item, "error") || item.isError === true || item.success === false ||
     result?.isError === true || (finiteInteger(item.exitCode) && item.exitCode !== 0);
   const isError = explicitError ? true : terminal && (item.status === "completed" || item.status === "succeeded" ||
-    item.isError === false || result?.isError === false || item.exitCode === 0) ? false : undefined;
-  const toolName = item.type === "mcpToolCall" ? text(item, "tool") ?? text(item, "server") ?? "mcpToolCall" : String(item.type);
+    item.isError === false || item.success === true || result?.isError === false || item.exitCode === 0) ? false : undefined;
+  const toolName = item.type === "mcpToolCall" || item.type === "dynamicToolCall" ? text(item, "tool") ?? text(item, "server") ?? String(item.type)
+    : item.type === "webSearch" ? "网页搜索" : item.type === "imageView" ? "查看图片" : String(item.type);
   const count = item.type === "fileChange" && Array.isArray(item.changes) ? item.changes.length : undefined;
-  const inputSummary = item.type === "commandExecution" ? text(item, "command") : count === undefined ? undefined : count + " files";
-  const resultSummary = terminal && count !== undefined ? count + " files" : undefined;
+  const inputSummary = item.type === "webSearch" ? text(item, "query") || undefined : item.type === "commandExecution" ? text(item, "command") : count === undefined ? undefined : count + " files";
+  const ui = item.mcpAppUi;
+  const hasApp = ui !== null && typeof ui === "object" && typeof (ui as Item).resourceUri === "string" && (ui as Item).resourceUri !== ""
+    || !!text(item, "mcpAppResourceUri");
+  const resultSummary = terminal && item.type === "mcpToolCall" && hasApp ? "应用内容暂不可显示"
+    : terminal && count !== undefined ? count + " files" : undefined;
   // Structured or arbitrary error values are not serialized into a summary.
   const errorObject = item.error !== null && typeof item.error === "object" ? item.error as Item : undefined;
   const errorSummary = explicitError ? text(item, "error") ?? (errorObject ? text(errorObject, "message") : undefined) : undefined;

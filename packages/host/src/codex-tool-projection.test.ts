@@ -79,6 +79,20 @@ describe("Codex producer tool projection (ADR-0045)", () => {
     expect([...codexToolContents(native)].find(part => part.part === "result")?.value).toEqual({ structuredContent: native.structuredContent, content: native.content, isError: false });
   });
 
+  it("shows web search, image inspection, dynamic media and MCP app UI in tools", () => {
+    const search = { id: "search", type: "webSearch", query: "flight workload", results: [{ payload: "private" }] };
+    expect(codexToolSummary(context(), search)).toMatchObject({ toolName: "网页搜索", inputSummary: { text: "flight workload" } });
+    expect([...codexToolContents(search)]).toEqual([{ part: "arguments", format: "json", value: { query: "flight workload" } }]);
+    expect([...codexToolContents({ id: "view", type: "imageView", path: "/private/image.png" })]).toEqual([]);
+    const tool = { id: "dynamic", type: "dynamicToolCall", tool: "capture", success: true,
+      contentItems: [{ type: "inputText", text: "Result" }, { type: "inputImage", imageUrl: "private" }] };
+    expect(codexToolSummary(context(), tool)).toMatchObject({ toolName: "capture", isError: false });
+    expect([...codexToolContents(tool)]).toEqual([{ part: "result", format: "text", value: "Result\n图片内容暂不可显示" }]);
+    const app = codexToolSummary(context(), { id: "app", type: "mcpToolCall", tool: "demo", mcpAppUi: { resourceUri: "ui://private" } });
+    expect(app?.resultSummary?.text).toBe("应用内容暂不可显示");
+    expect(JSON.stringify(app)).not.toContain("ui://private");
+  });
+
   it("fails unrepresentable detail content instead of reporting truncation as complete JSON", () => {
     const circular: Record<string, unknown> = {}; circular.self = circular;
     expect(() => codexToolContentText({ part: "result", format: "json", value: circular })).toThrow("invalid_codex_tool_content");
