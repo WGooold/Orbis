@@ -88,8 +88,8 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         if (open && state.e2eReady && state.supportsSessionConfiguration(kind) && cwd.isNotBlank()) onLoadConfiguration(kind, cwd)
     }
     val supported = state.launchableAgents ?: state.supportedAgents
-    val kinds = listOf("codex", "claude", "dsh", "openclaw", "pi", KIMI_CODE_KIND).filter {
-        when (it) { "openclaw" -> state.canLaunchOpenClaw(); KIMI_CODE_KIND -> state.kimiCodeSupported; else -> true }
+    val kinds = listOf("codex", "claude", "dsh", "openclaw", "pi", KIMI_CODE_KIND, "hermes").filter {
+        when (it) { "hermes" -> supported?.contains("hermes") == true; "openclaw" -> state.canLaunchOpenClaw(); KIMI_CODE_KIND -> state.kimiCodeSupported; else -> true }
     }
     val canStart = cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) &&
         (kind != "openclaw" || state.canLaunchOpenClaw() && config?.snapshot != null && config.error == null) &&

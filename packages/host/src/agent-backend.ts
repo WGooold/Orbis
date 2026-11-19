@@ -57,6 +57,10 @@ export type AgentActivateContext = {
 
 export interface AgentBackend {
   readonly kind: AgentKind;
+  /** False when the native catalog has no way to enumerate archived rows; active rows may still be complete. */
+  readonly archivedCatalogSupported?: boolean;
+  /** Whether the most recent active catalog read is known complete. */
+  readonly catalogComplete?: boolean | (() => boolean);
   /** Device-private full entry read; never publish native details into the shared event stream. */
   readSessionEntry?(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined>;
   /** Device-private content access; never returns raw content through the shared event sink. */
@@ -72,7 +76,6 @@ export interface AgentBackend {
   catalog(archived?: boolean): Promise<AgentSessionSummary[]>;
   catalogCoverage?(archived?: boolean): Promise<{ sessions: AgentSessionSummary[]; complete: boolean }>;
   /** A bounded backend can return valid rows without asserting catalog exhaustion. */
-  catalogComplete?(): boolean;
   /** Effective configured provider, independent of any open session. Unknown on failure. */
   currentProvider?(): Promise<string | undefined>;
   sessionConfiguration?(cwd: string): Promise<SessionConfigurationCatalog>;

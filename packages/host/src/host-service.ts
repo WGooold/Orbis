@@ -23,6 +23,8 @@ import { AgentToolInventory, type PreparedToolInventory } from "./agent-tool-inv
 import { ToolInventoryIngestion } from "./tool-inventory-ingestion.js";
 import { relayHistoryMode, type RelayHistoryMode } from "./history-delivery.js";
 import { PushWakeReceipts } from "./push-wake.js";
+import { HermesHostConnection, type HermesHostOptions } from "./hermes-host-connection.js";
+import type { HermesAgentBackend } from "./hermes-agent-backend.js";
 import { LiveActivityPublisher } from "./live-activity.js";
 
 import {
@@ -45,6 +47,7 @@ import {
   DEVICE_FEATURE_MESSAGE_RENDER,
   DEVICE_FEATURE_KIMI_CODE,
   DEVICE_FEATURE_OPENCLAW,
+  DEVICE_FEATURE_HERMES,
   HOST_FEATURE_DEVICE_FEATURES,
   PROTOCOL_VERSION,
   type AgentKind,
@@ -279,6 +282,7 @@ export type HostServiceOptions = {
   claude?: { configDir?: string; launcher?: ClaudeLauncher };
   /** Explicit isolated fixture, or false to prevent QA from inheriting a user's opt-in. */
   openClaw?: OpenClawConfig | false;
+  hermes?: HermesHostOptions;
   providers?: ProviderManager;
   providerUsage?: (kind: AgentKind, providerId: string) => UsageSnapshot | undefined;
   managementBackends?: () => HostManagementState["backends"];
@@ -326,6 +330,9 @@ export class HostService {
    */
   #backends: AgentBackend[];
   #openClaw: OpenClawBackend | undefined;
+  readonly #hermes: HermesHostConnection | undefined;
+  #hermesMutation: Promise<void> = Promise.resolve();
+  readonly #hermesLaunches = new Map<string, Promise<void>>();
   /** DSH Web and Desktop each own their connection, start and recovery state (ADR-0076 DSH-DESKTOP-03). */
   readonly #dsh: Record<DshKind, DshSlot> = { dsh: { startingExistingOnly: false }, dshDesktop: { startingExistingOnly: false } };
   /** Features each device declared on its current handshake (ADR-0064); absent = released App behaviour. */
@@ -605,6 +612,7 @@ export class HostService {
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
     const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#options.kimiCodeRuntime ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
+    if (this.#hermes?.installed) kinds.push("hermes");
     facts.backends({ backends: kinds.map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
@@ -739,6 +747,7 @@ export class HostService {
   readonly #kimiConfigurations: SessionConfigurationStore;
   // Published Hosts strictly decode their launch journal. New Agent records cannot poison it on rollback.
   readonly #openClawLaunches: SessionConfigurationStore;
+  readonly #hermesConfigurations: SessionConfigurationStore;
   #desktopLedgerWrite: Promise<void> = Promise.resolve();
 
   private constructor(
@@ -753,6 +762,7 @@ export class HostService {
     // Released Hosts parse every launch entry strictly; never mix new kinds into their file.
     this.#kimiConfigurations = new SessionConfigurationStore(join(stateDir, "kimi-session-configuration.json"));
     this.#openClawLaunches = new SessionConfigurationStore(join(stateDir, "openclaw-session-configuration.json"));
+    this.#hermesConfigurations = new SessionConfigurationStore(join(stateDir, "hermes-session-configuration.json"));
     // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
     this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
     this.#identity = identity;
@@ -915,6 +925,8 @@ export class HostService {
       this.#claudeBackend,
     ];
     this.#backends = backends;
+    this.#hermes = options.hermes ? new HermesHostConnection(options.hermes, identity.hostId,
+      (backend, retired) => this.#updateHermesBackend(backend, retired)) : undefined;
     // 共享同一个单写者：Agent 事实与设备视图回执都写进这一份模型。
     const agentStateRegistry = new AgentStateRegistry({ maxValueBytes: 4 * 1024 * 1024 });
     const agentStateOptions = {
@@ -1017,6 +1029,40 @@ export class HostService {
   }
 
   /** Wire a Codex runtime once. Desktop runtimes can be attached after relay startup. */
+  #updateHermesBackend(backend?: HermesAgentBackend, retired?: HermesAgentBackend): void {
+    if (this.#providerFactsClosing) return;
+    if (retired) {
+      this.#backends = this.#backends.filter(item => item !== retired);
+      for (const { runtimeId } of retired.directoryEntries()) {
+        this.#markRuntimeOffline(runtimeId, "hermes_gateway_disconnected");
+        this.#notifications.end(runtimeId);
+        this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason: "hermes_gateway_disconnected" });
+      }
+    }
+    if (backend && !this.#backends.includes(backend)) {
+      this.#backends.push(backend);
+      const announced = new Set<string>();
+      backend.setEventSink((event, runtimeId) => {
+        if (this.#providerFactsClosing || this.#hermes?.backend !== backend) return;
+        if (event.type === "runtime.metadata" && !announced.has(runtimeId)) {
+          announced.add(runtimeId);
+          this.#agentFacts.observe(runtimeId, event);
+          this.#broadcastDeviceMessage({ type: "runtime.online", runtime: event.metadata });
+        }
+        this.#publishRuntimeEvent(runtimeId, event);
+      });
+    }
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
+  }
+
+  async #ensureHermes(): Promise<HermesAgentBackend> {
+    try {
+      if (this.#hermes) return await this.#hermes.ensure();
+    } catch { /* Native details may contain private paths; do not relay them. */ }
+    throw new ActivationError("agent_unsupported", "Hermes Gateway 不可用，请在电脑端核对 Hermes CLI 与 Gateway");
+  }
+
   #attachCodexBackend(codex: CodexRuntime): void {
     if (this.#backends.includes(codex)) return;
     if (this.#toolContentStore) codex.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
@@ -1491,6 +1537,7 @@ export class HostService {
     if (this.#options.codexDesktopLaunchable === true && !agents.includes("codexDesktop")) agents.push("codexDesktop");
     if (this.#options.dshLaunchable === true && !agents.includes("dsh")) agents.push("dsh");
     // A Desktop whose version cannot be attached is not offered as launchable (DSH-DESKTOP-01).
+    if (this.#hermes?.installed && !agents.includes("hermes")) agents.push("hermes");
     const desktop = this.#options.dshDesktopStatus?.()?.state;
     if (this.#options.dshDesktopLaunchable === true && !agents.includes("dshDesktop")
       && desktop !== "unsupported" && desktop !== "notInstalled" && desktop !== "incompatible") agents.push("dshDesktop");
@@ -1602,7 +1649,7 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, DEVICE_FEATURE_MESSAGE_RENDER, DEVICE_FEATURE_OPENCLAW, ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : [])],
+      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, DEVICE_FEATURE_MESSAGE_RENDER, DEVICE_FEATURE_OPENCLAW, DEVICE_FEATURE_HERMES, ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : [])],
       sessionConfiguration: 1,
       ...(features?.has(DEVICE_FEATURE_OPENCLAW) ? { deviceFeatures: [...features] } : {}),
     };
@@ -1650,6 +1697,7 @@ export class HostService {
   }
 
   async start(): Promise<void> {
+    void this.#hermes?.discover().catch(() => undefined);
     this.#claudeModsSweep = setInterval(() => { this.#claudeModsBridge.expireStale(); }, 5_000);
     this.#claudeModsSweep.unref();
     void this.#claudeBackend.launchable().then(launchable => {
@@ -1849,6 +1897,7 @@ export class HostService {
     this.#modelLifecycle = "stopping";
     await this.#options.kimiCodeRuntime?.stop();
     await this.#openClaw?.stop();
+    await this.#hermes?.close().catch(() => undefined);
     await this.#liveActivities.close();
     for (const kind of DSH_KINDS) { clearTimeout(this.#dsh[kind].recoveryTimer); this.#dsh[kind].recoveryTimer = undefined; }
     this.#commandOwners.close();
@@ -2120,7 +2169,18 @@ export class HostService {
     }
     if (message.type === "session.configuration.read" || message.type === "session.configuration.save"
       || message.type === "session.launch" || message.type === "session.launch.read") {
-      if (message.type === "session.launch" || message.type === "session.launch.read") {
+      if (message.type === "session.launch" && message.agentKind === "hermes") {
+        const key = JSON.stringify([deviceId, message.launchId]);
+        const epoch = this.#deviceViewEpochs.get(deviceId);
+        const pending = this.#hermesMutation.then(() => {
+          if (!this.#providerFactsClosing && epoch === this.#deviceViewEpochs.get(deviceId)) return this.#handleSessionConfiguration(deviceId, message);
+        });
+        this.#hermesLaunches.set(key, pending);
+        this.#hermesMutation = pending.catch(() => undefined);
+        void this.#hermesMutation.then(() => { if (this.#hermesLaunches.get(key) === pending) this.#hermesLaunches.delete(key); });
+      } else if (message.type === "session.launch.read" && allowsAgent(this.#agentView(deviceId), "hermes")) {
+        void this.#readConfiguredLaunch(deviceId, message);
+      } else if (message.type === "session.launch" || message.type === "session.launch.read") {
         const epoch = this.#deviceViewEpochs.get(deviceId);
         this.#sessionMutation = this.#sessionMutation.then(() => {
           if (epoch === this.#deviceViewEpochs.get(deviceId)) return this.#handleSessionConfiguration(deviceId, message);
@@ -2136,7 +2196,10 @@ export class HostService {
     if (message.type === "session.catalog.query") {
       if (!this.#catalogQueryDevices.has(deviceId)) return;
       const link = this.#links.get(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
-      void (message.cursor ? Promise.resolve() : this.#catalogWithCache()).then(() => {
+      void (message.cursor ? Promise.resolve() : (async () => {
+        if (message.query.agentKind === "hermes") await this.#ensureHermes();
+        await this.#catalogWithCache();
+      })()).then(() => {
         if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active || epoch !== this.#deviceViewEpochs.get(deviceId)) return;
         const response = { ...this.#hostStateFacts.catalogQuery(message, hiddenKinds(this.#agentView(deviceId))), protocolVersion: PROTOCOL_VERSION };
         if (encodeDeviceMessage(response).byteLength > 64 * 1024) {
@@ -2144,7 +2207,10 @@ export class HostService {
             requestId: message.requestId, code: "catalog_page_too_large", message: "目录页超出传输上限" }); return;
         }
         this.#sendToDevice(deviceId, response);
-      }).catch(error => this.#options.onDeviceError?.(deviceId, error));
+      }).catch(error => {
+        if (error instanceof ActivationError) this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId, code: error.code, message: error.message });
+        else this.#options.onDeviceError?.(deviceId, error);
+      });
       return;
     }
     if (message.type === "session.history.capabilities.request") {
@@ -2213,6 +2279,12 @@ export class HostService {
     }
     if (message.type === "file.upload.cancel") {
       void this.#uploads.handleCancel(deviceId, message.uploadId);
+      return;
+    }
+    if (message.type === "session.activate" && message.target.agentKind === "hermes") {
+      this.#hermesMutation = this.#hermesMutation.then(() => {
+        if (!this.#providerFactsClosing && allowsAgentRequest(this.#agentView(deviceId), message)) return this.#handleSessionRequest(deviceId, message);
+      });
       return;
     }
     if (message.type === "session.activate" || message.type === "session.archive") {
@@ -2575,12 +2647,16 @@ export class HostService {
       const started = Date.now();
       try {
         const load = (archived: boolean) => backend.catalogCoverage?.(archived)
-          ?? backend.catalog(archived).then(sessions => ({ sessions, complete: true }));
-        const [active, archived] = await Promise.all([load(false), load(true)]);
+          ?? (archived ? backend.catalog(true) : backend.catalog()).then(sessions => ({ sessions, complete: true }));
+        const [active, archived] = await Promise.all([load(false), backend.archivedCatalogSupported === false ? Promise.resolve({ sessions: [], complete: true }) : load(true)]);
         const catalog = [...new Map([...active.sessions, ...archived.sessions].map((entry) => [entry.sessionId, entry])).values()];
         this.#options.log?.(`[debug] session.list：${backend.kind} 返回 ${catalog.length} 条（${Date.now() - started}ms）`);
         sessions.push(...catalog);
-        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: active.complete && archived.complete && (backend.catalogComplete?.() ?? true), elapsedMs: Date.now() - started });
+        const complete = typeof backend.catalogComplete === "function" ? backend.catalogComplete() : backend.catalogComplete !== false;
+        const reasons = [ ...(backend.archivedCatalogSupported === false ? ["archived_catalog_unsupported"] : []),
+          ...(!complete ? ["catalog_limit_reached"] : []) ];
+        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: active.complete && archived.complete && reasons.length === 0,
+          elapsedMs: Date.now() - started, ...(reasons.length ? { error: reasons.join(",") } : {}) });
       } catch (error) {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
@@ -2635,6 +2711,7 @@ export class HostService {
   }
 
   async #configuredBackend(kind: AgentKind): Promise<AgentBackend> {
+    if (kind === "hermes") return this.#ensureHermes();
     let backend = this.#backends.find(item => item.kind === kind);
     if ((kind === "dsh" || kind === "dshDesktop") && !backend?.isReady()) await this.#ensureDshRuntime(false, kind);
     if (kind === "codexDesktop" && !backend?.isReady()) {
@@ -2646,16 +2723,34 @@ export class HostService {
     return backend;
   }
 
+  async #readConfiguredLaunch(deviceId: string, message: Extract<DeviceE2ePayload, { type: "session.launch.read" }>): Promise<void> {
+    try {
+      const link = this.#links.get(deviceId);
+      const key = JSON.stringify([deviceId, message.launchId]);
+      await this.#hermesLaunches.get(key);
+      const prior = await this.#hermesConfigurations.result(deviceId, message.launchId, message.requestId);
+      if (this.#providerFactsClosing || link !== this.#links.get(deviceId)) return;
+      if (prior?.agentKind === "hermes") {
+        await this.#handleSessionConfiguration(deviceId, message);
+      } else {
+        this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionConfiguration(deviceId, message));
+      }
+    } catch (error) { this.#options.onDeviceError?.(deviceId, error); }
+  }
+
   async #handleSessionConfiguration(deviceId: string, message: Extract<DeviceE2ePayload, {
     type: "session.configuration.read" | "session.configuration.save" | "session.launch" | "session.launch.read"
   }>): Promise<void> {
     const epoch = this.#deviceViewEpochs.get(deviceId);
     const current = () => this.#links.get(deviceId)?.active !== undefined && epoch === this.#deviceViewEpochs.get(deviceId);
     if (!current() || !allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message); return; }
-    let ledger = message.type !== "session.launch.read" && message.agentKind === KIMI_KIND ? this.#kimiConfigurations : "agentKind" in message && message.agentKind === OPENCLAW_KIND ? this.#openClawLaunches : this.#sessionConfigurations;
+    const kind = "agentKind" in message ? message.agentKind : undefined;
+    let ledger = kind === KIMI_KIND ? this.#kimiConfigurations : kind === OPENCLAW_KIND ? this.#openClawLaunches
+      : kind === "hermes" ? this.#hermesConfigurations : this.#sessionConfigurations;
     const sendLaunch = async (launchId: string) => {
-      const result = await ledger.result(deviceId, launchId, message.requestId);
+      const observed = await ledger.result(deviceId, launchId, message.requestId);
       if (!current()) return;
+      const result = observed && allowsAgentIdentity(this.#agentView(deviceId), observed) ? observed : undefined;
       this.#sendToDevice(deviceId, result ?? { type: "session.launch.result", requestId: message.requestId,
         launchId, phase: "absent" });
     };
@@ -2665,6 +2760,8 @@ export class HostService {
         if (allowsAgent(this.#agentView(deviceId), KIMI_KIND) &&
             !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#kimiConfigurations;
         if (allowsAgent(this.#agentView(deviceId), OPENCLAW_KIND) && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#openClawLaunches;
+        if (!current()) return;
+        if (allowsAgent(this.#agentView(deviceId), "hermes") && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#hermesConfigurations;
         if (!current()) return;
         await this.#recoverSessionLaunch(ledger, deviceId, message.launchId, current);
         await sendLaunch(message.launchId); return;
@@ -2821,7 +2918,7 @@ export class HostService {
   ): Promise<void> {
     const requestId = message.requestId;
     const sharedOperationId = message.type === "session.activate" ? this.#beginSharedOperation("session.activate",
-      message.target.type === "new" ? message.target.agentKind : null, message.target.type === "resume" ? message.target.sessionId : null)
+      message.target.agentKind ?? null, message.target.type === "resume" ? message.target.sessionId : null)
       : message.type === "session.archive" ? this.#beginSharedOperation("session.archive", message.agentKind, message.sessionId) : undefined;
     this.#settleSharedOperation(sharedOperationId, "running");
     let sharedOperationFailed = false;
@@ -2831,10 +2928,10 @@ export class HostService {
     const receipted = message.type === "session.archive" || message.type === "session.activate";
     const operationRuntimeId = message.type === "session.archive" ? message.sessionId : message.type === "session.activate"
       ? message.target.type === "resume" ? message.target.sessionId : message.target.agentKind === DSH_DESKTOP_KIND ? "dsh-desktop:launch"
-        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : message.target.agentKind === OPENCLAW_KIND ? "openclaw:launch" : this.#identity.hostId
+        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : message.target.agentKind === OPENCLAW_KIND ? "openclaw:launch" : message.target.agentKind === "hermes" ? "hermes:launch" : this.#identity.hostId
       : this.#identity.hostId;
     // Scope receipts for gated runtimes before a device reconnects with an older build.
-    const receiptRuntimeId = allowsRuntime(3, operationRuntimeId) ? this.#identity.hostId : operationRuntimeId;
+    const receiptRuntimeId = allowsRuntime(deviceAgentView(), operationRuntimeId) ? this.#identity.hostId : operationRuntimeId;
     if (receipted) this.#deviceViewFacts.accepted(deviceId, { operationId: requestId, runtimeId: receiptRuntimeId, requestId });
     if (message.type === "session.activate") { this.#activationsPending++; this.refreshHostFacts(); }
     this.#options.log?.(`[debug] 收到 ${message.type}（requestId=${requestId}）`);
@@ -2865,7 +2962,7 @@ export class HostService {
         // 这里按 TTL 缓存 + 合并并发请求：同一时刻的多个 `session.list` 共享同一次扫描。
         const [{ sessions, cached }, providers] = await Promise.all([
           this.#catalogWithCache(),
-          Promise.all(this.#backends.filter((backend) => backend.isReady()).map(async (backend) => {
+          Promise.all(this.#backends.filter((backend) => backend.isReady() && allowsAgent(this.#agentView(deviceId), backend.kind)).map(async (backend) => {
             try {
               const provider = await backend.currentProvider?.();
               return provider === undefined ? [] : [{ agentKind: backend.kind, provider }];
@@ -2926,7 +3023,7 @@ export class HostService {
       };
       if (target.type === "new") {
         if (target.agentKind === OPENCLAW_KIND) throw new ActivationError("agent_unsupported", "请使用支持可恢复启动的 App 创建 OpenClaw 会话");
-        let backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
+        let backend = target.agentKind === "hermes" ? await this.#ensureHermes() : this.#backends.find((candidate) => candidate.kind === target.agentKind);
         if ((backend === undefined || !backend.isReady()) && target.agentKind === "codexDesktop") {
           try {
             const runtime = await this.#options.ensureCodexDesktop?.();
@@ -2968,10 +3065,11 @@ export class HostService {
         this.#sendActivated(deviceId, requestId, backend.kind, activated);
         return;
       }
-      const resumeKind = target.agentKind ?? (isKimiId(target.sessionId) ? KIMI_KIND : target.sessionId.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
+      const resumeKind = target.agentKind ?? (isKimiId(target.sessionId) ? KIMI_KIND : target.sessionId.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : target.sessionId.startsWith("hermes:") ? "hermes" : target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
         : target.sessionId.startsWith("dsh-desktop:") ? "dshDesktop" : target.sessionId.startsWith("dsh:") ? "dsh" : undefined);
       if (resumeKind === KIMI_KIND && !this.#options.kimiCodeRuntime?.isReady())
         throw new ActivationError("agent_unsupported", this.#options.kimiCodeRuntime?.reason ?? "Kimi Code Web 未连接");
+      if (resumeKind === "hermes") await this.#ensureHermes();
       if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {
         try {
           const runtime = await this.#options.ensureCodexDesktop?.();
@@ -2992,7 +3090,7 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady()) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND || backend.kind === OPENCLAW_KIND)) continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND || backend.kind === OPENCLAW_KIND || backend.kind === "hermes")) continue;
         try {
           const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, context);
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。
@@ -3308,7 +3406,7 @@ export class HostService {
 
   readonly #pushWakeReceipts = new PushWakeReceipts();
   #wakeDevices(category: "task-completed" | "approval-requested", eventId: string, runtimeId: string, sessionId?: string): void {
-    if (runtimeId.startsWith(OPENCLAW_PREFIX) || !this.#pushWakeReceipts.observe(category, eventId)) return;
+    if ((runtimeId.startsWith(OPENCLAW_PREFIX) || runtimeId.startsWith("hermes:")) || !this.#pushWakeReceipts.observe(category, eventId)) return;
     // APNS-L19: capture each phone's interest at the semantic edge. Defer the
     // reachability probe until the event has been queued for its E2E recipients.
     const recipients = this.#store.devices.filter(device => !device.revoked && allowsRuntime(this.#agentView(device.deviceId), runtimeId)).map(device => ({ device,

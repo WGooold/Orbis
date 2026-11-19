@@ -248,8 +248,8 @@ export type SessionCatalogEntry = z.infer<typeof SessionCatalogEntrySchema>;
 /**
  * 会话条目来源（spec §7.2 的 AgentBackend）与 ADR-0032 的共享状态模型。
  *
- * agentKind、Agent 身份与领域 envelope 都定义在 `agent-state.ts`；它只依赖 zod，
- * 因此不会与这里的 schema 形成循环。客户端仍从 `@orbis/protocol` 取类型。
+ * `agent-kind.ts` 是多个领域共用的身份枚举；AgentKey 与领域 envelope 在 `agent-state.ts`。
+ * 客户端仍从 `@orbis/protocol` 取类型。
  */
 export * from "./agent-state.js";
 export * from "./host-model-domains.js";
@@ -280,6 +280,7 @@ export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
 export const DEVICE_FEATURE_MESSAGE_RENDER = "message.content-render.v1";
 export const DEVICE_FEATURE_KIMI_CODE = "agent.kimiCode";
 export const DEVICE_FEATURE_OPENCLAW = "agent.openclaw";
+export const DEVICE_FEATURE_HERMES = "agent.hermes";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 
 /**

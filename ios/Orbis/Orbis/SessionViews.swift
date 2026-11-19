@@ -356,6 +356,7 @@ struct SessionDrawerView: View, Equatable {
         guard store.connection == .secured else { return L10n.tr("连接电脑后可操作") }
         guard let kind = session.agentKind else { return L10n.tr("尚未获取会话类型") }
         if kind == "openclaw", !store.openClawNegotiated { return L10n.tr("连接电脑后可操作") }
+        guard kind != "hermes" else { return L10n.tr("不支持归档") }
         guard !store.isArchiving(session.sessionId) else { return L10n.tr("处理中…") }
         guard session.archived != true else { return nil }
         let runtimes = store.runtimes.filter { $0.sessionId == session.sessionId }
@@ -379,9 +380,9 @@ struct SessionDrawerView: View, Equatable {
 
     private var filterMenuItems: [OrbisMenuItem] {
         [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: state.kind == nil) { selectFilter(nil) }]
-        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind].filter { kind in
+        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind, "hermes"].filter { kind in
             if kind == kimiCodeKind { return store.activeConnection.kimiCodeSupported }; if kind == "openclaw", !store.openClawNegotiated { return false }
-            return !["dshDesktop", "openclaw"].contains(kind) || store.supportedAgents?.contains(kind) == true
+            return !["dshDesktop", "openclaw", "hermes"].contains(kind) || store.supportedAgents?.contains(kind) == true
                 || store.launchableAgents?.contains(kind) == true || catalog.sessions.contains { $0.agentKind == kind }
         }.map { kind in
             let providers = kind == "codex" || kind == "codexDesktop"
@@ -591,6 +592,7 @@ private func filterTitle(_ kind: String) -> String {
     case "codexDesktop": return L10n.tr("Codex 桌面版")
     case "dsh": return "DeepSeek"
     case "dshDesktop": return L10n.tr("DeepSeek 桌面版")
+    case "hermes": return "Hermes Agent"
     case "claude": return "Claude Code"
     case kimiCodeKind: return "Kimi Code"
     case "openclaw": return "OpenClaw"
@@ -685,7 +687,7 @@ struct SessionDraftView: View {
         let p = OrbisPalette(scheme)
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 4) {
-                ForEach(["codex", "claude", "dsh", "pi"] + [kimiCodeKind, "openclaw"].filter { allowed.contains($0) }, id: \.self) { kind in
+                ForEach(["codex", "claude", "dsh", "pi"] + [kimiCodeKind, "openclaw", "hermes"].filter { allowed.contains($0) }, id: \.self) { kind in
                     let variants = agentVariants(kind), chosen = family == kind
                     OrbisMotionButton { agent = variants.first(where: allowed.contains) ?? kind } label: {
                         AgentEmblem(kind: kind, size: 20, recessed: false)

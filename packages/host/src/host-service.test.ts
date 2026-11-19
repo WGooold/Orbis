@@ -15,6 +15,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/p
 import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { type RawData } from "ws";
 
@@ -56,6 +57,7 @@ import {
 import { type RelayServer } from "@orbis/relay";
 import { createBusinessRelayServer as createRelayServer, relayBusinessHostOptions, restartBusinessHostQUIC } from "./fixtures/relay-business-transport.js";
 
+import type { HermesGatewayRpcClient } from "./hermes-gateway-rpc.js";
 import { HostService, channelForDeviceMessage } from "./host-service.js";
 import { HostRelayClient } from "./relay-client.js";
 import * as pushRelayConfig from "./config.js";
@@ -3593,7 +3595,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const launch = { requestId: "launch", launchId: "kimi-launch", agentKind: "kimiCode", cwd, binding: "kimi-code:fixture:local", revision: 0, values: {}, spawnMode: "headless" };
     await handshake();
     const initial = await wait(message => message.type === "device.ready", true);
-    expect(initial.hostFeatures).toEqual(["device.features", "message.content-render.v1", "agent.openclaw", "agent.kimiCode"]);
+    expect(initial.hostFeatures).toEqual(["device.features", "message.content-render.v1", "agent.openclaw", "agent.hermes", "agent.kimiCode"]);
     expect(initial.agents).not.toContain("kimiCode");
     const hidden = await read("host-hidden");
     for (const [type, body] of [
@@ -3900,6 +3902,147 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       const again = await until(message => message.type === "device.ready");
       expect((again.runtimes as RuntimeMetadata[]).map(row => row.runtimeId)).not.toContain("dsh-desktop:shared");
     } finally { await webRuntime.stop(); await desktopRuntime.stop(); }
+  });
+
+  // HERMES-COMPAT-01: run the same encrypted fixture against the candidate or a separately built release Relay.
+  // ORBIS_HERMES_COMPAT_RELEASE_ROOT points to a compiled, isolated checkout of the comparison tag.
+  const releaseRoot = process.env.ORBIS_HERMES_COMPAT_RELEASE_ROOT;
+  const startHermesCompatRelay = async (dir: string): Promise<RelayServer> => {
+    if (!releaseRoot) return startRelayLocal(dir);
+    const released = await import(pathToFileURL(join(releaseRoot, "packages/relay/dist/index.js")).href) as typeof import("@orbis/relay");
+    return released.createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret",
+      stateFile: join(dir, "relay-state.json") });
+  };
+
+  // HERMES-GATEWAY-01: exercise the real E2E Host/Relay router without touching a user Gateway.
+  it("connects Hermes only for negotiated requests and resets its visibility on rehandshake", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-hermes-host-"));
+    relay = await startHermesCompatRelay(stateDir);
+    const profile_id = join(stateDir, "fixture-hermes");
+    const sessionId = "hermes-private-id";
+    const endpoint = { profile_id, instance_id: "fixture", authority_epoch: 1, runtime_protocol: 1,
+      api_origin: "http://127.0.0.1:1", supervisor: "fixture", capabilities: ["session-authority-v1"] };
+    const close = vi.fn(async () => undefined);
+    const request = vi.fn(async (method: string, args: Record<string, unknown>) => {
+      if (method === "session.list") return { sessions: args.scope === "live" ? [] : [{ id: sessionId, title: "Synthetic Hermes", started_at: 1000 }] };
+      if (method === "prompt.submit") return { admission_id: "hermes-fixture-admission", status: "started" };
+      if (method === "session.resume") return { session_id: sessionId, stored_session_id: sessionId, running: false,
+        messages: [], prompts: [], last_sequence: 0, execution_generation: 0, replay_epoch: "initial", authority_epoch: 1,
+        info: { cwd: stateDir } };
+      throw new Error(`Unimplemented fixture method ${method}`);
+    });
+    const client = { request, close, closed: false, readyState: 1 } as unknown as HermesGatewayRpcClient;
+    const connectHermes = vi.fn(async () => ({ client, endpoint, serverRequests: [], runtime: {
+      ...endpoint, capabilities: [...endpoint.capabilities, "durable-admission-v1"], session_create: { sources: ["tui"], parameters: ["cwd"] },
+    } }));
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false,
+      hermes: { command: { command: "fixture-only", prefixArgs: [] }, connect: connectHermes } });
+    await host.start();
+    const opened = await host.openPairingWindow();
+    device = (await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Hermes fixture" })).device;
+    const pskRoot = await device.pair(opened.payload);
+    const open = () => device!.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+    const next = async (predicate: (row: Record<string, unknown>) => boolean, inspect?: (row: Record<string, unknown>) => void) => {
+      for (let i = 0; i < 80; i++) {
+        const row = await device!.receiveMessage() as Record<string, unknown>;
+        inspect?.(row);
+        if (predicate(row)) return row;
+      }
+      throw new Error("Hermes fixture reply not received");
+    };
+    const send = (value: Record<string, unknown>) => sendRequest(device!, { protocolVersion: PROTOCOL_VERSION, ...value });
+    const lookup = (requestId: string, agentKind: string | null, cursor: string | null = null) => {
+      send({ type: "session.catalog.query", requestId, format: "v1", query: { text: "", agentKind, archived: false, provider: "all" }, cursor, limit: 1 });
+      return next(row => row.requestId === requestId);
+    };
+    const declare = (features: string[]) => {
+      send({ type: "device.features", features });
+      return next(row => row.type === "device.ready");
+    };
+    await open();
+    const legacy = await next(row => row.type === "device.ready");
+    expect(legacy.launchableAgents).not.toContain("hermes");
+    send({ type: "session.activate", requestId: "blocked", target: { type: "resume", sessionId, agentKind: "hermes" } });
+    expect(await next(row => row.requestId === "blocked")).toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+    expect(connectHermes).not.toHaveBeenCalled();
+
+    const hermesOnly = await declare(["agent.hermes"]);
+    expect(hermesOnly.launchableAgents).toContain("hermes");
+    expect(hermesOnly.agents).not.toContain("hermes");
+    expect(hermesOnly).not.toHaveProperty("dshDesktop");
+    expect(connectHermes).not.toHaveBeenCalled();
+    send({ type: "session.catalog.capabilities.request", requestId: "capabilities" });
+    await next(row => row.requestId === "capabilities");
+    expect(await lookup("hermes-catalog", "hermes")).toMatchObject({ type: "session.catalog.page", page: { sessions: [{ sessionId, agentKind: "hermes" }] } });
+    send({ type: "session.activate", requestId: "resume", target: { type: "resume", sessionId, agentKind: "hermes" } });
+    let runtimeId = "";
+    expect(await next(row => row.requestId === "resume", row => {
+      if (row.type === "runtime.online") runtimeId = (row.runtime as RuntimeMetadata).runtimeId;
+    })).toMatchObject({ type: "session.activated", agentKind: "hermes", sessionId, spawnMode: "headless" });
+    expect(runtimeId).toMatch(/^hermes:/u);
+    expect(connectHermes).toHaveBeenCalledTimes(1);
+
+    send({ type: "runtime.command", runtimeId, commandId: "allowed-send", command: { type: "user_message", text: "fixture prompt" } });
+    expect(await next(row => row.type === "runtime.event" && (row.event as RuntimeEvent).type === "command.result")).toMatchObject({
+      runtimeId, event: { commandId: "allowed-send", ok: true, status: "success" },
+    });
+
+    const both = await declare(["agent.hermes", "agent.dshDesktop"]);
+    expect(both.agents).toContain("hermes");
+    expect(both).toHaveProperty("dshDesktop", null);
+    const dshOnly = await declare(["agent.dshDesktop"]);
+    expect(dshOnly.agents).not.toContain("hermes");
+    expect(dshOnly.runtimes).not.toContainEqual(expect.objectContaining({ runtimeId }));
+    expect(dshOnly).toHaveProperty("dshDesktop", null);
+    expect(await lookup("not-visible", null)).toMatchObject({ type: "session.catalog.page", page: { sessions: [], totalSessions: 0 } });
+    await declare(["agent.hermes", "agent.dshDesktop"]);
+    await open();
+    const downgraded = await next(row => row.type === "device.ready");
+    expect(downgraded.agents).not.toContain("hermes");
+    send({ type: "runtime.command", runtimeId, commandId: "blocked-send", command: { type: "user_message", text: "must not send" } });
+    expect(await next(row => row.commandId === "blocked-send")).toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+    expect(request.mock.calls.filter(([method]) => method === "prompt.submit").map(([method, params]) => [method, params])).toEqual([
+      ["prompt.submit", { session_id: sessionId, submission_id: "allowed-send", text: "fixture prompt" }],
+    ]);
+    await host.stop(); host = undefined;
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  // A current device declaration remains legal against a pre-Hermes Host; a reconnect receives its normal catalog.
+  it.skipIf(!releaseRoot)("preserves current device negotiation and fallback on the released Host and Relay", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-hermes-fallback-"));
+    relay = await startHermesCompatRelay(stateDir);
+    const released = await import(pathToFileURL(join(releaseRoot!, "packages/host/dist/host-service.js")).href) as { HostService: typeof HostService };
+    const oldHost = await released.HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false });
+    host = oldHost;
+    await oldHost.start();
+    const opened = await oldHost.openPairingWindow();
+    device = (await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Rollback fixture" })).device;
+    const pskRoot = await device.pair(opened.payload);
+    const next = async (predicate: (row: Record<string, unknown>) => boolean) => {
+      for (let i = 0; i < 40; i++) {
+        const row = await device!.receiveMessage() as Record<string, unknown>;
+        expect(row.type).not.toBe("protocol.error");
+        if (predicate(row)) return row;
+      }
+      throw new Error("Released Host fixture reply not received");
+    };
+    for (const requestId of ["fallback-one", "fallback-reconnected"]) {
+      await device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+      const ready = await next(row => row.type === "device.ready");
+      expect(ready.hostFeatures).toEqual(["device.features"]);
+      expect(ready.launchableAgents).not.toContain("hermes");
+      sendRequest(device, { type: "device.features", protocolVersion: PROTOCOL_VERSION, features: ["agent.dshDesktop", "agent.hermes"] });
+      const negotiated = await next(row => row.type === "device.ready");
+      expect(negotiated).toHaveProperty("dshDesktop", null);
+      expect(negotiated.launchableAgents).not.toContain("hermes");
+      sendRequest(device, { type: "session.list", protocolVersion: PROTOCOL_VERSION, requestId });
+      expect(await next(row => row.requestId === requestId)).toMatchObject({ type: "session.list.result", sessions: [] });
+    }
   });
 
   it("reopens a quit DSH browser session over E2E when Codex is also enabled", async () => {
@@ -4446,6 +4589,47 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       currentProviders: [{ agentKind: "codex", provider: "switched" }],
     });
     expect(listRequests).toHaveLength(2);
+  });
+
+  it("keeps active sessions visible while marking an unsupported archived catalog incomplete", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-partial-agent-catalog-"));
+    relay = await startRelayLocal(stateDir);
+    const client: DshConnection = {
+      onNotification: undefined, onRequest: undefined, onExit: undefined,
+      request: vi.fn(async () => ({ sessions: [] })), notify: vi.fn(), stop: vi.fn(async () => {}),
+    };
+    const runtime = new DshRuntime(client, {
+      list: async () => [],
+      read: async id => ({ header: { id, cwd: stateDir!, createdAt: 1 }, events: [] }),
+      close: async () => {},
+    });
+    Object.defineProperty(runtime, "archivedCatalogSupported", { value: false });
+    const catalog = vi.spyOn(runtime, "catalog").mockImplementation(async archived => archived ? [] : [{
+      sessionId: "dsh:active", agentKind: "dsh", hostname: "fixture-host", cwd: stateDir!,
+      createdAt: 1, modifiedAt: 2, messageCount: 1, archived: false,
+    }]);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, dshRuntime: runtime });
+    try {
+      await host.start();
+      device = await readyDeviceLocal({ host, relay });
+      sendRequest(device, { type: "session.list", protocolVersion: PROTOCOL_VERSION, requestId: "partial-catalog-list" });
+      await expect(device.receiveMessage()).resolves.toMatchObject({
+        type: "session.list.result", sessions: [expect.objectContaining({ sessionId: "dsh:active" })],
+      });
+      sendRequest(device, { type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "partial-catalog-state",
+        scope: "host", domains: ["catalog"] });
+      const state = await device.receiveMessage() as { domains: AgentStateDomainSnapshot[] };
+      const catalogState = state.domains.find(domain => domain.domain === "catalog")?.value as {
+        backends: Array<{ kind: string; complete: boolean; error?: string }>;
+        sessions: Array<{ sessionId: string }>;
+      };
+      expect(catalogState.sessions.map(session => session.sessionId)).toContain("dsh:active");
+      expect(catalogState.backends.find(backend => backend.kind === "dsh")).toMatchObject({
+        complete: false, error: "archived_catalog_unsupported",
+      });
+      expect(catalog.mock.calls).toEqual([[]]);
+    } finally { await runtime.stop(); }
   });
 
   it("keeps terminal and desktop Codex identities separate over the device protocol", async () => {

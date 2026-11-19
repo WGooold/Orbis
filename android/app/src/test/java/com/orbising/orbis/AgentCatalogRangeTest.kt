@@ -37,6 +37,17 @@ class AgentCatalogRangeTest {
         assertEquals(StatusTone.Good, complete.catalogSummaryView().tone)
     }
 
+    // HERMES-UI-01: a cold Hermes row has no working directory until attachment.
+    @Test fun `keeps Hermes identity in a mixed catalog page with an unknown working directory`() {
+        val loaded = reducer.reduce(request(first()),
+            page(rows = """[{"sessionId":"native-hermes-session","agentKind":"hermes","cwd":""}]"""), channel = "ctl")
+        val row = loaded.sessions["native-hermes-session"]
+        assertEquals("hermes", row?.agentKind)
+        assertEquals("", row?.cwd)
+        assertEquals(AgentBrand.Hermes, agentBrand(row?.agentKind))
+        assertEquals(DrawerAgentFilter.Hermes, drawerAgentFilter("hermes"))
+    }
+
     @Test fun `pages require an authenticated matching request and fixed version`() {
         val state = request(first())
         assertEquals(state, reducer.reduce(state, page(request = "old"), channel = "ctl"))

@@ -1,3 +1,5 @@
+import { AgentKindSchema } from "./agent-kind.js";
+export { AgentKindSchema, type AgentKind } from "./agent-kind.js";
 import { z } from "zod";
 import { ModelSelectionValuesSchema, TurnConfigurationSchema } from "./turn-configuration.js";
 import { HostProviderAuthenticationSchema, HostProviderUsageSchema, HostProviderHealthSchema, HostProviderRoutingSchema } from "./host-model-domains.js";
@@ -9,17 +11,6 @@ import { HostProviderAuthenticationSchema, HostProviderUsageSchema, HostProvider
  * 它不含存储、网络或原生语义；Host 端的单写者见 `packages/host/src/agent-state-registry.ts`。
  * 原生执行与原生历史仍是权威，这里描述的是 Host 管理并向客户端发布的标准化投影。
  */
-
-/**
- * 会话条目来源（spec §7.2 的 AgentBackend）。
- *
- * `pi` 的历史会话由 Host 直接扫磁盘（§8.1）；`codex` / `codexDesktop` 是同一个 Codex
- * 产品的两路接入（ADR-0022）；`dsh` 走本机 Web 服务（ADR-0020），`dshDesktop` 接入
- * DeepSeek Harness Desktop 自己拥有的后端（ADR-0076）。只有声明了
- * `DEVICE_FEATURE_DSH_DESKTOP` 的设备才会收到 `dshDesktop`。
- */
-export const AgentKindSchema = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", "kimiCode", "openclaw"]);
-export type AgentKind = z.infer<typeof AgentKindSchema>;
 
 const identity = z.string().min(1).max(256).refine(value => value.trim().length > 0, "Identifier must not be blank");
 

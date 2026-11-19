@@ -1223,6 +1223,7 @@
   "等待": "Waiting",
   "等待{0}切换": "Waiting for {0} switch",
   "等待中": "Waiting",
+  "不支持归档": "Archiving unavailable",
   "等待任务完成后归档": "Waiting for the task to finish before archiving",
   "等待会话启动": "Waiting for session to start",
   "等待传输": "Waiting to transfer",

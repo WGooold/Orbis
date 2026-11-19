@@ -4,7 +4,7 @@ import { basename, dirname, join, relative } from "node:path";
 import { defaultPiSessionsRoot, listPiSessions } from "./sessions.js";
 
 export class SessionArchiveError extends Error {
-  constructor(readonly code: "session_busy" | "session_not_found" | "session_conflict", message: string) {
+  constructor(readonly code: "session_busy" | "session_not_found" | "session_conflict" | "unsupported", message: string) {
     super(message);
   }
 }

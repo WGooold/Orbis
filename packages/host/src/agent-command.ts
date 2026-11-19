@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { promisify } from "node:util";
 import { agentInstallRoot } from "./agent-root.js";
 
-export type ExternalAgentKind = "pi" | "dsh" | "claude";
+export type ExternalAgentKind = "pi" | "dsh" | "claude" | "hermes";
 export type AgentCommand = {
   command: string;
   prefixArgs: string[];
@@ -26,11 +26,11 @@ export function agentTerminalEnvironment(env: NodeJS.ProcessEnv): Record<string,
   if (env.ORBIS_QA_HOME && !result.TERM) result.TERM = "xterm-256color";
   return result;
 }
-const packages = {
+const packages: Record<ExternalAgentKind, string[]> = {
   pi: ["@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"],
-  dsh: ["@deepseek-ai/dsh"], claude: ["@anthropic-ai/claude-code"],
+  dsh: ["@deepseek-ai/dsh"], claude: ["@anthropic-ai/claude-code"], hermes: [],
 };
-const legacyBins = { pi: "dist/bundle/cli.js", dsh: "lib/bin.js", claude: "cli.js" };
+const legacyBins: Record<ExternalAgentKind, string> = { pi: "dist/bundle/cli.js", dsh: "lib/bin.js", claude: "cli.js", hermes: "" };
 const execute = promisify(execFile);
 
 export function cliPathDirs(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string[] {

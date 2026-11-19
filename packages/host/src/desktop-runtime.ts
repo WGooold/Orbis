@@ -758,6 +758,7 @@ export class DesktopRuntime {
         ensureDshRuntime: () => connectDshRuntime(),
         recoverDshRuntime: () => connectDshRuntime(true),
         dshLaunchable,
+        ...(!this.#qa ? { hermes: {} } : {}),
         dshDesktopLaunchable,
         dshDesktopStatus: () => dshDesktopLifecycle.status,
         ensureDshDesktopRuntime: () => connectDshDesktop(),

@@ -99,7 +99,8 @@ internal enum class DrawerAgentFilter(
     DeepSeekDesktop("dshDesktop", "DeepSeek 桌面版", "dshDesktop"),
     Claude("claude", "Claude Code", "claude"),
     Kimi(KIMI_CODE_KIND, "Kimi Code", KIMI_CODE_KIND),
-    OpenClaw("openclaw", "OpenClaw", "openclaw");
+    OpenClaw("openclaw", "OpenClaw", "openclaw"),
+    Hermes("hermes", "Hermes Agent", "hermes");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
     val label: String get() = L10n.tr(labelKey)
@@ -120,6 +121,7 @@ private fun DrawerAgentFilterMenu(
     desktopDeepSeek: Boolean = false,
     kimiCode: Boolean = false,
     openClaw: Boolean = false,
+    hermes: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
@@ -161,6 +163,7 @@ private fun DrawerAgentFilterMenu(
                 when (filter) {
                     DrawerAgentFilter.DeepSeekDesktop -> desktopDeepSeek || filter == selected
                     DrawerAgentFilter.Kimi -> kimiCode
+                    DrawerAgentFilter.Hermes -> hermes || filter == selected
                     DrawerAgentFilter.OpenClaw -> openClaw
                     else -> true
                 }
@@ -414,6 +417,8 @@ internal fun SessionDrawer(
                             state.sessions.values.any { it.agentKind == "dshDesktop" },
                         openClaw = state.openClawNegotiated && (state.supportedAgents?.contains("openclaw") == true ||
                             state.sessions.values.any { it.agentKind == "openclaw" }),
+                        hermes = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "hermes" in it } ||
+                            state.sessions.values.any { it.agentKind == "hermes" },
                     )
 
                 }
@@ -807,6 +812,7 @@ private fun drawerArchiveUnavailableReason(row: CachedSessionRow, state: RemoteS
     row.agentKind == "openclaw" && !state.openClawNegotiated -> L10n.tr("连接电脑后可操作")
     row.catalogEntry?.agentKind == null -> L10n.tr("尚未获取会话类型")
     row.sessionId in state.archivingSessionIds -> L10n.tr("处理中…")
+    row.agentKind == "hermes" -> L10n.tr("不支持归档")
     row.isArchived || !row.isOnline -> null
     row.agentKind == "pi" -> L10n.tr("请先退出 Pi 会话")
     row.agentKind == "claude" -> L10n.tr("请先退出 Claude Code 会话")

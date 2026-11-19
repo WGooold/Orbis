@@ -15,7 +15,11 @@ OpenClaw mark (Lobe Icons)
 Source: @lobehub/icons-static-svg 1.102.0, openclaw-color.svg, https://github.com/lobehub/lobe-icons
 Copyright (c) 2023 LobeHub
 
-The Pi, Codex, Claude and OpenClaw marks are distributed under the following MIT License. Their
+Hermes Agent mark (Lobe Icons @lobehub/icons-static-svg 1.102.0)
+Source: https://github.com/lobehub/lobe-icons
+Copyright (c) 2023 LobeHub
+
+The Pi, Codex, Claude, OpenClaw and Hermes Agent marks are distributed under the following MIT License. Their
 product names and marks identify the corresponding third-party agents.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

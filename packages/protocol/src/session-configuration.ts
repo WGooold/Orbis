@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentKindSchema } from "./agent-kind.js";
 
 // S51 / SC73: all native option values stay opaque to mobile clients.
 const id = z.string().min(1).max(1024);
@@ -26,8 +27,7 @@ export const SessionConfigurationCatalogSchema = z.strictObject({
 });
 export type SessionConfigurationCatalog = z.infer<typeof SessionConfigurationCatalogSchema>;
 
-const kind = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", "kimiCode", "openclaw"]);
-const location = { agentKind: kind, cwd: z.string().min(1).max(4096) };
+const location = { agentKind: AgentKindSchema, cwd: z.string().min(1).max(4096) };
 const selected = { ...location, binding: id, revision: z.number().int().nonnegative(), values: SessionConfigurationValuesSchema };
 export const SessionConfigurationReadSchema = z.strictObject({ type: z.literal("session.configuration.read"), requestId: id, ...location });
 export const SessionConfigurationSaveSchema = z.strictObject({ type: z.literal("session.configuration.save"), requestId: id, ...selected });
@@ -42,7 +42,7 @@ export const SessionConfigurationResultSchema = z.strictObject({
 export const SessionLaunchResultSchema = z.strictObject({
   type: z.literal("session.launch.result"), requestId: id, launchId: id,
   phase: z.enum(["preparing", "created", "configuring", "ready", "failed", "unknown", "absent"]),
-  agentKind: kind.optional(), cwd: z.string().min(1).max(4096).optional(),
+  agentKind: AgentKindSchema.optional(), cwd: z.string().min(1).max(4096).optional(),
   revision: z.number().int().nonnegative().optional(), values: SessionConfigurationValuesSchema.optional(),
   sessionId: id.optional(), spawnMode: z.enum(["tui", "headless"]).optional(), error: z.string().max(2000).optional(),
 });

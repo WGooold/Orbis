@@ -5,12 +5,12 @@ import { CompactStateModel } from "./compact-state-model.js";
 import { agentViews, allowsAgent, allowsAgentRequest, hiddenKinds, projectAgentMessage } from "./device-agent-visibility.js";
 import { HostStateFacts } from "./host-state-facts.js";
 
-const kinds = ["pi", "dshDesktop", "kimiCode"] as const;
-const row = (index: number): AgentSessionSummary => ({ agentKind: kinds[index % 3]!, sessionId: `s${index}`,
+const kinds = ["pi", "dshDesktop", "kimiCode", "openclaw", "hermes"] as const;
+const row = (index: number): AgentSessionSummary => ({ agentKind: kinds[index % kinds.length]!, sessionId: `s${index}`,
   cwd: `/isolated/${index % 6}`, hostname: "fixture", createdAt: 1, modifiedAt: 200 - index, messageCount: 0, firstMessage: "a".repeat(900) });
 
 describe("KIMI-06 negotiated device projections", () => {
-  it("keeps all four snapshot projections, compact baselines, query totals and continuation cursors separate", () => {
+  it("keeps negotiated snapshot projections, compact baselines, query totals and continuation cursors separate", () => {
     const scope = { kind: "host" } as const;
     const registry = new AgentStateRegistry();
     const facts = new HostStateFacts({ registry });

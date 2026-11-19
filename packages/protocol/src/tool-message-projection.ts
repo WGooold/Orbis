@@ -7,7 +7,7 @@ const record = (value: unknown): Record<string, unknown> => value !== null && ty
 export type ToolMessageProjectionContext = { agent: AgentKey; order: number; entryId?: string;
   phase?: ToolSummary["phase"]; readCapability?: "range" | "whole-source" | "none"; contents?: ToolSummary["contents"] };
 
-/** Shared Pi/DSH facts only. Unknown tool inputs never become serialized JSON previews. */
+/** Only allowlisted adapter facts; unknown tool inputs never become serialized JSON previews. */
 export function messageToolSummary(context: ToolMessageProjectionContext, callId: string, name: string,
   args?: unknown, isError?: boolean): ToolSummary {
   const input = record(args);

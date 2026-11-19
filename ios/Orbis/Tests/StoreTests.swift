@@ -1577,6 +1577,18 @@ struct StoreTests {
         #expect(!store.supportsSessionConfiguration(for: "openclaw"))
     }
 
+    // HERMES-UI-01: negotiated ready keeps the native Hermes identity rather than treating it as Pi.
+    @Test func appliesNegotiatedHermesRuntime() async throws {
+        let (store, transport) = setup()
+        await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
+            "runtimes": [], "hostFeatures": ["device.features", "agent.hermes"]])
+        await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "deviceId": "device-1",
+            "runtimes": [runtime("hermes:fixture")], "hostFeatures": ["device.features", "agent.hermes"],
+            "dshDesktop": NSNull(), "launchableAgents": ["hermes"]])
+        #expect(store.launchableAgents == ["hermes"])
+        #expect(store.runtimes.map(\.runtimeId) == ["hermes:fixture"])
+    }
+
     @Test func authenticatedDesktopAvailabilityClearsWhenOmitted() async throws {
         let (store, transport) = setup()
         await transport.emit(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "runtimes": [],

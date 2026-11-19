@@ -240,6 +240,7 @@ enum LocalizationCatalog {
         "不可取消": "Cannot cancel",
         "不可用": "Unavailable",
         "不支持": "Unsupported",
+        "不支持归档": "Archiving unavailable",
         "不申请审批": "Never request approval",
         "不认识的帧种类：{0}": "Unknown frame type: {0}",
         "不询问": "Do not ask",
