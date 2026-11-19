@@ -111,6 +111,11 @@ function contentRevision(value: object): string {
 export class AgentConversationState {
   readonly #registry: AgentStateRegistry;
   readonly #current = new Map<string, Current>();
+  /**
+   * 已作废的基线在被丢弃后仍要记住它退掉的 epoch：迟到事件不得复活旧图。
+   * 存活期与「无当前状态」的窗口一致，下一次被接受就清掉。
+   */
+  readonly #retired = new Map<string, Set<string>>();
   readonly #pages = new Map<string, { event: Snapshot; bytes: number }>();
   readonly #limits: Required<ConversationStateOptions>;
   #bytes = 0;
@@ -119,7 +124,7 @@ export class AgentConversationState {
     this.#registry = registry;
     this.#limits = { maxCurrentSessions: 256, maxCurrentBytes: 32 * 1024 * 1024, maxPageBytes: 1024 * 1024, maxPages: 256, maxPageCacheBytes: 32 * 1024 * 1024, ...options };
     registry.subscribe(change => {
-      if (change.kind === "reset") { this.#current.clear(); this.#pages.clear(); this.#bytes = this.#currentBytes = 0; }
+      if (change.kind === "reset") { this.#current.clear(); this.#retired.clear(); this.#pages.clear(); this.#bytes = this.#currentBytes = 0; }
       else if (change.kind === "closed" && change.domain === "history") this.#forget(scopeKey(change.scope));
     });
   }
@@ -163,7 +168,7 @@ export class AgentConversationState {
     const head = event.type === "session.patch" ? event.head : event.checkpoint?.head;
     if (event.type === "session.snapshot" && head && head.leafId !== event.cursor.leafId) return reject("snapshot_head_mismatch");
     let ready = !handshake && source.ready && (event.type === "session.patch" ? event.headCompleteness === "complete" : event.checkpoint?.headCompleteness === "complete" && event.checkpoint.inventoryComplete) && event.live?.complete === true && head !== undefined;
-    const retired = new Set(old?.retired);
+    const retired = new Set(old?.retired ?? this.#retired.get(key));
     if (old && !sameEpoch) { if (retired.size >= 64) return reject("source_epoch_limit"); retired.add(old.source.epoch); }
     if (!old && this.#current.size >= this.#limits.maxCurrentSessions) return reject("current_session_limit");
     if (bytesOfEvent(event) > this.#limits.maxPageBytes) ready = false;
@@ -235,6 +240,7 @@ export class AgentConversationState {
     const result = this.#registry.commitTransaction([...changes, ...(companion?.changes ?? [])], () => {
       this.#currentBytes += next.bytes - (old?.bytes ?? 0);
       this.#current.set(key, next);
+      this.#retired.delete(key);
       if (!sameEpoch) this.#dropPages(key);
       if (ready && event.type === "session.snapshot" && bytesOfEvent(event) <= this.#limits.maxPageBytes) this.#cache(key, event);
       companion?.onCommitted();
@@ -313,7 +319,7 @@ export class AgentConversationState {
     }
   }
   #dropPages(key: string): void { for (const [id, page] of this.#pages) if (JSON.parse(id)[0] === key) { this.#bytes -= page.bytes; this.#pages.delete(id); } }
-  #forget(key: string): void { const old = this.#current.get(key); if (old) { this.#currentBytes -= old.bytes; this.#current.delete(key); } this.#dropPages(key); }
+  #forget(key: string): void { const old = this.#current.get(key); if (old) { this.#currentBytes -= old.bytes; this.#current.delete(key); } this.#retired.delete(key); this.#dropPages(key); }
   stats(): { pages: number; bytes: number; currentSessions: number; currentBytes: number } { return { pages: this.#pages.size, bytes: this.#bytes, currentSessions: this.#current.size, currentBytes: this.#currentBytes }; }
   /**
    * ADR-0038 §8：按需取回**未截断**的那一条 Entry。
@@ -358,12 +364,47 @@ export class AgentConversationState {
     }
     return bytesOfEvent(base) <= this.#limits.maxPageBytes ? base : undefined;
   }
-  /** Retire a stale baseline while retaining last-known rows for later reconciliation. */
+  /** 把已作废的源身份从三个事实域里撤掉（拿到值也不可信）。 */
+  #retiredFacts(scope: StateScope, current: Current | undefined): RegistryMutation[] {
+    return current === undefined ? [] : ["history", "live", "artifacts"].map(domain => ({ kind: "value" as const, scope,
+      domain: domain as "history" | "live" | "artifacts",
+      fact: { source: { producer: "adapter" as const, sourceId: `conversation:${scope.kind === "agent" ? scope.key.agentKind : ""}`,
+        sourceEpoch: current.source.epoch, sourceRevision: current.source.seq },
+      availability: "unknown" as const, completeness: "unknown" as const, value: null } }));
+  }
+
+  /**
+   * ADR-0032 §5：patch 永远不是恢复基线，所以一条已经不可信的基线**不能**靠把 `ready` 改成
+   * false 来修复：那样保留的 epoch/seq 仍是旧的，下一块补丁要么因 epoch 不符被拒成
+   * `handshake_base_mismatch`，要么因 baseSeq 落后被拒成 `patch_baseline_mismatch`，此后每一块
+   * 补丁都同样被拒（现场就是这个稳定状态）。作废时把整份当前状态连同它的 epoch/seq 一起丢掉，
+   * 下一块补丁就按「还没有基线」的握手处理；旧 epoch 记进 `#retired`，迟到事件照样会被拒。
+   */
   invalidateBaseline(scope: StateScope, companion?: PreparedRegistryCommit): void {
     if (scope.kind !== "agent") return;
-    const current = this.#current.get(scopeKey(scope));
-    const changes: RegistryMutation[] = current ? ["history", "live", "artifacts"].map(domain => ({ kind: "value", scope, domain: domain as "history" | "live" | "artifacts", fact: { source: { producer: "adapter", sourceId: `conversation:${scope.key.agentKind}`, sourceEpoch: current.source.epoch, sourceRevision: current.source.seq }, availability: "unknown", completeness: "unknown", value: null } })) : [];
-    this.#registry.commitTransaction([...changes, ...(companion?.changes ?? [])], () => { if (current) current.source.ready = false; companion?.onCommitted(); });
+    const key = scopeKey(scope), current = this.#current.get(key);
+    this.#registry.commitTransaction([...this.#retiredFacts(scope, current), ...(companion?.changes ?? [])], () => {
+      if (current !== undefined) {
+        if (current.retired.size > 0) {
+          // 与当前投影同一预算：只记住最近作废的会话，避免长期运行积累。
+          if (!this.#retired.has(key) && this.#retired.size >= this.#limits.maxCurrentSessions) {
+            const oldest = this.#retired.keys().next().value as string;
+            this.#retired.delete(oldest);
+          }
+          this.#retired.set(key, current.retired);
+        }
+        this.#forget(key);
+      }
+      companion?.onCommitted();
+    });
   }
-  offline(scope: StateScope, companion?: PreparedRegistryCommit): void { this.invalidateBaseline(scope, companion); }
+  /** 断线只丢“可恢复性”，保留已读到的行供按 id 取回原文；重连后由真实快照重建。 */
+  offline(scope: StateScope, companion?: PreparedRegistryCommit): void {
+    if (scope.kind !== "agent") return;
+    const current = this.#current.get(scopeKey(scope));
+    this.#registry.commitTransaction([...this.#retiredFacts(scope, current), ...(companion?.changes ?? [])], () => {
+      if (current) current.source.ready = false;
+      companion?.onCommitted();
+    });
+  }
 }
