@@ -869,6 +869,90 @@ internal class HostConnection(
     @Volatile private var importUpload: ImportUpload? = null
     @Volatile private var importWait: ImportWait? = null
 
+    private class ImportLaunchWait(val launch: ExternalImportLaunch, val requestId: String, val query: Boolean,
+        val reply: CompletableDeferred<ImportLaunchResult> = CompletableDeferred())
+    @Volatile private var importLaunchWait: ImportLaunchWait? = null
+    private val importLaunchGate = Mutex()
+
+    internal fun canLaunchExternalImport(): Boolean = shouldConnect && mutableState.value.let {
+        it.sessionConfigurationSupported && it.canOperateSessions && it.homeDirectoryReceived
+    } && relay.externalImportChannel() != null
+
+    suspend fun launchImport(batch: ExternalImportBatch, inbox: ExternalImportStore, agent: String, cwd: String, instruction: String) = withContext(Dispatchers.IO) {
+        if (!importLaunchGate.tryLock()) reject(ImportProblem.BUSY)
+        try {
+            val channel = relay.externalImportChannel() ?: reject(ImportProblem.HOST_UPGRADE)
+            if (!canLaunchExternalImport()) reject(ImportProblem.HOST_UPGRADE)
+            val state = mutableState.value
+            val config = state.sessionConfiguration
+            val snapshot = config.snapshot ?: reject(ImportProblem.LAUNCH_CONFIGURATION)
+            if (config.requestId != null || config.error != null || snapshot.agentKind != agent || snapshot.cwd != cwd ||
+                agent !in (state.launchableAgents ?: state.supportedAgents).orEmpty()) reject(ImportProblem.LAUNCH_CONFIGURATION)
+            val launch = ExternalImportLaunch("import-launch:" + UUID.randomUUID(), hostId, externalImportPairingKey(pairing),
+                pairing.hostName ?: hostId, agent, cwd, instruction)
+            externalImportMessage(batch.text, instruction, L10n.tr("请查看附件。"), L10n.tr("导入的内容："))
+            inbox.reserveLaunch(batch.id, launch)
+            if (!matchesImportLaunch(launch) || relay.externalImportChannel() !== channel || mutableState.value.agentModelEpoch != state.agentModelEpoch ||
+                mutableState.value.sessionConfiguration != config) {
+                inbox.failLaunch(batch.id, launch.id)
+                reject(ImportProblem.LAUNCH_CONFIGURATION)
+            }
+            continueImportLaunch(batch, inbox, launch, requestImportLaunch(launch, channel, snapshot))
+        } finally { importLaunchGate.unlock() }
+    }
+
+    suspend fun recoverImportLaunch(batch: ExternalImportBatch, inbox: ExternalImportStore) = withContext(Dispatchers.IO) {
+        if (!importLaunchGate.tryLock()) reject(ImportProblem.BUSY)
+        try {
+            val launch = batch.launch ?: reject(ImportProblem.TARGET_UNAVAILABLE)
+            if (launch.failed || batch.attempt != null || !matchesImportLaunch(launch)) reject(ImportProblem.TARGET_UNAVAILABLE)
+            val channel = relay.externalImportChannel() ?: reject(ImportProblem.HOST_UPGRADE)
+            continueImportLaunch(batch, inbox, launch, requestImportLaunch(launch, channel, null))
+        } finally { importLaunchGate.unlock() }
+    }
+
+    private fun matchesImportLaunch(launch: ExternalImportLaunch) =
+        hostId == launch.hostId && externalImportPairingKey(pairing) == launch.pairingKey && canLaunchExternalImport()
+
+    private suspend fun continueImportLaunch(batch: ExternalImportBatch, inbox: ExternalImportStore, launch: ExternalImportLaunch, result: ImportLaunchResult) {
+        if (result == ImportLaunchResult.Failed) { inbox.failLaunch(batch.id, launch.id); return }
+        if (result !is ImportLaunchResult.Ready || !matchesImportLaunch(launch)) return
+        val bound = inbox.bindLaunch(batch.id, launch, result.sessionId)
+        val target = checkNotNull(bound.destination?.target)
+        repeat(50) {
+            if (!matchesImportLaunch(launch)) return
+            val runtime = importRuntime(target)
+            if (runtime != null && (runtime.agentKind ?: mutableState.value.sessions[target.sessionId]?.agentKind ?: "pi") == launch.agent) {
+                deliverImport(bound, inbox, launch.instruction)
+                return
+            }
+            delay(100)
+        }
+        reject(ImportProblem.TARGET_UNAVAILABLE)
+    }
+
+    private suspend fun requestImportLaunch(launch: ExternalImportLaunch, channel: Any, config: SessionConfigurationSnapshot?): ImportLaunchResult {
+        val request = "import-launch:" + UUID.randomUUID()
+        val wait = ImportLaunchWait(launch, request, config == null)
+        importLaunchWait = wait
+        try {
+            if (!relay.sendExternalImport(buildJsonObject {
+                put("type", if (config == null) "session.launch.read" else "session.launch"); put("protocolVersion", PROTOCOL_VERSION)
+                put("requestId", request); put("launchId", launch.id)
+                if (config != null) {
+                    put("agentKind", launch.agent); put("cwd", launch.cwd); put("binding", config.binding)
+                    put("revision", config.revision); put("values", config.values.payload()); put("spawnMode", "tui")
+                }
+            }, channel)) return ImportLaunchResult.Unconfirmed
+            val start = SystemClock.elapsedRealtime()
+            val window = if (config == null) 20_000L else 90_000L
+            while (relay.externalImportChannel() === channel && SystemClock.elapsedRealtime() - start < window) {
+                withTimeoutOrNull(250) { wait.reply.await() }?.let { return it }
+            }
+            return ImportLaunchResult.Unconfirmed
+        } finally { importLaunchWait = null }
+    }
+
     private fun importPairingReady(target: ExternalImportTarget): Boolean {
         val state = mutableState.value
         return shouldConnect && target.hostId == hostId && target.pairingKey == externalImportPairingKey(pairing) &&
@@ -945,6 +1029,15 @@ internal class HostConnection(
     private fun consumeExternalImport(message: JsonObject): Boolean {
         if (message.containsKey("protocolVersion") && supportedProtocolVersion(message["protocolVersion"]) == null) return false
         val type = message.importString("type") ?: return false
+        if (type == "session.launch.result" || type == "protocol.error") {
+            val requestId = message.importString("requestId")
+            if (requestId?.startsWith("import-launch:") == true) {
+                importLaunchWait?.takeIf { it.requestId == requestId }?.let { wait ->
+                    wait.launch.result(message, wait.query)?.let(wait.reply::complete)
+                }
+                return true
+            }
+        }
         val wait = importWait
         if (wait != null) {
             val (ours, receipt) = importReceiptFor(message, wait.attempt, wait.target, wait.query)

@@ -10,7 +10,7 @@ import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-internal enum class ImportProblem { EMPTY, UNSUPPORTED, LIMIT, FULL, BUSY, UNREADABLE, TARGET_UNAVAILABLE, ALREADY_ASSIGNED, HOST_UPGRADE, UPLOAD_FAILED }
+internal enum class ImportProblem { EMPTY, UNSUPPORTED, LIMIT, FULL, BUSY, UNREADABLE, TARGET_UNAVAILABLE, ALREADY_ASSIGNED, HOST_UPGRADE, UPLOAD_FAILED, LAUNCH_CONFIGURATION }
 internal class ImportRejected(val problem: ImportProblem) : Exception()
 
 @Serializable
@@ -25,10 +25,15 @@ internal data class ExternalImportTarget(val hostId: String, val pairingKey: Str
 internal data class ExternalImportDestination(val target: ExternalImportTarget, val hostName: String, val sessionName: String)
 
 @Serializable
+internal data class ExternalImportLaunch(val id: String, val hostId: String, val pairingKey: String, val hostName: String,
+    val agent: String, val cwd: String, val instruction: String, val failed: Boolean = false)
+
+@Serializable
 internal data class ExternalImportBatch(
     val id: String, val createdAt: Long, val text: String?, val files: List<ImportedFile>,
     val destination: ExternalImportDestination? = null,
     val attempt: ExternalImportAttempt? = null,
+    val launch: ExternalImportLaunch? = null,
 )
 
 internal data class ImportSource(val name: String?, val open: () -> InputStream)
@@ -99,6 +104,7 @@ internal class ExternalImportStore(
 
     /** Replaces only the manifest; the batch ID and payload bytes remain unchanged. */
     fun assign(id: String, destination: ExternalImportDestination): ExternalImportBatch = update(id) { batch ->
+        if (batch.launch != null) reject(ImportProblem.ALREADY_ASSIGNED)
         val assigned = batch.destination
         if (assigned == null) batch.copy(destination = destination)
         else {
@@ -108,9 +114,31 @@ internal class ExternalImportStore(
     }
 
     fun unassign(id: String, target: ExternalImportTarget): ExternalImportBatch = update(id) { batch ->
-        if (batch.destination?.target != target) reject(ImportProblem.TARGET_UNAVAILABLE)
+        if (batch.destination?.target != target || batch.launch != null) reject(ImportProblem.TARGET_UNAVAILABLE)
         if (batch.attempt?.receipt?.maySend == false) reject(ImportProblem.BUSY)
         batch.copy(destination = null, attempt = null)
+    }
+
+    fun reserveLaunch(id: String, launch: ExternalImportLaunch) = update(id) { batch ->
+        if (batch.destination != null || batch.attempt != null || batch.launch != null) reject(ImportProblem.ALREADY_ASSIGNED)
+        batch.copy(launch = launch)
+    }
+
+    fun failLaunch(id: String, launchId: String) = update(id) { batch ->
+        val launch = batch.launch
+        if (launch?.id == launchId && batch.destination == null) batch.copy(launch = launch.copy(failed = true)) else batch
+    }
+
+    fun clearFailedLaunch(id: String, launchId: String) = update(id) { batch ->
+        if (batch.launch?.id != launchId || batch.launch.failed.not() || batch.destination != null) reject(ImportProblem.TARGET_UNAVAILABLE)
+        batch.copy(launch = null)
+    }
+
+    fun bindLaunch(id: String, launch: ExternalImportLaunch, sessionId: String) = update(id) { batch ->
+        val target = ExternalImportTarget(launch.hostId, launch.pairingKey, sessionId, launch.cwd)
+        if (batch.launch != launch || launch.failed || sessionId.isBlank() || (batch.destination != null && batch.destination.target != target))
+            reject(ImportProblem.TARGET_UNAVAILABLE)
+        batch.copy(destination = ExternalImportDestination(target, launch.hostName, downloadDisplayName(launch.cwd)))
     }
 
     fun uploadSources(id: String, target: ExternalImportTarget): List<ImportUploadSource> = synchronized(lock) {

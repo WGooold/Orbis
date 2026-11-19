@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,8 +34,10 @@ internal fun ExternalImportButton(count: Int, action: () -> Unit) {
 @Composable
 internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportViewModel, remote: RemoteViewModel) {
     val selected = ui.batches.firstOrNull { it.id == ui.selected }
-    var instruction by remember(selected?.id) { mutableStateOf(selected?.attempt?.instruction.orEmpty()) }
+    var instruction by remember(selected?.id) { mutableStateOf((selected?.attempt?.instruction ?: selected?.launch?.instruction).orEmpty()) }
     var deleting by remember(selected?.id) { mutableStateOf(false) }
+    var choosingComputer by remember(selected?.id) { mutableStateOf(false) }
+    var launchHost by remember(selected?.id) { mutableStateOf<String?>(null) }
     var choosingTarget by remember(selected?.id) { mutableStateOf(false) }
     var targets by remember(selected?.id) { mutableStateOf<List<ExternalImportDestination>?>(null) }
     LaunchedEffect(selected?.id, choosingTarget) {
@@ -45,7 +48,8 @@ internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportView
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (selected != null) NeumorphIconButton({
-                    if (choosingTarget) choosingTarget = false else model.select(null)
+                    if (launchHost != null) launchHost = null else if (choosingComputer) choosingComputer = false
+                    else if (choosingTarget) choosingTarget = false else model.select(null)
                 }, OrbisSymbols.ArrowBack, L10n.tr("返回"), enabled = !ui.busy)
                 Text(L10n.tr(if (choosingTarget) "选择已有会话" else "待导入"),
                     style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
@@ -55,7 +59,26 @@ internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportView
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 ui.problem?.let { Text(importProblemText(it), color = MaterialTheme.colorScheme.error) }
                 if (ui.busy || (selected != null && ui.delivering == selected.id)) Text(L10n.tr("正在处理导入…"))
-                if (selected != null && choosingTarget) {
+                val owner = launchHost?.let(remote::externalImportConnection)
+                if (selected != null && owner != null) {
+                    val state by owner.state.collectAsStateWithLifecycle()
+                    Text(owner.pairing.hostName ?: owner.hostId, style = MaterialTheme.typography.labelLarge)
+                    androidx.compose.runtime.key(owner) {
+                        SessionDraftCard(state, true, null, owner::browseSessions, owner::browseInto, owner::browseUp,
+                            onCancel = { launchHost = null }, onLoadConfiguration = owner::loadSessionConfiguration,
+                            onSaveConfiguration = owner::saveSessionConfiguration, importMode = true) { agent, cwd, note, _, _ ->
+                            launchHost = null; choosingComputer = false
+                            model.launch(selected, owner, agent, cwd, note)
+                            true
+                        }
+                    }
+                } else if (choosingComputer) {
+                    val hosts = remote.externalImportHosts()
+                    if (hosts.isEmpty()) Text(L10n.tr("暂无可加入的会话"))
+                    hosts.forEach { (host, _) ->
+                        NeumorphTextButton(host.name, onClick = { launchHost = host.hostId }, dismissOnClick = false)
+                    }
+                } else if (selected != null && choosingTarget) {
                     val destinations = targets
                     if (destinations == null) Text(L10n.tr("正在读取…"))
                     else if (destinations.isEmpty()) Text(L10n.tr("暂无可加入的会话"))
@@ -75,9 +98,19 @@ internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportView
                     }
                     selected.text?.let { body -> SelectionContainer { Text(importPreview(body, 2000)) } }
                     val destination = selected.destination
-                    if (destination == null) {
+                    val launch = selected.launch
+                    if (destination == null && launch != null) {
+                        Text(L10n.tr("{0} · {1}", launch.hostName, launch.cwd))
+                        Text(L10n.tr(if (launch.failed) "启动失败" else "启动结果待核对"))
+                        if (launch.failed) NeumorphTextButton(L10n.tr("移回待导入"), onClick = { model.clearFailedLaunch(selected.id, launch.id) },
+                            enabled = !ui.busy && ui.delivering == null, dismissOnClick = false)
+                        else NeumorphTextButton(L10n.tr("核对结果"), onClick = { model.deliver(selected, remote, null) },
+                            enabled = !ui.busy && ui.delivering == null, dismissOnClick = false)
+                    } else if (destination == null) {
                         NeumorphTextButton(L10n.tr("加入会话草稿"), onClick = { choosingTarget = true }, enabled = !ui.busy,
                             modifier = Modifier.testTag("external-import-choose-target"), dismissOnClick = false)
+                        NeumorphTextButton(L10n.tr("新建会话"), onClick = { choosingComputer = true }, enabled = !ui.busy && ui.delivering == null,
+                            modifier = Modifier.testTag("external-import-new-session"), dismissOnClick = false)
                     } else {
                         val receipt = selected.attempt?.receipt
                         when {
@@ -94,7 +127,7 @@ internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportView
                                     enabled = !ui.busy && ui.delivering != selected.id)
                                 NeumorphTextButton(L10n.tr("发送"), onClick = { model.deliver(selected, remote, instruction) },
                                     enabled = !ui.busy && ui.delivering == null, modifier = Modifier.testTag("external-import-send"), dismissOnClick = false)
-                                NeumorphTextButton(L10n.tr("移回待导入"), onClick = { model.unassign(selected.id, destination.target) },
+                                if (launch == null) NeumorphTextButton(L10n.tr("移回待导入"), onClick = { model.unassign(selected.id, destination.target) },
                                     enabled = !ui.busy && ui.delivering != selected.id, dismissOnClick = false)
                             }
                         }
@@ -102,8 +135,8 @@ internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportView
                     NeumorphTextButton(L10n.tr("删除"), onClick = { deleting = true }, enabled = !ui.busy && ui.delivering != selected.id, dismissOnClick = false)
                 } else {
                     if (ui.batches.isEmpty() && !ui.busy && ui.problem == null) Text(L10n.tr("暂无待导入内容"))
-                    ui.batches.filter { it.destination == null }.forEach { BatchRow(it, model, enabled = !ui.busy) }
-                    val drafts = ui.batches.filter { it.destination != null }
+                    ui.batches.filter { it.destination == null && it.launch == null }.forEach { BatchRow(it, model, enabled = !ui.busy) }
+                    val drafts = ui.batches.filter { it.destination != null || it.launch != null }
                     if (drafts.isNotEmpty()) {
                         Text(L10n.tr("导入草稿"), style = MaterialTheme.typography.labelLarge)
                         drafts.forEach { BatchRow(it, model, enabled = !ui.busy) }
@@ -155,6 +188,7 @@ private fun importProblemText(problem: ImportProblem): String = when (problem) {
     ImportProblem.BUSY -> L10n.tr("已有导入正在进行，请稍后重试")
     ImportProblem.UNREADABLE -> L10n.tr("无法读取导入内容")
     ImportProblem.TARGET_UNAVAILABLE -> L10n.tr("所选会话已不可用")
+    ImportProblem.LAUNCH_CONFIGURATION -> L10n.tr("配置未确认，请刷新核对")
     ImportProblem.HOST_UPGRADE -> L10n.tr("更新电脑端后可发送导入内容")
     ImportProblem.UPLOAD_FAILED -> L10n.tr("上传未完成，附件已保留")
     ImportProblem.ALREADY_ASSIGNED -> L10n.tr("此内容已加入其他会话草稿")

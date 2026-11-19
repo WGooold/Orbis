@@ -106,6 +106,25 @@ internal fun ExternalImportAttempt.wire(target: ExternalImportTarget, command: J
     if (command != null) put("command", command)
 }
 
+internal sealed interface ImportLaunchResult {
+    data class Ready(val sessionId: String) : ImportLaunchResult
+    data object Failed : ImportLaunchResult
+    data object Unconfirmed : ImportLaunchResult
+}
+
+internal fun ExternalImportLaunch.result(message: JsonObject, query: Boolean): ImportLaunchResult? {
+    if (message.importString("type") == "protocol.error") return ImportLaunchResult.Unconfirmed
+    if (message.importString("launchId") != id) return null
+    val session = message.importString("sessionId")
+    return when (message.importString("phase")) {
+        "ready" -> if (!session.isNullOrBlank() && message.importString("agentKind") == agent && message.importString("cwd") == cwd)
+            ImportLaunchResult.Ready(session) else ImportLaunchResult.Unconfirmed
+        "failed" -> if (session == null) ImportLaunchResult.Failed else ImportLaunchResult.Unconfirmed
+        "unknown", "absent" -> ImportLaunchResult.Unconfirmed
+        else -> if (query) ImportLaunchResult.Unconfirmed else null
+    }
+}
+
 /** Only explicit UI actions enter this transaction, including after interrupted uploads. */
 internal class ExternalImportDelivery {
     private val gate = Mutex()

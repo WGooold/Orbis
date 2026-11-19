@@ -71,12 +71,22 @@ internal class ExternalImportViewModel(app: Application) : AndroidViewModel(app)
 
     fun delete(id: String) = mutate(id, null) { store.delete(id) }
 
-    fun deliver(batch: ExternalImportBatch, remote: RemoteViewModel, instruction: String?) {
+    fun deliver(batch: ExternalImportBatch, remote: RemoteViewModel, instruction: String?) = runDelivery(batch) {
+        remote.deliverExternalImport(batch, store, instruction)
+    }
+
+    fun launch(batch: ExternalImportBatch, owner: HostConnection, agent: String, cwd: String, instruction: String) = runDelivery(batch) {
+        owner.launchImport(batch, store, agent, cwd, instruction)
+    }
+
+    fun clearFailedLaunch(id: String, launchId: String) = mutate(id, id) { store.clearFailedLaunch(id, launchId) }
+
+    private fun runDelivery(batch: ExternalImportBatch, action: suspend () -> Unit) {
         if (mutableUi.value.busy || mutableUi.value.delivering != null) return
         mutableUi.update { it.copy(delivering = batch.id, problem = null) }
         viewModelScope.launch {
             try {
-                remote.deliverExternalImport(batch, store, instruction)
+                action()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
                 mutableUi.update { state -> if (state.selected == batch.id)

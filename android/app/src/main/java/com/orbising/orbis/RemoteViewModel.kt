@@ -385,10 +385,19 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     internal suspend fun deliverExternalImport(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String?) {
-        val hostId = batch.destination?.target?.hostId ?: reject(ImportProblem.TARGET_UNAVAILABLE)
+        val hostId = batch.destination?.target?.hostId ?: batch.launch?.hostId ?: reject(ImportProblem.TARGET_UNAVAILABLE)
         val connection = connectionFor(hostId) ?: reject(ImportProblem.TARGET_UNAVAILABLE)
-        connection.deliverImport(batch, inbox, instruction)
+        if (batch.destination == null && instruction == null) connection.recoverImportLaunch(batch, inbox)
+        else connection.deliverImport(batch, inbox, instruction)
     }
+
+    internal fun externalImportHosts(): List<Pair<HostSnapshot, HostConnection>> = synchronized(lock) {
+        connections.values.mapNotNull { connection ->
+            if (!connection.canLaunchExternalImport()) null else HostSnapshot(connection.pairing, connection.state.value, false) to connection
+        }
+    }
+
+    internal fun externalImportConnection(hostId: String): HostConnection? = connectionFor(hostId)
 
     internal fun externalImportRuntime(target: ExternalImportTarget): RuntimeSummary? {
         val connection = connectionFor(target.hostId) ?: return null

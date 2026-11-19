@@ -2,7 +2,7 @@
 
 日期：2026-11-19
 
-状态：本地入口和向已有在线会话发送已实现；iOS 主 App 新建目标已实现；Android 新建目标、扩展直投待实施。独立工作树 `codex/external-import-20261119`。未部署、未验收。
+状态：本地入口与双端主 App 会话投递已实现；iOS 扩展直投待实施。独立工作树 `codex/external-import-20261119`。未部署、未验收。
 
 关联：[ADR-0049 乐观发送](0049-optimistic-send-and-source-reconciliation.md)、[ADR-0051 移动 UI 基线](0051-ui-style-motion-and-visual-stability-freeze.md)、[ADR-0055 Agent 输入生命周期](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0064 兼容性](0064-protocol-compatibility.md)、[ADR-0072 会话配置与可恢复启动](0072-session-configuration-and-recoverable-launch.md)、[ADR-0083 反馈等级](0083-feedback-levels-and-stale-replies.md)。
 
@@ -121,3 +121,9 @@ Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子�
 主 App 从导入收件箱选择电脑，在现有[新建卡片](../../ios/Orbis/Orbis/SessionViews.swift)明确选择 Agent 和工作目录。启动前原子保留批次和启动 ID；只使用已确认的配置，收到匹配的就绪回执才绑定新会话并走导入附件和首句发送。重连后查询原启动 ID，不重新创建。
 
 [Swift 定向回归](../../.artifacts/external-import/oi-05-ios/verified/run.log) 31/31；[通用模拟器构建](../../.artifacts/external-import/oi-05-ios/app/run.log)通过，[租约已释放](../../.artifacts/external-import/oi-05-ios/app/cleanup-audit.json)。未安装、未分发、未验收。
+
+### OI-05-Android 实施记录
+
+从导入收件箱选定电脑后，复用[新建卡片](../../android/app/src/main/java/com/orbising/orbis/SessionDraft.kt)的 Agent、项目及配置选择，不覆盖普通新建草稿。先保留批次和启动 ID，再请求启动；只接受同一启动、Agent 和项目的就绪回执，绑定真实会话后才上传附件及提交首句。启动结果未知时只查询原启动，不重新创建。
+
+[Android 定向回归](../../.artifacts/external-import/oi-05-android/verified/run.log) 14/14，平台用例已编译。未安装、未分发、未验收。共享 QA MCP 连接被拒，未登记；iOS 真机候选还需核对 QA 签名配方，确保主 App 和扩展各自的 bundle ID、Info.plist 以及 `.imports` App Group 不被全局覆盖。

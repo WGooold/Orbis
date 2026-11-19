@@ -105,6 +105,33 @@ class ExternalImportDeliveryTest {
         assertEquals(batch, inbox.list().single())
     }
 
+    // IMPORT-07: an uncertain launch keeps its reservation across reopen and only its exact ready result can bind a session.
+    @Test fun unknownLaunchCannotBeRecreatedOrRetargeted() {
+        val root = temporary.newFolder()
+        val inbox = ExternalImportStore(root)
+        val batch = inbox.save("first message", emptyList())
+        val launch = ExternalImportLaunch("import-launch:id", target.hostId, target.pairingKey, "Computer", "pi", target.cwd, "")
+        inbox.reserveLaunch(batch.id, launch)
+        val reopened = ExternalImportStore(root)
+        assertEquals(launch, reopened.list().single().launch)
+        assertThrows(ImportRejected::class.java) { reopened.reserveLaunch(batch.id, launch.copy(id = "second")) }
+        assertThrows(ImportRejected::class.java) { reopened.assign(batch.id, destination) }
+        assertThrows(ImportRejected::class.java) { reopened.clearFailedLaunch(batch.id, launch.id) }
+        fun reply(phase: String, cwd: String = launch.cwd, id: String = launch.id) = buildJsonObject {
+            put("type", "session.launch.result"); put("launchId", id); put("phase", phase)
+            put("agentKind", "pi"); put("cwd", cwd)
+            if (phase == "ready") put("sessionId", "created-session")
+        }
+        assertEquals(ImportLaunchResult.Unconfirmed, launch.result(reply("absent"), query = true))
+        assertEquals(ImportLaunchResult.Unconfirmed, launch.result(reply("ready", "/wrong"), query = true))
+        assertNull(launch.result(reply("ready", id = "different"), query = true))
+        assertNull(reopened.list().single().destination)
+        val result = launch.result(reply("ready"), query = true) as ImportLaunchResult.Ready
+        val bound = reopened.bindLaunch(batch.id, launch, result.sessionId)
+        assertEquals(target.copy(sessionId = "created-session"), bound.destination?.target)
+        assertThrows(ImportRejected::class.java) { reopened.bindLaunch(batch.id, launch, "different-session") }
+    }
+
     @Test fun checksUploadBytesAndCorrelatesOnlyTheOriginalResult() {
         val upload = UploadTask("task", runtime.runtimeId, target.hostId, "", "data.txt", 3, "hash", "/project")
         fun finish(size: Int, hash: String) = buildJsonObject { put("path", "/project/data.txt"); put("size", size); put("sha256", hash) }
