@@ -30,7 +30,7 @@ describe("MSG-RENDER-01 device message rendering", () => {
     const message: ChatMessage = { ...assistant(), content: [{ type: "render", renderKind: "codex_generated_image", text: "生成图片暂不可显示" }] };
     const envelope = { type: "runtime.event", runtimeId: "runtime", event: { type: "message.finished", message } };
     const path = join(cwd, "image.png");
-    const project = (rich: boolean, generatedImagePath?: () => string) => engine.project("phone", envelope, { codex: true, rich, generatedImagePath });
+    const project = (rich: boolean, generatedImagePath?: () => string) => engine.project("phone", envelope, { codex: true, rich, ...(generatedImagePath ? { generatedImagePath } : {}) });
     expect(project(true, () => path)).toMatchObject({ event: { message: { content: [{ type: "render", renderKind: "file_reference", purpose: "output",
       text: "image.png", file: { fileName: "image.png", referenceId: expect.stringMatching(/^orbis-message-file:/) } }] } } });
     expect(JSON.stringify(project(true, () => path))).not.toContain(path);
