@@ -1,6 +1,6 @@
 import {
   DISPLAY_PROJECTION_VERSION, LEGACY_DISPLAY_PROJECTION_VERSION, downgradeMessageForLegacy,
-  normalizeCodexMessage, projectDisplayEntries, renderStreamingMarkdown, hasCitationSuffix,
+  normalizeCodexMessage, projectDisplayEntries, renderStreamingMarkdown, hasCitationSuffix, hasCodexDirective,
   type ChatMessage, type RemoteSessionEntry, type RuntimeEvent,
 } from "@orbis/protocol";
 import { MessageFileReferences } from "./message-file-references.js";
@@ -132,7 +132,7 @@ export class DeviceMessageRendering {
       this.#setStream(key, { raw: "", visible: "", pending: false, excessive: true });
       return { ...event, delta: "" }; // Authoritative finish/patch restores large bodies.
     }
-    if (!previous.pending && !event.delta.includes(":codex-file-citation") && !hasCitationSuffix(raw)) {
+    if (!previous.pending && !hasCodexDirective(event.delta) && !hasCitationSuffix(raw)) {
       this.#setStream(key, { raw, visible: previous.visible + event.delta, pending: false });
       return event;
     }
@@ -167,9 +167,9 @@ function hasSpecialBlock(entry: RemoteSessionEntry): boolean {
 }
 function entryContainsDirective(entry: RemoteSessionEntry): boolean {
   const content = object(entry.data.message)?.content;
-  return typeof content === "string" ? content.includes(":codex-file-citation") : Array.isArray(content) && content.some(raw => {
+  return typeof content === "string" ? hasCodexDirective(content) : Array.isArray(content) && content.some(raw => {
     const block = object(raw);
-    return block?.type === "text" && typeof block.text === "string" && block.text.includes(":codex-file-citation");
+    return block?.type === "text" && typeof block.text === "string" && hasCodexDirective(block.text);
   });
 }
 function object(value: unknown): JsonObject | undefined {

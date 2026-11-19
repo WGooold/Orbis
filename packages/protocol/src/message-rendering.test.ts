@@ -39,6 +39,21 @@ describe("MSG-RENDER-01: shared Codex Markdown projection", () => {
     expect(normalizeCodexMessage(user, resolve)).toBe(user);
   });
 
+  it("downgrades Codex visualizations and suggestions in prose only", () => {
+    const visual = '::codex-inline-vis{file="private-chart.html"}';
+    const reference = '\ue200visualize\ue202{"path":"/secret/chart.html"}\ue201';
+    const followup = ':codex-followup[Continue]{prompt="hidden prompt"}';
+    expect(normalizeCodexMessage(message(`${visual}\n\n${reference}\n\n${followup}`), resolve).content).toEqual([
+      { type: "text", text: "可视化内容暂不可显示\n\n可视化内容暂不可显示\n\nContinue" },
+    ]);
+    for (const text of [`~~~markdown\n${visual}\n${followup}\n~~~`, `\`${followup}\``, '::codex-inline-vis{other="file"}']) {
+      const raw = message(text);
+      expect(normalizeCodexMessage(raw, resolve)).toBe(raw);
+    }
+    expect(renderStreamingMarkdown("Intro\n::codex-inline")).toEqual({ text: "Intro\n", pending: true });
+    expect(renderStreamingMarkdown("Intro :codex-followup[Continue]")).toEqual({ text: "Intro ", pending: true });
+  });
+
   it("buffers an unfinished directive, restores malformed text and keeps following prose", () => {
     expect(renderStreamingMarkdown("See :codex-file")).toEqual({ text: "See ", pending: true });
     expect(renderStreamingMarkdown(`${output.slice(0, -1)}`)).toEqual({ text: "", pending: true });
