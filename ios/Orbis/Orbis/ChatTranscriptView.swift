@@ -22,8 +22,7 @@ private final class ChatRowViewportMetrics {
 /// stays local to the row; only crossing a visibility/paging boundary publishes.
 private struct ChatRowViewportObserver: ViewModifier {
     let viewportHeight: CGFloat
-    var firstRow = false
-    var questionID: String?
+    let row: ChatViewportFacts.ReadingRow
     let report: (UUID, ChatViewportFacts?) -> Void
     @State private var metrics = ChatRowViewportMetrics()
 
@@ -31,7 +30,7 @@ private struct ChatRowViewportObserver: ViewModifier {
         content
             .onGeometryChange(for: ChatViewportFacts.self) { geometry in
                 ChatViewportFacts(frame: geometry.frame(in: .named("chat-viewport")),
-                                  viewportHeight: viewportHeight, firstRow: firstRow, questionID: questionID)
+                                  viewportHeight: viewportHeight, row: row)
             } action: { facts in
                 metrics.facts = facts
                 if metrics.appeared { report(metrics.token, facts) }
@@ -56,6 +55,8 @@ extension EnvironmentValues {
 /// new content, dragging or opening a disclosure stops following, and past three lines a jump-to-latest
 /// button appears. Nothing else moves the viewport on the reader's behalf.
 private enum ChatFollow {
+    static let topID = "chat-header"
+    static let topClearance: CGFloat = 48
     static let bottomID = "chat-bottom"
     static let topPadding: CGFloat = 4
 }
@@ -83,18 +84,9 @@ private struct ChatNativeSnapshotInputs: Equatable {
     let emptyHeight: CGFloat?
 }
 
-private struct ChatNativeHeaderInputs: Equatable {
-    let context: ChatReadContext
-    let syncing: Bool
-    let cached: Bool
-    let loading: Bool
-    let error: String?
-    let hasOlder: Bool
-}
-
 private enum ChatNativeItemInputs: Equatable {
+    case top
     case message(ChatNativeMessageInputs)
-    case header(ChatNativeHeaderInputs)
     case empty(syncing: Bool, height: CGFloat)
     case tools(ChatReadContext)
     case tail
@@ -164,7 +156,7 @@ struct ChatTranscriptView: View, Equatable {
         let _ = ChatDebugProbes.rendered(.transcript)
         conversation(state: state, revision: revision).overlay(alignment: .top) {
             ChatNoticesRegion(model: model, actions: actions, mountToken: mountToken, viewport: viewport,
-                setComposerFocused: setComposerFocused, onBack: onBack).equatable()
+                setComposerFocused: setComposerFocused, onBack: onBack, retryHistory: { _ = loadOlder(retrying: true) }).equatable()
         }
         .onReceive(acceptedSends) { beginSendFeedback(existing: $0) }
         .onDisappear {
@@ -197,6 +189,8 @@ struct ChatTranscriptView: View, Equatable {
                 ChatJumpToLatestView(viewport: viewport, hasRows: !state.transcript.rows.isEmpty,
                     accent: OrbisPalette(scheme).agent(state.kind), jump: jumpToLatest)
             }
+            .modifier(ChatHistoryAccessibility(enabled: state.hasOlder && !state.historyLoading && state.historyError == nil,
+                                               load: { _ = loadOlder() }))
             .overlay(alignment: .bottom) { ChatActionFeedbackView(feedback: state.actionFeedback) }
             .onChange(of: state.historyRevision) { _, _ in
                 sendFlight.clear()
@@ -208,12 +202,11 @@ struct ChatTranscriptView: View, Equatable {
     /// Release compatibility path on iOS 17; DEBUG comparison path on newer OSes.
     private func swiftUITranscript(height: CGFloat, state: ChatTranscriptState) -> some View {
         let transcript = state.transcript
-        let questionID = transcript.latestQuestion(excluding: Set(state.pending.items.map(\.messageId)))?.messageId
         let readContext = actions.reading(state.canSend)
         let streaming = activeStreaming(state)
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
-                transcriptHeader(state: state).id("chat-header")
+                Color.clear.frame(height: ChatFollow.topClearance).accessibilityHidden(true).id(ChatFollow.topID)
                 if transcript.rows.isEmpty {
                     OrbisEmptyState(symbol: "bubble.left.and.bubble.right", title: state.syncing ? L10n.tr("正在加载会话") : L10n.tr("继续这段会话"))
                         .frame(minHeight: max(180, height - 100))
@@ -221,20 +214,19 @@ struct ChatTranscriptView: View, Equatable {
                 ForEach(transcript.rows) { row in
                     messageRow(row, state: state, inputs: messageInputs(row, state: state, context: readContext, streaming: streaming)).equatable().id(row.id)
                         .modifier(ChatRowViewportObserver(viewportHeight: height,
-                            firstRow: row.id == transcript.firstMessageId,
-                            questionID: row.id == questionID ? questionID : nil, report: rowViewportChanged))
+                            row: .init(id: row.id, index: transcript.rowIndex[row.id] ?? .max), report: rowViewportChanged))
                 }
                 LiveToolsView(inventory: target.owner.toolInventories, runtimeId: actions.runtimeId, context: readContext).id("chat-live-tools")
-                    .modifier(ChatRowViewportObserver(viewportHeight: height, report: rowViewportChanged))
                 // Small tail: the last message sits close to the composer (LazyVStack spacing still applies).
                 Color.clear.frame(height: 4).id(ChatFollow.bottomID)
                     .background(GeometryReader { geo in Color.clear.preference(key: ChatBottomPreference.self, value: geo.frame(in: .named("chat-viewport")).maxY) })
             }.scrollTargetLayout()
                 .padding(.horizontal, 16).padding(.top, ChatFollow.topPadding)
-                .background(OrbisScrollDirectionObserver { earlier in
+                .background(OrbisScrollDirectionObserver(onDirection: { earlier in
                     guard ownsViewport else { return }
                     self.viewport.update { $0.directionChanged(towardEarlier: earlier) }
-                })
+                }, pagingOwner: { ownsViewport && viewport.canLoadHistory() ? viewport.nativeState.contextGeneration : nil },
+                    onHistoryPull: { _ = loadOlder() }))
                 .background {
                     if #unavailable(iOS 18.0) { LegacyScrollInteraction(onInteraction: userInteractionChanged) }
                 }
@@ -243,12 +235,12 @@ struct ChatTranscriptView: View, Equatable {
                 requestIsCurrent: { ownsViewport && self.viewport.owns($0) },
                 onDistance: bottomDistanceChanged, onInteraction: userInteractionChanged,
                 onReading: { if ownsViewport { self.viewport.disclosureBegan() } }))
-            .task(id: mountToken) {
+            .task(id: viewport.contextGeneration) {
                 // Child geometry can arrive before the page shell mounts and
                 // resets policy. Replay the latest discrete facts after that reset.
                 await Task.yield()
                 guard !Task.isCancelled, ownsViewport else { return }
-                if self.viewport.viewportChanged(metrics.reports.snapshot(questionID: self.viewport.latestQuestion?.messageId)) { loadOlder() }
+                self.viewport.readingRowChanged(metrics.reports.snapshot().readingRow?.id)
             }
     }
 
@@ -309,9 +301,6 @@ struct ChatTranscriptView: View, Equatable {
                     let trace = ChatSchedulingTrace.nativeInputsBegan()
                     defer { ChatSchedulingTrace.nativeInputsEnded(trace, rows: transcript.rows.count) }
                     let context = actions.reading(state.canSend)
-                    let header = nativeItem(id: "chat-header", inputs: .header(.init(context: context,
-                        syncing: state.syncing, cached: state.cached, loading: state.historyLoading,
-                        error: state.historyError, hasOlder: state.hasOlder)), environment: environment) { transcriptHeader(state: state) }
                     let streaming = activeStreaming(state)
                     let rows = transcript.rows.map { row in
                         let inputs = messageInputs(row, state: state, context: context, streaming: streaming)
@@ -330,7 +319,12 @@ struct ChatTranscriptView: View, Equatable {
                         LiveToolsView(inventory: target.owner.toolInventories, runtimeId: actions.runtimeId, context: context)
                     }] : []
                     let tail = nativeItem(id: ChatFollow.bottomID, inputs: .tail, environment: environment) { Color.clear.frame(height: 4) }
-                    let items = [header] + empty + rows + live + [tail]
+                    // Keep the former header's clearance so the top overlay never covers
+                    // the first message at rest. Loading/failure do not change list geometry.
+                    let top = nativeItem(id: ChatFollow.topID, inputs: .top, environment: environment) {
+                        Color.clear.frame(height: ChatFollow.topClearance).accessibilityHidden(true)
+                    }
+                    let items = [top] + empty + rows + live + [tail]
                     let _ = nativeItems.retain(ids: items.map(\.id))
                     return .init(items: items, revision: nativeItems.revision)
                 }
@@ -341,19 +335,14 @@ struct ChatTranscriptView: View, Equatable {
                 onInteraction: { active in
                     userInteractionChanged(active)
                     if !active { ChatDebugProbes.viewportStopped(viewport) }
-                }, onViewport: { frames, height in
+                }, onReadingRow: { id in
                     guard ownsViewport else { return }
-                    var facts = ChatViewportFacts()
-                    let question = viewport.latestQuestion?.messageId
-                    for (id, frame) in frames {
-                        facts.merge(ChatViewportFacts(frame: frame, viewportHeight: height,
-                            firstRow: id == transcript.firstMessageId, questionID: id == question ? question : nil))
-                    }
-                    if viewport.viewportChanged(facts) { loadOlder() }
+                    viewport.readingRowChanged(id)
                 }, onDirection: { earlier in
                     guard ownsViewport else { return }
                     viewport.update { $0.directionChanged(towardEarlier: earlier) }
-                }, reduceMotion: reduceMotion)
+                }, canPageHistory: { ownsViewport && viewport.canLoadHistory() },
+                onHistoryPull: { _ = loadOlder() }, reduceMotion: reduceMotion)
         }
         }
         .background { ChatTranscriptInteractionHost(state: nativeInteractions) }
@@ -368,28 +357,6 @@ struct ChatTranscriptView: View, Equatable {
         .onChange(of: revision, initial: true) { _, _ in
             nativeInteractions.reconcile(rowIDs: Set(state.transcript.rows.map(\.id)))
         }
-    }
-
-    /// One row above the transcript. Its height never changes: an error replaces the
-    /// paging action in place instead of adding a line.
-    private func transcriptHeader(state: ChatTranscriptState) -> some View {
-        let p = OrbisPalette(scheme)
-        let accent = p.agent(state.kind)
-        let error = state.historyError
-        let loading = state.historyLoading
-        let blocked = state.syncing || (!state.canSend && !state.cached) || loading
-        return HStack(spacing: 10) {
-            if let error {
-                Text(error).font(.orbisCaption()).foregroundStyle(p.error).lineLimit(1)
-                Spacer(minLength: 0)
-                OrbisTextButton(title: L10n.tr("重试"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
-            } else if state.hasOlder {
-                OrbisTextButton(title: L10n.tr("更早的消息"), symbol: "arrow.up", tint: accent, loading: loading) { loadOlder() }.disabled(blocked)
-                Spacer(minLength: 0)
-            } else {
-                Spacer(minLength: 0)
-            }
-        }.frame(minHeight: 48)
     }
 
     // Scrolling from a geometry callback re-enters lazy layout while a disclosure changes height.
@@ -407,7 +374,7 @@ struct ChatTranscriptView: View, Equatable {
     private func rowViewportChanged(_ token: UUID, _ facts: ChatViewportFacts?) {
         metrics.reports.update(token, facts: facts)
         guard ownsViewport else { return }
-        if self.viewport.viewportChanged(metrics.reports.snapshot(questionID: self.viewport.latestQuestion?.messageId)) { loadOlder() }
+        self.viewport.readingRowChanged(metrics.reports.snapshot().readingRow?.id)
     }
 
     private func jumpToLatest() {
@@ -416,11 +383,10 @@ struct ChatTranscriptView: View, Equatable {
         self.viewport.update { $0.jumpToLatest() }
     }
 
-    private func loadOlder() {
-        // The native scroll position owns the reading anchor; this only gates paging.
-        if ownsViewport, actions.loadOlderHistory() {
-            self.viewport.update { $0.olderPageAccepted(bottomDistance: self.viewport.bottomDistance) }
-        }
+    private func loadOlder(retrying: Bool = false) -> Bool {
+        guard ownsViewport, viewport.canLoadHistory(retrying: retrying), actions.loadOlderHistory() else { return false }
+        viewport.acceptedHistory(retrying: retrying)
+        return true
     }
 
     private func pendingAction(_ action: PendingSendAction, messageId: String?) {
@@ -690,5 +656,15 @@ private struct ChatJumpToLatestView: View {
                     .padding(16).transition(.opacity.combined(with: .scale(scale: 0.85)))
             }
         }.animation(reduced || activity?.active == false ? nil : .orbisFade, value: viewport.showJump)
+    }
+}
+
+private struct ChatHistoryAccessibility: ViewModifier {
+    let enabled: Bool
+    let load: () -> Void
+    func body(content: Content) -> some View {
+        content.accessibilityActions {
+            if enabled { Button(L10n.tr("更早的消息"), action: load) }
+        }
     }
 }

@@ -50,8 +50,8 @@ class HistoryReadOperationsTest {
     private fun remote(state: RemoteState, id: String = "page"): RemoteState = state.queueSessionSync("command",
         PendingSessionSync("r", "s", "sync", "history", "tail", beforeEntryId = "tail", historyOperationId = id))
         .let { advanceSessionSyncTasks(it, 0).state }
-    private fun response(state: RemoteState, withDisplay: Boolean = true): RemoteState {
-        val snapshot = SessionGraphSnapshot("s", "sync", SessionBranchCursor("tail"), "prepend", page.entries,
+    private fun response(state: RemoteState, withDisplay: Boolean = true, entries: List<SessionGraphEntry> = page.entries): RemoteState {
+        val snapshot = SessionGraphSnapshot("s", "sync", SessionBranchCursor("tail"), "prepend", entries,
             range = "history", targetLeafId = "tail", beforeEntryId = "tail", hasOlder = false, complete = true,
             display = if (withDisplay) null else DisplayBatch(DISPLAY_PROJECTION_VERSION))
         val event = Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), snapshot) as JsonObject
@@ -60,6 +60,33 @@ class HistoryReadOperationsTest {
         val committed = if (withDisplay) committedFixtureBatch(snapshot.entries) else
             CommittedSessionBatch(snapshot.entries, DisplayBatch(DISPLAY_PROJECTION_VERSION))
         return FixtureRelayReducer().reduceSourceSnapshot(state, payload.toString(), committed)
+    }
+
+    // CHAT-PAGING-01: a repeated cursor fails once, keeps the current window,
+    // and can be retried explicitly whether it came from disk or the source.
+    @Test fun `history rejects pages repeating the requested cursor`() {
+        val state = initial()
+        val started = state.beginHistoryRead("r", "page").state
+        val repeated = fixtureRange(listOf(entry("tail", "older")), false, true)
+        val local = started.applyLocalHistoryRead("page", repeated)
+        val fromHost = response(remote(started), entries = repeated.entries)
+        for (failed in listOf(local, fromHost)) {
+            assertEquals(HistoryReadPhase.FAILED, failed.historyReads.getValue("page").phase)
+            assertEquals("tail", failed.sessionHistory.getValue("r").oldestEntryId)
+            assertEquals(true, failed.sessionHistory.getValue("r").hasOlder)
+        }
+    }
+
+    @Test fun `gesture ownership does not survive a host session or branch replacement`() {
+        val state = initial()
+        val owner = ChatPresentationIdentity("host", "r", "s", 0)
+        assertEquals(true, state.ownsChatHistoryGesture(owner, "device"))
+        assertFalse(state.ownsChatHistoryGesture(owner, "other-device"))
+        assertFalse(state.copy(hostId = "other-host").ownsChatHistoryGesture(owner, "device"))
+        assertFalse(state.copy(selectedRuntimeId = null).ownsChatHistoryGesture(owner, "device"))
+        assertFalse(state.copy(runtimes = mapOf("r" to state.runtimes.getValue("r").copy(sessionId = "other-session")))
+            .ownsChatHistoryGesture(owner, "device"))
+        assertFalse(state.copy(sessionBranchGenerations = mapOf("r" to 1)).ownsChatHistoryGesture(owner, "device"))
     }
 
     // FT-G12-RESUME-01: a source request can arrive while a reserve reads disk.

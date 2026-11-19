@@ -126,6 +126,13 @@ internal fun RemoteState.beginSessionRead(
     return SessionReadStart(current.registerRead(operation), SessionReadAcceptance(operationId))
 }
 
+internal fun RemoteState.ownsChatHistoryGesture(owner: ChatPresentationIdentity, expectedDevice: String?): Boolean =
+    hostId == owner.host && deviceId == expectedDevice && selectedRuntimeId == owner.runtime &&
+        owner.session != null && runtimes[owner.runtime]?.sessionId == owner.session &&
+        (sessionBranchGenerations[owner.runtime] ?: 0) == owner.branch &&
+        sessionReadForWindow(owner.runtime, SessionReadKind.SOURCE)?.phase?.active != true &&
+        sessionReadForWindow(owner.runtime, SessionReadKind.FIRST_PAGE)?.phase?.active != true
+
 internal fun RemoteState.beginHistoryRead(
     key: String,
     operationId: String,
@@ -288,6 +295,9 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
         return copy(sessionHistory = sessionHistory + (operation.historyKey to history.copy(hasOlder = false)))
             .finishHistoryRead(operationId, SessionReadPhase.END_REACHED)
     }
+    if (page.entries.first().entryId == operation.beforeEntryId) {
+        return finishHistoryRead(operationId, SessionReadPhase.FAILED, L10n.tr("历史范围未推进，请重试"))
+    }
     val graph = sessionGraphs[operation.sessionId] ?: SessionGraph(operation.sessionId)
     // 本地页自带显示结果：条目与解释同源，页面读进来就能渲染。
     val merged = graph.copy(
@@ -300,7 +310,6 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
     // same operation active so its worker can fetch this fixed range from the source.
     if (page.entries.any { !merged.hasDisplayFor(it) }) return this
     if (operation.kind == SessionReadKind.PREFETCH) {
-        if (page.entries.first().entryId == operation.beforeEntryId) return finishHistoryRead(operationId, SessionReadPhase.CANCELLED)
         return finishHistoryRead(operationId, SessionReadPhase.SUCCEEDED)
     }
     val history = sessionHistory[operation.historyKey] ?: return this

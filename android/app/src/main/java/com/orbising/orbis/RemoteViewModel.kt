@@ -420,6 +420,16 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         return if (runtimeId == null) connection.loadOlderHistory() else connection.loadOlderHistory(runtimeId)
     }
 
+    // Local read admission reconciles graph coverage. Keep it off Main as well as the
+    // subsequent disk read, and route using the actual active Host, not a UI snapshot.
+    internal suspend fun loadChatHistory(owner: ChatPresentationIdentity, deviceId: String?, retrying: Boolean): HistoryReadAcceptance =
+        withContext(Dispatchers.Default) {
+            val host = owner.host ?: return@withContext HistoryReadAcceptance()
+            val connection = synchronized(lock) { connections[host] }
+            connection?.loadChatHistory(owner, deviceId, retrying) { activeHostId.value == host }
+                ?: HistoryReadAcceptance(rejection = L10n.tr("没有选中的历史窗口"))
+        }
+
     fun loadDraft(runtimeId: String): String = active()?.loadDraft(runtimeId).orEmpty()
 
     fun saveDraft(runtimeId: String, value: String) = active()?.saveDraft(runtimeId, value)

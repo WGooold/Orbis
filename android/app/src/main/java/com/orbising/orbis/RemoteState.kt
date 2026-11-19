@@ -2836,6 +2836,13 @@ class RelayReducer(
                 }
                 val liveLeafId = state.runtimes[runtimeId]?.sessionLeafId
                 val isHistory = pending.range == "history"
+                if (isHistory) {
+                    val first = (committed?.entries ?: snapshot.entries).firstOrNull()
+                    if (if (first != null) first.entryId == pending.beforeEntryId else snapshot.hasOlder == true) {
+                        val id = state.sessionSyncCommands.entries.first { it.value === pending }.key
+                        return state.failSessionSync(id, L10n.tr("历史范围未推进，请重试"))
+                    }
+                }
                 if (pending.range in setOf("history", "catchup") &&
                     (snapshot.rangeStatus != null && snapshot.rangeStatus !in setOf("complete", "older_available", "limit_reached") ||
                         // hasOlder describes backwards history paging. A bounded forward

@@ -31,87 +31,27 @@ struct ChatViewportTests {
         #expect([CGFloat(0), 120].sorted(by: ChatViewportAnchorPriority.precedes) == [0, 120])
     }
 
-    private func facts(_ y: CGFloat, height: CGFloat = 100, first: Bool = false, question: String? = nil) -> ChatViewportFacts {
+    private func facts(_ y: CGFloat, height: CGFloat = 100, index: Int = 0) -> ChatViewportFacts {
         ChatViewportFacts(frame: CGRect(x: 0, y: y, width: 300, height: height),
-                          viewportHeight: 600, firstRow: first, questionID: question)
+                          viewportHeight: 600, row: .init(id: "row-\(index)", index: index))
     }
 
-    // Ordinary pixel movement must not publish a new preference or invalidate the
-    // transcript; all existing visible/top/reminder thresholds still take effect.
-    @Test func onlyBoundaryCrossingsChangeViewportFacts() {
+    // CHAT-QUESTION-02: neither each scroll pixel nor an offscreen lazy host should
+    // change the reading row. A retired host cannot remove its replacement's report.
+    @Test func readingRowChangesOnlyAtVisibleRowBoundaries() {
         #expect(facts(100) == facts(101))
-        #expect(facts(-101) == facts(-102))
         #expect(facts(-100) != facts(-99))
         #expect(facts(599) != facts(600))
-        #expect(facts(-41, first: true) != facts(-40, first: true))
-        #expect(facts(-40, first: true) == facts(-39, first: true))
-        #expect(!facts(-40).firstRowNearTop)
-    }
-
-    // The reminder's dead band is wider than visibility. Missing lazy rows and
-    // changing source-question IDs must not accidentally count as on-screen.
-    @Test func questionDeadBandAndIdentitySurviveLazyRelease() {
-        var viewport = facts(200)
-        viewport.merge(facts(-108, question: "q"))
-        #expect(!viewport.questionOutsideViewport("q"))
-        viewport.merge(facts(-109, question: "q"))
-        #expect(viewport.questionOutsideViewport("q"))
-        viewport.merge(facts(608, question: "q"))
-        #expect(!viewport.questionOutsideViewport("q"))
-        viewport.merge(facts(609, question: "q"))
-        #expect(viewport.questionOutsideViewport("q"))
-        viewport.merge(facts(200, question: "q"))
-        #expect(!viewport.questionOutsideViewport("q"))
-        #expect(viewport.questionOutsideViewport("new-question"))
-        #expect(!viewport.questionOutsideViewport(nil))
-        #expect(facts(200).questionOutsideViewport("released-question"))
-        #expect(!ChatViewportFacts().questionOutsideViewport("q"))
-    }
-
-    // Reducing unrelated row reports preserves the first-row and question facts
-    // regardless of row order, without carrying a growing frame dictionary.
-    @Test func mergingRowsPreservesPagingAndQuestionFacts() {
-        let reports = [facts(-39, first: true), facts(300), facts(700, question: "q")]
-        func merge(_ rows: [ChatViewportFacts]) -> ChatViewportFacts {
-            rows.reduce(into: ChatViewportFacts()) { $0.merge($1) }
-        }
-        let viewport = merge(reports)
-        #expect(viewport == merge(Array(reports.reversed())))
-        #expect(viewport.firstRowNearTop && viewport.hasVisibleRows)
-        #expect(viewport.questionOutsideViewport("q"))
-    }
-
-    // IOS-CHAT-13: lazy layout can report an offscreen tail independently of the
-    // still-visible long reply. Only that row's disappearance retires its facts.
-    @Test func rowReportsRetainVisibleGeometryAcrossIndependentLazyUpdates() {
         var reports = ChatViewportReports()
-        let reply = UUID(), question = UUID(), tail = UUID(), replacement = UUID()
-        reports.update(reply, facts: facts(-1600, height: 2460))
-        reports.update(question, facts: facts(700, question: "question"))
-        reports.update(tail, facts: ChatViewportFacts())
-        #expect(reports.snapshot(questionID: "question").hasVisibleRows)
-        #expect(reports.snapshot(questionID: "question").questionOutsideViewport("question"))
-        reports.update(tail, facts: nil)
-        #expect(reports.snapshot(questionID: "question").hasVisibleRows)
-        reports.update(replacement, facts: facts(-1500, height: 2460))
-        reports.update(reply, facts: nil)
-        #expect(reports.snapshot(questionID: "question").hasVisibleRows, "Retiring an older lazy host cannot retire its replacement")
-        reports.update(replacement, facts: nil)
-        #expect(!reports.snapshot(questionID: "question").hasVisibleRows)
-    }
-
-    // A source publication can create the next question before the old lazy host
-    // updates its metadata. Aggregation must select the current identity explicitly.
-    @Test func currentQuestionGeometryDoesNotDependOnReportEnumerationOrder() {
-        var reports = ChatViewportReports()
-        let old = UUID(), current = UUID(), duplicate = UUID()
-        reports.update(old, facts: facts(700, question: "old"))
-        reports.update(current, facts: facts(300, question: "new"))
-        reports.update(duplicate, facts: facts(700, question: "new"))
-        #expect(!reports.snapshot(questionID: "new").questionOutsideViewport("new"))
-        reports.update(current, facts: nil)
-        #expect(reports.snapshot(questionID: "new").question?.outside == true)
-        #expect(reports.snapshot(questionID: nil).question == nil)
+        let old = UUID(), next = UUID(), replacement = UUID()
+        reports.update(next, facts: facts(450, index: 3))
+        reports.update(old, facts: facts(-1600, height: 2460, index: 2))
+        #expect(reports.snapshot().readingRow?.id == "row-2")
+        reports.update(replacement, facts: facts(-1500, height: 2460, index: 2))
+        reports.update(old, facts: nil)
+        #expect(reports.snapshot().readingRow?.id == "row-2")
+        reports.update(replacement, facts: facts(-1500, height: 1400, index: 2))
+        #expect(reports.snapshot().readingRow?.id == "row-3")
     }
 
     // IOS-CHAT-04: geometry may cross thresholds, but never takes reading intent away
@@ -119,7 +59,7 @@ struct ChatViewportTests {
     @Test func onlyRealInteractionIdleCanRestoreFollowingAtTheOriginalTwentyPointBoundary() {
         var policy = ChatViewportPolicy()
         policy.disclosureBegan(bottomDistance: 100)
-        policy.distanceChanged(0, hasMessages: true, firstRowNearTop: false)
+        policy.distanceChanged(0, hasMessages: true)
         let reading = policy
         policy.interactionChanged(false, bottomDistance: 0)
         #expect(policy == reading && !policy.following)
@@ -142,7 +82,7 @@ struct ChatViewportTests {
         policy.interactionChanged(true, bottomDistance: 0)
         policy.interactionChanged(false, bottomDistance: 20.001)
         #expect(policy.mode == .reading && policy.hasBrowsed)
-        policy.distanceChanged(0, hasMessages: true, firstRowNearTop: false)
+        policy.distanceChanged(0, hasMessages: true)
         #expect(!policy.following)
     }
 
@@ -151,89 +91,56 @@ struct ChatViewportTests {
     @Test func distanceSamplesPublishOnlyPositioningOrJumpThresholdChanges() {
         var policy = ChatViewportPolicy()
         let initial = policy
-        policy.distanceChanged(.infinity, hasMessages: true, firstRowNearTop: false)
-        policy.distanceChanged(0, hasMessages: false, firstRowNearTop: false)
+        policy.distanceChanged(.infinity, hasMessages: true)
+        policy.distanceChanged(0, hasMessages: false)
         #expect(policy == initial)
-        policy.distanceChanged(0, hasMessages: true, firstRowNearTop: false)
-        #expect(policy.hasPositioned && policy.topArmed)
+        policy.distanceChanged(0, hasMessages: true)
+        #expect(policy.hasPositioned)
         policy.interactionChanged(true, bottomDistance: 60)
         #expect(!policy.showJump)
-        policy.distanceChanged(60.001, hasMessages: true, firstRowNearTop: false)
+        policy.distanceChanged(60.001, hasMessages: true)
         #expect(policy.showJump)
         let above = policy
         for distance in [CGFloat(61), 62, 100, .infinity] {
-            policy.distanceChanged(distance, hasMessages: true, firstRowNearTop: false)
+            policy.distanceChanged(distance, hasMessages: true)
             #expect(policy == above)
         }
-        policy.distanceChanged(60, hasMessages: true, firstRowNearTop: false)
+        policy.distanceChanged(60, hasMessages: true)
         #expect(!policy.showJump)
     }
 
-    // IOS-CHAT-04: top entry is a consumed viewport edge, including rejected/busy
-    // entries. A page finishing while still at top cannot launch the next page by itself.
-    @Test func topPagingRequiresANewEdgeAfterCompletionOrBlockedEntry() {
-        var policy = ChatViewportPolicy()
-        let top = facts(0, first: true), away = facts(-41, first: true)
-        policy.distanceChanged(0, hasMessages: true, firstRowNearTop: true)
-        let initialTop = policy.viewportChanged(top, questionID: nil, canPage: true)
-        #expect(!initialTop)
-        let leavingInitialTop = policy.viewportChanged(away, questionID: nil, canPage: true)
-        #expect(!leavingInitialTop)
-        let firstEntry = policy.viewportChanged(top, questionID: nil, canPage: true)
-        #expect(firstEntry)
-        policy.olderPageAccepted(bottomDistance: 100)
-        #expect(policy.awaitingOlderPage && !policy.following)
-        let whileLoading = policy.viewportChanged(top, questionID: nil, canPage: false)
-        #expect(!whileLoading)
-        policy.olderPageFinished()
-        let afterCompletion = policy.viewportChanged(top, questionID: nil, canPage: true)
-        #expect(!afterCompletion)
-
-        _ = policy.viewportChanged(away, questionID: nil, canPage: true)
-        let blockedEntry = policy.viewportChanged(top, questionID: nil, canPage: false)
-        #expect(!blockedEntry)
-        let unblockedAtSameTop = policy.viewportChanged(top, questionID: nil, canPage: true)
-        #expect(!unblockedAtSameTop)
-        _ = policy.viewportChanged(away, questionID: nil, canPage: true)
-        let nextEntry = policy.viewportChanged(top, questionID: nil, canPage: true)
-        #expect(nextEntry)
-        let repeatedEntry = policy.viewportChanged(top, questionID: nil, canPage: true)
-        #expect(!repeatedEntry)
-        // An explicit retry/button accepted by the business owner is independent of the
-        // automatic edge. The policy does not invent a history operation identity.
-        policy.olderPageAccepted(bottomDistance: 100)
-        #expect(policy.awaitingOlderPage)
-        policy.interactionChanged(true, bottomDistance: 100)
-        policy.olderPageAccepted(bottomDistance: 100)
-        #expect(policy.mode == .interacting)
-        policy.interactionChanged(false, bottomDistance: 20)
-        #expect(policy.following, "A history read does not retire the user's ongoing native gesture")
+    // CHAT-PAGING-01: release consumes the gesture before the read, so a quick
+    // cache hit, a slow network response, and a repeated release cannot replay it.
+    @Test func historyPullConsumesEachGestureExactlyOnce() {
+        var pan = ChatHistoryPan()
+        let pull = CGPoint(x: 5, y: 56)
+        func release(_ translation: CGPoint) -> Bool { pan.release(translation: translation) }
+        #expect(!release(pull))
+        pan.begin(nearTop: true, admitted: false)
+        #expect(!release(pull))
+        pan.begin(nearTop: true, admitted: true)
+        #expect(!release(CGPoint(x: 0, y: 20)))
+        pan.begin(nearTop: true, admitted: true)
+        #expect(!release(CGPoint(x: 70, y: 56)))
+        pan.begin(nearTop: true, admitted: true)
+        #expect(release(pull))
+        #expect(!release(pull))
+        pan.begin(nearTop: false, admitted: true)
+        #expect(release(pull))
+        pan.begin(nearTop: true, admitted: true)
+        pan.cancel()
+        #expect(!release(pull))
     }
 
-    // IOS-CHAT-04: locating a question may itself expose the history boundary. Source
-    // changes and old-page completion cannot turn that explicit location into auto paging.
-    @Test func questionPagingSuppressionSurvivesGeometryPublicationAndPageCompletion() {
+    @Test func historyAcceptanceDoesNotRetireTheUsersNativeGesture() {
         var policy = ChatViewportPolicy()
-        let top = facts(0, first: true), away = facts(-41, first: true)
-        policy.distanceChanged(100, hasMessages: true, firstRowNearTop: false)
-        policy.locateQuestion("q", bottomDistance: 100)
-        let request = policy.request
-        policy.olderPageFinished()
-        policy.questionChanged(outside: true)
-        policy.distanceChanged(200, hasMessages: true, firstRowNearTop: false)
-        policy.interactionChanged(false, bottomDistance: 0)
-        _ = policy.viewportChanged(away, questionID: "new-source-question", canPage: true)
-        let suppressedEntry = policy.viewportChanged(top, questionID: "new-source-question", canPage: true)
-        #expect(!suppressedEntry)
-        #expect(policy.suppressQuestionPaging && policy.request == request && !policy.following)
         policy.interactionChanged(true, bottomDistance: 100)
-        #expect(!policy.suppressQuestionPaging && policy.request == nil)
-        _ = policy.viewportChanged(away, questionID: nil, canPage: true)
-        let afterInteraction = policy.viewportChanged(top, questionID: nil, canPage: true)
-        #expect(afterInteraction)
-        policy.locateQuestion("q", bottomDistance: 100)
-        policy.jumpToLatest()
-        #expect(!policy.suppressQuestionPaging && policy.following)
+        policy.olderPageAccepted(bottomDistance: 100)
+        #expect(policy.awaitingOlderPage && policy.mode == .interacting)
+        policy.interactionChanged(false, bottomDistance: 20)
+        #expect(!policy.following, "A short page must not jump to its newly added tail")
+        policy.olderPageFinished()
+        #expect(!policy.awaitingOlderPage)
     }
 
     // IOS-CHAT-04: both native adapters call owns immediately before scrollTo. A
@@ -296,7 +203,7 @@ struct ChatViewportTests {
     // In particular it cannot carry an automatic edge or pending old-page gate forward.
     @Test func contextResetRetiresReadingAndPagingWithoutCreatingAScrollRequest() {
         var policy = ChatViewportPolicy()
-        policy.distanceChanged(100, hasMessages: true, firstRowNearTop: false)
+        policy.distanceChanged(100, hasMessages: true)
         policy.interactionChanged(true, bottomDistance: 100)
         policy.directionChanged(towardEarlier: true)
         policy.questionChanged(outside: true)
@@ -305,7 +212,7 @@ struct ChatViewportTests {
         policy.resetContext()
         #expect(policy.following && !policy.hasPositioned && !policy.hasBrowsed)
         #expect(!policy.showJump && !policy.showQuestionReminder && !policy.lastScrollTowardEarlier)
-        #expect(!policy.suppressQuestionPaging && !policy.awaitingOlderPage && !policy.topArmed)
+        #expect(!policy.suppressQuestionPaging && !policy.awaitingOlderPage)
         #expect(policy.request == nil)
     }
 }

@@ -66,6 +66,12 @@ struct ChatNativeSnapshotRow: Equatable, Sendable {
 struct ChatNativeSnapshotPlan: Sendable {
     let ids: [String]
     let reconfigured: [String]
+    let reconfiguredIDs: Set<String>
+
+    init(ids: [String], reconfigured: [String]) {
+        self.ids = ids; self.reconfigured = reconfigured
+        reconfiguredIDs = Set(reconfigured)
+    }
 }
 
 /// Prepares changes relative to the last applied snapshot. The coordinator supplies
@@ -139,28 +145,28 @@ final class ChatViewportController {
     private(set) var showQuestionReminder = false
     private(set) var request: ChatViewportPolicy.Request?
     private(set) var contextGeneration = 0
-    private(set) var latestQuestion: ChatQuestion?
+    private(set) var readingQuestion: ChatQuestion?
+    private(set) var retryingHistory = false
     @ObservationIgnored private(set) var policy = ChatViewportPolicy()
     @ObservationIgnored let arrivals = ReplyCardArrivals()
     @ObservationIgnored var bottomDistance: CGFloat = 0
-    @ObservationIgnored var viewport = ChatViewportFacts()
+    @ObservationIgnored private(set) var readingRowID: String?
     @ObservationIgnored private var current: ChatTranscriptState?
     @ObservationIgnored private var visible = true
     @ObservationIgnored private var sourceReady = false
 
     func commit(_ state: ChatTranscriptState, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if let current, current.target != state.target || current.historyRevision != state.historyRevision {
-            bottomDistance = 0; viewport = ChatViewportFacts()
+            bottomDistance = 0; readingRowID = nil; retryingHistory = false
             update { $0.resetContext() }
         }
-        if let current, current.historyPageRevision != state.historyPageRevision ||
-            (current.historyLoading && !state.historyLoading && state.historyError != nil) {
+        if let current, !state.historyLoading,
+           current.historyPageRevision != state.historyPageRevision || current.historyLoading {
             update { $0.olderPageFinished() }
+            retryingHistory = false
         }
         self.current = state
-        let question = state.transcript.latestQuestion(excluding: Set(state.pending.items.map(\.messageId)))
-        if latestQuestion != question { latestQuestion = question }
-        update { $0.questionChanged(outside: viewport.questionOutsideViewport(question?.messageId)) }
+        updateReadingQuestion()
         sourceReady = state.connection == .secured && !state.syncing && !state.cached
         // Register before assigning the observed region: lazy row initialization can
         // synchronously claim the ticket as soon as SwiftUI sees the new transcript.
@@ -168,7 +174,8 @@ final class ChatViewportController {
             ready: visible && policy.hasPositioned && sourceReady, following: policy.following, now: now)
     }
     func resetForMount() {
-        bottomDistance = 0; viewport = ChatViewportFacts(); current = nil
+        bottomDistance = 0; readingRowID = nil; current = nil
+        readingQuestion = nil; retryingHistory = false
         update { $0.resetContext() }
     }
     func setVisualActive(_ active: Bool) {
@@ -191,17 +198,33 @@ final class ChatViewportController {
     }
     func distanceChanged(_ distance: CGFloat) {
         bottomDistance = distance
-        update { $0.distanceChanged(distance, hasMessages: current?.hasMessages ?? false, firstRowNearTop: viewport.firstRowNearTop) }
+        update { $0.distanceChanged(distance, hasMessages: current?.hasMessages ?? false) }
     }
     func interactionChanged(_ active: Bool) { update { $0.interactionChanged(active, bottomDistance: bottomDistance) } }
     func disclosureBegan() {
         readingSurface.cancel()
         update { $0.disclosureBegan(bottomDistance: bottomDistance) }
     }
-    func viewportChanged(_ facts: ChatViewportFacts) -> Bool {
-        viewport = facts
-        return update { $0.viewportChanged(facts, questionID: latestQuestion?.messageId,
-            canPage: current.map { !$0.syncing && !$0.historyLoading && $0.historyError == nil } ?? false) }
+    func readingRowChanged(_ id: String?) {
+        guard readingRowID != id else { return }
+        readingRowID = id
+        updateReadingQuestion()
+    }
+    private func updateReadingQuestion() {
+        let row = readingRowID
+        let question = row.flatMap { current?.transcript.question(at: $0) }
+        let candidate = question?.messageId == row ? nil : question
+        if readingQuestion != candidate { readingQuestion = candidate }
+        if policy.questionOutsideViewport != (candidate != nil) { update { $0.questionChanged(outside: candidate != nil) } }
+    }
+    func canLoadHistory(retrying: Bool = false) -> Bool {
+        guard let current, visible, policy.hasPositioned, current.hasOlder, !current.syncing,
+              !current.historyLoading, !policy.awaitingOlderPage, current.canSend || current.cached else { return false }
+        return retrying ? current.historyError != nil : current.historyError == nil
+    }
+    func acceptedHistory(retrying: Bool) {
+        if retrying { retryingHistory = true }
+        update { $0.olderPageAccepted(bottomDistance: bottomDistance) }
     }
     func owns(_ candidate: ChatViewportPolicy.Request) -> Bool { policy.owns(candidate) }
 }

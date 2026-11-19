@@ -25,3 +25,9 @@ Status: accepted（交互已确定；代码与回归同步实施，完整设备�
 ## 2026-11-02 / r35 交互补充（已接入，验证中）
 
 r35 修订：提示改为一行；出现还须最近一次用户滚动朝更早内容，向最新方向滚动即收起。三行指离底部的像素距离对应三行，其他身份 / 通知优先 / 定位规则保持。详见 [ADR-0058](0058-shared-interaction-motion.md)；双端门禁未完成前不记为验收。
+
+## CHAT-QUESTION-02：以当前阅读位置为准（2026-11-18）
+
+取视口内最靠上的消息行，向前定位最近一个已确认的用户提问；若该行就是提问则不重复显示。对话尾部的新提问和本地待确认行不替换当前提示。iOS `ChatTranscriptWorker` 与 Android `ChatPresentationWorker` 在后台准备索引和文本；UI 仅读取当前可见行，行 ID 变化时查表，不在滚动时遍历历史。历史重试占用同一提示位，覆盖时直接移除提问及其点击区。
+
+自动验证见 [iOS 模拟器](../../.artifacts/chat-history-20261118/ios-ui-r4/command.log)（包含正文锚点原 1pt 断言及拖动不重建）、[Android 模拟器](../../.artifacts/chat-history-20261118/android-ui-r3/instrumentation.log)。首轮失败、同设备源码对照及其余记录保存在 [本轮证据](../../.artifacts/chat-history-20261118/)。未部署，未做真机验收。

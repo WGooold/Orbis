@@ -20,6 +20,29 @@ import org.junit.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class HistoryPagingTest {
+    // CHAT-PAGING-01: no queued gesture may cross an in-flight page's completion.
+    @Test fun `chat history pulls consume the release once and discard blocked gestures`() {
+        val pan = ChatHistoryPan()
+        fun release(x: Float = 0f, y: Float = 60f, nearTop: Boolean = true, admitted: Boolean = true) =
+            pan.release(x, y, nearTop, admitted)
+        assertEquals(false, release())
+        pan.begin(nearTop = true, admitted = false, density = 1f)
+        assertEquals(false, release())
+        pan.begin(nearTop = true, admitted = true, density = 1f)
+        assertEquals(false, release(y = 20f))
+        pan.begin(nearTop = true, admitted = true, density = 1f)
+        assertEquals(false, release(x = 72f))
+        pan.begin(nearTop = false, admitted = true, density = 1f)
+        assertEquals(false, release(nearTop = false))
+        pan.begin(nearTop = false, admitted = true, density = 1f)
+        assertEquals(false, release(admitted = false))
+        pan.begin(nearTop = false, admitted = true, density = 1f)
+        assertEquals(true, release())
+        assertEquals(false, release())
+        pan.begin(nearTop = true, admitted = true, density = 1f)
+        assertEquals(true, release())
+    }
+
     @Test fun `初始就在顶部不请求`() = runTest {
         var index by mutableStateOf(0)
         var blocked by mutableStateOf(false)

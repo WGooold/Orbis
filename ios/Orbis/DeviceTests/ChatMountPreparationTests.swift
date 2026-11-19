@@ -50,7 +50,7 @@ import XCTest
         let view = ChatNativeTranscriptView(snapshot: { snapshot },
             prepareMount: { model.prepareMount(target: target, token: token) }, viewport: viewport,
             tailID: ids.last!, mountToken: token, requestIsCurrent: { viewport.owns($0) },
-            onDistance: { _ in }, onInteraction: { _ in }, onViewport: { _, _ in })
+            onDistance: { _ in }, onInteraction: { _ in }, onReadingRow: { _ in })
         let coordinator = ChatNativeTranscriptView.Coordinator(view, snapshotWorker: worker)
         defer { coordinator.stop() }
         let collection = coordinator.makeCollection()

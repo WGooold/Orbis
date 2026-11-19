@@ -1085,6 +1085,8 @@ private struct TrackedSendTarget<Content: View>: View {
 /// Native pan direction, independent of layout, inertia, programmatic jumps and new output.
 struct OrbisScrollDirectionObserver: UIViewRepresentable {
     let onDirection: (Bool) -> Void
+    var pagingOwner: () -> Int? = { nil }
+    var onHistoryPull: () -> Void = {}
     func makeCoordinator() -> Coordinator { Coordinator(onDirection) }
     func makeUIView(context: Context) -> UIView {
         let view = UIView(); view.isUserInteractionEnabled = false
@@ -1093,6 +1095,8 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
     }
     func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.changed = onDirection
+        context.coordinator.pagingOwner = pagingOwner
+        context.coordinator.onHistoryPull = onHistoryPull
         DispatchQueue.main.async { context.coordinator.attach(view) }
     }
     static func dismantleUIView(_ view: UIView, coordinator: Coordinator) { coordinator.detach() }
@@ -1100,13 +1104,18 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
         var changed: (Bool) -> Void
         weak var scroll: UIScrollView?
         var lastY: CGFloat = 0
+        var pagingOwner: () -> Int? = { nil }
+        var onHistoryPull: () -> Void = {}
+        private var historyPan = ChatHistoryPan()
+        private var owner: Int?
         init(_ changed: @escaping (Bool) -> Void) { self.changed = changed }
         func attach(_ view: UIView) {
             guard scroll == nil else { return }
             var ancestor = view.superview
             while let candidate = ancestor {
                 if let found = candidate as? UIScrollView {
-                    scroll = found; found.panGestureRecognizer.addTarget(self, action: #selector(pan))
+                    scroll = found; found.alwaysBounceVertical = true
+                    found.panGestureRecognizer.addTarget(self, action: #selector(pan))
                     #if DEBUG
                     Task { @MainActor in
                         if PreviewChatScrollProbe.enabled { PreviewChatScrollProbe.shared.scroll = found }
@@ -1118,8 +1127,17 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
             }
         }
         @objc func pan(_ pan: UIPanGestureRecognizer) {
-            let y = pan.translation(in: pan.view).y
-            if pan.state == .began { lastY = 0 }
+            guard let scroll else { return }
+            let translation = pan.translation(in: pan.view)
+            let y = translation.y
+            let nearTop = scroll.contentOffset.y + scroll.adjustedContentInset.top <= 44
+            if pan.state == .began {
+                lastY = 0
+                owner = pagingOwner()
+                historyPan.begin(nearTop: nearTop, admitted: owner != nil)
+            } else if pan.state == .ended {
+                if historyPan.release(translation: translation), nearTop, let owner, pagingOwner() == owner { onHistoryPull() }
+            } else if pan.state == .cancelled || pan.state == .failed { historyPan.cancel() }
             if pan.state == .began || pan.state == .changed {
                 let delta = y - lastY
                 if abs(delta) > 0.5 { changed(delta > 0); lastY = y }

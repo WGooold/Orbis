@@ -189,7 +189,7 @@ struct ChatScreenModelTests {
     // may delay a gesture, explicit jump, initial placement or context reset.
     @Test func nativeStateReflectsIntentBeforeAnyQueuedObserverRuns() {
         let viewport = ChatViewportController()
-        viewport.update { $0.distanceChanged(0, hasMessages: true, firstRowNearTop: false) }
+        viewport.update { $0.distanceChanged(0, hasMessages: true) }
         #expect(viewport.policy.hasPositioned)
         viewport.interactionChanged(true)
         #expect(!viewport.nativeState.following)

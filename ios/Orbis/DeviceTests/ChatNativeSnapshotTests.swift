@@ -19,13 +19,13 @@ import XCTest
                        viewport: ChatViewportController,
                        onDistance: @escaping (CGFloat) -> Void = { _ in },
                        onInteraction: @escaping (Bool) -> Void = { _ in },
-                       onViewport: @escaping ([String: CGRect], CGFloat) -> Void = { _, _ in }) -> ChatNativeTranscriptView {
+                       onReadingRow: @escaping (String?) -> Void = { _ in }) -> ChatNativeTranscriptView {
         let snapshot = ChatNativeTranscriptView.Snapshot(items: ids.map {
             .init(id: $0, revision: UUID(), content: AnyView(Text($0).frame(height: 44)))
         }, revision: revision)
         return ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
             tailID: ids.last ?? "tail", mountToken: owner, requestIsCurrent: { viewport.owns($0) },
-            onDistance: onDistance, onInteraction: onInteraction, onViewport: onViewport)
+            onDistance: onDistance, onInteraction: onInteraction, onReadingRow: onReadingRow)
     }
 
     private func drainResolutionQueue() async {
@@ -71,7 +71,7 @@ import XCTest
         let snapshot = ChatNativeTranscriptView.Snapshot(items: items, revision: 1)
         let initial = ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
             tailID: "tail", mountToken: UUID(), requestIsCurrent: { viewport.owns($0) },
-            onDistance: { _ in }, onInteraction: { _ in }, onViewport: { _, _ in viewportReports += 1 })
+            onDistance: { _ in }, onInteraction: { _ in }, onReadingRow: { _ in viewportReports += 1 })
         let coordinator = ChatNativeTranscriptView.Coordinator(initial)
         defer { coordinator.stop() }
         let collection = coordinator.makeCollection()
@@ -123,7 +123,7 @@ import XCTest
             let input = ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
                 tailID: "tail", mountToken: UUID(), requestIsCurrent: { viewport.owns($0) },
                 onDistance: { viewport.distanceChanged($0) },
-                onInteraction: { viewport.interactionChanged($0) }, onViewport: { _, _ in reports += 1 })
+                onInteraction: { viewport.interactionChanged($0) }, onReadingRow: { _ in reports += 1 })
             let coordinator = ChatNativeTranscriptView.Coordinator(input)
             defer { coordinator.stop() }
             let collection = coordinator.makeCollection()
@@ -221,7 +221,7 @@ import XCTest
             let input = ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
                 tailID: "tail", mountToken: UUID(), requestIsCurrent: { viewport.owns($0) },
                 onDistance: { viewport.distanceChanged($0) }, onInteraction: { viewport.interactionChanged($0) },
-                onViewport: { _, _ in reports += 1 })
+                onReadingRow: { _ in reports += 1 })
             let coordinator = ChatNativeTranscriptView.Coordinator(input)
             defer { coordinator.stop() }
             let collection = coordinator.makeCollection()
@@ -344,7 +344,7 @@ import XCTest
                 onInteraction: { active in
                     interactions.append(active)
                     viewport.interactionChanged(active)
-                }, onViewport: { _, _ in viewportReports += 1 })
+                }, onReadingRow: { _ in viewportReports += 1 })
         }
         let coordinator = ChatNativeTranscriptView.Coordinator(publication(ids, revision: 1))
         defer { coordinator.stop() }
@@ -431,7 +431,7 @@ import XCTest
         let owner = UUID(), viewport = ChatViewportController()
         let ids = (0..<80).map { "message-\($0)" }
         var viewportReports = 0
-        let initial = input(ids, revision: 1, owner: owner, viewport: viewport) { _, _ in
+        let initial = input(ids, revision: 1, owner: owner, viewport: viewport) { _ in
             viewportReports += 1
         }
         let coordinator = ChatNativeTranscriptView.Coordinator(initial, snapshotWorker: worker)
@@ -516,7 +516,7 @@ import XCTest
         ], revision: 1)
         let view = ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
             tailID: "tail", mountToken: UUID(), requestIsCurrent: { viewport.owns($0) },
-            onDistance: { _ in }, onInteraction: { _ in }, onViewport: { _, _ in })
+            onDistance: { _ in }, onInteraction: { _ in }, onReadingRow: { _ in })
         let coordinator = ChatNativeTranscriptView.Coordinator(view)
         defer { coordinator.stop() }
         let collection = coordinator.makeCollection()

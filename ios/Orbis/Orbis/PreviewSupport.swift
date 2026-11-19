@@ -420,8 +420,8 @@ final class PreviewChatAnchorDiagnostics: ObservableObject {
                              "hasBrowsed": controller.policy.hasBrowsed,
                              "towardEarlier": controller.policy.lastScrollTowardEarlier,
                              "questionOutside": controller.policy.questionOutsideViewport,
-                             "questionID": controller.latestQuestion?.messageId ?? "",
-                             "hasVisibleRows": controller.viewport.hasVisibleRows,
+                             "questionID": controller.readingQuestion?.messageId ?? "",
+                             "hasVisibleRows": controller.readingRowID != nil,
                              "showReminder": controller.showQuestionReminder] as [String: Any]
                         } ?? [:],
                         "tracking": scroll.isTracking, "dragging": scroll.isDragging,

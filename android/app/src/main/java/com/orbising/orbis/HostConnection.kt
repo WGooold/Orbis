@@ -1397,13 +1397,28 @@ internal class HostConnection(
         return loadOlderHistory(runtimeId, null)
     }
 
-    private fun loadOlderHistory(runtimeId: String?, automatic: SessionHistoryPrefetch?): HistoryReadAcceptance {
+    internal fun loadChatHistory(owner: ChatPresentationIdentity, deviceId: String?, retrying: Boolean,
+                                 isActiveHost: () -> Boolean): HistoryReadAcceptance {
+        val admitted: (RemoteState) -> Boolean = { state ->
+            isActiveHost() && state.ownsChatHistoryGesture(owner, deviceId) &&
+                (retrying || state.historyReadForWindow(owner.runtime)?.phase != SessionReadPhase.FAILED)
+        }
+        if (!admitted(mutableState.value)) return HistoryReadAcceptance()
+        cancelAutomaticHistoryReads(owner.runtime)
+        return loadOlderHistory(owner.runtime, null, admitted)
+    }
+
+    private fun loadOlderHistory(runtimeId: String?, automatic: SessionHistoryPrefetch?,
+                                 admission: (RemoteState) -> Boolean = { true }): HistoryReadAcceptance {
         val key = runtimeId ?: return HistoryReadAcceptance(rejection = L10n.tr("没有选中的历史窗口"))
         val pairedDevice = device ?: return HistoryReadAcceptance(rejection = L10n.tr("设备尚未配对"))
         if (automatic != null && !automatic.canContinue) return HistoryReadAcceptance()
         val operationId = UUID.randomUUID().toString()
         var acceptance = HistoryReadAcceptance()
-        updateState { state -> state.beginHistoryRead(key, operationId, automatic).also { acceptance = it.acceptance }.state }
+        updateState { state ->
+            if (admission(state)) state.beginHistoryRead(key, operationId, automatic).also { acceptance = it.acceptance }.state
+            else state.also { acceptance = HistoryReadAcceptance() }
+        }
         if (acceptance.operationId == null || acceptance.merged) return acceptance
         val operation = mutableState.value.historyReads[operationId] ?: return acceptance
         if (automatic != null) synchronized(automaticHistoryLock) { automaticHistoryProgress[automatic.scopeId] = automatic }

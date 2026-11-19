@@ -1491,7 +1491,14 @@ final class HostConnection: ObservableObject {
                 let generation = historyGeneration, branch = branchGenerations[runtime.runtimeId] ?? 0
                 let sourceRevision = sessionRevisions[session] ?? 0
                 runAsyncTransaction { [weak self] in
-                    guard let self, generation == self.historyGeneration,
+                    guard let self else { return }
+                    defer {
+                        if kind == .history, generation == self.historyGeneration,
+                           branch == self.branchGenerations[runtime.runtimeId] ?? 0 {
+                            self.historyLoading.remove(runtime.runtimeId)
+                        }
+                    }
+                    guard generation == self.historyGeneration,
                           branch == self.branchGenerations[runtime.runtimeId] ?? 0,
                           kind != .firstPage || sourceRevision == self.sessionRevisions[session] ?? 0,
                           await self.installCachedPage(page, runtimeId: runtime.runtimeId, sessionId: session,
@@ -1501,6 +1508,7 @@ final class HostConnection: ObservableObject {
                         self.startAutomaticHistoryPrefetch(runtime)
                     }
                 }
+                if kind == .history { return } // Do not release admission before projection/install finishes.
             }
         case .requestHistory(let before, _):
             if canSend { requestOlderHistory(runtime, sessionId: session, boundary: before, operation: operation) }
@@ -1512,9 +1520,12 @@ final class HostConnection: ObservableObject {
             else if selectedOfflineSession != nil { historyErrors[runtime.runtimeId] = L10n.tr("这份会话还没有完整的本地历史缓存。") }
         case .requestCatchup(let gap): requestCatchup(runtime, operation: operation, gap: gap)
         case .none:
-            if let read = sessionReads.operations[operation], read.kind == .prefetch,
-               read.phase == .failed, let budget = read.historyPrefetch {
-                automaticHistoryProgress[budget.scopeId] = budget.spendingFailedAttempts(1)
+            if let read = sessionReads.operations[operation], read.phase == .failed {
+                if read.kind == .history, let error = read.error {
+                    historyErrors[runtime.runtimeId] = FeedbackText.reason(error)
+                } else if let budget = read.historyPrefetch {
+                    automaticHistoryProgress[budget.scopeId] = budget.spendingFailedAttempts(1)
+                }
             }
         }
         if sessionReads.operations[operation]?.phase.active == false, kind == .history { historyLoading.remove(runtime.runtimeId) }

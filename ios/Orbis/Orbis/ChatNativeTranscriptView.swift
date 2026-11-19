@@ -145,8 +145,10 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
     var requestIsCurrent: (ChatViewportPolicy.Request) -> Bool
     var onDistance: (CGFloat) -> Void
     var onInteraction: (Bool) -> Void
-    var onViewport: ([String: CGRect], CGFloat) -> Void
+    var onReadingRow: (String?) -> Void
     var onDirection: (Bool) -> Void = { _ in }
+    var canPageHistory: () -> Bool = { false }
+    var onHistoryPull: () -> Void = {}
     var horizontalInset: CGFloat = 16
     var topInset: CGFloat = 4
     var spacing: CGFloat = 16
@@ -194,6 +196,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         private weak var collection: NativeTranscriptCollection?
         private var dataSource: UICollectionViewDiffableDataSource<Int, String>?
         private var desired: [Item] = []
+        private var desiredHasMessages = false
         private var rendered: [String: Item] = [:]
         private var appliedRows: [ChatNativeSnapshotRow] = []
         private let snapshotWorker: ChatNativeSnapshotWorker
@@ -216,14 +219,15 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         private var userInteracting = false
         private var pendingInteractionEnd = false
         private var previousPanY: CGFloat = 0
+        private var historyPan = ChatHistoryPan()
         private var pendingDirection: Bool?
         private var anchors: [Anchor] = []
         private var alignment: Alignment?
         private var handledRequest: ChatViewportPolicy.Request?
         private(set) var animatingOffset = false
         private var lastDistance: CGFloat?
-        private var lastViewport: [String: CGRect]?
-        private var lastViewportHeight: CGFloat?
+        private var lastReadingRow: String?
+        private var hasEmittedReadingRow = false
         private weak var observedViewport: ChatViewportController?
         private var viewportObserver: UUID?
         private var readingSurfaceReceiver: UUID?
@@ -373,10 +377,12 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 handledRequest = nil
                 pendingInteractionEnd = false
                 userInteracting = false
+                historyPan.cancel()
+                pendingDirection = nil
                 animatingOffset = false
                 lastDistance = nil
-                lastViewport = nil
-                lastViewportHeight = nil
+                lastReadingRow = nil
+                hasEmittedReadingRow = false
             }
             if following { anchors = [] }
             if !ownerChanged, initialPlacementReady, !following || nativeMotionActive {
@@ -390,6 +396,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                     assertionFailure("Native transcript requires unique row IDs")
                 }
                 desired = next
+                desiredHasMessages = next.contains { $0.kind == .message && $0.id != input.tailID }
                 if let snapshot { receivedItemsRevision = snapshot.revision }
                 sourceGeneration &+= 1
                 applyDesiredSnapshot()
@@ -483,6 +490,16 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             // the current reading position immediately before the actual UI mutation.
             if initialPlacementReady, !following || nativeMotionActive {
                 captureAnchorsIfNeeded()
+            }
+            // If the reader is inside a long reply, a short newer row at the bottom
+            // must not pull them down as that reply gains a paragraph. This applies
+            // to source snapshots only; disclosure sizing keeps its existing priority.
+            if let height = collection?.bounds.height,
+               let reading = anchors.firstIndex(where: {
+                   $0.top < 0 && $0.top + $0.height > height * 0.5 && plan.reconfiguredIDs.contains($0.id)
+               }), reading != anchors.startIndex {
+                let anchor = anchors.remove(at: reading)
+                anchors.insert(anchor, at: anchors.startIndex)
             }
             // Keep the old snapshot's cell provider unchanged while metadata is
             // preparing. New content becomes visible in the actual UI transaction.
@@ -666,10 +683,10 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             }
             if animatingOffset { collection.layoutIfNeeded() }
             else { UIView.performWithoutAnimation { collection.layoutIfNeeded() } }
-            let measuredVisibleContent = hasMeasuredVisibleContent
-            placement.measured(visibleContent: measuredVisibleContent,
+            let visible = visibleContent()
+            placement.measured(visibleContent: visible.measured,
                 bottomDistance: bottomOffset - collection.contentOffset.y)
-            if placement.isReady && measuredVisibleContent { emitMetrics() }
+            if placement.isReady { emitMetrics(readingRow: visible.firstMessage) }
             if pendingInteractionEnd {
                 pendingInteractionEnd = false
                 input.onInteraction(false)
@@ -748,7 +765,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                     PreviewChatScrollProbe.shared.nativeQuestionAnimationStarted?(active.request)
                 }
                 #endif
-            } else if targetID.map({ isMeasured($0) }) ?? hasMeasuredVisibleContent,
+            } else if targetID.map({ isMeasured($0) }) ?? visibleContent().measured,
                       abs(collection.contentOffset.y - clamped(target)) <= 1 {
                 alignment = nil
                 if !following { captureAnchorsIfNeeded() }
@@ -799,22 +816,25 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             return true
         }
 
-        private func visibleRows() -> [(String, CGRect, Bool)] {
-            guard let collection, let dataSource else { return [] }
-            return collection.indexPathsForVisibleItems.compactMap { path in
-                guard let id = dataSource.itemIdentifier(for: path),
-                      let cell = collection.cellForItem(at: path) as? NativeTranscriptCell,
-                      cell.frame.intersects(collection.bounds) else { return nil }
-                return (id, cell.frame, cell.hasMeasured(id: id, height: cell.frame.height))
-            }.sorted { $0.1.minY < $1.1.minY }
-        }
-
-        private var hasMeasuredVisibleContent: Bool {
-            let rows = visibleRows()
-            let hasMessages = desired.contains { $0.kind == .message }
-            return rows.contains { id, _, measured in
-                measured && (!hasMessages || rendered[id]?.kind == .message)
+        /// UIKit owns geometry. Examine only onscreen cells, without sorting or building
+        /// a frame map. Transcript indexing and question text stay in the worker.
+        private func visibleContent() -> (measured: Bool, firstMessage: String?) {
+            guard let collection else { return (false, nil) }
+            let bounds = collection.bounds
+            var measured = false, firstY = CGFloat.infinity
+            var firstMessage: String?
+            for case let cell as NativeTranscriptCell in collection.visibleCells {
+                guard let id = cell.representedID, let item = rendered[id], cell.frame.intersects(bounds) else { continue }
+                let isMessage = item.kind == .message && id != input.tailID
+                if !measured && (isMessage || !desiredHasMessages) {
+                    measured = cell.hasMeasured(id: id, height: cell.frame.height)
+                }
+                if isMessage && cell.frame.minY < firstY {
+                    firstY = cell.frame.minY
+                    firstMessage = id
+                }
             }
+            return (measured, firstMessage)
         }
 
         private func isMeasured(_ id: String) -> Bool {
@@ -827,8 +847,15 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             // Reading compensation never competes with an explicit positioning
             // owner, including snapshots prepared while its target is pending.
             guard alignment == nil, !animatingOffset, anchors.isEmpty, let collection else { return }
-            anchors = visibleRows().compactMap { id, frame, measured in
-                guard measured, rendered[id]?.kind == .message, id != input.tailID else { return nil }
+            // Keep the diffable data source as the authority for anchor capture while
+            // a reusable cell is changing what it represents.
+            guard let dataSource else { return }
+            anchors = collection.indexPathsForVisibleItems.compactMap { path in
+                guard let id = dataSource.itemIdentifier(for: path),
+                      let cell = collection.cellForItem(at: path) as? NativeTranscriptCell,
+                      rendered[id]?.kind == .message, id != input.tailID else { return nil }
+                let frame = cell.frame
+                guard frame.intersects(collection.bounds), cell.hasMeasured(id: id, height: frame.height) else { return nil }
                 return Anchor(id: id, top: frame.minY - collection.bounds.minY, height: frame.height,
                     interaction: interactionGeneration,
                     panY: collection.panGestureRecognizer.translation(in: collection).y,
@@ -863,7 +890,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             return false
         }
 
-        private func emitMetrics() {
+        private func emitMetrics(readingRow: String?) {
             guard let collection else { return }
             if let direction = pendingDirection {
                 pendingDirection = nil
@@ -874,16 +901,10 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
                 lastDistance = distance
                 input.onDistance(distance)
             }
-            var frames: [String: CGRect] = [:]
-            for (id, frame, measured) in visibleRows()
-                where measured && rendered[id]?.kind == .message && id != input.tailID {
-                frames[id] = frame.offsetBy(dx: -collection.bounds.minX, dy: -collection.bounds.minY)
-            }
-            let height = collection.bounds.height
-            if frames != lastViewport || height != lastViewportHeight {
-                lastViewport = frames
-                lastViewportHeight = height
-                input.onViewport(frames, height)
+            if !hasEmittedReadingRow || readingRow != lastReadingRow {
+                hasEmittedReadingRow = true
+                lastReadingRow = readingRow
+                input.onReadingRow(readingRow)
             }
         }
 
@@ -929,7 +950,23 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
             input.viewport.readingSurface.cancel()
+            historyPan.begin(nearTop: scrollView.contentOffset.y + scrollView.adjustedContentInset.top <= 44,
+                             admitted: initialPlacementReady && input.canPageHistory())
             beginInteraction(scrollView)
+        }
+
+        func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                       targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+            let atTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top <= 44
+            guard historyPan.release(translation: scrollView.panGestureRecognizer.translation(in: scrollView)),
+                  atTop, input.canPageHistory(), scrollView.panGestureRecognizer.state != .cancelled else { return }
+            // Defer the model write until UIKit has finished choosing its deceleration target.
+            let owner = ownership, generation = interactionGeneration
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.stopped, self.ownership == owner, self.interactionGeneration == generation,
+                      self.input.canPageHistory() else { return }
+                self.input.onHistoryPull()
+            }
         }
 
         private func beginInteraction(_ scrollView: UIScrollView) {

@@ -4,56 +4,25 @@ import CoreGraphics
 /// PERF-11: scrolling only publishes viewport boundary crossings. Pixel offsets
 /// are native scroll state; the chat needs visibility, paging and question facts.
 struct ChatViewportFacts: Equatable {
-    struct Question: Equatable {
+    struct ReadingRow: Equatable {
         let id: String
-        let outside: Bool
+        let index: Int
     }
-    var hasVisibleRows = false
-    var firstRowNearTop = false
-    var question: Question?
+    var readingRow: ReadingRow?
 
-    init() {}
-    init(frame: CGRect, viewportHeight: CGFloat, firstRow: Bool, questionID: String?) {
-        hasVisibleRows = frame.maxY > 0 && frame.minY < viewportHeight
-        firstRowNearTop = firstRow && frame.minY >= -40 && frame.minY < viewportHeight
-        if let questionID {
-            question = Question(id: questionID, outside: frame.maxY < -8 || frame.minY > viewportHeight + 8)
-        }
-    }
-
-    mutating func merge(_ next: Self) {
-        hasVisibleRows = hasVisibleRows || next.hasVisibleRows
-        firstRowNearTop = firstRowNearTop || next.firstRowNearTop
-        question = next.question ?? question
-    }
-
-    func questionOutsideViewport(_ id: String?) -> Bool {
-        guard hasVisibleRows, let id else { return false }
-        // A lazily released question is outside. A previous question's geometry
-        // cannot stand in for a newly published question with a different identity.
-        guard let question, question.id == id else { return true }
-        return question.outside
+    init(readingRow: ReadingRow? = nil) { self.readingRow = readingRow }
+    init(frame: CGRect, viewportHeight: CGFloat, row: ReadingRow) {
+        readingRow = frame.maxY > 0 && frame.minY < viewportHeight ? row : nil
     }
 }
 
-/// A lazy row owns its report until it disappears. Unrelated geometry callbacks
-/// must not replace the aggregate with a transient empty preference reduction.
+/// SwiftUI's compatibility stack reports only row/visibility boundary changes.
 struct ChatViewportReports {
-    private var reports: [UUID: ChatViewportFacts] = [:]
+    private var reports: [UUID: ChatViewportFacts.ReadingRow] = [:]
 
-    mutating func update(_ token: UUID, facts next: ChatViewportFacts?) {
-        reports[token] = next
-    }
-
-    func snapshot(questionID: String?) -> ChatViewportFacts {
-        reports.values.reduce(into: ChatViewportFacts()) { aggregate, next in
-            aggregate.hasVisibleRows = aggregate.hasVisibleRows || next.hasVisibleRows
-            aggregate.firstRowNearTop = aggregate.firstRowNearTop || next.firstRowNearTop
-            guard let question = next.question, question.id == questionID else { return }
-            // Old/new lazy hosts can overlap during an identity handoff. An
-            // on-screen report for the current question wins until its host exits.
-            aggregate.question = .init(id: question.id, outside: (aggregate.question?.outside ?? true) && question.outside)
-        }
+    mutating func update(_ token: UUID, facts next: ChatViewportFacts?) { reports[token] = next?.readingRow }
+    func snapshot() -> ChatViewportFacts {
+        .init(readingRow: reports.values.min { $0.index < $1.index })
     }
 }
 
@@ -78,7 +47,6 @@ struct ChatViewportPolicy: Equatable {
     private(set) var questionOutsideViewport = false
     private(set) var suppressQuestionPaging = false
     private(set) var awaitingOlderPage = false
-    private(set) var topArmed = false
     private(set) var showJump = false
     private(set) var request: Request?
     private(set) var contextGeneration = 0
@@ -90,22 +58,9 @@ struct ChatViewportPolicy: Equatable {
         hasPositioned && hasBrowsed && lastScrollTowardEarlier && showJump && questionOutsideViewport
     }
 
-    mutating func distanceChanged(_ distance: CGFloat, hasMessages: Bool, firstRowNearTop: Bool) {
-        if distance.isFinite && !hasPositioned && hasMessages {
-            hasPositioned = true
-            if !firstRowNearTop { topArmed = true }
-        }
+    mutating func distanceChanged(_ distance: CGFloat, hasMessages: Bool) {
+        if distance.isFinite && !hasPositioned && hasMessages { hasPositioned = true }
         updateJump(distance)
-    }
-
-    /// Consume the edge even while a business read is blocked. Completion cannot replay
-    /// a top position: the reader must leave this boundary before it can arm again.
-    mutating func viewportChanged(_ viewport: ChatViewportFacts, questionID: String?, canPage: Bool) -> Bool {
-        questionChanged(outside: viewport.questionOutsideViewport(questionID))
-        guard viewport.firstRowNearTop else { topArmed = hasPositioned; return false }
-        guard topArmed else { return false }
-        topArmed = false
-        return canPage && !suppressQuestionPaging && !awaitingOlderPage
     }
 
     mutating func questionChanged(outside: Bool) { questionOutsideViewport = outside }
@@ -122,7 +77,7 @@ struct ChatViewportPolicy: Equatable {
             // Programmatic scrolling and disclosure layout also report idle. Only a real
             // native user interaction may finish by restoring bottom following.
             guard mode == .interacting else { return }
-            mode = bottomDistance <= Self.line ? .following : .reading
+            mode = !awaitingOlderPage && bottomDistance <= Self.line ? .following : .reading
             if following { hasBrowsed = false }
         }
         updateJump(bottomDistance)
@@ -615,5 +570,18 @@ struct FoldReadingGeometry {
         header = CGRect(x: 0, y: max(0, hingeBottom + 12), width: width, height: showsSurface ? headerHeight : 0)
         surface = CGRect(x: 0, y: surfaceY, width: width, height: showsSurface ? editorY - surfaceY : 0)
         composer = CGRect(x: 0, y: editorY, width: width, height: editorHeight)
+    }
+}
+
+/// CHAT-PAGING-01: a gesture that starts blocked stays blocked. Completion and
+/// geometry have no authority to begin or replay it. Distances are in points.
+struct ChatHistoryPan {
+    private var startedNearTop: Bool?
+    mutating func begin(nearTop: Bool, admitted: Bool) { startedNearTop = admitted ? nearTop : nil }
+    mutating func cancel() { startedNearTop = nil }
+    mutating func release(translation: CGPoint) -> Bool {
+        defer { cancel() }
+        guard let startedNearTop else { return false }
+        return translation.y >= (startedNearTop ? 44 : 12) && translation.y > abs(translation.x)
     }
 }

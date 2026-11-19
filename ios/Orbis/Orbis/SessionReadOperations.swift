@@ -123,6 +123,10 @@ struct SessionReadOperations {
         guard owns(id, current: current), operations[id]?.phase == .local, let operation = operations[id] else { return .none }
         guard page.graph.sessionId == operation.owner.sessionId, operation.owner.cacheEpoch == nil || page.graph.epoch == operation.owner.cacheEpoch else { finish(id, phase: .superseded); return .none }
         if page.status == .cycleDetected { finish(id, phase: .failed, error: L10n.tr("本地历史父节点形成循环")); return .none }
+        if [.history, .prefetch].contains(operation.kind), let first = page.entries.first,
+           first.entryId == operation.beforeEntryId {
+            finish(id, phase: .failed, error: L10n.tr("历史范围未推进，请重试")); return .none
+        }
         if page.displayComplete && !page.entries.isEmpty {
             finish(id, phase: .succeeded); return .apply(page)
         }

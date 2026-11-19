@@ -1,6 +1,12 @@
 package com.orbising.orbis
 
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlin.math.abs
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -27,5 +33,43 @@ internal fun historyPagingRequests(
         val enteredTop = index <= TopZoneLastIndex && previous > TopZoneLastIndex
         previous = index
         if (enteredTop && !isBlocked) emit(Unit)
+    }
+}
+
+/** CHAT-PAGING-01: a blocked down event stays blocked, even if the page returns before release. */
+internal class ChatHistoryPan {
+    private var requiredDistance: Float? = null
+    fun begin(nearTop: Boolean, admitted: Boolean, density: Float) {
+        requiredDistance = if (admitted) (if (nearTop) 44f else 12f) * density else null
+    }
+    fun release(dx: Float, dy: Float, nearTop: Boolean, admitted: Boolean): Boolean {
+        val threshold = requiredDistance
+        requiredDistance = null
+        return threshold != null && admitted && nearTop && dy >= threshold && dy > abs(dx)
+    }
+}
+
+/** Observe only physical transcript gestures. Final pass sees the list position after the drag.
+ *  Never consume input, and never start a read from recomposition, rebound, or fling callbacks. */
+internal fun Modifier.chatHistoryPull(
+    owner: ChatPresentationIdentity,
+    nearTop: () -> Boolean,
+    canLoad: () -> Boolean,
+    onLoad: () -> Unit,
+): Modifier = pointerInput(owner) {
+    val gesture = ChatHistoryPan()
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        gesture.begin(nearTop(), canLoad(), density)
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Final)
+            if (event.changes.any { it.id != down.id && it.pressed }) break
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (!change.pressed) {
+                val distance = change.position - down.position
+                if (gesture.release(distance.x, distance.y, nearTop(), canLoad())) onLoad()
+                break
+            }
+        }
     }
 }

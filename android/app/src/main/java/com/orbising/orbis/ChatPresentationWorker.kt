@@ -38,7 +38,9 @@ internal class ChatPresentationProjection(
     val turnIds: Map<String, String>,
     val requestTools: Map<String, ToolActivity>,
     val orphanTools: List<ToolActivity>,
+    val inputMessages: List<ChatMessage>,
     questionMessages: List<ChatMessage>,
+    excludedQuestions: Set<String>,
     val error: String? = null,
 ) {
     val keys = items.map(ChatListItem::key)
@@ -54,8 +56,12 @@ internal class ChatPresentationProjection(
         item.key to messages.flatMap { it.content }.mapNotNull(RemoteContent::artifact)
     }
     val byKey = items.associateBy(ChatListItem::key)
-    val indexByMessage = chatListItemIndexByMessageId(items)
-    val latestQuestion = latestChatQuestion(questionMessages)
+    // Keep source-message lookup for actions and add identities for split card anchors.
+    val indexByMessage = buildMap {
+        putAll(chatListItemIndexByMessageId(items))
+        items.forEachIndexed { index, row -> put(row.key, index) }
+    }
+    val readingQuestions = indexChatReadingQuestions(keys, questionMessages, excludedQuestions)
     val truncated = presentation.messages.firstNotNullOfOrNull { message ->
         message.content.firstOrNull { it.truncated }?.let { message.messageId to (it.originalBytes ?: 0L) }
     }
@@ -93,7 +99,7 @@ internal class ChatPresentationWorker {
         val items = chatViewportItems(grouped, old?.items.orEmpty())
         val represented = presentation.messages.flatMap { it.content }.mapNotNull(RemoteContent::toolCallId).toSet()
         ChatPresentationProjection(request.identity, presentation, items, byMessage, turns, request.tools,
-            orphanToolActivities(request.tools.values, represented), base, source?.error).also { previous = it }
+            orphanToolActivities(request.tools.values, represented), request.messages, base, request.pending.keys, source?.error).also { previous = it }
     }
 }
 

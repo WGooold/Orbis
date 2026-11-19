@@ -241,6 +241,7 @@ struct ChatRow: Identifiable {
 struct ChatQuestion: Equatable {
     let messageId: String
     let text: String
+    let accessibilityLabel: String
 
     init?(_ message: ChatMessage) {
         guard message.role == "user", message.isError != true else { return nil }
@@ -252,6 +253,7 @@ struct ChatQuestion: Equatable {
         guard !text.isEmpty else { return nil }
         self.messageId = message.messageId
         self.text = text
+        accessibilityLabel = L10n.tr("最近提问，{0}", text)
     }
 }
 
@@ -356,7 +358,9 @@ func desktopAttachTitle(_ state: String?) -> String {
 struct ChatTranscript {
     let rows: [ChatRow]
     let firstMessageId: String?
-    let questions: [ChatQuestion]
+    let rowIndex: [String: Int]
+    private let readingQuestions: [String: ChatQuestion]
+    private let sourceQuestions: [String: ChatQuestion]
     /// Only the tool results and timings that belong to each row, so an unchanged row compares equal.
     let toolResultsByRow: [String: [String: ChatMessage]]
     let toolTextByRow: [String: [String: PreparedChatToolText]]
@@ -366,13 +370,12 @@ struct ChatTranscript {
 
     static let empty = ChatTranscript(messages: [], turnTimings: [:])
 
-    func latestQuestion(excluding messageIds: Set<String>) -> ChatQuestion? {
-        questions.last { !messageIds.contains($0.messageId) }
-    }
+    /// Inclusive predecessor; the caller hides it when the top row is the question itself.
+    func question(at rowID: String) -> ChatQuestion? { readingQuestions[rowID] }
 
     init(messages: [ChatMessage], turnTimings: [String: SessionTurnTiming], previousRows: [ChatRow] = [],
          displayIds: [String: String] = [:], aliases: [String: String] = [:], contentRevision: UUID = UUID(),
-         previous: ChatTranscript? = nil,
+         previous: ChatTranscript? = nil, excludedQuestions: Set<String> = [],
          prepareToolText: (ChatContent, ChatMessage?) -> PreparedChatToolText = { PreparedChatToolText(content: $0, result: $1) }) {
         let presentation = chatPresentation(messages)
         let timings = turnTimings.values.sorted { ($0.startedAt, $0.turnId) < ($1.startedAt, $1.turnId) }
@@ -385,14 +388,25 @@ struct ChatTranscript {
                   old.completedIds == row.completedIds else { return row }
             return old
         }
-        firstMessageId = presentation.messages.first?.messageId
-        questions = presentation.messages.compactMap(ChatQuestion.init)
+        firstMessageId = rows.first?.id
+        var indices: [String: Int] = [:]
+        var questions: [String: ChatQuestion] = [:], predecessors: [String: ChatQuestion] = [:]
+        var question: ChatQuestion?
         var results: [String: [String: ChatMessage]] = [:], rowTimings: [String: [SessionTurnTiming]] = [:]
         var toolText: [String: [String: PreparedChatToolText]] = [:]
         var anchorsByMessage: [String: Set<String>] = [:], rowAnchors: [String: Set<String>] = [:]
         for (entry, message) in displayIds { anchorsByMessage[message, default: []].insert(entry) }
         for (message, entry) in aliases { anchorsByMessage[message, default: []].insert(entry) }
-        for row in rows {
+        for (index, row) in rows.enumerated() {
+            indices[row.id] = index
+            if row.isUser, !excludedQuestions.contains(row.id), let message = row.messages.first {
+                let retained = previousByID[row.id]?.contentRevision == row.contentRevision ? previous?.sourceQuestions[row.id] : nil
+                if let source = retained ?? ChatQuestion(message) {
+                    questions[row.id] = source
+                    question = source
+                }
+            }
+            predecessors[row.id] = question
             let calls = row.messages.flatMap { message in
                 message.content.flatMap { [$0.toolCallId, $0.summary?.tool?.toolCallId].compactMap { $0 } } + [message.toolCallId].compactMap { $0 }
             }
@@ -423,6 +437,7 @@ struct ChatTranscript {
                 rowAnchors[row.id] = anchors
             }
         }
+        rowIndex = indices; readingQuestions = predecessors; sourceQuestions = questions
         toolResultsByRow = results; timingsByRow = rowTimings
         toolTextByRow = toolText
         changeAnchorsByRow = rowAnchors
@@ -979,12 +994,14 @@ actor ChatTranscriptWorker {
         }
         let transcript: ChatTranscript
         if !changed, let old = previousInput, let cached = previousTranscript,
-           old.timings == input.timings, old.displayIds == input.displayIds, old.aliases == input.aliases {
+           old.timings == input.timings, old.displayIds == input.displayIds, old.aliases == input.aliases,
+           old.pending.map(\.messageId) == input.pending.map(\.messageId) {
             transcript = cached
         } else {
             transcript = ChatTranscript(messages: publishedMessages, turnTimings: input.timings,
                 previousRows: self.identity == identity ? previousRows : [], displayIds: input.displayIds, aliases: input.aliases,
-                previous: self.identity == identity ? previousTranscript : nil, prepareToolText: prepareToolText)
+                previous: self.identity == identity ? previousTranscript : nil,
+                excludedQuestions: Set(input.pending.map(\.messageId)), prepareToolText: prepareToolText)
             warmTailMarkdown(transcript.rows)
         }
         previousInput = input; previousTranscript = transcript

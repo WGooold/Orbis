@@ -3926,8 +3926,9 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["跳到最新消息"].exists)
     }
 
-    func testQuestionReminderTracksNewSourceQuestionsWithoutMovingTheReader() {
-        let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-reduce-motion"])
+    // CHAT-QUESTION-02: source appends below a reader must not change the predecessor.
+    func testQuestionReminderKeepsTheReadingQuestionAcrossSourceAppends() {
+        let app = launch("viewport", arguments: ["--preview-viewport-rows", "--preview-reduce-motion", "--probe-chat-updates"])
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
         let transcript = chatTranscript(app)
         let reminder = app.buttons["chat-question-reminder"]
@@ -3937,7 +3938,10 @@ final class OrbisUITests: XCTestCase {
         }
         recordAnchorDiagnostics(app)
         XCTAssertTrue(reminder.waitForExistence(timeout: 3))
-        XCTAssertTrue(reminder.label.contains("新增消息 0"))
+        XCTAssertTrue(reminder.label.contains("检查长回复滚动"))
+        let publication = app.staticTexts["chat-update-report"]
+        XCTAssertTrue(publication.waitForExistence(timeout: 5))
+        waitForStableChatRegions(publication)
         let anchor = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
             .allElementsBoundByIndex.first { $0.isHittable && $0.frame.minY > transcript.frame.minY + 120 && $0.frame.maxY < transcript.frame.maxY - 20 }
         if anchor == nil {
@@ -3985,9 +3989,16 @@ final class OrbisUITests: XCTestCase {
         }
         XCTAssertNotNil(anchor)
         let before = anchor?.frame.minY
+        let beforePublication = chatRegionCounts(publication)["transcript"] ?? 0
         app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "刷新 Git 工作分支")).firstMatch.tap()
-        let changed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "新增消息 1"), object: reminder)
-        XCTAssertEqual(XCTWaiter.wait(for: [changed], timeout: 5), .completed)
+        // Wait for the new source row to reach the transcript, then inspect the reminder
+        // at the original offset. The fixture's rows are lazy, so use the publication probe.
+        let updated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (self.chatRegionCounts(publication)["transcript"] ?? 0) > beforePublication
+        }, object: publication)
+        XCTAssertEqual(XCTWaiter.wait(for: [updated], timeout: 5), .completed)
+        waitForStableChatRegions(publication)
+        XCTAssertTrue(reminder.label.contains("检查长回复滚动"))
         recordAnchorDiagnostics(app)
         if let anchor, let before { XCTAssertEqual(anchor.frame.minY, before, accuracy: 1) }
         capture("question-reminder-new-source-reduced", app: app)

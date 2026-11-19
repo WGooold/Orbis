@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
@@ -81,10 +82,13 @@ class ChatQuestionReminderInstrumentedTest {
             scroll.layoutInfo.visibleItemsInfo.any { it.key == "question" })
         compose.onNodeWithContentDescription("回到最新消息").assertIsDisplayed()
         capture("question-original-$dark")
-        // The question can be offscreen below an older answer, too. It still names the latest question.
+        // CHAT-QUESTION-02: an earlier answer points to its own preceding question.
         compose.runOnIdle { scope.launch { scroll.scrollToItem(2, 100) } }
         compose.waitForIdle()
         reminder.assertIsDisplayed()
+        val inReminder = hasAnyAncestor(hasTestTag("chat-question-reminder"))
+        compose.onNode(hasText("之前的问题") and inReminder, useUnmergedTree = true).assertIsDisplayed()
+        compose.onNode(hasText(question) and inReminder, useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithText("最近提问").assertIsDisplayed()
         compose.onNodeWithContentDescription("回到最新消息").performClick()
         compose.waitForIdle()
@@ -103,10 +107,37 @@ class ChatQuestionReminderInstrumentedTest {
                 messages = conversation.messages + text("source-new", "user", "已确认的新问题"), revision = conversation.revision + 1)))
         }
         compose.waitForIdle()
-        compose.onNodeWithText("已确认的新问题").assertIsDisplayed()
+        compose.onNodeWithText(question).assertIsDisplayed()
+        compose.onNodeWithText("已确认的新问题").assertIsNotDisplayed()
         assertEquals(4, scroll.firstVisibleItemIndex)
         assertEquals(before, scroll.firstVisibleItemScrollOffset)
         capture("question-confirmed-update")
+    }
+
+    // CHAT-PAGING-01: replacing the question must remove its semantics and hit target
+    // immediately, even with an animation clock that has not advanced.
+    @Test fun historyRetryOwnsTheQuestionSlotWithoutMovingTheReader() = withChat { state, scroll, _ ->
+        val before = scroll.firstVisibleItemScrollOffset
+        val original = state.value
+        val failed = SessionReadOperation("failed", "r", original.deviceId, original.hostId, "s", "leaf", "oldest", 0,
+            null, phase = SessionReadPhase.FAILED, error = "fixture failure")
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.runOnIdle {
+                state.value = original.copy(sessionHistory = mapOf("r" to SessionHistoryState("s", "leaf", "oldest", true)),
+                    sessionReads = mapOf("failed" to failed))
+            }
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+            compose.onNodeWithTag("chat-history-retry").assertIsDisplayed().assertHasClickAction()
+            compose.onNodeWithTag("chat-question-reminder").assertDoesNotExist()
+            assertEquals(before, scroll.firstVisibleItemScrollOffset)
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.runOnIdle { state.value = original }
+        compose.waitForIdle()
+        compose.onNodeWithTag("chat-history-retry").assertDoesNotExist()
+        compose.onNodeWithText(question).assertIsDisplayed()
+        assertEquals(before, scroll.firstVisibleItemScrollOffset)
     }
 
     @Test fun notificationsTakePriorityAndHostChangesClearTheReminder() = withChat { state, scroll, _ ->
@@ -141,7 +172,11 @@ class ChatQuestionReminderInstrumentedTest {
         compose.runOnIdle { scope.launch { scroll.scrollToItem(4, 350) } }
         compose.waitForIdle()
         reminder.assertDoesNotExist()
-        compose.onNodeWithTag("chat-transcript").performTouchInput { swipeDown() }
+        // Stay inside the same reply. A large down swipe can bring the source
+        // question into the first visible row, where the reminder should hide.
+        compose.onNodeWithTag("chat-transcript").performTouchInput {
+            swipe(center, center + Offset(0f, 100f), durationMillis = 450)
+        }
         compose.waitForIdle()
         reminder.assertIsDisplayed()
     }

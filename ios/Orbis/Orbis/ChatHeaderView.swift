@@ -5,15 +5,15 @@ struct ChatNoticesRegion: View, Equatable {
     let actions: ChatSessionActions
     let mountToken: UUID
     private var ownsViewport: Bool { model.ownsMount(target: actions.target, token: mountToken) }
-    private var target: ChatActionContext { actions.target }
     let viewport: ChatViewportController
     let setComposerFocused: (Bool) -> Void
     let onBack: () -> Void
+    let retryHistory: () -> Void
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.orbisVisualActive) private var visualActive
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.mountToken == rhs.mountToken }
-    private var showQuestion: Bool { viewport.showQuestionReminder && viewport.latestQuestion != nil }
+    private var showQuestion: Bool { viewport.showQuestionReminder && viewport.readingQuestion != nil }
     private var facts: ChatNoticesState { model.notices }
     private var hasNotices: Bool {
         guard let projection = facts.notice else { return false }
@@ -32,20 +32,50 @@ struct ChatNoticesRegion: View, Equatable {
                     }
                 }.padding(.horizontal, 16).accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
             } else {
-                ZStack(alignment: .top) {
-                    if showQuestion && !hasNotices, let question = viewport.latestQuestion { questionReminder(question).padding(.horizontal, 16).padding(.top, 6).transition(reduceMotion || !visualActive ? .identity : InteractionMotion.notice) }
-                    if hasNotices {
-                        RuntimeNoticesView(model: model, actions: actions, runtimeId: actions.runtimeId,
-                                           supported: facts.supported).padding(.horizontal, 16)
+                let history = model.transcript
+                if (history.hasOlder && history.historyError != nil) || viewport.retryingHistory {
+                    // An exclusive branch removes the question, including its outgoing animation and hit target.
+                    VStack(spacing: 0) {
+                        historyRetry(loading: viewport.retryingHistory || history.historyLoading,
+                                     enabled: !history.syncing && (history.canSend || history.cached))
+                        if hasNotices { runtimeNotices }
                     }
-                }.animation(reduceMotion || !visualActive ? nil : InteractionMotion.panel, value: showQuestion && !hasNotices)
+                } else if hasNotices {
+                    runtimeNotices
+                } else {
+                    Group {
+                        if showQuestion, let question = viewport.readingQuestion {
+                            questionReminder(question).padding(.horizontal, 16).padding(.top, 6)
+                                .transition(reduceMotion || !visualActive ? .identity : InteractionMotion.notice)
+                        }
+                    }.animation(reduceMotion || !visualActive ? nil : InteractionMotion.panel, value: showQuestion)
+                }
             }
         }
+    }
+    private var runtimeNotices: some View {
+        RuntimeNoticesView(model: model, actions: actions, runtimeId: actions.runtimeId,
+                           supported: facts.supported).padding(.horizontal, 16)
+    }
+    private func historyRetry(loading: Bool, enabled: Bool) -> some View {
+        let p = OrbisPalette(scheme)
+        return OrbisMotionButton { if ownsViewport { retryHistory() } } label: {
+            HStack(spacing: 12) {
+                Text(L10n.tr(loading ? "正在加载更早的历史…" : "历史加载失败"))
+                    .foregroundStyle(loading ? p.secondary : p.error)
+                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                if loading { ProgressView().accessibilityHidden(true) }
+                else { Text(L10n.tr("重试")).foregroundStyle(.tint).fixedSize(horizontal: true, vertical: false) }
+            }.font(.orbisLabel()).padding(.horizontal, 14).padding(.vertical, 10).frame(minHeight: 48)
+        }.buttonStyle(NeuButtonStyle())
+            .disabled(loading || !enabled)
+            .accessibilityIdentifier("chat-history-retry")
+            .padding(.horizontal, 16).padding(.top, 6)
     }
     private func questionReminder(_ question: ChatQuestion) -> some View {
         let p = OrbisPalette(scheme)
         return OrbisMotionButton {
-            guard ownsViewport else { return }
+            guard ownsViewport, viewport.showQuestionReminder, viewport.readingQuestion == question else { return }
             setComposerFocused(false)
             ChatDebugProbes.armQuestionPreemption(viewport)
             viewport.update { $0.locateQuestion(question.messageId, bottomDistance: viewport.bottomDistance) }
@@ -62,7 +92,7 @@ struct ChatNoticesRegion: View, Equatable {
             }.padding(.horizontal, 14).padding(.vertical, 10).frame(minHeight: 48)
         }.buttonStyle(NeuButtonStyle())
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(L10n.tr("最近提问，{0}", question.text))
+            .accessibilityLabel(question.accessibilityLabel)
             .accessibilityHint(L10n.tr("定位到原消息"))
             .accessibilityIdentifier("chat-question-reminder")
             .accessibilityAddTraits(.isButton)

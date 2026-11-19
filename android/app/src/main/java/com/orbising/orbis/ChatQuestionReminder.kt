@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.NorthWest
 import com.orbising.orbis.OrbisActionIcon as Icon
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.animation.AnimatedVisibility
@@ -37,17 +38,32 @@ import androidx.compose.ui.unit.dp
 @Immutable
 internal data class ChatQuestion(val messageId: String, val text: String)
 
-internal fun latestChatQuestion(messages: List<ChatMessage>, excludedMessageIds: Set<String> = emptySet()): ChatQuestion? =
-    messages.asReversed().firstNotNullOfOrNull { message ->
-        if (message.role != "user" || message.isError == true || message.messageId in excludedMessageIds) null
-        else message.content.mapNotNull { block ->
-            when {
-                block.type == "text" -> block.text?.takeIf { it.isNotBlank() }
-                block.type == "artifact" -> block.artifact?.let { L10n.tr("附件：{0}", it.fileName) }
-                else -> null
-            }
-        }.joinToString("\n").trim().takeIf { it.isNotEmpty() }?.let { ChatQuestion(message.messageId, it) }
+internal fun sourceChatQuestion(message: ChatMessage): ChatQuestion? {
+    if (message.role != "user" || message.isError == true) return null
+    return message.content.mapNotNull { block ->
+        when (block.type) {
+            "text" -> block.text?.takeIf { it.isNotBlank() }
+            "artifact" -> block.artifact?.let { L10n.tr("附件：{0}", it.fileName) }
+            else -> null
+        }
+    }.joinToString("\n").trim().takeIf { it.isNotEmpty() }?.let { ChatQuestion(message.messageId, it) }
+}
+
+/** Built with the background transcript projection, not in the scroll observer. */
+internal fun indexChatReadingQuestions(
+    rowKeys: List<String>, source: List<ChatMessage>, excluded: Set<String>,
+): Map<String, ChatQuestion> {
+    val questions = source.asSequence().filter { it.messageId !in excluded }
+        .mapNotNull(::sourceChatQuestion).associateBy(ChatQuestion::messageId)
+    return buildMap {
+        var predecessor: ChatQuestion? = null
+        for (row in rowKeys) {
+            val question = questions[row]
+            if (question != null) predecessor = question
+            else predecessor?.let { put(row, it) }
+        }
     }
+}
 
 @Composable
 internal fun ChatQuestionReminder(question: ChatQuestion, onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -83,6 +99,24 @@ internal fun AnimatedChatQuestionReminder(
     ) {
         displayed?.let { shown ->
             ChatQuestionReminder(shown, onClick = { if (visible) question?.let(onClick) })
+        }
+    }
+}
+
+@Composable
+internal fun ChatHistoryRetry(loading: Boolean, enabled: Boolean, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    NeumorphSurface(
+        modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("chat-history-retry"),
+        shape = RemoteUi.ControlShape, shadowScale = 0.6f, contentPadding = 12.dp,
+        onClick = onRetry.takeIf { !loading && enabled },
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(L10n.tr(if (loading) "正在加载更早的历史…" else "历史加载失败"),
+                modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
+                color = if (loading) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Text(L10n.tr("重试"), color = MaterialTheme.colorScheme.primary, maxLines = 1)
         }
     }
 }

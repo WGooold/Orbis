@@ -167,6 +167,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.unit.IntOffset
@@ -1604,8 +1606,9 @@ internal fun ChatScreen(
             delay(1_000)
         }
     }
+    val presentationIdentity = ChatPresentationIdentity(state.hostId, runtimeId, pageSessionId, state.sessionBranchGenerations[runtimeId] ?: 0)
     val projection = rememberChatPresentation(ChatPresentationRequest(
-        ChatPresentationIdentity(state.hostId, runtimeId, pageSessionId, state.sessionBranchGenerations[runtimeId] ?: 0),
+        presentationIdentity,
         conversation.messages, conversation.turnTimings, conversation.tools, state.pendingSends,
         launchCache.takeIf { conversation.messages.isEmpty() && launch != null }))
     val presentation = projection?.presentation ?: ConversationPresentation(emptyList(), emptyMap())
@@ -1619,9 +1622,7 @@ internal fun ChatScreen(
         TurnChangePresentationIdentity(runtimeId, pageSessionId, state.sessionBranchGenerations[runtimeId] ?: 0),
         projection?.items.orEmpty(), turnIdsByMessageId,
         state.turnChanges[runtimeId]?.summaries.orEmpty()))
-    val latestQuestion = projection?.latestQuestion
     val truncatedContent = projection?.truncated
-    val chatItemKeys = projection?.keys.orEmpty()
     val chatItemIndexById = projection?.indexByMessage.orEmpty()
     val orphanTools = projection?.orphanTools.orEmpty()
     // 下载不属于任何会话：会话页的下载按钮显示的是这台电脑全部在途任务。
@@ -1656,25 +1657,25 @@ internal fun ChatScreen(
     val viewportMotion = remember(runtimeId, sessionId) { ChatViewportMotion() }
     // A catch-up can connect a large cached prefix in one projection. LazyColumn's nearby-key
     // lookup may then lose the old row. Capture its key before the new list is laid out.
-    val previousItemKeys = remember(runtimeId, sessionId) { mutableSetOf<String>() }
+    val previousRows = remember(runtimeId, sessionId) { arrayOfNulls<Map<String, ChatListItem>>(1) }
     val projectionAnchor = remember(listState, projection, chatHeaderCount, orphanTools.size, displayReadPending, sourceRead?.operationId) {
-        listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById || it.key in previousItemKeys }
+        listState.layoutInfo.visibleItemsInfo.firstOrNull { projection?.byKey?.containsKey(it.key) == true || previousRows[0]?.containsKey(it.key) == true }
             ?.let { ChatReadingAnchor(it.key as String, it.index, -it.offset, viewportMotion.generation) }
     }
     SideEffect {
-        previousItemKeys.clear()
-        previousItemKeys.addAll(chatItemKeys)
+        if (projection != null) previousRows[0] = projection.byKey
     }
     // Capture before a replacement is laid out, including when the new projection is empty.
     var refreshAnchorOperationId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
     val refreshStartAnchor = remember(runtimeId, sessionId, sourceRead?.operationId) { projectionAnchor }
-    var historyAnchorMessageId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
-    var historyAnchorIndex by remember(runtimeId, sessionId) { mutableStateOf<Int?>(null) }
-    var historyAnchorPending by remember(runtimeId, sessionId) { mutableStateOf(false) }
-    var historyAnchorOperationId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
-    var historyAnchorOffset by remember(runtimeId, sessionId) { mutableStateOf(0) }
-    var historyAnchorGeneration by remember(runtimeId, sessionId) { mutableStateOf(0L) }
-    var historyPagingFeedback by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    var historyAnchorMessageId by remember(presentationIdentity) { mutableStateOf<String?>(null) }
+    var historyAnchorIndex by remember(presentationIdentity) { mutableStateOf<Int?>(null) }
+    var historyAnchorPending by remember(presentationIdentity) { mutableStateOf(false) }
+    var historyAnchorOperationId by remember(presentationIdentity) { mutableStateOf<String?>(null) }
+    var historyAnchorOffset by remember(presentationIdentity) { mutableStateOf(0) }
+    var historyAnchorGeneration by remember(presentationIdentity) { mutableStateOf(0L) }
+    var historyPagingFeedback by remember(presentationIdentity) { mutableStateOf<String?>(null) }
+    var retryingHistory by remember(presentationIdentity) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val sendFlight = remember(state.hostId, runtimeId, sessionId) { MessageSendFlightState(scope) }
     LaunchedEffect(firstDraftSend?.send?.messageId, runtimeId, sessionId) {
@@ -1691,16 +1692,15 @@ internal fun ChatScreen(
     val replyArrivals = remember(state.hostId, runtimeId, sessionId) { ReplyCardArrivals() }
     replyArrivals.observe(projection?.arrivalRows.orEmpty(), initialPositioned && state.e2eReady && conversation.sourceReady && !conversation.isChatSyncing && !displayReadPending,
         following, android.os.SystemClock.uptimeMillis())
-    var hasBrowsed by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
-    var lastScrollTowardEarlier by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
-    var suppressQuestionPaging by remember(state.hostId, runtimeId, sessionId) { mutableStateOf(false) }
+    var hasBrowsed by remember(presentationIdentity) { mutableStateOf(false) }
+    var lastScrollTowardEarlier by remember(presentationIdentity) { mutableStateOf(false) }
     var userScrolling by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val dragging by listState.interactionSource.collectIsDraggedAsState()
-    LaunchedEffect(dragging, state.hostId) {
+    val currentHistoryPending by rememberUpdatedState(historyAnchorPending)
+    LaunchedEffect(dragging, presentationIdentity) {
         if (dragging) {
             following = false
             hasBrowsed = true
-            suppressQuestionPaging = false
             userScrolling = true
             viewportMotion.moved()
         }
@@ -1713,14 +1713,13 @@ internal fun ChatScreen(
                 (last?.offset ?: 0) + (last?.size ?: 0), layout.viewportEndOffset, layout.afterContentPadding)
         }
     }
-    val scrollIntent = remember(state.hostId, runtimeId, sessionId) {
+    val scrollIntent = remember(presentationIdentity) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source == NestedScrollSource.UserInput && available.y != 0f) {
                     lastScrollTowardEarlier = available.y > 0f
                     following = false
                     hasBrowsed = true
-                    suppressQuestionPaging = false
                     userScrolling = true
                     viewportMotion.moved()
                 }
@@ -1740,7 +1739,7 @@ internal fun ChatScreen(
                 if (userScrolling) {
                     if (!scrolling) {
                         userScrolling = false
-                        following = distance < lineHeightPx
+                        following = !currentHistoryPending && distance < lineHeightPx
                         if (following) hasBrowsed = false
                     }
                 } else if (!scrolling && count > chatHeaderCount) {
@@ -1882,39 +1881,51 @@ internal fun ChatScreen(
             } finally { model.setHistoryWindowVisible(historyHost, runtimeId, false) }
         }
     }
-    fun loadHistoryPage() {
-        val anchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById }
-        val index = anchor?.index ?: listState.firstVisibleItemIndex
-        val offset = anchor?.let { -it.offset } ?: listState.firstVisibleItemScrollOffset
-        val accepted = model.loadOlderHistory(runtimeId)
-        if (accepted.operationId == null) {
-            historyPagingFeedback = accepted.rejection ?: L10n.tr("历史加载请求未启动，请重试")
-            return
-        }
-        historyPagingFeedback = null
+    val historyFailure = historyPagingFeedback != null || historyRead?.phase == HistoryReadPhase.FAILED
+    // Business admission also runs immediately before the load, not just at gesture start.
+    fun canLoadHistory(retrying: Boolean = false): Boolean = initialPositioned && !historyOpen &&
+        projection != null && sessionId != null && historyState?.hasOlder == true && historyState.oldestEntryId != null && !displayReadPending &&
+        !historyAnchorPending && historyRead?.phase?.active != true &&
+        (if (retrying) historyFailure else !historyFailure)
+
+    fun loadHistoryPage(retrying: Boolean = false): Boolean {
+        if (!canLoadHistory(retrying)) return false
+        val anchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { projection?.byKey?.containsKey(it.key) == true }
         historyAnchorMessageId = anchor?.key as? String
-        historyAnchorIndex = index
-        historyAnchorPending = true
-        historyAnchorOffset = offset
+        historyAnchorIndex = anchor?.index ?: listState.firstVisibleItemIndex
+        historyAnchorOffset = anchor?.let { -it.offset } ?: listState.firstVisibleItemScrollOffset
         historyAnchorGeneration = viewportMotion.generation
-        historyAnchorOperationId = accepted.operationId
+        // Lock before crossing to the worker. Do not let a short, non-scrollable window
+        // reacquire tail following while that worker is prepending rows.
+        historyAnchorPending = true
+        if (retrying) retryingHistory = true
+        val wasFollowing = following
+        val viewportGeneration = viewportMotion.generation
+        following = false
+        scope.launch {
+            val accepted = model.loadChatHistory(presentationIdentity, state.deviceId, retrying)
+            if (accepted.operationId != null) {
+                historyPagingFeedback = null
+                historyAnchorOperationId = accepted.operationId
+            } else {
+                if (accepted.rejection != null) historyPagingFeedback = accepted.rejection
+                historyAnchorPending = false
+                retryingHistory = false
+                if (viewportMotion.generation == viewportGeneration) following = wasFollowing
+            }
+        }
+        return true
     }
-    val pagingBlocked by rememberUpdatedState(
-        !initialPositioned || historyState?.hasOlder != true || historyRead?.phase?.active == true ||
-            historyRead?.phase == HistoryReadPhase.FAILED || historyAnchorPending || suppressQuestionPaging
-    )
-    val currentLoadHistoryPage by rememberUpdatedState { loadHistoryPage() }
-    // ADR-0041：只有「滚进顶部」的边沿才加载下一页。把 hasOlder/phase 放进 key 会让 effect 每完成
-    // 一页就重启、snapshotFlow 重放当前值，于是停在顶部变成连续下载。
-    LaunchedEffect(runtimeId, sessionId) {
-        historyPagingRequests({ listState.firstVisibleItemIndex }) { pagingBlocked }
-            .collect { currentLoadHistoryPage() }
-    }
-    LaunchedEffect(projection, state.historyReads, historyAnchorOperationId) {
-        val operation = historyAnchorOperationId?.let(state.historyReads::get)
-        if (!historyAnchorPending || operation?.phase?.active == true) return@LaunchedEffect
+    val currentCanPage by rememberUpdatedState { canLoadHistory() }
+    val currentLoadPage by rememberUpdatedState { loadHistoryPage() }
+    val nearHistoryTopPx = with(LocalDensity.current) { 44.dp.roundToPx() }
+    LaunchedEffect(presentationIdentity, projection, state.historyReads, historyAnchorOperationId) {
+        val operation = historyAnchorOperationId?.let(state.historyReads::get) ?: return@LaunchedEffect
+        if (!historyAnchorPending || operation.phase.active) return@LaunchedEffect
+        if (operation.phase in setOf(HistoryReadPhase.SUCCEEDED, HistoryReadPhase.END_REACHED) &&
+            projection?.inputMessages !== conversation.messages) return@LaunchedEffect
         try {
-            if (operation?.phase in setOf(HistoryReadPhase.SUCCEEDED, HistoryReadPhase.END_REACHED) &&
+            if (operation.phase in setOf(HistoryReadPhase.SUCCEEDED, HistoryReadPhase.END_REACHED) &&
                 historyAnchorGeneration == viewportMotion.generation && !userScrolling && !following &&
                 !listState.isScrollInProgress) {
                 val newIndex = historyAnchorMessageId?.let { chatItemIndexById[it] }
@@ -1926,6 +1937,7 @@ internal fun ChatScreen(
             historyAnchorIndex = null
             historyAnchorPending = false
             historyAnchorOperationId = null
+            retryingHistory = false
         }
     }
 
@@ -2068,7 +2080,7 @@ internal fun ChatScreen(
         if (!following && !historyAnchorPending) {
             projectionAnchor?.takeIf { it.generation == viewportMotion.generation }?.let { (key, _, offset) ->
                 chatItemIndexById[key]?.let { index ->
-                    val first = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key in chatItemIndexById }
+                    val first = listState.layoutInfo.visibleItemsInfo.firstOrNull { projection?.byKey?.containsKey(it.key) == true }
                     if (!userScrolling && !listState.isScrollInProgress &&
                         (first?.key != key || first?.offset != -offset)) {
                         listState.scrollToItem(chatHeaderCount + index, offset)
@@ -2428,7 +2440,6 @@ internal fun ChatScreen(
                             if (lastIndex >= 0) {
                                 userScrolling = false
                                 hasBrowsed = false
-                                suppressQuestionPaging = false
                                 following = true
                                 listState.animateScrollToItem(lastIndex, Int.MAX_VALUE)
                             }
@@ -2445,7 +2456,17 @@ internal fun ChatScreen(
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize().nestedScroll(scrollIntent).testTag("chat-transcript")
+                modifier = Modifier.fillMaxSize()
+                    .chatHistoryPull(presentationIdentity,
+                        nearTop = { listState.firstVisibleItemIndex < chatHeaderCount ||
+                            (listState.firstVisibleItemIndex == chatHeaderCount && listState.firstVisibleItemScrollOffset <= nearHistoryTopPx) },
+                        canLoad = { currentCanPage() }, onLoad = { currentLoadPage() })
+                    .nestedScroll(scrollIntent)
+                    .semantics {
+                        if (canLoadHistory()) customActions = listOf(CustomAccessibilityAction(L10n.tr("更早的消息")) {
+                            currentLoadPage()
+                        })
+                    }.testTag("chat-transcript")
                     .onGloballyPositioned { sendFlight.viewport = it.boundsInWindow() },
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
                 // 轮次间距 24，组内间距由 AssistantTurnCard 提供。
@@ -2454,7 +2475,7 @@ internal fun ChatScreen(
                 item(key = "chat-status") {
                     val errors = listOfNotNull(
                         if (runtime == null && launch == null) L10n.tr("会话已离线") else null,
-                        historyPagingFeedback, historyActionError, historyRead?.takeIf { it.phase == HistoryReadPhase.FAILED }?.error,
+                        historyActionError,
                         firstReadError, rangeError, state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError,
                         if (conversation.waitingLocalInteraction) L10n.tr("请在电脑端完成交互") else null,
                         conversation.interactionNotice, conversation.systemNotice,
@@ -2468,8 +2489,6 @@ internal fun ChatScreen(
                         }
                         when {
                             errors.isNotEmpty() -> NeumorphTextButton(errors.first(), { detailsOpen = true }, Modifier.weight(1f))
-                            historyState?.hasOlder == true -> NeumorphTextButton(L10n.tr("更早的消息"), { loadHistoryPage() },
-                                Modifier.weight(1f), enabled = historyRead?.phase?.active != true)
                             else -> Spacer(Modifier.weight(1f))
                         }
                         if (truncatedContent != null) NeumorphTextButton(L10n.tr("完整内容"), {
@@ -2488,8 +2507,7 @@ internal fun ChatScreen(
                         confirmButton = { NeumorphTextButton(L10n.tr("关闭"), { detailsOpen = false }) },
                         dismissButton = { if (errors.isNotEmpty()) NeumorphTextButton(L10n.tr("重试"), {
                             detailsOpen = false
-                            if (historyRead?.phase == HistoryReadPhase.FAILED) loadHistoryPage()
-                            else model.refreshRuntime(runtimeId, explicitRetry = true)
+                            model.refreshRuntime(runtimeId, explicitRetry = true)
                         }) })
                 }
                 items(chatItems, key = ChatListItem::key, contentType = { it::class }) { item ->
@@ -2560,44 +2578,49 @@ internal fun ChatScreen(
             val notices = state.visibleNotificationProjection(runtimeId)?.takeIf { it.sessionId == sessionId }
             val noticesSupported = runtime?.agentKind in setOf("codex", "codexDesktop")
             val hasNotices = notices != null && (notices.items.isNotEmpty() || (noticesSupported && !notices.complete))
-            val questionGap = with(LocalDensity.current) { 8.dp.toPx() }
-            val questionOutsideViewport by remember(listState, latestQuestion, questionGap) {
-                derivedStateOf {
-                    val layout = listState.layoutInfo
-                    val row = layout.visibleItemsInfo.firstOrNull { it.key == latestQuestion?.messageId }
-                    latestQuestion != null && layout.visibleItemsInfo.isNotEmpty() &&
-                        (row == null || row.offset + row.size < layout.viewportStartOffset - questionGap ||
-                            row.offset > layout.viewportEndOffset + questionGap)
-                }
-            }
-            // An overlay leaves list measurements and reading anchors unchanged. Notices own this slot first.
-            AnimatedChatQuestionReminder(
-                question = latestQuestion,
-                visible = !hasNotices && initialPositioned && hasBrowsed && lastScrollTowardEarlier && !following && distanceToBottom > lineHeightPx * 3 && questionOutsideViewport,
-                modifier = Modifier.align(Alignment.TopCenter).padding(horizontal = 16.dp, vertical = 6.dp),
-                onClick = { question ->
-                        val index = chatItems.indexOfFirst { it.key == question.messageId }
-                        if (index >= 0) {
-                            userScrolling = false
-                            following = false
-                            suppressQuestionPaging = true
-                            viewportMotion.moved()
-                            scope.launch { listState.animateScrollToItem(chatHeaderCount + index) }
-                        }
-                },
-            )
-            launch?.takeIf { it.failure != null || it.unconfirmed }?.let { failed ->
-                Box(Modifier.align(Alignment.TopCenter)) {
-                    LaunchNotice(failed, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) },
-                        onAbandon = if (model.canAbandonConfiguredLaunch(failed.requestId)) {
+            val failedLaunch = launch?.takeIf { it.failure != null || it.unconfirmed }
+            val showHistoryRetry = (historyState?.hasOlder == true && historyFailure) || retryingHistory
+            // One top slot: no outgoing question animation remains when retry takes over.
+            Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
+                if (failedLaunch != null) {
+                    LaunchNotice(failedLaunch, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) },
+                        onAbandon = if (model.canAbandonConfiguredLaunch(failedLaunch.requestId)) {
                             { model.abandonConfiguredLaunch()?.let(onAbandonLaunch); Unit }
                         } else null)
+                } else if (showHistoryRetry) {
+                    ChatHistoryRetry(loading = retryingHistory || historyRead?.phase?.active == true,
+                        enabled = canLoadHistory(retrying = true), onRetry = { loadHistoryPage(retrying = true) },
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+                } else if (!hasNotices) {
+                    val readingRowId by remember(listState, projection) {
+                        derivedStateOf {
+                            val layout = listState.layoutInfo
+                            val row = layout.visibleItemsInfo.firstOrNull {
+                                it.offset + it.size > layout.viewportStartOffset && it.offset < layout.viewportEndOffset &&
+                                    projection?.byKey?.containsKey(it.key) == true
+                            }
+                            row?.key as? String
+                        }
+                    }
+                    val readingQuestion = remember(projection, readingRowId) {
+                        readingRowId?.let { projection?.readingQuestions?.get(it) }
+                    }
+                    AnimatedChatQuestionReminder(
+                        question = readingQuestion,
+                        visible = initialPositioned && hasBrowsed && lastScrollTowardEarlier && !following && distanceToBottom > lineHeightPx * 3,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        onClick = { question ->
+                            chatItemIndexById[question.messageId]?.let { index ->
+                                userScrolling = false
+                                following = false
+                                viewportMotion.moved()
+                                scope.launch { listState.animateScrollToItem(chatHeaderCount + index) }
+                            }
+                        },
+                    )
                 }
-            }
-            state.visibleNotificationProjection(runtimeId)?.takeIf { it.sessionId == sessionId }?.let { projection ->
-                Box(Modifier.align(Alignment.TopCenter)) {
-                    RuntimeNotifications(projection, state.notificationEpoch,
-                        supported = state.runtimes[runtimeId]?.agentKind in setOf("codex", "codexDesktop"),
+                if (hasNotices && notices != null) {
+                    RuntimeNotifications(notices, state.notificationEpoch, supported = noticesSupported,
                         onRecheck = { model.syncNotifications(runtimeId) }) { model.dismissNotification(runtimeId, it) }
                 }
             }

@@ -7,26 +7,19 @@ struct ChatQuestionTests {
         ChatMessage(messageId: id, role: role, content: [ChatContent(type: "text", text: text, toolName: nil, artifact: nil)], timestamp: 1, isError: nil)
     }
 
-    @Test func latestQuestionUsesTranscriptOrderAndNeverAssistantOrToolText() {
-        let messages = [message("first"), message("second"), message("assistant", "assistant"), message("tool", "tool")]
-        let transcript = ChatTranscript(messages: messages, turnTimings: [:])
-        #expect(transcript.latestQuestion(excluding: [])?.messageId == "second")
-        #expect(transcript.latestQuestion(excluding: [])?.text == "同一个问题")
-        #expect(ChatTranscript(messages: Array(messages.dropFirst(2)), turnTimings: [:]).latestQuestion(excluding: []) == nil)
-    }
-
-    @Test func localUnconfirmedAndFailedRowsDoNotReplaceTheSourceQuestion() {
-        let transcript = ChatTranscript(messages: [message("source"), message("sending"), message("failed"), message("unconfirmed")], turnTimings: [:])
-        #expect(transcript.latestQuestion(excluding: ["sending", "failed", "unconfirmed"])?.messageId == "source")
-        #expect(transcript.latestQuestion(excluding: ["source", "sending", "failed", "unconfirmed"]) == nil)
-    }
-
-    @Test func prependingHistoryAndReplacingTheBranchKeepOnlyTheCurrentQuestion() {
-        let current = message("current")
-        let question = ChatTranscript(messages: [current], turnTimings: [:]).latestQuestion(excluding: [])
-        #expect(ChatTranscript(messages: [message("old"), current, message("answer", "assistant")], turnTimings: [:]).latestQuestion(excluding: []) == question)
-        #expect(ChatTranscript(messages: [message("branch")], turnTimings: [:]).latestQuestion(excluding: [])?.messageId == "branch")
-        #expect(ChatTranscript.empty.latestQuestion(excluding: []) == nil)
+    // CHAT-QUESTION-02: stable row order wins over timestamps; never look forward
+    // to a question below the current answer, or pick a locally pending user row.
+    @Test func readingIndexResolvesFromEachRowAndSkipsPendingQuestions() {
+        let transcript = ChatTranscript(messages: [message("intro", "assistant"), message("first"),
+            message("answer1", "assistant"), message("pending"), message("answer2", "assistant"),
+            message("second"), message("answer3", "assistant")], turnTimings: [:], excludedQuestions: ["pending"])
+        #expect(transcript.question(at: "intro") == nil)
+        #expect(transcript.question(at: "answer1")?.messageId == "first")
+        #expect(transcript.question(at: "pending")?.messageId == "first")
+        #expect(transcript.question(at: "answer2")?.messageId == "first")
+        #expect(transcript.question(at: "answer3")?.messageId == "second")
+        #expect(transcript.question(at: "second")?.messageId == "second")
+        #expect(transcript.question(at: "stale-branch") == nil)
     }
 
     @Test func attachmentsAndMultilineUnicodeHaveAnUnmodifiedAccessiblePreview() {

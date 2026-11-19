@@ -50,3 +50,9 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 ## Verification
 
 [测试规则](../../AGENTS.md#测试)；[HistoryPagingTest.kt](../../android/app/src/test/java/com/orbising/orbis/HistoryPagingTest.kt)；[原始证据](../../.artifacts/)。
+
+## CHAT-PAGING-01：聊天页按手势松手分页（2026-11-18）
+
+在线及缓存聊天页移除可见的「更早的消息」按钮，保留读屏动作。主动上翻到顶部区域并松手最多读取一页；已在顶部（包括不足一屏）须达到下拉阈值再松手。手势开始和结束均校验准入，读取中的手势不排队；停留、回弹、布局变化、定位与回包不触发前台续页。游标不推进时进入失败而非续页。预取与传输重发仍由各自的预算和操作归属控制。Android 独立离线历史列表维持原有 §1–§5 行为。
+
+失败时「重试」与最近提问互斥；重试在原位显示加载状态。分页状态不增减可见列表行。验证见 [分页锚点和请求计数](../../.artifacts/chat-history-20261118/ios-ui-r4/command.log)、[Android 读操作单测](../../.artifacts/chat-history-20261118/android-build-r3/)及 [Android 提示互斥](../../.artifacts/chat-history-20261118/android-ui-r3/instrumentation.log)。未部署，未做真机验收。
