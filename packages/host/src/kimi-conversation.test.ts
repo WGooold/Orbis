@@ -80,6 +80,20 @@ describe("KIMI-03 native conversation source", () => {
     await expect(failed).rejects.toThrow("尚未同步");
   });
 
+  it("keeps the live tool identity when Kimi revises its provisional timestamp at approval", async () => {
+    const { source, sync } = setup();
+    source.frame({ type: "turns", turns: [], has_more: false });
+    source.frame({ type: "turn.started", turn: turn("active", 0, [], { status: "running" }) });
+    source.frame({ type: "item.started", turn_id: "active", item: item("tool", "tool_call", { status: "running", name: "Bash", stage: "input", input_text: "{}" }) });
+    source.frame({ type: "item.updated", turn_id: "active", item_id: "tool", set: {
+      created_at: "2026-11-19T05:00:01.000Z", stage: "awaiting_approval", interaction_id: "approval_fixture",
+    } });
+    expect(source.ready).toBe(true);
+    const id = kimiItemId("active", "tool");
+    expect((await sync()).live?.toolInventory).toBeDefined();
+    expect(source.toolPart({ projectionVersion: 1, tool: { agent, toolCallId: id }, part: "arguments" })).toEqual({ format: "text", value: "{}" });
+  });
+
   it("keeps reasoning, tool failure and large tool output separate from the shared transcript", async () => {
     const { source, sync, events } = setup();
     const large = "fixture-private-output ".repeat(8000);

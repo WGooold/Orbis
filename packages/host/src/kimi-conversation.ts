@@ -163,7 +163,9 @@ export class KimiConversation {
         if (type === "item.removed") items.splice(index, 1);
         else if (type === "item.updated" && item.type === "tool_call") {
           const set = kimiObject(frame.set);
-          if (Object.hasOwn(set, "item_id") || Object.hasOwn(set, "type") || Object.hasOwn(set, "created_at")) throw new Error();
+          // Kimi replaces the provisional tool-input timestamp when the native tool starts
+          // or enters approval. It is still the same live item; canonical rows are not edited.
+          if (item.status !== "running" || Object.hasOwn(set, "item_id") || Object.hasOwn(set, "type")) throw new Error();
           items[index] = nativeItem.parse({ ...item, ...set });
         } else if (type === "item.delta" && typeof frame.delta === "string") {
           const field = frame.field;
