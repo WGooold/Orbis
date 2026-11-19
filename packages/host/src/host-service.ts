@@ -44,6 +44,7 @@ import {
   DeviceE2ePayloadSchema,
   DEVICE_FEATURE_DSH_DESKTOP,
   HOST_FEATURE_DEVICE_FEATURES,
+  HOST_FEATURE_SESSION_SPAWN_AUTO,
   PROTOCOL_VERSION,
   type AgentKind,
   type HostProviderSummary,
@@ -196,6 +197,8 @@ export type HostServiceOptions = {
   adminToken?: string;
   stateDir?: string;
   reconnect?: boolean;
+  /** ADR-0084: recommend `auto` to clients using the Linux headless CLI profile. */
+  preferAutoSessionSpawn?: boolean;
   /** 关掉本机 loopback 端点（只有测试会这么做：它要的是纯 Relay 路径）。 */
   loopback?: boolean;
   /** 关掉 LAN 端点。关掉后只剩 Relay 一条路径，不影响其他功能。 */
@@ -1486,7 +1489,8 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES],
+      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES,
+        ...(this.#options.preferAutoSessionSpawn === true ? [HOST_FEATURE_SESSION_SPAWN_AUTO] : [])],
       sessionConfiguration: 1,
     };
   }

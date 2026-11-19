@@ -274,6 +274,8 @@ export type CodexDesktopAttach = z.infer<typeof CodexDesktopAttachSchema>;
  * 未声明 `agent.dshDesktop` 的设备（包括全部已发布 App）不会收到 `dshDesktop` 枚举、会话或运行时。
  */
 export const HOST_FEATURE_DEVICE_FEATURES = "device.features";
+/** ADR-0084: prefer `auto` over the legacy mobile default of `tui` for this Host. */
+export const HOST_FEATURE_SESSION_SPAWN_AUTO = "session.spawn.auto";
 export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 

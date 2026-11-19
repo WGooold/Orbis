@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -595,6 +596,7 @@ data class RemoteState(
     /** Agent kinds that can be started on demand, including an installed but currently closed desktop GUI. */
     val launchableAgents: Set<String>? = null,
     val sessionConfigurationSupported: Boolean = false,
+    val prefersAutoSessionSpawn: Boolean = false,
     val sessionConfiguration: SessionConfigurationState = SessionConfigurationState(),
     /**
      * Codex 桌面版 app-server 的接入状态；null = 未知或这台电脑没跑这条后端。
@@ -1771,6 +1773,7 @@ internal fun RemoteState.markReconnecting(): RemoteState {
     return copy(
         connection = RelayConnection.RECONNECTING,
         homeDirectoryReceived = false,
+        prefersAutoSessionSpawn = false,
         toolInventories = emptyMap(), pendingToolConversations = emptyMap(),
         turnChanges = turnChanges.mapValues { (_, value) -> value.copy(request = null, queriedEntries = emptySet(), queriedTurns = emptySet(), manifests = value.manifests.mapValues { (_, manifest) -> manifest.copy(requestId = null) }) },
         changeViewer = null,
@@ -2102,6 +2105,7 @@ class RelayReducer(
                     notificationEpoch = message.string("notificationEpoch") ?: state.notificationEpoch,
                     homeDirectoryReceived = true,
                     sessionConfigurationSupported = message["sessionConfiguration"]?.jsonPrimitive?.intOrNull == 1,
+                    prefersAutoSessionSpawn = (message["hostFeatures"] as? JsonArray)?.contains(JsonPrimitive("session.spawn.auto")) == true,
                     sessions = sessions,
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
@@ -2290,6 +2294,7 @@ class RelayReducer(
                 state.copy(
                     e2eReady = false,
                     homeDirectoryReceived = false,
+                    prefersAutoSessionSpawn = false,
                     currentProviders = emptyMap(),
                     sessionActivateRequests = emptySet(),
                     sessionActivateTargets = emptyMap(),

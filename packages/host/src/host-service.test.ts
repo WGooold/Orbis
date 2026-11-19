@@ -3594,6 +3594,20 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     } finally { await runtime.stop(); }
   });
 
+  it.each([false, true])("advertises automatic session spawn only when enabled (%s)", async preferAutoSessionSpawn => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-spawn-capability-"));
+    relay = await startRelayLocal(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
+      credential: "runtime-secret", adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "sessions"),
+      reconnect: false, lan: false, preferAutoSessionSpawn });
+    await host.start();
+    const result = await readyDeviceCapturing({ host, relay });
+    device = result.device;
+    const ready = RelayToDeviceMessageSchema.parse(result.ready);
+    expect(ready).toMatchObject({ type: "device.ready",
+      hostFeatures: preferAutoSessionSpawn ? ["device.features", "session.spawn.auto"] : ["device.features"] });
+  });
+
   it("device.ready 带上这台电脑支持的 agent：没启用 Codex 就只有 pi", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelayLocal(stateDir);

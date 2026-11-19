@@ -48,6 +48,8 @@ Status: accepted（开始实施；尚未完成 Linux 构建、打包、部署及
 | `codexDesktop` | 仅接入实际存在并可连接的桌面产品进程；无头服务器没有该进程时报告不适用，不尝试打开桌面应用。 |
 | `dshDesktop` | 仅接入实际存在并可连接的桌面产品进程；无头服务器没有该进程时报告不适用，不尝试打开桌面应用。 |
 
+移动端只在经过认证的 `device.ready.hostFeatures` 包含 `session.spawn.auto` 时，对普通新建、恢复和配置式创建默认发送 `auto`。Linux 无头 CLI 声明该能力；未声明的 Host 继续收到旧默认 `tui`，避免旧 Windows Host 因缺少 `SESSIONNAME` 把 Pi 改为无窗口运行。请求中的显式模式优先，回执仍报告实际模式；重连后以该 Host 最新的 `device.ready` 为准。
+
 后端能力及原因通过现有 Host 状态 / 诊断路径表达。若需新增协议字段，按 ADR-0064 验证旧 Host、旧 Relay 和旧 App 的解析、注册帧、后续更新、重连及回退；不以相同协议版本号或可选字段为兼容证明。
 
 ### 实现边界
@@ -86,4 +88,6 @@ Status: accepted（开始实施；尚未完成 Linux 构建、打包、部署及
 
 ## 当前实施状态
 
-本 ADR 与 ticket 顺序已在提交 `e3ba2ece`（`LINUX-HOST-CLI-00`）记录。`LINUX-HOST-CLI-01` 已实现 CLI bin 声明、Linux 无桌面平台策略、前台启动的信号监听 / 清理，以及桌面专属后端抑制；源码构建、定向测试、CLI help 与 npm pack dry-run 核对通过。`LINUX-AGENT-HEADLESS-02` 已让 Linux CLI 默认启用 Codex app-server，并让 Codex `auto` 走 headless 且回执与 TUI 行为一致；Pi RPC 与 DSH 后端沿用现有 headless 路径。当前分支 Windows 工具链验证：`npm run typecheck`、`npm run build` 通过；`vitest` 定向运行 `cli-profile.test.ts`、`codex-runtime.test.ts`、`codex-daemon.test.ts`，244 项通过。WSL2 Ubuntu 烟测在隔离 HOME / 状态目录和本机隔离 Relay 下清除 `DISPLAY` / `WAYLAND_DISPLAY`，从构建后的 `dist/cli.js` 启动 Host，Relay 认证成功，出现 Linux 无头就绪标记，收到 SIGINT 后以退出码 0 退出。烟测未安装 Codex CLI，验证缺少 Codex 依赖时 Host 仍可启动；该过程发现并修复了 app-server 启动失败后的 healthz 轮询未取消，以及无 PID 子进程停止时等待不存在的 `exit` 事件的问题。该结果仅为 WSL2 启停烟测，不等同于干净 Linux 部署或完整 Agent 矩阵验收；真实 Pi / Codex / DSH 会话、手机配对与重连、发行包和用户安装均未验证。完整 `npm test` 在 Windows 上有 6 项失败（4 项超时、1 项 portal demo 未观察到本机 Pi runtime、1 项 Windows Codex junction 断言），其中本 ticket 的定向测试通过。当前 Android / iOS 普通新建仍显式发送 `tui`，因此移动端 `auto` ticket 完成前，Pi / Codex 新建流程仍会按显式模式拒绝或保持既有后端语义；尚未完成手机闭环。Claude、移动端模式、Linux 发行包与完整验收仍未完成；用户安装验收待进行。
+本 ADR 与 ticket 顺序已在提交 `e3ba2ece`（`LINUX-HOST-CLI-00`）记录。`LINUX-HOST-CLI-01` 已实现 CLI bin 声明、Linux 无桌面平台策略、前台启动的信号监听 / 清理，以及桌面专属后端抑制；源码构建、定向测试、CLI help 与 npm pack dry-run 核对通过。`LINUX-AGENT-HEADLESS-02` 已让 Linux CLI 默认启用 Codex app-server，并让 Codex `auto` 走 headless 且回执与 TUI 行为一致；Pi RPC 与 DSH 后端沿用现有 headless 路径。当前分支 Windows 工具链验证：`npm run typecheck`、`npm run build` 通过；`vitest` 定向运行 `cli-profile.test.ts`、`codex-runtime.test.ts`、`codex-daemon.test.ts`，244 项通过。WSL2 Ubuntu 烟测在隔离 HOME / 状态目录和本机隔离 Relay 下清除 `DISPLAY` / `WAYLAND_DISPLAY`，从构建后的 `dist/cli.js` 启动 Host，Relay 认证成功，出现 Linux 无头就绪标记，收到 SIGINT 后以退出码 0 退出。烟测未安装 Codex CLI，验证缺少 Codex 依赖时 Host 仍可启动；该过程发现并修复了 app-server 启动失败后的 healthz 轮询未取消，以及无 PID 子进程停止时等待不存在的 `exit` 事件的问题。该结果仅为 WSL2 启停烟测，不等同于干净 Linux 部署或完整 Agent 矩阵验收；真实 Pi / Codex / DSH 会话、手机配对与重连、发行包和用户安装均未验证。完整 `npm test` 在 Windows 上有 6 项失败（4 项超时、1 项 portal demo 未观察到本机 Pi runtime、1 项 Windows Codex junction 断言），其中本 ticket 的定向测试通过。Claude、Linux 发行包与完整验收仍未完成；用户安装验收待进行。
+
+2026-11-19，`MOBILE-SPAWN-AUTO-04` 已实现。Windows 工具链通过 TypeScript 类型检查、构建、Host 的加密连接定向回归（4 项）、CLI / Codex / Pi 定向回归（261 项通过，3 项跳过）和 Android `LaunchLedgerTest`（13 项）。iOS 已添加同类用例，未在 Windows 上运行。WSL2 Ubuntu 用隔离 HOME、仅本机 Relay、Linux 原生 Codex CLI 0.169.0 验证 Host 与 app-server 就绪及 `SIGINT` 正常退出；直接调用 Host Codex 后端验证 `auto` 新建返回 `headless`、显式 `tui` 返回 `spawn_failed`。空会话恢复被 Codex 原生 `thread/resume` 拒绝（`no rollout found`）；未发送消息、未调用模型，也未验证已落盘会话恢复或真实手机配对和重连。

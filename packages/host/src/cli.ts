@@ -203,6 +203,7 @@ async function runHostUntilShutdown(
         relayHistoryMode: config.relayHistoryMode,
         credential: config.runtimeCredential,
         stateDir,
+        preferAutoSessionSpawn: profile.headless,
         ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
         // 隔离测试台用：只列这个目录里的 Pi 会话，避免联调时把真实会话（以及它们的运行状态）拉进来。
         ...(sessionsRoot === undefined ? {} : { sessionsRoot }),
