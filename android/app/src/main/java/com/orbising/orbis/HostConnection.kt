@@ -327,6 +327,7 @@ internal class HostConnection(
     @Volatile private var preferCompactState = true
     /** ADR-0076: filtered device.ready answered with `device.features`; applied only if no full view follows. */
     @Volatile private var pendingFilteredReady: String? = null
+    @Volatile private var expectedMessageDisplayVersion: Int? = null
     @Volatile private var preferDeltaState = true
     private val menuOptions = MenuOptionsLoader()
     private val sharedSessionContent = SharedSessionContent()
@@ -2654,12 +2655,15 @@ internal class HostConnection(
                 // (no `dshDesktop` key). Declare the feature and apply the full device.ready it sends next, so a
                 // selected Desktop session is not dropped; the filtered view is applied only if none arrives.
                 if (interactiveChannel != null && incomingMessage != null && incomingMessage.get("type")?.jsonPrimitive?.contentOrNull == "device.ready") {
-                    val filtered = incomingMessage["hostFeatures"]?.let { it as? JsonArray }?.any { it.jsonPrimitive.contentOrNull == "device.features" } == true &&
+                    val hostFeatures = (incomingMessage["hostFeatures"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+                    val render = MESSAGE_RENDER_FEATURE in hostFeatures
+                    val filtered = "device.features" in hostFeatures &&
                         !incomingMessage.containsKey("dshDesktop") && !incomingMessage.containsKey("_orbisFilteredFallback")
                     if (filtered && relay.sendDeviceMessage(buildJsonObject {
                             put("type", "device.features")
                             put("protocolVersion", PROTOCOL_VERSION)
-                            put("features", JsonArray(listOf(JsonPrimitive("agent.dshDesktop"))))
+                            put("features", JsonArray(listOfNotNull(JsonPrimitive("agent.dshDesktop"),
+                                JsonPrimitive(MESSAGE_RENDER_FEATURE).takeIf { render })))
                         })) {
                         val fallback = JsonObject(incomingMessage + ("_orbisFilteredFallback" to JsonPrimitive(true))).toString()
                         pendingFilteredReady = fallback
@@ -2673,6 +2677,11 @@ internal class HostConnection(
                         continue
                     }
                     pendingFilteredReady = null
+                    expectedMessageDisplayVersion = when {
+                        !render -> LEGACY_DISPLAY_PROJECTION_VERSION
+                        incomingMessage.containsKey("dshDesktop") -> DISPLAY_PROJECTION_VERSION
+                        else -> null  // The capability response may still be in flight.
+                    }
                 }
                 if (interactiveChannel != null && incomingMessage != null && incomingMessage.get("type")?.jsonPrimitive?.contentOrNull in setOf("agent.menu.options.page", "protocol.error") && menuOptions.owns(incomingMessage)) {
                     menuOptions.consume(incomingMessage, messageJson)?.let { result ->
@@ -3034,7 +3043,7 @@ internal class HostConnection(
             scope.launch {
                 relayStateLock.withLock {
                     if (currentGeneration != generation) return@launch
-                    if (ready) handshakeStalled = false
+                    if (ready) handshakeStalled = false else expectedMessageDisplayVersion = null
                     updateState { current ->
                         (if (ready) current else current.markReconnecting()).copy(
                             e2eReady = ready,
@@ -3488,7 +3497,7 @@ internal class HostConnection(
     private fun prepareSessionCache(pairedDevice: DeviceCredential, sessionId: String, agentKind: String?): Boolean {
         // 显示投影版本换代与 Codex 格式重建一样，都要先清掉旧缓存再让内容重新进来。
         val codexRebuilt = sessionGraphStore.prepareSession(pairedDevice, sessionId, agentKind)
-        val displayRebuilt = sessionGraphStore.prepareDisplayCache(pairedDevice, sessionId)
+        val displayRebuilt = sessionGraphStore.prepareDisplayCache(pairedDevice, sessionId, expectedMessageDisplayVersion.takeIf { mutableState.value.e2eReady })
         if (codexRebuilt || displayRebuilt) {
             // 这条日志是"一直在重新同步"的判据：重复出现说明重建判据没有收敛。
             Log.i(RELOAD_TRACE_TAG, "session.cache_rebuild sessionId=$sessionId codex=$codexRebuilt display=$displayRebuilt")

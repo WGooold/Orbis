@@ -619,6 +619,17 @@ class SessionGraphTest {
         assertEquals("unknown_native_type", graph.display.getValue("future").reason)
     }
 
+    // MSG-RENDER-01-COMPAT: a released Host's v3 batch is still a renderable baseline.
+    @Test fun `legacy display batch is applied by the upgraded app`() {
+        val source = listOf(entry("u1", null, text = "Released Host"))
+        val fixture = fixtureGraph("session-1", source, SessionBranchCursor("u1"))
+        val batch = DisplayBatch(LEGACY_DISPLAY_PROJECTION_VERSION, fixture.display.values.toList())
+        val graph = SessionGraph("session-1").merge(SessionGraphSnapshot("session-1", "preview", SessionBranchCursor("u1"), "replace", source, display = batch))
+        assertEquals(LEGACY_DISPLAY_PROJECTION_VERSION, graph.displayVersion)
+        assertEquals(listOf("u1"), projectSessionGraph(graph).messages.map(ChatMessage::messageId))
+        assertNull(projectSessionGraph(graph).error)
+    }
+
     @Test
     fun `a projection version mismatch is reported instead of rendering another version's semantics`() {
         val entries = listOf(entry("u1", null, text = "问题"))

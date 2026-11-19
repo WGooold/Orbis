@@ -699,7 +699,7 @@ class SessionGraphStore(
             arrayOf(sessionId),
         ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) to cursor.getStringOrNull(1) else null }
             ?: return null
-        return window.takeIf { it.first == DISPLAY_PROJECTION_VERSION }
+        return window.takeIf { supportsDisplayProjection(it.first) }
     }
 
     private fun decodeDisplayRows(
@@ -723,13 +723,13 @@ class SessionGraphStore(
      * （渲染、会话标题、树标签都要靠显示结果）。返回 true 表示这个会话的本地缓存已被清掉。
      */
     @Synchronized
-    internal fun prepareDisplayCache(device: DeviceCredential, sessionId: String): Boolean {
+    internal fun prepareDisplayCache(device: DeviceCredential, sessionId: String, expectedVersion: Int? = null): Boolean {
         if (sessionId.isBlank()) return false
         val database = database(device).readableDatabase
         val stored = database.rawQuery(
             "SELECT projection_version FROM session_display_windows WHERE session_id = ?", arrayOf(sessionId),
         ).use { if (it.moveToFirst()) it.getInt(0) else null }
-        if (stored == DISPLAY_PROJECTION_VERSION) return false
+        if (supportsDisplayProjection(stored) && (expectedVersion == null || stored == expectedVersion)) return false
         if (stored == null) {
             // 没有显示窗口行：这个会话要么从没缓存过，要么缓存来自「条目还没有解释」的上一版 App。
             // 后者留着只会渲染出一片空白——已知来源状态还会让后端回 unchanged，永远补不上显示结果，
@@ -755,7 +755,7 @@ class SessionGraphStore(
         display: DisplayBatch?,
         superseded: Set<String> = emptySet(),
     ) {
-        if (display == null || display.projectionVersion != DISPLAY_PROJECTION_VERSION) return
+        if (display == null || !supportsDisplayProjection(display.projectionVersion)) return
         for (row in display.entries) {
             if (row.displayId.isBlank()) continue
             if (row.entryId != null && row.entryId in superseded) continue

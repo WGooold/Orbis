@@ -255,6 +255,16 @@ data class RemoteContent(
     val arguments: JsonElement? = null,
     val artifact: RemoteArtifact? = null,
     val summary: ToolSummary? = null,
+    val renderKind: String? = null,
+    val file: MessageFileReference? = null,
+)
+
+@Serializable
+data class MessageFileReference(
+    val fileName: String,
+    val referenceId: String? = null,
+    val line: Long? = null,
+    val endLine: Long? = null,
 )
 
 @Serializable
@@ -393,7 +403,7 @@ internal fun artifactDownloadTaskId(hostId: String, artifactId: String): String 
     "$hostId\u0000artifact\u0000$artifactId".toByteArray(Charsets.UTF_8),
 ).toString()
 
-internal fun downloadDisplayName(path: String): String = path.trimEnd('/', '\\')
+internal fun downloadDisplayName(path: String): String = if (messageFileReferenceId(path) != null) L10n.tr("电脑文件") else path.trimEnd('/', '\\')
     .substringAfterLast('/')
     .substringAfterLast('\\')
     .ifBlank { L10n.tr("电脑文件") }
@@ -3334,6 +3344,7 @@ class RelayReducer(
                         sourcePath = artifact.path,
                         sourceArtifactId = artifact.artifactId,
                     )).copy(
+                        displayName = if (messageFileReferenceId(artifact.path) != null) artifact.fileName else existing?.displayName ?: artifact.fileName,
                         commandId = commandId,
                         transferId = transferId,
                         artifact = artifact,

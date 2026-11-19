@@ -26,6 +26,22 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertSame
 
 class MarkdownTest {
+    // MSG-RENDER-01: the original paragraph stays selectable; copy contains no Host action token.
+    @Test fun `normalized file links render and copy their label inside the paragraph`() {
+        val id = "orbis-message-file:" + "a".repeat(64)
+        val source = "See **[Draft\\[1\\].md:10–12](<$id>)** now."
+        val rendered = inlineMarkdown(source)
+        assertEquals("See Draft[1].md:10–12 now.", rendered.text)
+        assertEquals(listOf(id), rendered.getStringAnnotations(MARKDOWN_FILE_LINK_ANNOTATION, 0, rendered.length).map { it.item })
+        assertEquals("See **Draft[1].md:10–12** now.", copyableMessageText(source))
+        assertFalse(markdownFileLinkPath("$id/other") != null)
+        val file = MessageFileReference("Draft.md", id)
+        assertEquals(id, RemoteContent("render", text = "Draft.md", renderKind = "file_reference", file = file).messageFileAction())
+        val unsupported = RemoteContent("render", renderKind = "future", file = file)
+        assertEquals(null, unsupported.messageFileAction())
+        assertEquals(L10n.tr("内容暂不可显示"), unsupported.replyCopyText())
+    }
+
     @Test
     fun `prepared markdown cache reuses spans and does not retain an oversized document`() = runBlocking {
         val cache = MarkdownDocumentCache(maxCharacters = 64)

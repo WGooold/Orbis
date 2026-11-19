@@ -148,7 +148,7 @@ class ArtifactDownloadStore(context: Context) {
             // Keep the task's routing identity once the command is bound.
             runtimeId = existing?.runtimeId ?: runtimeId,
             hostId = existing?.hostId ?: hostId,
-            displayName = existing?.displayName ?: artifact.fileName,
+            displayName = if (messageFileReferenceId(artifact.path) != null) artifact.fileName else existing?.displayName ?: artifact.fileName,
             commandId = commandId,
             sourcePath = existing?.sourcePath ?: artifact.path,
             sourceArtifactId = existing?.sourceArtifactId ?: artifact.artifactId,

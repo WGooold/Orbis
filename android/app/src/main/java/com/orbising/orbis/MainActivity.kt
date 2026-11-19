@@ -3844,10 +3844,9 @@ internal fun AssistantTurnCard(
                 Spacer(Modifier.weight(1f))
                 turnTiming?.let { TurnStartLabel(it.startedAt) }
                 // 整段回复的复制入口，与 iOS 卡片右上角一致。
-                if (copyMessages.any { message -> message.content.any { it.type == "text" && !it.text.isNullOrBlank() } }) {
+                if (copyMessages.any { message -> message.content.any { it.type == "render" || it.type == "text" && !it.text.isNullOrBlank() } }) {
                     CopyIconButton(L10n.tr("复制回复"), size = 30.dp) {
-                        copyMessages.flatMap { message -> message.content.filter { it.type == "text" }.mapNotNull { it.text } }
-                            .filter(String::isNotBlank).joinToString("\n\n")
+                        copyMessages.flatMap { message -> message.content.mapNotNull(RemoteContent::replyCopyText) }.joinToString("\n\n")
                     }
                 }
             }
@@ -3959,7 +3958,15 @@ private fun MessageBlocks(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         message.content.forEachIndexed { index, block ->
             key(block.toolCallId ?: "${message.messageId}:$index:${block.type}") {
-            if (block.type == "artifact" && block.artifact != null) {
+            if (block.type == "render") {
+                val action = block.messageFileAction()
+                if (action != null) {
+                    MessageReferenceCard(block, downloads.values.firstOrNull { it.sourcePath == action }, onDownload = { downloadFile(action) })
+                } else {
+                    Text(block.messageRenderLabel(), color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium, modifier = Modifier.testTag("message-content-placeholder"))
+                }
+            } else if (block.type == "artifact" && block.artifact != null) {
                 ArtifactCard(
                     artifact = block.artifact,
                     download = downloads[artifactDownloadKey(block.artifact)],
@@ -3991,6 +3998,20 @@ private fun MessageBlocks(
                 }
             }
             }
+        }
+    }
+}
+
+@Composable
+private fun MessageReferenceCard(block: RemoteContent, download: ArtifactDownload?, onDownload: () -> Unit) {
+    val busy = download?.status == "downloading" || download?.status == "queued"
+    NeumorphSurface(onClick = onDownload, enabled = !busy, shape = RemoteUi.ControlShape,
+        modifier = Modifier.fillMaxWidth().testTag("message-file-reference")) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(OrbisSymbols.Download, contentDescription = L10n.tr("下载文件"), tint = MaterialTheme.colorScheme.primary)
+            FileNameText(block.messageRenderLabel(), Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+            if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
         }
     }
 }
@@ -4633,7 +4654,8 @@ private fun fullEntryText(entry: SessionGraphEntry): String {
     return content.jsonArray.joinToString("\n") { block ->
         val obj = block.jsonObject
         when (obj["type"]?.jsonPrimitive?.contentOrNull) {
-            "text", "thinking" -> obj["text"]?.jsonPrimitive?.contentOrNull ?: ""
+            "text", "thinking" -> copyableMessageText(obj["text"]?.jsonPrimitive?.contentOrNull.orEmpty())
+            "render" -> obj["text"]?.jsonPrimitive?.contentOrNull?.let { L10n.tr(it) } ?: L10n.tr("内容暂不可显示")
             "tool_call" -> "[工具] " + (obj["toolName"]?.jsonPrimitive?.contentOrNull ?: "") + " " + (obj["arguments"]?.toString() ?: "")
             else -> block.toString()
         }

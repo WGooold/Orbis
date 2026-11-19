@@ -67,6 +67,7 @@ internal const val MARKDOWN_URL_LINK_ANNOTATION = "url-link"
 internal fun markdownFileLinkPath(value: String): String? {
     val candidate = value.trim().removeSurrounding("<", ">")
     if (candidate.isBlank() || candidate.any { it.code < 0x20 || it.code == 0x7f }) return null
+    messageFileReferenceId(candidate)?.let { return it }
     if (markdownHttpLinkUrl(candidate) != null) return null
     // Protocol-relative web URLs must not become downloads from the computer's filesystem.
     return candidate.takeIf {

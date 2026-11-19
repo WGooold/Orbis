@@ -1,5 +1,27 @@
 package com.orbising.orbis
 
+private val messageFileTarget = Regex("orbis-message-file:[a-f0-9]{64}")
+private val messageFileLink = Regex("""\[((?:\\.|[^\\\[\]\r\n])+)\]\(<orbis-message-file:[a-f0-9]{64}>\)""")
+private val escapedLabel = Regex("""\\([\\`*_{}\[\]<>!~|&$])""")
+
+/** The renderer recognizes an Orbis link target, never a provider's private directive. */
+internal fun messageFileReferenceId(target: String?): String? = target?.takeIf(messageFileTarget::matches)
+
+internal fun copyableMessageText(text: String): String = if (!text.contains("orbis-message-file:")) text else
+    messageFileLink.replace(text) { escapedLabel.replace(it.groupValues[1], "$1") }
+
+internal fun RemoteContent.messageRenderLabel(): String = text?.takeIf(String::isNotBlank)?.let { L10n.tr(it) }
+    ?: L10n.tr("内容暂不可显示")
+
+internal fun RemoteContent.messageFileAction(): String? =
+    if (type == "render" && renderKind == "file_reference") messageFileReferenceId(file?.referenceId) else null
+
+internal fun RemoteContent.replyCopyText(): String? = when (type) {
+    "text" -> text?.let(::copyableMessageText)?.takeIf(String::isNotBlank)
+    "render" -> messageRenderLabel()
+    else -> null
+}
+
 internal enum class ContentPresentation(val startsCollapsed: Boolean) {
     MESSAGE(false),
     THINKING(true),

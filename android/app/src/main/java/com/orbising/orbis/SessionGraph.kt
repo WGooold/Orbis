@@ -212,7 +212,7 @@ internal fun SessionGraph.isWaitingForParent(oldLeafId: String?, newLeafId: Stri
 internal fun SessionGraph.hasBoundedPreviewWindow(snapshot: SessionGraphSnapshot): Boolean {
     if (snapshot.mode != "replace" || snapshot.selection !in setOf(null, "snapshot") ||
         snapshot.complete != false || snapshot.rangeStatus != "limit_reached" || snapshot.hasOlder != true ||
-        snapshot.entries.isEmpty() || displayVersion != DISPLAY_PROJECTION_VERSION) return false
+        snapshot.entries.isEmpty() || !supportsDisplayProjection(displayVersion)) return false
     val head = snapshot.checkpoint?.head?.leafId ?: return false
     if (head != snapshot.cursor.leafId || snapshot.targetLeafId?.let { it != head } == true) return false
     val window = snapshot.entries.map { entries[it.entryId] ?: return false }
@@ -266,7 +266,7 @@ internal fun SessionGraph.merge(snapshot: SessionGraphSnapshot): SessionGraph {
     // 显示结果与条目同源：同一批 snapshot 带来的显示行按 entryId 覆盖旧表示。
     // 版本不匹配的批次整批拒绝：本机只认得自己那份语义的显示结果。已有的行仍是本机语义下的
     // 结果，原样保留；版本号记下来，由投影如实报给用户，而不是悄悄按别人的语义渲染。
-    val appliesDisplay = snapshot.display != null && snapshot.display.projectionVersion == DISPLAY_PROJECTION_VERSION
+    val appliesDisplay = supportsDisplayProjection(snapshot.display?.projectionVersion)
     val merged = baseline.copy(
         entries = mergedEntries,
         display = mergeDisplayEntries(baseline.display, snapshot.display),
@@ -307,7 +307,7 @@ internal fun projectSessionGraph(graph: SessionGraph): SessionProjectionResult {
     )
     val path = pathResult.entries
     // 版本不匹配时如实说出来：内容为空不是「没有历史」，而是本机认不出对方的显示语义。
-    val projectionError = graph.displayVersion?.takeIf { it != DISPLAY_PROJECTION_VERSION }
+    val projectionError = graph.displayVersion?.takeUnless(::supportsDisplayProjection)
         ?.let { L10n.tr("显示投影版本不匹配（Host：{0}），请更新 App", it) }
         ?: graph.cursor.leafId?.let {
             pathResult.status.takeUnless { status ->
