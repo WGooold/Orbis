@@ -78,3 +78,28 @@ Malformed 指令若无法安全确认类型，保持为普通文本；合法但�
 本 ADR 记录产品与协议决策，不表示代码、部署或用户验收已完成。实现需更新 Host 的实时与历史消息适配、版本化展示投影、Android / iOS 消费层及旧客户端兼容路径；已有 Markdown、数学公式、产物卡片、文件下载能力优先复用。协议变更依照 ADR-0064 验证最近已发布 Host、Relay、Android 与 iOS 的新旧组合。
 
 回归应使用同一份跨平台消息夹具覆盖正文位置、代码上下文、行号、输出卡片去重、未知 renderKind 占位、未完成 / 无效指令、复制、文件不可用、历史回放和旧端兼容。自动验证、候选安装包、独立环境、用户手动验证与验收结论分别留证；未验证的 App / 协议组合不标记为兼容。
+
+### 主线接入清单
+
+| 来源 | App 可直接显示 | 降级与保留范围 |
+| --- | --- | --- |
+| 全部 | Markdown、已支持的数学公式、可用附件卡、标准工具详情 | 不认识的 `renderKind` 使用块内的可读标签；内部事件保持隐藏。工具详情按需读取。 |
+| Codex CLI / Desktop | 文件引用和行号；输出文件卡；生成图有本机 `savedPath` 时复用文件卡；计划正文、单回合进度清单、审查正文、公开推理摘要；搜索、查看图片、动态工具使用折叠工具卡 | 用户图片／音频原位占位；未保存或失败的生成图显示对应状态；动态工具图片、MCP App、内联可视化占位；建议显示标签，不代用户提交；清单只在收到原生事件的活动回合中显示，不从历史猜测。 |
+| Claude Code | Web 引用和 HTTP(S) 搜索结果引用；成功 Artifact 标题／地址、搜索来源、已提交计划用既有工具详情文本视图 | 文档引用、聊天媒体与工具媒体显示标签；引用随 transcript 提交生效。工具内的地址可复制，正文引用可点击。 |
+| Pi | 现有聊天 Markdown、工具展示、产物 | 图片位置保留占位；旧 Host 接收文本降级。 |
+| DSH ACP / Web / Desktop | 现有正文、工具与产物展示 | 已识别图片和附件原位占位，覆盖增量、恢复和历史；未观测到的音频或资源事件不推断。 |
+| Kimi / OpenClaw / Hermes | 独立适配分支，主线未提供其入口 | Kimi 已知类型可复用正文、推理和工具。OpenClaw 在 `clawMessage` 接有来源凭据的媒体；Hermes 在 `transcriptContent` 将现有图片标签接入共享占位。随各自适配合入验证，未计入主线接入。 |
+
+### Ticket 与证据
+
+| Ticket | 主线提交 | 代码与验证 |
+| --- | --- | --- |
+| 契约与 Host | `2383fd94`、`b40652dc` | [Markdown 投影](../../packages/protocol/src/message-rendering.ts)、[面向 App 的投影](../../packages/host/src/device-message-rendering.ts)、[文件身份校验](../../packages/host/src/message-file-references.ts)。 |
+| Android / iOS | `3b2e83a2`、`992362e8`、`ed2f5ce7` | Android 41 项、公式扫描 35 项、Swift 161 项；iOS 模拟器 App 与测试目标编译完成。证据目录下 `android-unit/`、`ios-unit-final/`、`ios-build/`。 |
+| Codex 正文与媒体 | `55eaffb2`、`a765ba2e`、`4854165f`、`978fe0ca`、`1ac934c7`、`1c17a9a2` | [Codex 适配](../../packages/host/src/codex-runtime.ts)；活动与完成项由 Host 归一化。审核来源为 Codex app-server 导出 schema 和开源源码 `b5d9f7116e256e59f4a036c1c3e18979994598c4`，不据此推断闭源桌面实现。 |
+| Codex 工具 | `cc0ef162` | [工具投影](../../packages/host/src/codex-tool-projection.ts)；普通工具摘要和明确的媒体占位复用原详情入口。 |
+| Claude | `99c6721a`、`8c406805`、`fe63880a`、`36ff75f2` | [Transcript](../../packages/host/src/claude-transcript.ts)、[工具详情](../../packages/host/src/claude-session-history.ts)；公开增量与持久化形状按 Claude Code Mods 2.1.318 生成声明核对。 |
+| Pi / DSH | `50de5b02`、`f8f568e4` | [DSH 历史映射](../../packages/host/src/dsh-history.ts)；适配器测试覆盖实时与历史。 |
+| 传输与兼容 | `3610ede0` 与本记录 | `final-regression.log`：16 文件、567 项；`generated-file-wire.log`：隔离 Host + Relay 校验旧端文本、富投影、生成图下载请求。`released-wire.json`：实际 Windows Host v0.1.22 ZIP 的旧 schema 接收降级后的开始、完成、快照及按需条目。`pi-release/pi-host-matrix.json`：对照发布源码 `11c7a227` 的 6 个隔离用例，含旧/新双向、同版正对照、新→旧→新重连；该矩阵验证 Pi/Host 连接，不代替移动 App 真机回归。 |
+
+验证证据在本机 `.artifacts/msg-render-20261119/`。待用户验证：在独立候选环境打开一条含中文路径、行号、生成图和不支持内容的会话，核对两端正文顺序、复制、文件打开／下载、占位及重连后历史。未部署、未发布候选安装包；公开 macOS Host、已发 Android 和 iOS 外测包的交叉安装矩阵尚未完成。iOS 外测对照为有分发证据的 `0.1.2 (3)`；`0.1.3 (11)` 仅确认上传。共享 QA 入口本轮不可用，未登记人工验收。
