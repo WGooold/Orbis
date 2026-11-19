@@ -166,6 +166,28 @@ describe("ClaudeTranscriptProjection", () => {
     expect(JSON.stringify(projection.entries)).not.toContain("private-document-excerpt");
   });
 
+  it("links Claude search-result sources and keeps known tool media in tool details", () => {
+    const projection = new ClaudeTranscriptProjection();
+    projection.push(assistant("a1", null, [{ type: "text", text: "Results", citations: [
+      { type: "search_result_location", source: "https://example.test/source", title: "Source" },
+      { type: "search_result_location", source: "file:///private/source" },
+    ] }]));
+    projection.push(user("u1", "a1", [{ type: "tool_result", tool_use_id: "t1", content: [
+      { type: "text", text: "Before" },
+      { type: "image", source: { type: "base64", data: "private" } },
+      { type: "document", file: { base64: "private" } },
+      { type: "audio", source: { data: "private" } },
+      { type: "text", text: "After" },
+    ] }]));
+    expect(projectDisplayEntries(projection.entries, projection.leafId).entries[0]?.message?.content).toEqual([
+      { type: "text", text: "Results" }, { type: "text", text: "[Source](<https://example.test/source>)" },
+      { type: "render", renderKind: "citation", text: "引用来源暂不可显示" },
+    ]);
+    expect(projection.entries[1]?.data.message).toMatchObject({ role: "toolResult", content: [
+      { type: "text", text: "Before\n图片内容暂不可显示\n附件内容暂不可显示\n音频内容暂不可显示\nAfter" },
+    ] });
+  });
+
   it("splits several tool results and maps compact summaries", () => {
     const projection = new ClaudeTranscriptProjection();
     projection.push(user("r", null, [

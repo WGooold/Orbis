@@ -107,7 +107,7 @@ export class ClaudeTranscriptProjection {
         const toolName = this.#toolNames.get(toolCallId);
         const id = results.length === 1 && visible.length === 0 ? uuid : `${uuid}:result:${index}`;
         result.push(messageEntry(id, timestamp, { role: "toolResult", toolCallId, ...(toolName === undefined ? {} : { toolName }),
-          content: [{ type: "text", text: clip(plainText(item.content) ?? "") }], isError: item.is_error === true, timestamp: at }));
+          content: [{ type: "text", text: clip(toolResultText(item.content)) }], isError: item.is_error === true, timestamp: at }));
       });
       return result;
     }
@@ -136,15 +136,18 @@ export class ClaudeTranscriptProjection {
   }
 }
 
-const DOCUMENT_CITATIONS = new Set(["char_location", "page_location", "content_block_location", "search_result_location"]);
+const DOCUMENT_CITATIONS = new Set(["char_location", "page_location", "content_block_location"]);
 function citationBlocks(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 32).flatMap(raw => {
     const citation = record(raw);
-    if (citation?.type === "web_search_result_location") return [{ type: "citation",
-      ...(typeof citation.url === "string" && citation.url.length <= 2048 ? { url: citation.url } : {}),
-      ...(typeof citation.title === "string" ? { title: citation.title.slice(0, 256) } : {}),
-    }];
+    if (citation?.type === "web_search_result_location" || citation?.type === "search_result_location") {
+      const url = citation.type === "search_result_location" ? citation.source : citation.url;
+      return [{ type: "citation",
+        ...(typeof url === "string" && url.length <= 2048 ? { url } : {}),
+        ...(typeof citation.title === "string" ? { title: citation.title.slice(0, 256) } : {}),
+      }];
+    }
     // Document locations reference input available to Claude, not a downloadable Orbis file.
     return typeof citation?.type === "string" && DOCUMENT_CITATIONS.has(citation.type) ? [{ type: "citation" }] : [];
   });
@@ -268,6 +271,22 @@ function plainText(value: unknown): string | undefined {
     return item?.type === "text" && typeof item.text === "string" ? [item.text] : [];
   });
   return parts.length === 0 ? undefined : parts.join("\n");
+}
+
+/** Only known display blocks enter tool details; never serialize their media payloads. */
+function toolResultText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return "";
+  return value.flatMap(block => {
+    const item = record(block);
+    if (item?.type === "text" && typeof item.text === "string") return [item.text];
+    switch (item?.type) {
+      case "image": return ["图片内容暂不可显示"];
+      case "audio": return ["音频内容暂不可显示"];
+      case "document": case "attachment": return ["附件内容暂不可显示"];
+      default: return [];
+    }
+  }).join("\n");
 }
 
 function clip(value: string): string {
