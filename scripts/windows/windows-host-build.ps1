@@ -107,7 +107,7 @@ if (result.status !== 0 || result.stdout.trim() !== expected) {
             # Bind installer cleanup support to this exact executable; stale markers after a downgrade
             # must not send an unknown option to an older Qt app (which may show an error dialog).
             [IO.File]::WriteAllText((Join-Path $stage 'installer-update-v1.sha256'), (Get-FileHash -LiteralPath "$stage\OrbisHost.exe" -Algorithm SHA256).Hash.ToLowerInvariant() + "`n", [Text.Encoding]::ASCII)
-            $archive = Join-Path $releaseRoot 'OrbisHost-0.1.22-windows-x64.zip'
+            $archive = Join-Path $releaseRoot 'OrbisHost-0.1.23-windows-x64.zip'
             Compress-Archive -LiteralPath $stage -DestinationPath $archive
             [IO.File]::WriteAllText("$archive.sha256", (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $archive) + "`n", [Text.Encoding]::ASCII)
             if ($InnoCompiler) {
@@ -127,7 +127,7 @@ if (result.status !== 0 || result.stdout.trim() !== expected) {
                 } finally {
                     if ($installerDrive) { & "$env:SystemRoot\System32\subst.exe" $installerDrive /D }
                 }
-                $installer = Join-Path $releaseRoot 'OrbisHost-0.1.22-windows-x64-setup.exe'
+                $installer = Join-Path $releaseRoot 'OrbisHost-0.1.23-windows-x64-setup.exe'
                 [IO.File]::WriteAllText("$installer.sha256", (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $installer) + "`n", [Text.Encoding]::ASCII)
             }
             Write-Output "Portable release: $archive"
