@@ -43,8 +43,9 @@ describe("MSG-RENDER-01: shared Codex Markdown projection", () => {
     expect(renderStreamingMarkdown("See :codex-file")).toEqual({ text: "See ", pending: true });
     expect(renderStreamingMarkdown(`${output.slice(0, -1)}`)).toEqual({ text: "", pending: true });
     expect(renderStreamingMarkdown(`See ${output} now.`, resolve)).toEqual({ text: "See final report.md now.", pending: false });
-    const raw = message('See :codex-file-citation{path="unterminated\nAnd then this.');
+    const malformed = 'See :codex-file-citation{path="unterminated\nAnd then this.';
+    const raw = message(malformed);
     expect(normalizeCodexMessage(raw, resolve)).toBe(raw);
-    expect(normalizeCodexMessage(message(`${raw.content[0]!.text}\n${output}`), resolve).content.at(-1)).toMatchObject({ type: "render" });
+    expect(normalizeCodexMessage(message(`${malformed}\n${output}`), resolve).content.at(-1)).toMatchObject({ type: "render" });
   });
 });

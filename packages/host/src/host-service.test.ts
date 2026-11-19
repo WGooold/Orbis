@@ -37,6 +37,7 @@ import {
 import {
   applyStateDelta, type AgentStateDomainSnapshot, type CatalogQueryPage,
   LOOPBACK_PATH,
+  DEVICE_FEATURE_MESSAGE_RENDER,
   PROTOCOL_VERSION,
   RelayToDeviceMessageSchema,
   ToolInventorySource, createToolSummary, createToolContentPage,
@@ -3534,7 +3535,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(ready.ready.agents).not.toContain("dshDesktop");
       expect(ready.ready.launchableAgents).not.toContain("dshDesktop");
       expect(ready.ready).not.toHaveProperty("dshDesktop");
-      expect(ready.ready.hostFeatures).toEqual(["device.features"]);
+      expect(ready.ready.hostFeatures).toEqual(expect.arrayContaining(["device.features"]));
       RelayToDeviceMessageSchema.parse(ready.ready);
       const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
         for (let i = 0; i < 80; i++) {
@@ -4023,6 +4024,56 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       type: "runtime.event",
       event: { type: "command.result", commandId: "c4", ok: false },
     });
+  });
+
+  // MSG-RENDER-01: exercise the real Codex adapter and encrypted download route, not a loopback Pi impersonating Codex.
+  it.each([false, true])("delivers Codex output references with capability %s", async rich => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-message-render-wire-"));
+    relay = await startRelayLocal(stateDir);
+    const fileName = "论文问题备选.md";
+    await writeFile(join(stateDir, fileName), "# Draft\n");
+    const thread = { id: "render-thread", cwd: stateDir, turns: [], status: { type: "idle" } };
+    const server = { mode: "owned", request: vi.fn(async (method: string) => {
+      if (["thread/start", "thread/read", "thread/resume"].includes(method)) return { thread };
+      if (method === "config/read") return { config: {} };
+      return { data: [] };
+    }), notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer;
+    const runtime = new CodexRuntime({ server, onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts") });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false, codexRuntime: runtime });
+    await host.start(); device = await readyDeviceLocal({ host, relay });
+    const next = async (predicate: (message: Record<string, unknown>) => boolean) => {
+      for (let i = 0; i < 50; i++) { const message = await device!.receiveMessage(); if (predicate(message)) return message; }
+      throw new Error("missing rendering fixture response");
+    };
+    if (rich) sendRequest(device, { type: "device.features", protocolVersion: PROTOCOL_VERSION, features: [DEVICE_FEATURE_MESSAGE_RENDER] });
+    sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "activate-render",
+      target: { type: "new", agentKind: "codex", cwd: stateDir } });
+    expect(await next(message => message.requestId === "activate-render")).toMatchObject({ type: "session.activated" });
+    const notify = server.onNotification!;
+    const native = `:codex-file-citation{path="${fileName}" purpose="output"}`;
+    const route = { threadId: thread.id, turnId: "turn-render" };
+    notify("turn/started", { threadId: thread.id, turn: { id: route.turnId } });
+    notify("item/agentMessage/delta", { ...route, itemId: "reply", delta: native.slice(0, 11) });
+    const delta = (message: Record<string, unknown>) => (message.event as RuntimeEvent | undefined)?.type === "message.delta";
+    expect(await next(delta)).toMatchObject({ event: { delta: "" } });
+    notify("item/agentMessage/delta", { ...route, itemId: "reply", delta: native.slice(11) });
+    expect(await next(delta)).toMatchObject({ event: { delta: fileName } });
+    notify("item/completed", { ...route, item: { type: "agentMessage", id: "reply", text: native } });
+    const finish = await next(message => (message.event as RuntimeEvent | undefined)?.type === "message.finished");
+    const block = (finish.event as Extract<RuntimeEvent, { type: "message.finished" }>).message.content[0];
+    expect(block).toMatchObject(rich ? { type: "render", renderKind: "file_reference", text: fileName } : { type: "text", text: fileName });
+    if (block?.type === "render") {
+      const referenceId = block.file?.referenceId;
+      expect(referenceId).toMatch(/^orbis-message-file:[a-f0-9]{64}$/);
+      device.sendCommand(runtime.runtimeIdFor(thread.id), "download-reference", { type: "file.download", path: referenceId });
+      const offer = await next(message => {
+        const event = message.event as RuntimeEvent | undefined;
+        return event?.type === "artifact.started" || event?.type === "command.result" && event.commandId === "download-reference";
+      });
+      expect(offer).toMatchObject({ event: { type: "artifact.started", artifact: { fileName, path: referenceId, size: 8 } } });
+      expect(JSON.stringify(offer)).not.toContain(stateDir);
+    }
   });
 
   it("rejects malformed and future inputs with their original command identity", async () => {

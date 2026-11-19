@@ -15,14 +15,14 @@ export class SessionWireContent {
   #bytes = 0;
 
   clear(): void { this.#live.clear(); this.#bytes = 0; this.#projected = new WeakMap(); }
-  project(message: object): object {
+  project(message: object, audience?: string): object {
     const envelope = message as Record<string, unknown>, event = envelope.event as Snapshot | undefined;
     if (envelope.type !== "runtime.event" || !event || !["session.snapshot", "session.patch"].includes(event.type)) return message;
     const cached = this.#projected.get(event);
     if (cached) return { ...envelope, ...cached };
     const shared: Shared = { format: "shared-v1", references: [] };
     let projected: Snapshot = event;
-    const runtime = String(envelope.runtimeId), old = this.#live.get(runtime);
+    const runtime = JSON.stringify([audience ?? null, envelope.runtimeId]), old = this.#live.get(runtime);
     if (event.type === "session.patch" && event.source.ready && old?.session === event.sessionId && old.epoch === event.source.epoch && old.seq === event.baseSeq) {
       const operations = stateDelta(old.value, event.live);
       const delta = operations && { baseRevision: old.seq, operations };

@@ -6,7 +6,7 @@ import {
   AgentCapabilityItemSchema, PermissionManagementSchema,
 } from "@orbis/protocol";
 import { encodeDeviceResponse } from "./device-protocol.js";
-import { encodeDeviceMessage, projectDeviceMessage } from "./device-message-projection.js";
+import { encodeDeviceMessage, projectCompactDeviceMessage, projectDeviceMessage } from "./device-message-projection.js";
 
 const commands = ["builtin", "extension", "prompt", "skill", "mcp"].map(source => ({
   name: source === "mcp" ? "mcp:server-a:search" : `${source}:exact-target`, source,
@@ -96,6 +96,19 @@ describe("FT-G01 menu-only device projection", () => {
     expect(projectDeviceMessage(hostDomain)).toBe(hostDomain);
     const alreadyMinimal = eventMessage({ type: "runtime.capabilities", capabilities: { commands: minimalCommands } });
     expect(projectDeviceMessage(alreadyMinimal)).toBe(alreadyMinimal);
+  });
+
+  it("retains only the normalized render fields in compact history messages", () => {
+    const event = { type: "session.snapshot", source: { ready: true }, entries: [{ type: "message", data: { message: {
+      messageId: "m", role: "assistant", timestamp: 1,
+      content: [{ type: "render", renderKind: "file_reference", text: "answer.md", file: { referenceId: `orbis-message-file:${"a".repeat(64)}`, fileName: "answer.md", line: 8 }, purpose: "output",
+        sourceSecret: "must-be-removed" }],
+    } } }] };
+    const input = { ...eventMessage(event), event };
+    const output = projectCompactDeviceMessage(input) as typeof input;
+    expect(output.event.entries[0]!.data.message.content).toEqual([{ type: "render", renderKind: "file_reference", text: "answer.md",
+      file: { referenceId: `orbis-message-file:${"a".repeat(64)}`, fileName: "answer.md", line: 8 }, purpose: "output" }]);
+    expect(JSON.stringify(output)).not.toContain("must-be-removed");
   });
 
   it("preserves all 2,009 tree options and counts the removed UTF-8 bytes", () => {

@@ -23,7 +23,7 @@ export function normalizeCodexMessage(message: ChatMessage, resolve: ResolveFile
   const outputs = new Map<string, Extract<RemoteContent, { type: "render" }>>();
   const content = message.content.map((block): RemoteContent => {
     if (block.type !== "text") return block;
-    return projectText(block, streaming || block.truncated === true, citation => {
+    return projectText(block, streaming || block.truncated === true, (citation, standalone) => {
       const fileName = Array.from(citation.path.split(/[\\/]/u).at(-1)!).reduce((name, ch) =>
         name.length + ch.length <= 255 ? name + ch : name, "");
       const resolved = resolve(citation.path);
@@ -32,10 +32,10 @@ export function normalizeCodexMessage(message: ChatMessage, resolve: ResolveFile
         ...(citation.line === undefined ? {} : { line: citation.line }),
         ...(citation.endLine === undefined ? {} : { endLine: citation.endLine }) };
       const label = citation.line === undefined ? fileName : `${fileName}:${citation.line}${citation.endLine === undefined ? "" : `–${citation.endLine}`}`;
-      if (citation.purpose === "output" && !streaming) {
+      if (citation.purpose === "output" && !streaming && (outputs.size < 32 || outputs.has(resolved?.key ?? citation.path))) {
         const key = resolved?.key ?? citation.path;
         if (!outputs.has(key)) outputs.set(key, { type: "render", renderKind: "file_reference", purpose: "output", text: label, file });
-        return "";
+        if (standalone) return "";
       }
       return resolved ? `[${escapeMarkdown(label)}](<${resolved.referenceId}>)` : escapeMarkdown(label);
     });
@@ -61,7 +61,7 @@ export function downgradeMessageForLegacy(message: ChatMessage): ChatMessage {
 }
 
 export function stripMessageFileReferenceTargets(text: string): string {
-  return text.replace(/\[((?:\\.|[^\]])+)\]\(<orbis-message-file:[a-f0-9]{64}>\)/gu,
+  return text.replace(/\[((?:\\.|[^\\[\]\r\n])+)\]\(<orbis-message-file:[a-f0-9]{64}>\)/gu,
     (_match, label: string) => label.replace(/\\([\\[\]`*_{}])/gu, "$1"));
 }
 
@@ -73,7 +73,7 @@ export function renderStreamingMarkdown(text: string, resolve?: ResolveFile): { 
 }
 
 function projectText(block: TextContent, streaming: boolean,
-  label: (citation: FileCitation) => string): TextContent {
+  label: (citation: FileCitation, standalone: boolean) => string): TextContent {
   const source = block.text;
   if (!source.includes(name) && (!streaming || !hasCitationSuffix(source))) return block;
   const candidates = scanCandidates(source, streaming);
@@ -84,7 +84,13 @@ function projectText(block: TextContent, streaming: boolean,
   for (const [index, candidate] of candidates.entries()) {
     if (!visible.has(index)) continue;
     text += source.slice(offset, candidate.start);
-    if (candidate.citation) text += label(candidate.citation);
+    if (candidate.citation) {
+      const lineStart = source.lastIndexOf("\n", candidate.start - 1) + 1;
+      const lineEnd = source.indexOf("\n", candidate.end);
+      const standalone = !source.slice(lineStart, candidate.start).trim() &&
+        !source.slice(candidate.end, lineEnd === -1 ? undefined : lineEnd).trim();
+      text += label(candidate.citation, standalone);
+    }
     offset = candidate.end;
   }
   return { ...block, text: text + source.slice(offset) };
@@ -185,10 +191,10 @@ function parseAttributes(body: string): FileCitation | undefined {
   }
   let path = entries.get("path");
   const purpose = entries.get("purpose") ?? "source";
-  if (!path || path.length > 4096 || control(path) || /^[a-z][a-z\d+.-]*:(?![\\/])/iu.test(path) || /^[\\/]{2}|^[a-z][a-z\d+.-]*:\/\//iu.test(path) ||
-      (purpose !== "source" && purpose !== "output")) return undefined;
+  if (!path || path.length > 4096 || control(path) || (purpose !== "source" && purpose !== "output")) return undefined;
   const suffix = /:(\d+)(?::\d+)?$/u.exec(path);
   if (suffix && !(suffix.index === 1 && /^[a-z]:/iu.test(path))) path = path.slice(0, suffix.index);
+  if (/^[\\/]{2}/u.test(path) || /^[a-z][a-z\d+.-]*:/iu.test(path) && !/^[a-z]:[\\/](?![\\/])/iu.test(path)) return undefined;
   const fileName = path.split(/[\\/]/u).at(-1);
   if (!fileName || fileName === "." || fileName === "..") return undefined;
   const start = entries.get("line") ?? entries.get("line_number") ?? entries.get("start_line") ?? entries.get("line_start") ?? entries.get("line_range_start") ?? suffix?.[1];

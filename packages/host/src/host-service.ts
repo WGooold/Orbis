@@ -43,6 +43,7 @@ import {
 import {
   DeviceE2ePayloadSchema,
   DEVICE_FEATURE_DSH_DESKTOP,
+  DEVICE_FEATURE_MESSAGE_RENDER,
   HOST_FEATURE_DEVICE_FEATURES,
   PROTOCOL_VERSION,
   type AgentKind,
@@ -73,6 +74,8 @@ import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { buildAgentStateSnapshot, buildAgentStateSnapshotParts } from "./agent-state-snapshot.js";
 import { AgentStateSubscriptions } from "./agent-state-subscriptions.js";
 import { AgentConversationState } from "./agent-conversation-state.js";
+import { DeviceMessageRendering } from "./device-message-rendering.js";
+import { MessageFileReferences } from "./message-file-references.js";
 import { DeviceViewFacts } from "./device-view-facts.js";
 import { RuntimeCommandLifecycle } from "./runtime-command-lifecycle.js";
 import {
@@ -314,6 +317,9 @@ export class HostService {
   readonly #dsh: Record<DshKind, DshSlot> = { dsh: { startingExistingOnly: false }, dshDesktop: { startingExistingOnly: false } };
   /** Features each device declared on its current handshake (ADR-0064); absent = released App behaviour. */
   readonly #deviceFeatures = new Map<string, ReadonlySet<string>>();
+  /** ADR-0084: project source messages once per representation at the device boundary. */
+  readonly #messageFileReferences = new MessageFileReferences();
+  readonly #deviceMessageRendering = new DeviceMessageRendering(this.#messageFileReferences);
   /** Devices that read a host-scope view without `dshDesktop`; their cached revisions are not full views. */
   readonly #legacyHostServed = new Set<string>();
   readonly #claudeBridge: ClaudeHookBridge;
@@ -704,6 +710,7 @@ export class HostService {
   readonly #workspaceGit = new Map<string, HostWorkspacesState["workspaces"][number]["git"]>();
   readonly #fieldTraffic = new FieldTrafficMeter();
   readonly #sessionWireContent = new SessionWireContent();
+  readonly #richSessionWireContent = new SessionWireContent();
   readonly #sharedOperations = new Map<string, HostSharedOperation>();
   #sharedOperationsTruncatedAt = 0;
   readonly #desktopOwnedIds = new Set<string>();
@@ -743,6 +750,7 @@ export class HostService {
     this.#pairing = new HostPairingService(identity);
     this.#spawner = options.spawner ?? new SessionSpawner({ stateDir, ...(options.log === undefined ? {} : { log: options.log }) });
     this.#downloads = new HostDownloadService({
+      resolveMessageReference: (id, deviceId) => this.#messageFileReferences.resolve(id, deviceId),
       indexPath: hostArtifactIndexPath(stateDir),
       publishEvent: (deviceId, runtimeId, event) => {
         this.#sendToDevice(deviceId, {
@@ -1505,7 +1513,7 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES],
+      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, DEVICE_FEATURE_MESSAGE_RENDER],
       sessionConfiguration: 1,
     };
   }
@@ -1843,6 +1851,7 @@ export class HostService {
     this.#sessionSync.clearDevice(deviceId);
     this.#notifications.releaseDevice(deviceId);
     this.#deviceViewFacts.forget(deviceId);
+    this.#messageFileReferences.releaseDevice(deviceId);
     this.#links.get(deviceId)?.close();
     this.#links.delete(deviceId);
     this.#deviceFeatures.delete(deviceId); this.#legacyHostServed.delete(deviceId);
@@ -2885,8 +2894,21 @@ export class HostService {
     this.#options.onPathChange?.(deviceId, change);
   }
 
+  #isCodexRuntime(runtimeId: string): boolean {
+    const scope = this.#agentFacts.scopeOf(runtimeId);
+    return scope?.kind === "agent" && (scope.key.agentKind === "codex" || scope.key.agentKind === "codexDesktop");
+  }
+
   #encodeForDevice(deviceId: string, message: object): Buffer {
-    return this.#encodeMeasured(this.#compactStateSubscriptions.supportsSharedContent(deviceId) ? this.#sessionWireContent.project(projectCompactDeviceMessage(message)) : message);
+    const { runtimeId } = message as { runtimeId?: string };
+    const scope = runtimeId === undefined ? undefined : this.#agentFacts.scopeOf(runtimeId);
+    const codex = runtimeId !== undefined && this.#isCodexRuntime(runtimeId);
+    const rich = this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_MESSAGE_RENDER) === true;
+    const identity = scope?.kind === "agent" ? this.#agentStateRegistry.read(scope, "identity")?.value as { cwd?: string } | undefined : undefined;
+    const cwd = codex ? identity?.cwd : undefined;
+    const rendered = this.#deviceMessageRendering.project(deviceId, message, { rich, codex, ...(cwd === undefined ? {} : { cwd }) });
+    return this.#encodeMeasured(this.#compactStateSubscriptions.supportsSharedContent(deviceId)
+      ? (rich ? this.#richSessionWireContent : this.#sessionWireContent).project(projectCompactDeviceMessage(rendered), rich ? deviceId : undefined) : rendered);
   }
 
   readTransportFields(): ReturnType<FieldTrafficMeter["snapshot"]> { return this.#fieldTraffic.snapshot(); }
@@ -2974,6 +2996,7 @@ export class HostService {
   }
 
   #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent): void {
+    if (this.#isCodexRuntime(runtimeId)) this.#deviceMessageRendering.observe(runtimeId, event);
     this.#fileChangeTurns.observe(runtimeId, event);
     if (event.type === "tool.activity") return;
     if (event.type === "session.tools.produced") {
@@ -3101,6 +3124,7 @@ export class HostService {
   }
 
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
+    if (message.type === "runtime.offline") this.#deviceMessageRendering.releaseRuntime(message.runtimeId);
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
     const hidden = hiddenFromLegacy(message);
     const chatEvent = message.type === "runtime.event" && ["session.patch", "session.snapshot", "message.started", "message.delta",

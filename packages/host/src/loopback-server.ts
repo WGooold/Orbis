@@ -129,6 +129,7 @@ export class HostLoopbackServer {
       headers.push("X-Orbis-Session-Turn-Outcome: 1");
       // Pi must know the strict metadata additions before it authenticates.
       headers.push("X-Orbis-Runtime-Model-State: 1");
+      headers.push("X-Orbis-Message-Render: 1");
     });
     const server = createServer((request, response) => {
       void this.#handleHttp(request, response);

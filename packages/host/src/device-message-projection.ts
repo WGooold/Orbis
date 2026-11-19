@@ -87,8 +87,11 @@ const publicBlocks = (value: unknown): unknown => !Array.isArray(value) ? typeof
   const keys = block.type === "text" ? ["type", "text", "truncated", "originalBytes"]
     : block.type === "thinking" ? ["type", "text", "thinking", "truncated", "originalBytes"]
       : block.type === "artifact" ? ["type", "artifact"]
+        : block.type === "render" ? ["type", "renderKind", "text", "file", "purpose"]
         : block.type === "tool_call" || block.type === "toolCall" ? ["type", "id", "name", "toolCallId", "toolName", "summary"] : undefined;
-  return keys ? [pick(block, keys)] : [];
+  if (!keys) return [];
+  const projected = pick(block, keys);
+  return [block.type === "render" && isObject(projected) ? field(projected, "file", value => pick(value, ["referenceId", "fileName", "line", "endLine"])) : projected];
 });
 const commandResultKeys = ["provider", "modelId", "level", "sessionName", "sessionId", "runtimeId", "cwd", "leafId", "isIdle",
   "copied", "compacted", "reloaded", "shutdown", "command", "accepted", "editorText"];

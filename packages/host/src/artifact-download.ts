@@ -14,6 +14,7 @@ import { basename, extname, join } from "node:path";
 
 import {
   ARTIFACT_CHUNK_BYTES,
+  MESSAGE_FILE_PREFIX,
   PROTOCOL_VERSION,
   encodeArtifactChunkFrame,
   type RelayToDeviceMessage,
@@ -41,6 +42,7 @@ export type HostDownloadServiceOptions = {
   publishBinary: (deviceId: string, frame: Uint8Array) => void;
   /** artifact 索引落盘位置（`<stateDir>/artifacts.json`）。 */
   indexPath: string;
+  resolveMessageReference?: (id: string, deviceId: string) => Promise<string>;
   log?: (line: string) => void;
   maxConcurrent?: number;
 };
@@ -48,7 +50,7 @@ export type HostDownloadServiceOptions = {
 type IndexedArtifact = RemoteArtifact & { runtimeId: string; seenAt: number };
 
 /** `RemoteArtifact.path` 是可选的，但 Host 服务下载的前提就是已解析出真实路径。 */
-type ResolvedArtifact = RemoteArtifact & { path: string };
+type ResolvedArtifact = RemoteArtifact & { path: string; referenceId?: string };
 
 /**
  * 一条 receiver-driven 的范围下载（ADR-0005）。
@@ -259,7 +261,7 @@ export class HostDownloadService {
       this.#trimCommands();
       return false;
     }
-    const artifact = await this.#resolve(command);
+    const artifact = await this.#resolve(command, deviceId);
     if (artifact === undefined) {
       this.#options.log?.(`Host 无法读取下载目标：${command.type === "artifact.download" ? command.artifactId : command.path}`);
       this.#failDownload(deviceId, runtimeId, commandId, "电脑上找不到这个文件");
@@ -379,7 +381,7 @@ export class HostDownloadService {
         mimeType: active.artifact.mimeType,
         size: active.artifact.size,
         sha256: active.artifact.sha256,
-        ...(active.artifact.path === undefined ? {} : { path: active.artifact.path }),
+        ...(active.artifact.path === undefined ? {} : { path: active.artifact.referenceId ?? active.artifact.path }),
       },
     });
   }
@@ -481,11 +483,17 @@ export class HostDownloadService {
 
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async #resolve(command: DownloadCommand): Promise<ResolvedArtifact | undefined> {
+  async #resolve(command: DownloadCommand, deviceId: string): Promise<ResolvedArtifact | undefined> {
     if (command.type === "artifact.download") {
       const known = this.#index.get(command.artifactId);
       if (known?.path === undefined || known.path === "") return undefined;
       return await this.#fromPath(known.path, known);
+    }
+    if (command.path.startsWith(MESSAGE_FILE_PREFIX)) {
+      try {
+        const path = await this.#options.resolveMessageReference?.(command.path, deviceId);
+        return path === undefined ? undefined : this.#fromPath(path, undefined, command.path);
+      } catch { return undefined; }
     }
     return await this.#fromPath(command.path, undefined);
   }
@@ -496,7 +504,7 @@ export class HostDownloadService {
    * `sha256` 是手机侧校验的硬要求（`artifact.started` 里缺它会被判成「无法安全处理」），
    * 索引里没有现成摘要时得现算——大文件会花上几百毫秒，这是它唯一的代价。
    */
-  async #fromPath(path: string, known: RemoteArtifact | undefined): Promise<ResolvedArtifact | undefined> {
+  async #fromPath(path: string, known: RemoteArtifact | undefined, referenceId?: string): Promise<ResolvedArtifact | undefined> {
     try {
       const info = await stat(path);
       if (!info.isFile() || !Number.isSafeInteger(info.size) || info.size < 0) return undefined;
@@ -512,6 +520,7 @@ export class HostDownloadService {
         size: info.size,
         sha256,
         path,
+        ...(referenceId === undefined ? {} : { referenceId }),
       };
     } catch {
       // 文件不在、没权限、或不是普通文件：都不该在这里报错，交给调用方回落。
