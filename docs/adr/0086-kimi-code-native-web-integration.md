@@ -72,3 +72,9 @@ Kimi 作为独立 `AgentBackend`（`agentKind: "kimiCode"`）接入 Host。`sess
 [sessions]: https://github.com/MoonshotAI/kimi-code/blob/b0de2fbd2de04d87689225aafd3912e5d193b62d/docs/en/reference/server-api-sessions.md
 [acp]: https://github.com/MoonshotAI/kimi-code/blob/b0de2fbd2de04d87689225aafd3912e5d193b62d/docs/en/reference/kimi-acp.md
 [instances]: https://github.com/MoonshotAI/kimi-code/blob/b0de2fbd2de04d87689225aafd3912e5d193b62d/packages/kap-server/src/instanceRegistry.ts
+
+## KIMI-10：桌面图形界面
+
+在 Host「设置 → 常规」复用现有开关与应用按钮。保存显式选择后，运行中的 Host 按既有流程重连；暂停的 Host 不自动启动。首次未选择时继承原有本地配置；图形界面的显式选择仅覆盖桌面运行，不改 CLI 配置。共享 QA 构建不展示生产接入开关。
+
+连接状态来自当前适配器，不从开关、安装状态或 Relay 连接推断。只显示短状态，启动说明放在按需提示中，不要求粘贴凭据，也不代启停 Kimi。移动端继续按协商能力显示原有选择器和会话组件。
