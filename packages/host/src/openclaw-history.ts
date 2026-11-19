@@ -22,6 +22,7 @@ export function clawMessage(raw: Record<string, unknown>, id: string, fallbackTi
     const part = openClawRecord(item);
     if (part?.type === "text") return textBlock(part.text, "text");
     if (part?.type === "thinking") return textBlock(part.thinking, "thinking");
+    if (part?.type === "image") return [{ type: "render", renderKind: "image", text: "图片内容暂不可显示" }] satisfies RemoteContent[];
     return [];
   }) : [];
   // Do not surface tool arguments, thought signatures, image bytes or other unprojected native metadata.

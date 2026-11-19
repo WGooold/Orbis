@@ -88,7 +88,8 @@ Malformed 指令若无法安全确认类型，保持为普通文本；合法但�
 | Claude Code | Web 引用和 HTTP(S) 搜索结果引用；成功 Artifact 标题／地址、搜索来源、已提交计划用既有工具详情文本视图 | 文档引用、聊天媒体与工具媒体显示标签；引用随 transcript 提交生效。工具内的地址可复制，正文引用可点击。 |
 | Pi | 现有聊天 Markdown、工具展示、产物 | 图片位置保留占位；旧 Host 接收文本降级。 |
 | DSH ACP / Web / Desktop | 现有正文、工具与产物展示 | 已识别图片和附件原位占位，覆盖增量、恢复和历史；未观测到的音频或资源事件不推断。 |
-| Kimi / OpenClaw / Hermes | 独立适配分支，主线未提供其入口 | Kimi 已知类型可复用正文、推理和工具。OpenClaw 在 `clawMessage` 接有来源凭据的媒体；Hermes 在 `transcriptContent` 将现有图片标签接入共享占位。随各自适配合入验证，未计入主线接入。 |
+| Kimi Code | 正文、推理和工具复用共享组件 | 已确认的协议项没有独立媒体形状。 |
+| OpenClaw / Hermes | 正文及各自已接入的标准会话组件 | OpenClaw 的 `image` 与 Hermes 的 `image` / `image_url` 使用共享占位；其它未知块保持隐藏。 |
 
 ### Ticket 与证据
 
@@ -103,3 +104,5 @@ Malformed 指令若无法安全确认类型，保持为普通文本；合法但�
 | 传输与兼容 | `3610ede0` 与本记录 | `final-regression.log`：16 文件、567 项；`generated-file-wire.log`：隔离 Host + Relay 校验旧端文本、富投影、生成图下载请求。`released-wire.json`：实际 Windows Host v0.1.22 ZIP 的旧 schema 接收降级后的开始、完成、快照及按需条目。`pi-release/pi-host-matrix.json`：对照发布源码 `11c7a227` 的 6 个隔离用例，含旧/新双向、同版正对照、新→旧→新重连；该矩阵验证 Pi/Host 连接，不代替移动 App 真机回归。 |
 
 验证证据在本机 `.artifacts/msg-render-20261119/`。待用户验证：在独立候选环境打开一条含中文路径、行号、生成图和不支持内容的会话，核对两端正文顺序、复制、文件打开／下载、占位及重连后历史。未部署、未发布候选安装包；公开 macOS Host、已发 Android 和 iOS 外测包的交叉安装矩阵尚未完成。iOS 外测对照为有分发证据的 `0.1.2 (3)`；`0.1.3 (11)` 仅确认上传。共享 QA 入口本轮不可用，未登记人工验收。
+
+Kimi、OpenClaw、Hermes 已分别合入主线。Hermes 合并回归见本机 `.artifacts/merges/hermes/`：Host 定向检查 201 项、iOS 135 项、Android 定向检查通过。会话基线恢复测试在合并前干净提交与合并候选均超时，另留对照。未部署、未发包，待用户验证。

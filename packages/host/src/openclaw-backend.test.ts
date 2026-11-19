@@ -1,3 +1,4 @@
+import { clawMessage } from "./openclaw-history.js";
 import { expect, test, vi } from "vitest";
 import { RuntimeWireEventSchema, type RuntimeEvent, type RuntimeMetadata } from "@orbis/protocol";
 import { OpenClawBackend } from "./openclaw-backend.js";
@@ -143,4 +144,12 @@ test("rebinds the same native session after a Gateway reconnect", async () => {
     expect(f.request.mock.calls.filter(([method]) => method === "sessions.messages.subscribe")).toHaveLength(2);
     expect(f.request.mock.calls.some(([method]) => method === "sessions.create" || method === "chat.send")).toBe(false);
   } finally { await f.backend.stop(); }
+});
+
+// MSG-RENDER-01: the shared history/live projection preserves media order without payloads.
+test("keeps native OpenClaw image blocks in order without forwarding data", () => {
+  expect(clawMessage({ role: "assistant", content: [{ type: "text", text: "Before" },
+    { type: "image", mimeType: "image/png", data: "private-data" }, { type: "text", text: "After" }] }, "test")?.content).toEqual([
+    { type: "text", text: "Before" }, { type: "render", renderKind: "image", text: "图片内容暂不可显示" }, { type: "text", text: "After" },
+  ]);
 });

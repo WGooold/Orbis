@@ -1164,7 +1164,7 @@ function transcriptContent(raw: unknown, textValue: unknown, reasoningValue?: un
       const part = asRecord(value);
       if (part.type === "text" && typeof part.text === "string") content.push({ type: "text", text: part.text.slice(0, MAX_TEXT_CHARS) });
       else if ((part.type === "thinking" || part.type === "reasoning") && typeof part.text === "string") content.push({ type: "thinking", text: part.text.slice(0, MAX_TEXT_CHARS) });
-      else if (part.type === "image" || part.type === "image_url") content.push({ type: "text", text: "[图片]" });
+      else if (part.type === "image" || part.type === "image_url") content.push({ type: "render", renderKind: "image", text: "图片内容暂不可显示" });
     }
   }
   if (content.length === 0 && typeof textValue === "string" && textValue.length) content.push({ type: "text", text: textValue.slice(0, MAX_TEXT_CHARS) });

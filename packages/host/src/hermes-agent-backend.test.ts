@@ -171,7 +171,8 @@ describe("HermesAgentBackend", () => {
       ] },
       { role: "tool", tool_call_id: "call-secret", name: "read", is_error: false, row_id: 3, timestamp: 1_700_000_002,
         content: [{ type: "text", text: "private tool output must not be broadcast" }] },
-      { role: "assistant", text: "Done", row_id: 4, timestamp: 1_700_000_003 },
+      { role: "assistant", row_id: 4, timestamp: 1_700_000_003, content: [{ type: "text", text: "Done" },
+        { type: "image_url", image_url: "private-media-url" }] },
     ] }));
     const { backend, events } = makeBackend(gateway);
     const activation = await backend.activate({ type: "resume", sessionId: "stored-session" });
@@ -182,6 +183,10 @@ describe("HermesAgentBackend", () => {
     }));
     const emitted = events.find((event): event is Extract<RuntimeEvent, { type: "session.snapshot" }> =>
       event.type === "session.snapshot" && event.syncId === "sync-tools");
+    expect(emitted?.display?.entries.at(-1)?.message?.content).toEqual([
+      { type: "text", text: "Done" }, { type: "render", renderKind: "image", text: "图片内容暂不可显示" },
+    ]);
+    expect(JSON.stringify(emitted)).not.toContain("private-media-url");
     const toolCall = emitted?.display?.entries.find(entry => entry.message?.content.some(part => part.type === "tool_call"))?.message?.content
       .find(part => part.type === "tool_call");
     const toolResult = emitted?.entries.find(entry => (entry.data.message as { role?: string }).role === "toolResult")?.data.message;
