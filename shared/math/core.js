@@ -2,6 +2,7 @@
 (function (root) {
   'use strict';
   var tick = String.fromCharCode(96);
+  var messageFileLink = /^\[(?:\\.|[^\\\[\]\r\n])+\]\(<orbis-message-file:[a-f0-9]{64}>\)/;
   var environments = /^(equation|equation\*|align|align\*|alignat|alignat\*|gather|gather\*|displaymath|math)$/;
   function escaped(s, i) { var n = 0; while (i > 0 && s.charAt(--i) === '\\') n++; return n % 2 === 1; }
   function closeAt(s, end, start, limit) {
@@ -18,6 +19,7 @@
     var prefix = '\uE000orbis-math-';
     while (source.indexOf(prefix) >= 0) prefix += '-';
     var tokens = [], output = [], cursor = 0, i = 0, count = 0, listIndent = -1;
+    var hasMessageFiles = source.indexOf("<orbis-message-file:") >= 0;
     function save(start, finish, tex, display, pending) {
       var marker = prefix + tokens.length + '\uE001';
       // Strip Markdown quote prefixes only from the engine input; raw copy stays exact.
@@ -65,6 +67,11 @@
         if ((/^(?: {4}|\t)/.test(unquoted) && !list && (listIndent < 0 || /^\s*/.exec(unquoted)[0].length >= listIndent + 4)) || /^ {0,3}\[[^\]]+\]:/.test(unquoted)) { i = nextLine + 1; continue; }
       }
       var c = source.charAt(i);
+      // A normalized file link is literal Markdown, including escaped brackets in its label.
+      if (hasMessageFiles && c === '[') {
+        var fileLink = messageFileLink.exec(source.slice(i, i + 768));
+        if (fileLink) { i += fileLink[0].length; continue; }
+      }
       if ((i === 0 || /[\s(<]/.test(source.charAt(i - 1))) && /^(?:https?:\/\/|mailto:)/i.test(source.slice(i, i + 8))) {
         var url = /^(?:https?:\/\/|mailto:)[^\s<>]+/i.exec(source.slice(i));
         if (url) { i += url[0].length; continue; }

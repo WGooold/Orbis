@@ -53,3 +53,11 @@ test('empty explicit formulas preserve their source', () => {
   assert.equal(p.tokens[0].pending, true);
   assert.equal(p.tokens[0].raw, String.raw`\(\)`);
 });
+
+// Host-escaped brackets in a file name are Markdown punctuation, even beside a real formula.
+test('normalized file links leave their labels to Markdown without hiding adjacent math', () => {
+  const link = String.raw`[报告\[最终\].md](<orbis-message-file:${'a'.repeat(64)}>)`;
+  const p = math.protect(`${link} then \\(x^2\\)`);
+  assert.ok(p.text.startsWith(link));
+  assert.deepEqual(Array.from(p.tokens, token => token.tex), ['x^2']);
+});
