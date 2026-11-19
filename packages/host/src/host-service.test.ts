@@ -3600,21 +3600,22 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(activate).toHaveBeenCalledTimes(1);
   });
 
-  // KIMI-09: opt-in real Kimi Web and released Orbis runtime probes. The fixture owns the isolated native server.
+  // KIMI-09/11: opt-in real Kimi Web/Desktop and released Orbis runtime probes. The fixture owns the isolated native server.
   it.skipIf(!process.env.ORBIS_TEST_KIMI_FIXTURE)("drives real Kimi Web through the encrypted Relay channel", async () => {
     const fixture = JSON.parse(await readFile(process.env.ORBIS_TEST_KIMI_FIXTURE!, "utf8")) as {
-      homeDir: string; endpoint: string; cwd: string; oldRelay?: string; oldHost?: string; result: string;
+      homeDir: string; endpoint?: string; source?: "desktop"; cwd: string; oldRelay?: string; oldHost?: string; result: string;
     };
     stateDir = await mkdtemp(join(tmpdir(), "orbis-kimi-chain-"));
     const options = { port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(stateDir, "relay.json") };
     const releasedRelay = fixture.oldRelay ? await import(/* @vite-ignore */ fixture.oldRelay) as { createRelayServer: typeof createRelayServer } : undefined;
     relay = await (releasedRelay?.createRelayServer ?? createRelayServer)(options);
-    const kimi = new KimiRuntime({ stateDir, homeDir: fixture.homeDir, endpoint: fixture.endpoint });
+    const nativeOptions = { homeDir: fixture.homeDir, ...(fixture.endpoint ? { endpoint: fixture.endpoint } : {}), ...(fixture.source ? { source: fixture.source } : {}) };
+    const kimi = new KimiRuntime({ stateDir, ...nativeOptions });
     const hostOptions = { relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false };
     host = await HostService.create({ ...hostOptions, kimiCodeRuntime: kimi });
     await host.start();
-    await vi.waitFor(() => expect(kimi.isReady()).toBe(true), { timeout: 12_000 });
+    await vi.waitFor(() => expect(kimi.isReady(), kimi.reason ?? "Kimi not ready").toBe(true), { timeout: 12_000 });
     const opened = await host.openPairingWindow();
     const connected = await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
       qrText: encodePairingQrText(opened.payload), deviceName: "Isolated Kimi wire client" });
@@ -3653,6 +3654,44 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect((await ready(false)).hostFeatures).toContain("agent.kimiCode");
     send("device.features", { features: ["agent.kimiCode"] });
     await ready(true);
+    // Open a native-owned session before Orbis requests activation, while an approval is live.
+    const nativePeer = await KimiWebClient.connect(nativeOptions);
+    try {
+      const existing = await nativePeer.requestJson("/api/v1/sessions", { method: "POST", body: {
+        metadata: { cwd: fixture.cwd }, environment_id: "local",
+      } }) as { id: string };
+      const configForResume = await kimi.sessionConfiguration(fixture.cwd);
+      id = `${configForResume.binding.slice(0, -"local".length)}${existing.id}`;
+      if (fixture.source === "desktop") expect(id).toMatch(/^kimi-code:desktop-/u);
+      const frames: Record<string, unknown>[] = [];
+      const peer = nativePeer.openSocket(frame => frames.push(frame), () => {});
+      await vi.waitFor(() => expect(peer.readyState).toBe(WebSocket.OPEN));
+      peer.send(JSON.stringify({ type: "subscribe", request_id: "peer-subscribe", session_id: existing.id }));
+      await vi.waitFor(() => expect(frames).toContainEqual(expect.objectContaining({ type: "turns", session_id: existing.id })));
+      await nativePeer.requestJson(`/api/v1/sessions/${existing.id}/prompts`, { method: "POST", body: {
+        agent_id: "main", prompt_id: "peer-prompt", content: [{ type: "text", text: "native-approval-existing-fixture" }],
+      } });
+      await vi.waitFor(() => expect(frames).toContainEqual(expect.objectContaining({ type: "interaction", kind: "approval", status: "pending" })), { timeout: 5000 });
+      send("session.activate", { requestId: "attach-existing", target: { type: "resume", agentKind: "kimiCode", sessionId: id }, spawnMode: "headless" });
+      let attached = false;
+      let pending: Extract<RuntimeEvent, { type: "interaction.requested" | "interaction.snapshot" }> | undefined;
+      await wait("native activation and pending interaction", (m, e) => {
+        if (m.requestId === "attach-existing") {
+          expect(m).toMatchObject({ type: "session.activated", sessionId: id });
+          attached = true;
+        }
+        if (m.runtimeId === id && (e?.type === "interaction.requested" || e?.type === "interaction.snapshot" && e.requests?.length === 1)) {
+          pending = e as typeof pending;
+        }
+        return attached && pending !== undefined;
+      });
+      const e = pending!;
+      const approval = e.type === "interaction.requested" ? e.request : e.requests[0]!;
+      device.sendCommand(id, "peer-answer", { type: "interaction.respond", extensionId: approval.extensionId, requestId: approval.requestId, response: { kind: "confirm", value: false } });
+      expect(await receipt("peer-answer")).toMatchObject({ status: "success" });
+      await vi.waitFor(() => expect(frames).toContainEqual(expect.objectContaining({ type: "interaction", kind: "approval", outcome: "rejected", status: "ended" })));
+      expect(JSON.stringify(await snapshot("peer-history"))).toContain("native-approval-existing-fixture");
+    } finally { nativePeer.close(); }
     send("session.configuration.read", { requestId: "config", agentKind: "kimiCode", cwd: fixture.cwd });
     const config = await reply("config");
     expect(config).toMatchObject({ type: "session.configuration.result", agentKind: "kimiCode" });
@@ -3699,7 +3738,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     // Keep the current turn at an actual approval; a second native client queues its successor.
     device.sendCommand(id, "running", { type: "user_message", messageId: "running", text: "native-approval-stop-fixture" });
     await event("interaction.requested", e => e.request.kind === "confirm" && e.request.requestId !== card.requestId);
-    const native = await KimiWebClient.connect({ homeDir: fixture.homeDir, endpoint: fixture.endpoint });
+    const native = await KimiWebClient.connect(nativeOptions);
     try {
       const path = `/api/v1/sessions/${id.split(":").at(-1)}/prompts`;
       const queued = await native.requestJson(path, { method: "POST", body: { prompt_id: "native-queued", agent_id: "main",
@@ -3723,7 +3762,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(final).toContain("native-next-fixture");
       expect(final).not.toContain("must not enqueue");
     } finally { native.close(); }
-    const report = { relay: fixture.oldRelay ? "released" : "current", checks: ["configuration", "launch and exact recovery", "prompt identity",
+    const report = { relay: fixture.oldRelay ? "released" : "current", checks: ["resume a native-owned active session and resolve its pending approval", "configuration", "launch and exact recovery", "prompt identity",
       "native approval rejection", "history and reconnect", "unnegotiated isolation", "idle stop rejected", "exact running stop and queued successor"], releasedHost: false };
     if (fixture.oldHost) {
       const ledgerPath = join(stateDir, "kimi-session-configuration.json");

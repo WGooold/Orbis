@@ -18,6 +18,8 @@ import { readDesktopRecoveryReason } from "./codex-desktop-recovery.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { loadKimiCodeConfig } from "./config.js";
+import type { KimiSource } from "./kimi-web-client.js";
+import { supportsKimiDesktop } from "./kimi-desktop-owner.js";
 import { KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle, openDshDesktopFromHost } from "./dsh-desktop-lifecycle.js";
@@ -77,6 +79,7 @@ const providerPresets = [...existingProviderPresets, ...claudeProviderPresets];
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
   kimiCodeEnabled?: boolean;
+  kimiCodeSource?: KimiSource;
   dshEnabled?: boolean; dshEntry?: string; dshWebUrl?: string;
   /** macOS：让用户自己在终端里运行的 Pi 也加载 Orbis 扩展（缺省开启）。 */
   piIntegrationEnabled?: boolean;
@@ -223,8 +226,9 @@ export class DesktopRuntime {
     this.#poll.unref();
     this.#usage.start();
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
-    const kimiCodeDefaultEnabled = (await this.#kimiCodeConfig())?.kimiCodeEnabled ?? false;
-    return { kimiCodeDefaultEnabled, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
+    const kimi = await this.#kimiCodeConfig();
+    return { kimiCodeDefaultEnabled: kimi?.kimiCodeEnabled ?? false, kimiCodeDefaultSource: kimi?.kimiCodeSource ?? "web",
+      kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
       iosAppDownloadQr: await QRCode.toDataURL(IOS_APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
   }
@@ -720,7 +724,9 @@ export class DesktopRuntime {
       const kimi = await this.#kimiCodeConfig();
       if (this.#desired !== settings) { await this.#dispose(); return; }
       const kimiRuntime = kimi && (settings.kimiCodeEnabled ?? kimi.kimiCodeEnabled) ? new KimiRuntime({ stateDir: this.#stateDir, homeDir: kimi.kimiCodeHome,
-        ...(kimi.kimiCodeEndpoint === undefined ? {} : { endpoint: kimi.kimiCodeEndpoint }), log: line => this.log(`Kimi Code Web · ${line}`) }) : undefined;
+        source: settings.kimiCodeSource ?? kimi.kimiCodeSource,
+        ...(kimi.kimiCodeEndpoint === undefined || (settings.kimiCodeSource !== undefined && settings.kimiCodeSource !== kimi.kimiCodeSource)
+          ? {} : { endpoint: kimi.kimiCodeEndpoint }), log: line => this.log(line) }) : undefined;
       let relayAuthenticated = false;
       const service = await HostService.create({
         ...(kimiRuntime === undefined ? {} : { kimiCodeRuntime: kimiRuntime }),

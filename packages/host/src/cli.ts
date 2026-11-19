@@ -46,13 +46,14 @@ const USAGE = `orbis —— 电脑侧的 Host 进程
   --state-dir <路径>             覆盖状态目录（默认 ~/.orbis）
   --codex                        host 子命令：预启动 Codex 终端后端（需已全局安装 codex-cli）
   --dsh                          host 子命令：预启动 DeepSeek Harness；App 启动会话时也可按需启动
-  --kimi-code                    host 子命令：连接已由用户启动的本机 Kimi Code Web 服务（只连接，不启停）
+  --kimi-code                    host 子命令：连接已由用户启动的本机 Kimi Code 服务（只连接，不启停）
   --sessions-root <路径>         host 子命令：只扫这个目录下的 Pi 会话（隔离测试台用它，
                                  免得把真实会话列进来；默认 ~/.pi/agent/sessions）
   --print-payload                pair 子命令：把配对载荷按一行 JSON 打到 stdout（不给二维码），
                                  供隔离测试台或脚本把载荷交给客户端，不必用摄像头扫码
 
 环境变量：
+  ORBIS_KIMI_CODE_SOURCE    选择 web（默认）或 desktop（macOS arm64）
   ORBIS_LAN_PORT             覆盖 LAN 直连端口（默认 42130）
 `;
 
@@ -102,7 +103,7 @@ async function runHost(
 
   let service: HostService | undefined;
   const kimiRuntime = config.kimiCodeEnabled || kimiCodeFlag
-    ? new KimiRuntime({ stateDir, homeDir: config.kimiCodeHome, ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }),
+    ? new KimiRuntime({ stateDir, source: config.kimiCodeSource, homeDir: config.kimiCodeHome, ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }),
       log: line => console.log(`[kimi-code] ${line}`) })
     : undefined;
   // 与桌面 Host 一致：DeepSeek Web 能热加载配置，所以编辑当前在用的供应商不需要先空闲。

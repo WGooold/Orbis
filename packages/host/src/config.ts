@@ -13,6 +13,8 @@ import { orbisEnvironment } from "@orbis/protocol";
 import { relayTransportMode, type RelayTransportMode } from "./relay-socket.js";
 import { relayHistoryMode, type RelayHistoryMode } from "./history-delivery.js";
 
+import type { KimiSource } from "./kimi-web-client.js";
+
 export const HOST_CONFIG_FILE = "config.json";
 
 export function defaultAgentConfigPath(): string {
@@ -34,6 +36,7 @@ export type HostConfig = {
 
 type KimiCodeConfig = {
   kimiCodeEnabled: boolean;
+  kimiCodeSource: KimiSource;
   kimiCodeHome: string;
   kimiCodeEndpoint: string | undefined;
 };
@@ -81,7 +84,10 @@ export async function loadKimiCodeConfig(stateDir: string, env = process.env): P
 }
 
 function resolveKimiCodeConfig(config: Record<string, unknown> | undefined, env: Record<string, string | undefined>): KimiCodeConfig {
+  const source = env["ORBIS_KIMI_CODE_SOURCE"] ?? config?.["kimiCodeSource"] ?? "web";
+  if (source !== "web" && source !== "desktop") throw new Error("Kimi Code 来源必须为 web 或 desktop");
   return {
+    kimiCodeSource: source,
     kimiCodeEnabled: env["ORBIS_KIMI_CODE_ENABLED"] === "1" || config?.["kimiCodeEnabled"] === true,
     kimiCodeHome: env["KIMI_CODE_HOME"] || stringField(config, "kimiCodeHome") || join(homedir(), ".kimi-code"),
     kimiCodeEndpoint: env["ORBIS_KIMI_CODE_ENDPOINT"] || stringField(config, "kimiCodeEndpoint"),
