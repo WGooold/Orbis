@@ -98,6 +98,7 @@ class ComposerSessionInfoInstrumentedTest {
         val displayed = mutableStateOf(RemoteState(selectedRuntimeId = runtime.runtimeId, runtimes = mapOf(runtime.runtimeId to runtime)))
         try {
             compose.setContent { OrbisTheme { ChatScreen(displayed.value, model) } }
+            compose.onNodeWithTag("chat-voice-input").assertIsDisplayed()
             val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
             val transcript = compose.onNodeWithTag("chat-transcript").fetchSemanticsNode().boundsInRoot
             val field = compose.onNode(hasSetTextAction()).fetchSemanticsNode().boundsInRoot

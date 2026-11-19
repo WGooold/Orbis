@@ -28,6 +28,9 @@
         BB9D500A260FB66F4F3344D5 /* ChatMarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABA69147CCA95C8B28B5ECA9; };
         64C3F8243EDD18A1B2F98489 /* ChatMessageRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2CC3A7FB21F94C1E8CEFC97; };
         48C9131EA30DFABA87F879B9 /* ChatComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5204809A5B06BD2744B651E; };
+        A11130010000000000000001 /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11130010000000000000002; };
+        A11130010000000000000003 /* VoiceTextCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11130010000000000000004; };
+        A11130010000000000000005 /* VoiceCleanupSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11130010000000000000006; };
         7A8339F274E140F2938BADA5 /* ChatTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C54B3BAF4E82D69C4D2724; };
         C98200020000000000000001 /* ChatNativeTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C98210020000000000000001; };
         C98200020000000000000002 /* ChatNativeTranscriptEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = C98210020000000000000002; };
@@ -119,6 +122,9 @@
         ABA69147CCA95C8B28B5ECA9 /* ChatMarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMarkdownView.swift; sourceTree = "<group>"; };
         D2CC3A7FB21F94C1E8CEFC97 /* ChatMessageRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessageRow.swift; sourceTree = "<group>"; };
         A5204809A5B06BD2744B651E /* ChatComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatComposerView.swift; sourceTree = "<group>"; };
+        A11130010000000000000002 /* VoiceInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputController.swift; sourceTree = "<group>"; };
+        A11130010000000000000004 /* VoiceTextCleanup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceTextCleanup.swift; sourceTree = "<group>"; };
+        A11130010000000000000006 /* VoiceCleanupSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCleanupSettings.swift; sourceTree = "<group>"; };
         14C54B3BAF4E82D69C4D2724 /* ChatTranscriptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTranscriptView.swift; sourceTree = "<group>"; };
         C98210020000000000000001 /* ChatNativeTranscriptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatNativeTranscriptView.swift; sourceTree = "<group>"; };
         C98210020000000000000002 /* ChatNativeTranscriptEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatNativeTranscriptEnvironment.swift; sourceTree = "<group>"; };
@@ -298,6 +304,9 @@
                 C98210020000000000000002 /* ChatNativeTranscriptEnvironment.swift */,
                 C98210020000000000000003 /* ChatTranscriptInteractionState.swift */,
                 A5204809A5B06BD2744B651E /* ChatComposerView.swift */,
+                A11130010000000000000002 /* VoiceInputController.swift */,
+                A11130010000000000000004 /* VoiceTextCleanup.swift */,
+                A11130010000000000000006 /* VoiceCleanupSettings.swift */,
                 D2CC3A7FB21F94C1E8CEFC97 /* ChatMessageRow.swift */,
                 ABA69147CCA95C8B28B5ECA9 /* ChatMarkdownView.swift */,
                 1B57CBCB214140E9324C6786 /* ChatConfigurationViews.swift */,
@@ -527,6 +536,9 @@
                 C98200020000000000000002 /* ChatNativeTranscriptEnvironment.swift in Sources */,
                 C98200020000000000000003 /* ChatTranscriptInteractionState.swift in Sources */,
                 48C9131EA30DFABA87F879B9 /* ChatComposerView.swift in Sources */,
+                A11130010000000000000001 /* VoiceInputController.swift in Sources */,
+                A11130010000000000000003 /* VoiceTextCleanup.swift in Sources */,
+                A11130010000000000000005 /* VoiceCleanupSettings.swift in Sources */,
                 64C3F8243EDD18A1B2F98489 /* ChatMessageRow.swift in Sources */,
                 BB9D500A260FB66F4F3344D5 /* ChatMarkdownView.swift in Sources */,
                 8805B409FEE81C340BA71E36 /* ChatConfigurationViews.swift in Sources */,

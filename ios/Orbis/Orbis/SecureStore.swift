@@ -62,6 +62,25 @@ final class SecureStore: SecureStorage {
         try save(JSONEncoder().encode(targets), service: "orbis.liveActivityRegistrations")
     }
 
+    func voiceCleanupAPIConfig() throws -> VoiceCleanupAPIConfig? {
+        guard let data = try read(service: "orbis.voiceCleanupAPI.v1") else { return nil }
+        return try JSONDecoder().decode(VoiceCleanupAPIConfig.self, from: data)
+    }
+
+    func saveVoiceCleanupAPIConfig(_ config: VoiceCleanupAPIConfig?) throws {
+        let name = "orbis.voiceCleanupAPI.v1"
+        if let config {
+            try save(JSONEncoder().encode(config), service: name)
+        } else {
+            let service = namespace + name
+            let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: service]
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw PairingError.relay(L10n.tr("无法保存安全凭据，请解锁设备后重试。"))
+            }
+        }
+    }
+
     private func save(_ data: Data, service: String) throws {
         let service = namespace + service
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: service]

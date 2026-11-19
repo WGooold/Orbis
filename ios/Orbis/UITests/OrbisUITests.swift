@@ -3187,6 +3187,7 @@ final class OrbisUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         let seededDraft = String(repeating: "跨平台会话输入保持稳定，", count: 24)
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["chat-voice-input"].exists, "The composer should expose voice input without changing the send target.")
         let seeded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             composer.value as? String == seededDraft
         }, object: nil)
