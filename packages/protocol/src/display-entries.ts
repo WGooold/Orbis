@@ -386,7 +386,7 @@ function contentBlocks(value: unknown): RemoteContent[] {
   return blocks;
 }
 
-function safeCitationUrl(value: string | undefined): URL | undefined {
+export function safeCitationUrl(value: string | undefined): URL | undefined {
   if (value === undefined || value.length > 2048 || !/^https?:\/\//iu.test(value) || [...value].some(ch => {
     const code = ch.charCodeAt(0);
     return code <= 0x20 || code === 0x7f || ch === "<" || ch === ">" || ch === "\\";

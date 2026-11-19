@@ -3,6 +3,7 @@ import { ToolActivityProducer, ToolContentReadError, type ToolContentStore } fro
 import {
   RecoverableSessionSource,
   SessionSyncPreparer,
+  safeCitationUrl,
   type AgentKey,
   type RemoteSessionEntry,
   type RuntimeCommand,
@@ -91,6 +92,10 @@ export class ClaudeSessionHistory {
       : event.type === "message.started" || event.type === "message.finished" ? event.message.messageId : undefined;
     // A late chunk or turn.complete must never resurrect an already committed step.
     if (id !== undefined && this.#retiredMessages.has(id)) return true;
+    if (event.type === "tool.finished" && event.isError !== true) {
+      const text = claudeToolResultText(event.toolName, event.result);
+      if (text !== undefined) event = { ...event, result: text };
+    }
     return this.source.observe(this.#tools.event(event));
   }
 
@@ -309,6 +314,7 @@ export class ClaudeSessionHistory {
     const raw = await readFile(path, "utf8");
     if (Buffer.byteLength(raw, "utf8") > 64 * 1024 * 1024) throw new ToolContentReadError("content_unavailable");
     const id = locator.tool.toolCallId;
+    let toolName: string | undefined;
     for (const line of raw.split("\n")) {
       if (!line.includes(id)) continue;
       let row: unknown;
@@ -316,14 +322,49 @@ export class ClaudeSessionHistory {
       const content = (row as { message?: { content?: unknown } } | null)?.message?.content;
       if (!Array.isArray(content)) continue;
       for (const block of content as Record<string, unknown>[]) {
-        if (locator.part === "arguments" && block.type === "tool_use" && block.id === id) return { format: "json", value: block.input ?? {} };
+        if (block.type === "tool_use" && block.id === id) {
+          if (locator.part === "arguments") return { format: "json", value: block.input ?? {} };
+          if (typeof block.name === "string") toolName = block.name;
+        }
         if (locator.part !== "arguments" && block.type === "tool_result" && block.tool_use_id === id) {
+          const text = block.is_error === true ? undefined : claudeToolResultText(toolName, (row as { toolUseResult?: unknown }).toolUseResult);
+          if (text !== undefined) return { format: "text", value: text };
           return typeof block.content === "string" ? { format: "text", value: block.content } : { format: "json", value: block.content ?? null };
         }
       }
     }
     return undefined;
   }
+}
+
+/** The app's tool detail view uses plain text. Keep only the published title/URL or plan. */
+export function claudeToolResultText(tool: string | undefined, value: unknown): string | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const result = value as Record<string, unknown>;
+  const source = (raw: unknown): { url: string; label: string } | undefined => {
+    if (raw === null || typeof raw !== "object") return undefined;
+    const { title, url } = raw as Record<string, unknown>;
+    const target = safeCitationUrl(typeof url === "string" ? url : undefined);
+    if (!target) return undefined;
+    const label = typeof title === "string" ? title.replace(/[\u0000-\u0020\u007f\u202a-\u202e\u2066-\u2069]+/gu, " ").trim().slice(0, 256) : "";
+    return { url: target.href, label: label || target.hostname };
+  };
+  if (tool === "Artifact" && (result.opened === true || typeof result.path === "string")) {
+    const link = source(result);
+    return link ? `${link.label}\n${link.url}` : undefined;
+  }
+  if (tool === "ExitPlanMode" && result.awaitingLeaderApproval !== true && typeof result.plan === "string" && result.plan.trim()) return result.plan;
+  if (tool !== "WebSearch" || !Array.isArray(result.results)) return undefined;
+  const links = new Map<string, string>();
+  for (const group of result.results.slice(0, 32)) {
+    if (group === null || typeof group !== "object" || !Array.isArray(group.content)) continue;
+    for (const hit of group.content.slice(0, 32)) {
+      const link = source(hit);
+      if (link && !links.has(link.url)) links.set(link.url, `${link.label}\n${link.url}`);
+      if (links.size >= 16) return [...links.values()].join("\n\n");
+    }
+  }
+  return links.size ? [...links.values()].join("\n\n") : undefined;
 }
 
 function userText(content: unknown): string | undefined {
