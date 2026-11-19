@@ -80,3 +80,9 @@ Kimi 作为独立 `AgentBackend`（`agentKind: "kimiCode"`）接入 Host。`sess
 连接状态来自当前适配器，不从开关、安装状态或 Relay 连接推断。只显示短状态，启动说明放在按需提示中，不要求粘贴凭据，也不代启停 Kimi。移动端继续按协商能力显示原有选择器和会话组件。
 
 已实现。macOS Qt 构建、定向测试与最小窗口设置渲染通过；证据见 `verification.json` 中的 `desktopUi`。Windows 安装与手动验收待完成，未部署。
+
+## KIMI-11：Kimi Code Desktop 内嵌服务（[#59](https://github.com/WGooold/Orbis/issues/59)）
+
+保留独立 Web 路径；桌面模式直接接官方 Kimi Code 应用自己的服务，不另启 `kimi web`，不使用 Browser MCP，不包装或改写桌面应用，也不调用 `takeover`。两个模式均可选择，每个 Host 对同一数据根只接一种来源；共享数据目录不是共享运行状态。切换来源必须显式操作，不做跨来源回退。
+
+先验证 macOS arm64 Desktop 1.3.7（内嵌 2.6.2）的实例登记 PID、应用签名和 API 契约，再复用会话、输入和交互适配。非已验证桌面平台不宣告支持。验收区分原生桌面服务上的链路验证与桌面／手机 UI 验收。
