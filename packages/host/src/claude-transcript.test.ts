@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { RuntimeEvent } from "@orbis/protocol";
+import { projectDisplayEntries, type RuntimeEvent } from "@orbis/protocol";
 import { ClaudeSessionHistory } from "./claude-session-history.js";
 import { ClaudeTranscriptProjection, ClaudeTranscriptReader, findClaudeTranscript } from "./claude-transcript.js";
 import { AgentConversationState } from "./agent-conversation-state.js";
@@ -129,6 +129,41 @@ describe("ClaudeTranscriptProjection", () => {
     expect(projection.entries[3]!.data.message).toMatchObject({ role: "toolResult", toolCallId: "toolu_1", toolName: "Bash",
       content: [{ type: "text", text: "a.txt" }], isError: false });
     expect(projection.has("sub")).toBe(true);
+  });
+
+  it("projects Claude citations as safe links and visible media as placeholders without forwarding payloads", () => {
+    const projection = new ClaudeTranscriptProjection();
+    projection.push(user("u1", null, [
+      { type: "text", text: "Please inspect this." },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "private-base64" } },
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data: "private-document" } },
+    ]));
+    projection.push(assistant("a1", "u1", [
+      { type: "text", text: "See the docs.", citations: [{ type: "web_search_result_location", url: "https://docs.example.test/page", title: "Official docs", cited_text: "Source passage" }] },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: "private-assistant-image" } },
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data: "private-assistant-document" } },
+      { type: "redacted_thinking", data: "private-hidden-thinking" },
+      { type: "text", text: "From the attachment.", citations: [{ type: "page_location", cited_text: "private-document-excerpt" }] },
+    ]));
+    const userMessage = projection.entries[0]!.data.message as { content: unknown[] };
+    const assistantMessage = projection.entries[1]!.data.message as { content: unknown[] };
+    expect(userMessage.content).toEqual([{ type: "text", text: "Please inspect this." }, { type: "image" }, { type: "document" }]);
+    expect(assistantMessage.content).toEqual([
+      { type: "text", text: "See the docs." },
+      { type: "citation", url: "https://docs.example.test/page", title: "Official docs" },
+      { type: "image" },
+      { type: "document" },
+      { type: "text", text: "From the attachment." }, { type: "citation" },
+    ]);
+    const display = projectDisplayEntries(projection.entries, projection.leafId);
+    expect(display.entries[0]!.message?.content).toMatchObject([{ type: "text", text: "Please inspect this." }, { type: "render", renderKind: "image" }, { type: "render", renderKind: "document" }]);
+    expect(display.entries[1]!.message?.content).toMatchObject([{ type: "text", text: "See the docs." }, { type: "text", text: "[Official docs](<https://docs.example.test/page>)" },
+      { type: "render", renderKind: "image" }, { type: "render", renderKind: "document" }, { type: "text", text: "From the attachment." },
+      { type: "render", renderKind: "citation" }]);
+    expect(JSON.stringify(projection.entries)).not.toContain("private-base64");
+    expect(JSON.stringify(projection.entries)).not.toContain("private-document");
+    expect(JSON.stringify(projection.entries)).not.toContain("private-hidden-thinking");
+    expect(JSON.stringify(projection.entries)).not.toContain("private-document-excerpt");
   });
 
   it("splits several tool results and maps compact summaries", () => {

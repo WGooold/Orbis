@@ -91,19 +91,21 @@ export class ClaudeTranscriptProjection {
         return content.trim().length === 0 ? [] : [messageEntry(uuid, timestamp, { role: "user", content, timestamp: at })];
       }
       if (!Array.isArray(content)) return [];
-      const texts = content.flatMap(block => {
+      const visible = content.flatMap((block): Record<string, unknown>[] => {
         const item = record(block);
-        return item?.type === "text" && typeof item.text === "string" && item.text.trim().length > 0 ? [{ type: "text", text: item.text }] : [];
+        if (item?.type === "text" && typeof item.text === "string" && item.text.trim().length > 0) return [{ type: "text", text: item.text }];
+        const media = visibleMedia(item);
+        return media ? [media] : [];
       });
       const result: Omit<RemoteSessionEntry, "parentId">[] = [];
-      if (texts.length > 0) result.push(messageEntry(uuid, timestamp, { role: "user", content: texts, timestamp: at }));
+      if (visible.length > 0) result.push(messageEntry(uuid, timestamp, { role: "user", content: visible, timestamp: at }));
       const results = content.filter(block => record(block)?.type === "tool_result");
       results.forEach((block, index) => {
         const item = record(block)!;
         const toolCallId = text(item.tool_use_id);
         if (toolCallId === undefined) return;
         const toolName = this.#toolNames.get(toolCallId);
-        const id = results.length === 1 && texts.length === 0 ? uuid : `${uuid}:result:${index}`;
+        const id = results.length === 1 && visible.length === 0 ? uuid : `${uuid}:result:${index}`;
         result.push(messageEntry(id, timestamp, { role: "toolResult", toolCallId, ...(toolName === undefined ? {} : { toolName }),
           content: [{ type: "text", text: clip(plainText(item.content) ?? "") }], isError: item.is_error === true, timestamp: at }));
       });
@@ -113,9 +115,13 @@ export class ClaudeTranscriptProjection {
       if (!Array.isArray(message.content)) return [];
       const blocks = message.content.flatMap((block): Record<string, unknown>[] => {
         const item = record(block);
-        if (item?.type === "text" && typeof item.text === "string" && item.text.length > 0) return [{ type: "text", text: item.text }];
+        if (item?.type === "text" && typeof item.text === "string" && item.text.length > 0) return [
+          { type: "text", text: item.text }, ...citationBlocks(item.citations),
+        ];
         // Hidden thinking is persisted as an empty string plus a signature; there is nothing to show.
         if (item?.type === "thinking" && typeof item.thinking === "string" && item.thinking.length > 0) return [{ type: "thinking", thinking: item.thinking }];
+        const media = visibleMedia(item);
+        if (media) return [media];
         if (item?.type === "tool_use" && typeof item.id === "string" && typeof item.name === "string") {
           this.#toolNames.set(item.id, item.name);
           return [{ type: "toolCall", id: item.id, name: item.name, arguments: item.input ?? {} }];
@@ -128,6 +134,26 @@ export class ClaudeTranscriptProjection {
     }
     return [];
   }
+}
+
+const DOCUMENT_CITATIONS = new Set(["char_location", "page_location", "content_block_location", "search_result_location"]);
+function citationBlocks(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 32).flatMap(raw => {
+    const citation = record(raw);
+    if (citation?.type === "web_search_result_location") return [{ type: "citation",
+      ...(typeof citation.url === "string" && citation.url.length <= 2048 ? { url: citation.url } : {}),
+      ...(typeof citation.title === "string" ? { title: citation.title.slice(0, 256) } : {}),
+    }];
+    // Document locations reference input available to Claude, not a downloadable Orbis file.
+    return typeof citation?.type === "string" && DOCUMENT_CITATIONS.has(citation.type) ? [{ type: "citation" }] : [];
+  });
+}
+
+function visibleMedia(item: Row | undefined): { type: "image" | "document" } | undefined {
+  if (item?.type === "image") return { type: "image" };
+  if (item?.type === "document" || item?.type === "attachment") return { type: "document" };
+  return undefined;
 }
 
 /**

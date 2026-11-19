@@ -366,20 +366,27 @@ function contentBlocks(value: unknown): RemoteContent[] {
         blocks.push({ type: "render", renderKind: "document", text: "附件内容暂不可显示" });
         break;
       case "citation": {
-        const url = asString(block["url"]);
-        const title = asString(block["title"]) ?? asString(block["name"]) ?? asString(block["cited_text"]);
-        if (url !== undefined && /^https?:\/\/[^\s<>"']+$/iu.test(url) && title !== undefined && ![...url].some(character => {
-          const code = character.charCodeAt(0);
-          return code < 0x20 || code === 0x7f;
-        })) {
-          blocks.push({ type: "text", text: `[${title.replace(/[\\[\]]/gu, "\\$&")}](${url.replace(/[()\\]/gu, "\\$&")})` });
-        } else blocks.push({ type: "render", renderKind: "citation", text: title === undefined ? "引用来源暂不可显示" : `引用：${title}` });
+        const url = safeCitationUrl(asString(block["url"]));
+        if (url === undefined) blocks.push({ type: "render", renderKind: "citation", text: "引用来源暂不可显示" });
+        else {
+          const title = asString(block["title"])?.replace(/\s+/gu, " ").trim().slice(0, 256) || url.hostname;
+          const label = title.replace(/[\\`*_{}[\]<>!~|&$]/gu, "\\$&");
+          blocks.push({ type: "text", text: `[${label}](<${url.href}>)` });
+        }
         break;
       }
       default: break;
     }
   }
   return blocks;
+}
+
+function safeCitationUrl(value: string | undefined): URL | undefined {
+  if (value === undefined || value.length > 2048 || !/^https?:\/\//iu.test(value) || [...value].some(ch => {
+    const code = ch.charCodeAt(0);
+    return code <= 0x20 || code === 0x7f || ch === "<" || ch === ">" || ch === "\\";
+  })) return undefined;
+  try { const url = new URL(value); return url.username || url.password ? undefined : url; } catch { return undefined; }
 }
 
 function truncationFields(block: Record<string, unknown>): { truncated?: true; originalBytes?: number } {
