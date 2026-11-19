@@ -21,6 +21,15 @@ class KimiCodeTest {
         assertEquals("tui", kimiSpawnMode("codex", "tui"))
     }
 
+    @Test fun `Agent settings require an explicit capability echo even with Desktop admitted`() {
+        val offer = ready("""{"hostFeatures":["device.features","agent.enablement.v1"],"dshDesktop":null}""")
+        assertTrue(AGENT_ENABLEMENT_FEATURE in requestedAgentFeatures(offer))
+        assertFalse(readyAdmitsAgentEnablement(offer))
+        val admitted = ready("""{"hostFeatures":["device.features","agent.enablement.v1"],"deviceFeatures":["agent.enablement.v1"],"dshDesktop":null}""")
+        assertTrue(readyAdmitsAgentEnablement(admitted))
+        assertTrue(requestedAgentFeatures(admitted).isEmpty())
+    }
+
     @Test fun `one native row retires all merged optimistic sends but never another same-text send`() {
         val native = Json.decodeFromString(ChatMessage.serializer(),
             """{"messageId":"native","role":"user","content":[{"type":"text","text":"same"}],"timestamp":1,"clientMessageId":"a","clientMessageIds":["a","b"]}""")

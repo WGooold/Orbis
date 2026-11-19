@@ -170,6 +170,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /** Saves phone-to-Relay selection for the active Host. */
+    fun setAgentEnabled(kind: String, enabled: Boolean, revision: Long, confirmDisable: Boolean) {
+        active()?.setAgentEnabled(kind, enabled, revision, confirmDisable)
+    }
+    fun refreshAgentEnablement() { active()?.refreshAgentEnablement() }
+
     fun setRelayTransportMode(mode: RelayTransportMode) {
         active()?.setRelayTransportMode(mode)
     }

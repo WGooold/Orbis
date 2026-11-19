@@ -229,6 +229,7 @@ export class HermesAgentBackend implements AgentBackend {
       }
       let raw: unknown;
       try {
+        context?.requireCurrent?.();
         raw = await this.#request<unknown>("session.resume", {
           session_id: target.sessionId,
           source: "tui",
@@ -261,6 +262,7 @@ export class HermesAgentBackend implements AgentBackend {
     if (context?.launchId !== undefined && (!safeRequestId(context.launchId) || !this.#options.runtime.session_create.parameters.includes("request_id")))
       throw new ActivationError("agent_unsupported", "Hermes Gateway 未提供可核验的启动请求身份");
     if (this.#options.runtime.session_create.parameters.includes("request_id")) params.request_id = context?.launchId ?? randomUUID();
+    context?.requireCurrent?.();
     const raw = asRecord(await this.#request("session.create", params));
     this.#assertSnapshotOwner(raw, asRecord(raw.info));
     const nativeId = hermesToolIdentity(raw.stored_session_id ?? raw.session_id);

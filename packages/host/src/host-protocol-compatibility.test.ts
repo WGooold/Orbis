@@ -12,6 +12,8 @@ import { EnvelopeReassembler, fragmentEnvelope, PROTOCOL_VERSION, LOOPBACK_PATH,
 import type { RelayServer } from "@orbis/relay";
 import { createBusinessRelayServer as createRelayServer, relayBusinessDeviceURL, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 import { HostService as SourceHostService } from "./host-service.js";
+import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
+import { CLAUDE_BRIDGE_CAPABILITIES, CLAUDE_BRIDGE_VERSION } from "./claude-mods-bridge.js";
 import type { OpenClawConfig } from "./openclaw-gateway.js";
 
 // Optional additional oracle from an unchanged installed release. Native require
@@ -117,20 +119,21 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     if (directory) await rm(directory, { recursive: true, force: true });
     keys.clear();
   });
-  const setup = async (openClaw: OpenClawConfig | false = false): Promise<void> => {
+  let management: AgentEnablementController | undefined;
+  const setup = async (openClaw: OpenClawConfig | false = false, manage = false): Promise<void> => {
     directory = await mkdtemp(join(tmpdir(), "orbis-wire-compat-"));
     hostId = (await loadOrCreateHostIdentity({ dir: directory })).hostId;
-    const devices = ["phone18", "phone19"].map(deviceId => {
+    const devices = ["phone18", "phone19", ...(manage ? ["other19"] : [])].map(deviceId => {
       const psk = randomBytes(32); keys.set(deviceId, psk);
       return { deviceId, pskRoot: psk.toString("base64url"), devicePub: randomBytes(32).toString("base64url"), createdAt: 1, label: deviceId, revoked: false };
     });
     await saveDeviceStore(directory, { version: 1, devices });
     relay = await createRelayServer({ port: 0, runtimeCredentials: ["isolated-runtime"], deviceCredentials: devices.map(device => ({ deviceId: device.deviceId, hostId, name: device.label, credential: device.deviceId })) });
-    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "isolated-runtime", stateDir: directory, openClaw, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
+    management = manage ? new AgentEnablementController(new AgentEnablementStore(directory), () => {}) : undefined;
+    host = await HostService.create({ ...(management ? { agentEnablement: management } : {}), relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "isolated-runtime", stateDir: directory, openClaw, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
     await host.start();
   };
-  const connect = async (version: 18 | 19, path: "relay" | "lan", outerVersion: 18 | 19 = version, bootstrap = true): Promise<OldPhone> => {
-    const deviceId = `phone${version}`;
+  const connect = async (version: 18 | 19, path: "relay" | "lan", outerVersion: 18 | 19 = version, bootstrap = true, deviceId = `phone${version}`): Promise<OldPhone> => {
     const socket = new WebSocket(path === "relay" ? await relayBusinessDeviceURL(relay.url + "/v1/device") : "ws://127.0.0.1:" + host.lan!.port + "/v1/lan");
     await once(socket, "open");
     if (path === "relay") {
@@ -182,6 +185,128 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     expect(await phone.take("artifact.read.failed", "read-after-done")).toMatchObject({ reason: "unknown_transfer" });
     expect(phone.errors).toEqual([]);
     expect(host.devices).toHaveLength(2);
+  });
+
+  // A released Host has no management capability. A modern App on that Host
+  // still handshakes and lists sessions, without sending management frames.
+  it("keeps normal pairing and directory reads when the Host cannot manage Agent settings", async () => {
+    await setup();
+    const phone = await connect(19, "lan", 19, false);
+    const ready = await phone.take("device.ready");
+    expect(ready.hostFeatures).not.toContain("agent.enablement.v1");
+    phone.request({ type: "session.list", requestId: "read-on-unmanaged" });
+    expect(await phone.take("session.list.result", "read-on-unmanaged")).toMatchObject({ sessions: [] });
+    expect(phone.messages.some(row => String(row.type).startsWith("agent.enablement."))).toBe(false);
+  });
+
+  // HOST-AGENT-04: Exercise a real encrypted device exchange, revision conflict and
+  // independent Gateway connection independently of any desktop/phone UI.
+  it.skipIf(!!compatibleRoot)("synchronizes committed Agent settings with negotiated devices and gates the managed backend", async () => {
+    const gateway = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(gateway, "listening");
+    const address = gateway.address();
+    if (!address || typeof address === "string") throw new Error("No synthetic Gateway port");
+    let opened = 0;
+    gateway.on("connection", socket => { opened++; socket.on("error", () => {}); });
+    try {
+      await setup({ url: `ws://127.0.0.1:${address.port}` }, true);
+      const old = await connect(18, "relay");
+      const app = await connect(19, "lan");
+      const other = await connect(19, "relay", 19, true, "other19");
+      other.request({ type: "device.features", features: ["agent.enablement.v1"] });
+      await other.take("device.ready");
+      const send = (id: string, enabled: boolean, expectedRevision: number) => app.request({ type: "agent.enablement.write", requestId: id, kind: "openclaw", enabled, expectedRevision });
+      send("unnegotiated", true, 0);
+      expect(await app.take("protocol.error", "unnegotiated")).toMatchObject({ code: "agent_feature_required" });
+      app.request({ type: "device.features", features: ["agent.enablement.v1", "agent.openclaw"] });
+      expect(await app.take("device.ready")).toMatchObject({ hostFeatures: expect.arrayContaining(["agent.enablement.v1"]), deviceFeatures: expect.arrayContaining(["agent.openclaw", "agent.enablement.v1"]) });
+      app.request({ type: "agent.enablement.read", requestId: "initial" });
+      const initial = await app.take("agent.enablement.snapshot", "initial");
+      expect(initial).toMatchObject({ snapshot: { revision: 0, agents: ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", "hermes", "kimiCode", "openclaw"].map(kind => ({ kind, enabled: false })) } });
+      app.request({ type: "agent.enablement.write", requestId: "unmanaged", kind: "unknown-source", enabled: true, expectedRevision: 0 });
+      expect(await app.take("protocol.error", "unmanaged")).toMatchObject({ code: "agent_feature_required" });
+      expect(opened).toBe(0);
+      send("enable", true, 0);
+      expect(await app.take("agent.enablement.result", "enable")).toMatchObject({ status: "applied", snapshot: { revision: 1 } });
+      expect(await other.take("agent.enablement.snapshot")).toMatchObject({ snapshot: { revision: 1 } });
+      await vi.waitFor(() => expect(opened).toBe(1));
+      send("stale", false, 0);
+      expect(await app.take("agent.enablement.result", "stale")).toMatchObject({ status: "conflict", snapshot: { revision: 1, agents: expect.arrayContaining([expect.objectContaining({ kind: "openclaw", enabled: true })]) } });
+      await management!.set({ kind: "openclaw", enabled: false, expectedRevision: 1 });
+      await vi.waitFor(() => expect(gateway.clients.size).toBe(0));
+      await vi.waitFor(() => expect(app.messages).toContainEqual(expect.objectContaining({ type: "agent.enablement.snapshot", snapshot: expect.objectContaining({ revision: 2, agents: expect.arrayContaining([{ kind: "openclaw", label: "OpenClaw", enabled: false }]) }) })));
+      app.request({ type: "session.activate", requestId: "disabled", target: { type: "resume", sessionId: "openclaw:stale" } });
+      expect(await app.take("protocol.error", "disabled")).toMatchObject({ code: "agent_feature_required" });
+      expect(await other.take("agent.enablement.snapshot")).toMatchObject({ snapshot: { revision: 2 } });
+      other.socket.close();
+      const reconnected = await connect(19, "lan", 19, true, "other19");
+      reconnected.request({ type: "device.features", features: ["agent.enablement.v1"] });
+      await reconnected.take("device.ready");
+      reconnected.request({ type: "agent.enablement.read", requestId: "after-reconnect" });
+      expect(await reconnected.take("agent.enablement.snapshot", "after-reconnect")).toMatchObject({ snapshot: { revision: 2 } });
+      expect(host.revokeDevice("other19")).toBe(true);
+      await management!.set({ kind: "pi", enabled: true, expectedRevision: 2 });
+      app.request({ type: "agent.enablement.read", requestId: "after-revoke" });
+      expect(await app.take("agent.enablement.snapshot", "after-revoke")).toMatchObject({ snapshot: { revision: 3 } });
+      expect(reconnected.messages).not.toContainEqual(expect.objectContaining({ type: "agent.enablement.snapshot", snapshot: expect.objectContaining({ revision: 3 }) }));
+      expect(old.messages.some(row => String(row.type).startsWith("agent.enablement."))).toBe(false);
+      for (const protocol of releaseProtocols) {
+        for (const ready of old.messages.filter(row => row.type === "device.ready"))
+          protocol.RelayToDeviceMessageSchema.parse({ ...ready, protocolVersion: protocol.PROTOCOL_VERSION });
+      }
+      expect(old.errors).toEqual([]);
+    } finally {
+      for (const socket of gateway.clients) socket.terminate();
+      await new Promise<void>(resolve => gateway.close(() => resolve()));
+    }
+  });
+
+  // Use authenticated native bridge requests, not just the ready projection, to prove
+  // Pi and Claude can each detach while the other source and the paired channel stay live.
+  it.skipIf(!!compatibleRoot)("gates Pi and Claude bridges independently and confirms disable during a turn", async () => {
+    await setup(false, true);
+    const app = await connect(19, "lan");
+    app.request({ type: "device.features", features: ["agent.enablement.v1"] });
+    await app.take("device.ready");
+    const descriptor = host.loopback!.descriptor!;
+    const registerPi = async () => {
+      const socket = new WebSocket(descriptor.url + LOOPBACK_PATH);
+      runtimes.push(socket);
+      await once(socket, "open");
+      socket.send(JSON.stringify({ type: "runtime.authenticate", protocolVersion: PROTOCOL_VERSION, role: "host", credential: descriptor.token,
+        runtime: { runtimeId: "opaque-test-id", name: "Pi", cwd: directory, status: "running", sessionId: "pi-fixture" } }));
+      return socket;
+    };
+    const hello = async () => {
+      const response = await fetch(descriptor.url.replace(/^ws:/u, "http:") + "/v1/claude/mods/hello", {
+        method: "POST", headers: { authorization: `Bearer ${descriptor.token}` },
+        body: JSON.stringify({ type: "hello", cwd: directory, sessionId: "fixture-claude", instanceId: "isolated-claude",
+          interactive: true, configDir: join(directory, "claude"), claudeVersion: "2.1.322", bridgeVersion: CLAUDE_BRIDGE_VERSION,
+          capabilities: CLAUDE_BRIDGE_CAPABILITIES }),
+      });
+      return response.json();
+    };
+    const blocked = await registerPi();
+    expect((await once(blocked, "close"))[0]).toBe(1008);
+    expect(await hello()).toMatchObject({ ok: false, error: "bridge_offline" });
+    await management!.set({ kind: "pi", enabled: true, expectedRevision: 0 });
+    const pi = await registerPi();
+    await app.take("runtime.online");
+    await management!.set({ kind: "claude", enabled: true, expectedRevision: 1 });
+    expect(await hello()).toMatchObject({ ok: true, runtimeId: "claude:fixture-claude" });
+    app.request({ type: "agent.enablement.write", requestId: "unconfirmed", kind: "pi", enabled: false, expectedRevision: 2 });
+    expect(await app.take("protocol.error", "unconfirmed")).toMatchObject({ code: "agent_disable_confirmation_required" });
+    expect(host.localRuntimes).toHaveLength(1);
+    const piClosed = once(pi, "close");
+    app.request({ type: "agent.enablement.write", requestId: "confirmed", kind: "pi", enabled: false, expectedRevision: 2, confirmDisable: true });
+    expect(await app.take("agent.enablement.result", "confirmed")).toMatchObject({ status: "applied", snapshot: { revision: 3 } });
+    await piClosed;
+    expect(host.localRuntimes).toHaveLength(0);
+    expect(await hello()).toMatchObject({ ok: true });
+    await management!.set({ kind: "claude", enabled: false, expectedRevision: 3 });
+    expect(await hello()).toMatchObject({ ok: false, error: "bridge_offline" });
+    app.request({ type: "session.list", requestId: "after-disable" });
+    expect(await app.take("session.list.result", "after-disable")).toMatchObject({ sessions: [] });
   });
 
   // OPENCLAW-02: exercise the SDK, Host and Relay together with a synthetic Gateway.

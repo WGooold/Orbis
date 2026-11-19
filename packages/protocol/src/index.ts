@@ -1,6 +1,7 @@
 import { TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema, TurnChangesSummariesSchema, TurnChangesUpdatedSchema, TurnChangesPageSchema, FileChangeDetailPageSchema, TurnChangesFailedSchema } from "./turn-file-changes.js";
 export * from "./turn-file-changes.js";
 import { z } from "zod";
+import { AgentEnablementReadSchema, AgentEnablementWriteSchema, AgentEnablementUpdateSchema } from "./agent-enablement.js";
 import { DshDesktopAttachSchema } from "./host-model-domains.js";
 import { ModelSelectionValuesSchema, TurnConfigurationSchema } from "./turn-configuration.js";
 export * from "./turn-configuration.js";
@@ -252,6 +253,7 @@ export type SessionCatalogEntry = z.infer<typeof SessionCatalogEntrySchema>;
  * 客户端仍从 `@orbis/protocol` 取类型。
  */
 export * from "./agent-state.js";
+export * from "./agent-enablement.js";
 export * from "./host-model-domains.js";
 
 /**
@@ -1256,6 +1258,8 @@ export const RelayDeviceClientMessageSchema = z.discriminatedUnion("type", [
  * 只剩 `device.authenticate` 与 v2 帧——命令只存在于 E2E 密文里（ADR-0009）。
  */
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
+  AgentEnablementReadSchema.extend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  AgentEnablementWriteSchema.extend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({ type: z.literal("session.catalog.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
   CatalogQueryRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({ type: z.literal("session.history.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
@@ -1368,6 +1372,7 @@ export const SharedSessionContentSchema = z.strictObject({
 });
 
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
+  ...AgentEnablementUpdateSchema.options,
   SessionConfigurationResultSchema,
   SessionLaunchResultSchema,
   z.strictObject({ type: z.literal("session.catalog.capabilities"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128), format: z.literal("v1") }),

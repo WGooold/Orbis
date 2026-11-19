@@ -531,7 +531,14 @@ data class SessionActivationInfo(
     val at: Long = System.currentTimeMillis(),
 )
 
+data class AgentEnablementRow(val kind: String, val label: String, val enabled: Boolean)
+
 data class RemoteState(
+    val agentEnablementAvailable: Boolean = false,
+    val agentEnablementRows: List<AgentEnablementRow> = emptyList(),
+    val agentEnablementRevision: Long? = null,
+    val agentEnablementPending: String? = null,
+    val agentEnablementFailed: Boolean = false,
     val notificationEpoch: String? = null,
     val notificationProjections: Map<String, NoticeProjection> = emptyMap(),
     val notificationReceipts: Map<String, Long> = emptyMap(),
@@ -1795,6 +1802,8 @@ internal fun RemoteState.markReconnecting(): RemoteState {
         currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
         e2eReady = false,
+        agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
+        agentEnablementPending = null, agentEnablementFailed = false,
         conversations = conversations.mapValues { (_, conversation) ->
             conversation.withoutActiveTurn().copy(
                 interactions = conversation.interactions.mapValues { (_, interaction) ->
@@ -2319,6 +2328,8 @@ class RelayReducer(
                 val interrupted = state.pendingCommands.keys
                 state.copy(
                     e2eReady = false,
+                    agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
+                    agentEnablementPending = null, agentEnablementFailed = false,
                     homeDirectoryReceived = false,
                     kimiCodeSupported = false,
                     currentProviders = emptyMap(),

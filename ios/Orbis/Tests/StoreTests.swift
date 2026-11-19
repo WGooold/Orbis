@@ -85,6 +85,31 @@ private final class SingleCommitGate: @unchecked Sendable {
 
 @Suite("Native app state") @MainActor
 struct StoreTests {
+    @Test func agentEnablementWaitsForHostAndRejectsStaleSettings() async throws {
+        let (store, transport) = setup()
+        let owner = store.activeConnection
+        await transport.ready([])
+        #expect(!owner.agentEnablementAvailable)
+        await transport.emit(["type": "device.ready", "runtimes": [], "dshDesktop": NSNull(),
+            "hostFeatures": ["device.features", "agent.enablement.v1"], "deviceFeatures": ["agent.enablement.v1"]])
+        let read = try #require(transport.sent.last { $0["type"] as? String == "agent.enablement.read" }?["requestId"])
+        func snapshot(_ revision: Int, _ enabled: Bool) -> [String: Any] {
+            ["revision": revision, "agents": [["kind": "futureAgent", "label": "Future Agent", "enabled": enabled]]]
+        }
+        await transport.emit(["type": "agent.enablement.snapshot", "requestId": read, "snapshot": snapshot(1, false)])
+        owner.setAgentEnabled("futureAgent", enabled: true, expectedRevision: 1)
+        let write = try #require(transport.sent.last { $0["type"] as? String == "agent.enablement.write" })
+        #expect(write["expectedRevision"] as? Int == 1)
+        #expect(owner.agentEnablementRows.first?.enabled == false)
+        await transport.emit(["type": "agent.enablement.result", "requestId": write["requestId"]!, "status": "applied", "snapshot": snapshot(2, true)])
+        await transport.emit(["type": "agent.enablement.snapshot", "snapshot": snapshot(1, false)])
+        #expect(owner.agentEnablementPending == nil)
+        #expect(owner.agentEnablementRows.first?.enabled == true)
+        transport.state?(.offline, nil)
+        #expect(!owner.agentEnablementAvailable)
+        #expect(owner.agentEnablementRows.isEmpty)
+    }
+
     @Test func pathAnnouncementsUpdateLatencyAndDisconnectClearsTheSample() async {
         let (store, transport) = setup()
         transport.state?(.secured, nil)

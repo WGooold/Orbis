@@ -32,6 +32,10 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (fs.existsSync(failing)) return out({ id, error: method + " failed in fixture" });
   if (method === "start") { out({ event: "state", state: "connecting" }); out({ event: "state", state: "connected" }); }
   if (method === "stop") out({ event: "state", state: "stopped" });
+  if (method === "agent.enablement.write") {
+    const snapshot = { revision: params.expectedRevision + 1, agents: [{ kind: params.kind, label: "OpenClaw", enabled: params.enabled }] };
+    return out({ id, result: { status: "applied", snapshot } });
+  }
   if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
   if (method === "detect") return out({ id, result: [] });
   if (method === "updateAgent") return out({ id, result: { entry: "/fixture/pi", version: "9.9.9" } });
@@ -39,11 +43,11 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
 });
 )JS");
     }
-    static QStringList methods(const QString &root) {
+    static QStringList methods(const QString &root, bool includeDetect = false) {
         QFile file(root + "/packages/host/dist/methods.log");
         if (!file.open(QIODevice::ReadOnly)) return {};
         QStringList result;
-        for (const auto &line : QString::fromUtf8(file.readAll()).split('\n', Qt::SkipEmptyParts)) if (line != "detect") result.append(line);
+        for (const auto &line : QString::fromUtf8(file.readAll()).split('\n', Qt::SkipEmptyParts)) if (includeDetect || line != "detect") result.append(line);
         return result;
     }
     static void clearMethods(const QString &root) { QFile::remove(root + "/packages/host/dist/methods.log"); }
@@ -74,6 +78,33 @@ private slots:
         m_host->m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
     }
     void cleanup() { m_host.reset(); m_root.reset(); }
+
+    // HOST-AGENT-06: only the Host's snapshot changes the desktop toggle; a local edit
+    // does not pause Host and delayed snapshots cannot undo edits from a paired device.
+    void agentEnablementUsesHostAuthorityWithoutReconnect() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        const auto deliver = [&host](int revision, bool enabled) {
+            host.receiveLine({{"event", "agentEnablement"}, {"snapshot", QJsonObject{
+                {"revision", revision}, {"agents", QJsonArray{QJsonObject{{"kind", "openclaw"}, {"enabled", enabled}}}}
+            }}});
+        };
+        const auto enabled = [&host]() { return host.agentEnablement().value("agents").toList().first().toMap().value("enabled").toBool(); };
+        deliver(0, false);
+        settle(host);
+        host.setAgentEnabled("openclaw", true);
+        QVERIFY(!enabled());
+        settle(host);
+        QVERIFY(enabled());
+        QCOMPARE(methods(root()), QStringList({"agent.enablement.write"}));
+        QCOMPARE(methods(root(), true), QStringList({"detect", "agent.enablement.write", "detect"}));
+        QCOMPARE(host.state(), QString("connected"));
+        deliver(2, false);
+        deliver(1, true);
+        settle(host);
+        QVERIFY(!enabled());
+        QCOMPARE(host.agentEnablement().value("revision").toInt(), 2);
+    }
 
     // OPENCLAW-04: only a successful save reconnects a running Host; a paused Host stays paused.
     void openClawSettingsReconnectOnlyAfterSuccessfulSave() {

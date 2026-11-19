@@ -226,6 +226,7 @@ export class DshAcpRuntime implements AgentBackend {
     if (!isAbsolute(cwd) || !await stat(cwd).then(info => info.isDirectory(), () => false)) {
       throw new ActivationError("cwd_missing", "请选择存在的绝对目录");
     }
+    context?.requireCurrent?.();
     const response = record(await this.#client.request(id === undefined ? "session/new" : "session/resume", {
       cwd, mcpServers: [], ...(id === undefined ? {} : { sessionId: id }),
     }, 60_000));

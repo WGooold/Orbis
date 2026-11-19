@@ -81,6 +81,7 @@ class HostController : public QObject {
     Q_PROPERTY(int runtimeCount READ runtimeCount NOTIFY changed)
     /** HOST-GUIDE-01: per-Agent backend facts of the running Host ({kind, ready, launchable, runtimeCount}); empty while paused. */
     Q_PROPERTY(QVariantList backends READ backends NOTIFY changed)
+    Q_PROPERTY(QVariantMap agentEnablement READ agentEnablement NOTIFY agentEnablementChanged)
     Q_PROPERTY(QVariantMap openClaw READ openClaw NOTIFY openClawChanged)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
@@ -160,6 +161,7 @@ public:
     int pairSeconds() const;
     int runtimeCount() const { return m_runtimeCount; }
     QVariantList backends() const { return m_backends; }
+    QVariantMap agentEnablement() const { return m_agentEnablement; }
     QVariantMap openClaw() const { return m_openClaw; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
@@ -184,6 +186,7 @@ public:
     Q_INVOKABLE void replaceIdentity();
     Q_INVOKABLE void refreshRegistrationPolicy();
     Q_INVOKABLE void startHost();
+    Q_INVOKABLE void setAgentEnabled(const QString &kind, bool enabled, double expectedRevision = -1, bool confirmDisable = false);
     Q_INVOKABLE void saveOpenClaw(const QString &url, const QString &token);
     Q_INVOKABLE void reconnectOpenClaw();
     Q_INVOKABLE void stopHost();
@@ -246,6 +249,7 @@ public:
 #endif
 signals:
     void changed();
+    void agentEnablementChanged();
     void openClawChanged();
     void providersChanged();
     void providerPresetsChanged();
@@ -294,6 +298,7 @@ private:
     void resumeAfterChange();
     /** Paused Hosts have no reachable phones or sessions; drop the running service's facts with it. */
     void clearRunningFacts();
+    void applyAgentEnablement(const QJsonObject &snapshot);
     void receiveLine(const QJsonObject &line);
     /** `failed`, when given, replaces the user-facing error handling for a refused or unreachable request. */
     void api(const QString &endpoint, const QJsonObject &body, Callback done, std::function<void()> failed = {});
@@ -358,6 +363,7 @@ private:
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_iosAppDownloadQr, m_challenge, m_challengeEmail;
     DiagnosticLogModel m_logs;
     QVariantList m_devices, m_agents, m_backends;
+    QVariantMap m_agentEnablement;
     QVariantMap m_openClaw;
     QVariantMap m_codexDesktop, m_dshDesktop;
     /** 后台准备进度，按 kind 存放（Codex 可能是一次上百 MB 的下载，但都不阻塞中继连接）。 */

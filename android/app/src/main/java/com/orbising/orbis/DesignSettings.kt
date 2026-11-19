@@ -32,9 +32,11 @@ import androidx.compose.ui.unit.dp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: Boolean,
-    onApplyProtocol: (RelayTransportMode) -> Unit) {
+    onApplyProtocol: (RelayTransportMode) -> Unit,
+    onAgentEnabled: (String, Boolean, Long, Boolean) -> Unit = { _, _, _, _ -> }, onAgentRefresh: () -> Unit = {}) {
     var protocolOpen by rememberSaveable { mutableStateOf(false) }
     var languageOpen by rememberSaveable { mutableStateOf(false) }
+    var disableAgent by remember(state.hostId, state.agentEnablementRevision, state.e2eReady) { mutableStateOf<AgentEnablementRow?>(null) }
     Scaffold(containerColor = MaterialTheme.colorScheme.surface, topBar = {
         RemoteTopAppBar(title = { Text(L10n.tr("设置"), fontWeight = FontWeight.SemiBold) }, navigationIcon = {
             if (!root) NeumorphIconButton(onBack, OrbisSymbols.ArrowBack, L10n.tr("返回"))
@@ -64,12 +66,37 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
                     minHeight = 56.dp, onClick = { protocolOpen = true })
                 }
             }
+            if (state.agentEnablementAvailable) SettingsGroup("Agent", tag = "settings-agent-enablement") {
+                state.agentEnablementRows.forEach { agent ->
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(agent.label, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                        Switch(checked = agent.enabled, onCheckedChange = { enabled ->
+                            if (enabled) state.agentEnablementRevision?.let { onAgentEnabled(agent.kind, true, it, false) }
+                            else disableAgent = agent
+                        },
+                            enabled = state.e2eReady && state.agentEnablementPending == null,
+                            modifier = Modifier.testTag("agent-enablement-${agent.kind}").semantics { contentDescription = agent.label })
+                    }
+                }
+                if (state.agentEnablementPending != null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (state.agentEnablementFailed) TextButton(onClick = onAgentRefresh) { Text(L10n.tr("刷新")) }
+            }
             SettingsGroup(L10n.tr("外观")) { AppearancePicker() }
             SettingsGroup(L10n.tr("语言"), padding = 8.dp, tag = "settings-language-group") {
                 SettingsRow(L10n.tr("语言"), if (AppLocalization.language == AppLanguage.Chinese) "简体中文" else "English",
                     "settings-language", onClick = { languageOpen = true })
             }
         }
+    }
+    disableAgent?.let { agent ->
+        NeumorphDialog(onDismissRequest = { disableAgent = null },
+            title = { Text(L10n.tr("停用 {0}？", agent.label)) },
+            text = { Text(L10n.tr("Orbis 将断开此 Agent 的接入，不会退出原生应用。")) },
+            dismissButton = { TextButton(onClick = { disableAgent = null }) { Text(L10n.tr("取消")) } },
+            confirmButton = { TextButton(onClick = {
+                disableAgent = null
+                state.agentEnablementRevision?.let { onAgentEnabled(agent.kind, false, it, true) }
+            }) { Text(L10n.tr("停用")) } })
     }
     if (protocolOpen) ProtocolChoiceSheet(state.relayTransportMode, state.hostId != null, { protocolOpen = false }) {
         protocolOpen = false; onApplyProtocol(it)

@@ -7,7 +7,8 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { DEVICE_STORE_FILE, HOST_IDENTITY_FILE, X25519_KEY_BYTES, deriveSharedSecret, fromBase64UrlFixed, loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, privateKeyFromRaw, resolveStateDir, revokeDeviceRecord, saveDeviceStore, toBase64Url } from "@orbis/e2e";
 import QRCode from "qrcode";
-import { hostRecoveryProof, type AgentStateRangeRequest } from "@orbis/protocol";
+import { AgentEnablementChoiceSchema, AgentKindSchema, hostRecoveryProof, type AgentKind, type AgentStateRangeRequest } from "@orbis/protocol";
+import { AgentDisableConfirmationRequired, AgentEnablementController, AgentEnablementStore, type AgentEnablementResult, type AgentEnablementSnapshot } from "./agent-enablement.js";
 import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { RelayAuthenticationError } from "./relay-client.js";
@@ -137,6 +138,7 @@ export class DesktopRuntime {
   #claudeIntegrationAbort: AbortController | undefined;
   /** HOST-PREP-06：本地路由在后台启动；会读取 Codex 配置的入口先等它。从不 reject。 */
   #routing: Promise<void> = Promise.resolve();
+  #routingWanted = false;
   /** HOST-LANE-01：每次暂停加一。暂停可以越过在途的 start，start 在挂上 #desired 之前据此放弃。 */
   #lifecycleGeneration = 0;
   #claudeDetection: Promise<void> | undefined;
@@ -150,6 +152,7 @@ export class DesktopRuntime {
   #codexRuntime: CodexRuntime | undefined;
   /** 终端接入的准备（可能是一次上百 MB 的下载）：与中继连接和手机可用性无关，可随时取消。 */
   #codexPrepare: AbortController | undefined;
+  #codexPending: Promise<CodexRuntime | undefined> | undefined;
   #codexDesktopLifecycle: CodexDesktopLifecycle | undefined;
   #dshRuntime: DshRuntime | undefined;
   /** DeepSeek Harness Desktop entry (ADR-0076); its app and backend stay owned by Desktop. */
@@ -178,10 +181,29 @@ export class DesktopRuntime {
   readonly #providers: ProviderManager;
   readonly #usage: ProviderUsageCache;
 
+  readonly #agentEnablement: AgentEnablementController;
+  #legacyDshEnabled = false;
+  #legacyCodexEnabled = false;
+  #legacyPiEnabled = false;
+  #legacyClaudeEnabled = false;
+  #claudeIntegrationPreference: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {};
+
   constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths, qa?: DesktopQaConfiguration) {
     this.#emit = emit;
     this.#qa = qa;
     this.#stateDir = resolveStateDir(stateDir);
+    this.#agentEnablement = new AgentEnablementController(new AgentEnablementStore(this.#stateDir, async () => {
+      if (this.#qa) return {};
+      const openClaw = await readOpenClawDesktopSettings(this.#stateDir);
+      const kimi = await loadKimiCodeConfig(this.#stateDir).catch(() => undefined);
+      return { ...(openClaw.url ? { openclaw: true } : {}), ...(kimi?.kimiCodeEnabled ? { kimiCode: true } : {}), ...(this.#legacyDshEnabled ? { dsh: true } : {}), ...(this.#legacyCodexEnabled ? { codex: true } : {}), ...(this.#legacyPiEnabled ? { pi: true } : {}), ...(this.#legacyClaudeEnabled ? { claude: true } : {}) };
+    }), snapshot => {
+      if (!snapshot.agents.some(row => row.kind === "dshDesktop" && row.enabled)) this.#cancelDshDesktopOpen();
+      if (!this.#agentEnablement.allows("claude")) this.#claudeIntegrationAbort?.abort();
+      if (this.#poll) this.#prepareClaudeIntegration();
+      this.#reconcileCodexRouting(snapshot.agents.some(row => (row.kind === "codex" || row.kind === "codexDesktop") && row.enabled));
+      this.#emit({ event: "agentEnablement", snapshot });
+    });
     // DeepSeek Web 热加载配置文件，只有它能在有会话运行时应用配置变更；
     // 其他 Agent 的 apply 会重载自己的运行时，所以仍然要求空闲。
     const liveApply = (kind: string, liveEdit: boolean): boolean => liveEdit && kind === "dsh";
@@ -203,7 +225,12 @@ export class DesktopRuntime {
     });
   }
 
-  async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {}): Promise<unknown> {
+  async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled" | "dshEnabled" | "codexEnabled" | "piIntegrationEnabled"> & { legacyClaudeEnabled?: boolean } = {}): Promise<unknown> {
+    this.#legacyDshEnabled ||= settings.dshEnabled === true;
+    this.#legacyCodexEnabled ||= settings.codexEnabled === true;
+    this.#legacyPiEnabled ||= settings.piIntegrationEnabled === true;
+    this.#legacyClaudeEnabled ||= settings.legacyClaudeEnabled === true;
+    this.#claudeIntegrationPreference = settings;
     // 先于一切 Agent 检测：从程序坞打开的 Host 只有 launchd 的最小 PATH。
     // 登录环境是例外：之后的每一次 Agent 检测和启动都依赖它，必须先就位。
     if (!this.#qa) {
@@ -212,21 +239,41 @@ export class DesktopRuntime {
     }
     // DMG / portable installs have no installer hook. Registration runs in the background (HOST-PREP-04):
     // it may run four `claude` commands, and the desktop must not look frozen meanwhile.
+    const enablement = await this.readAgentEnablement().catch(() => { this.log("无法读取 Agent 启用设置"); return null; });
     this.#ensureClaudeIntegration(settings);
     this.#scheduleClaudeDetection();
     const identity = await loadOrCreateHostIdentity({ dir: this.#stateDir });
-    // HOST-PREP-06: routing binds a port and rewrites Codex configuration; it has no time limit, so it
-    // no longer holds initialization. Codex launches wait for it; a failure stays visible in the log.
-    this.#routing = this.#providers.startRouting()
-      .catch(error => { this.log(error instanceof ProviderError ? error.message : "Codex local routing could not start; check its port and settings"); });
     this.#poll = setInterval(() => this.status(), 2_000);
     this.#poll.unref();
     this.#usage.start();
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
     return { hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
+      agentEnablement: enablement,
       ...(this.#qa ? {} : { openClaw: await readOpenClawDesktopSettings(this.#stateDir) }),
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
       iosAppDownloadQr: await QRCode.toDataURL(IOS_APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
+  }
+
+  #reconcileCodexRouting(wanted: boolean): void {
+    if (this.#qa || this.#routingWanted === wanted) return;
+    this.#routingWanted = wanted;
+    this.#routing = this.#routing.then(() => wanted ? this.#providers.startRouting() : this.#providers.closeRouting())
+      .catch(error => { this.log(error instanceof ProviderError ? error.message : "无法更新 Codex 本地路由"); });
+  }
+
+  async readAgentEnablement(): Promise<AgentEnablementSnapshot> {
+    return await this.#agentEnablement.read();
+  }
+
+  async setAgentEnablement(input: unknown): Promise<AgentEnablementResult> {
+    const choice = AgentEnablementChoiceSchema.extend({ kind: AgentKindSchema }).safeParse(input);
+    if (!choice.success) throw new Error("此 Agent 暂不支持启用设置");
+    try {
+      return await this.#agentEnablement.set(choice.data, undefined, kind => this.#service?.verifyAgentDisable(kind));
+    } catch (error) {
+      if (error instanceof AgentDisableConfirmationRequired) throw error;
+      throw new Error("无法保存 Agent 设置，请检查 Host 状态目录权限");
+    }
   }
 
   async saveOpenClaw(url: unknown, token: unknown): Promise<Awaited<ReturnType<typeof saveOpenClawDesktopSettings>>> {
@@ -240,13 +287,19 @@ export class DesktopRuntime {
   }
 
   #managedRoot(): string { return agentInstallRoot(); }
-  async #environment(settings?: Partial<DesktopSettings>): Promise<void> {
-    if (!this.#qa && settings?.dshWebUrl?.trim()) process.env.ORBIS_DSH_WEB_URL = validateDshWebUrl(settings.dshWebUrl.trim()); else delete process.env.ORBIS_DSH_WEB_URL;
+  async #environment(settings?: Partial<DesktopSettings>, only?: "pi" | "codex" | "dsh"): Promise<void> {
+    if (only === undefined || only === "dsh") {
+      if (!this.#qa && settings?.dshWebUrl?.trim()) process.env.ORBIS_DSH_WEB_URL = validateDshWebUrl(settings.dshWebUrl.trim());
+      else if (this.#qa || settings !== undefined) delete process.env.ORBIS_DSH_WEB_URL;
+    }
     const managed = this.#managedRoot();
+    const leases = new Map((["pi", "codex", "dsh"] as const).map(kind => [kind, this.#agentEnablement.lease(kind)]));
+    const current = (kind: "pi" | "codex" | "dsh") => (only === undefined || only === kind) && leases.get(kind)?.isCurrent() === true;
     let selectedCodex: string | undefined;
-    try { selectedCodex = await readCodexSelection(); this.#selectionError = false; }
-    catch { this.#selectionError = true; this.log("Codex 版本选择记录不可读，请在 Agent 页修复终端接入"); }
+    try { if (current("codex")) { selectedCodex = await readCodexSelection(); if (current("codex")) this.#selectionError = false; } }
+    catch { if (current("codex")) { this.#selectionError = true; this.log("Codex 版本选择记录不可读，请在 Agent 页修复终端接入"); } }
     for (const kind of ["pi", "codex", "dsh"] as const) {
+      if (!current(kind)) continue;
       const configured = settings?.[`${kind}Entry`];
       let active: string | undefined;
       try { active = await activeManagedEntry(kind, managed); }
@@ -268,6 +321,7 @@ export class DesktopRuntime {
       // An explicit external choice must report its own failure, not silently
       // select another installation. Managed records may still expire after cleanup.
       const entry = kind !== "codex" && configured && installationSource(configured, managed) !== "managed" ? configured : await firstExisting(ordered);
+      if (!current(kind)) continue;
       const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
       if (entry) process.env[key] = entry; else delete process.env[key];
       if (kind === "codex" && entry && entry !== selectedCodex) await this.#syncCodexSelection(entry);
@@ -281,13 +335,14 @@ export class DesktopRuntime {
     process.env.PATH = roots.join(delimiter);
     // Detection, updates and session startup must target the same copy, including a broken default.
     for (const kind of ["pi", "codex", "dsh"] as const) {
+      if (!current(kind)) continue;
       const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
       if (!process.env[key]) {
         const entry = (await findAgentCopies(kind, process.env))[0]?.entry;
-        if (entry) process.env[key] = entry;
+        if (entry && current(kind)) process.env[key] = entry;
       }
     }
-    if (process.env.ORBIS_CODEX_ENTRY && !selectedCodex && !this.#selectionError) await this.#syncCodexSelection(process.env.ORBIS_CODEX_ENTRY);
+    if (current("codex") && process.env.ORBIS_CODEX_ENTRY && !selectedCodex && !this.#selectionError) await this.#syncCodexSelection(process.env.ORBIS_CODEX_ENTRY);
     process.env.ORBIS_ENABLED = "true";
     process.env.ORBIS_RELAY_URL = "ws://127.0.0.1";
     process.env.ORBIS_RUNTIME_CREDENTIAL = "loopback-only";
@@ -312,11 +367,20 @@ export class DesktopRuntime {
 
   async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
     if (!this.#qa) await adoptWindowsEnvironment();
+    await this.#agentEnablement.read();
     await this.#environment(settings);
     this.#scheduleClaudeDetection();
     if (checkLatest) this.#scheduleClaudeLatestCheck();
     const managed = this.#managedRoot();
-    return Promise.all((["pi", "codex", "dsh"] as const).map(async (kind) => {
+    return Promise.all((["pi", "codex", "dsh"] as const).map(async (kind): Promise<AgentInstallStatus & { path?: string; connected?: boolean }> => {
+      if (!this.#agentEnablement.allows(kind)) {
+        this.#detected.delete(kind);
+        const desktopInstalled = !this.#qa && (kind === "dsh"
+          ? this.#agentEnablement.allows("dshDesktop") && await new DshDesktopLifecycle({ stateDir: this.#stateDir }).isInstalled()
+          : kind === "codex" && this.#agentEnablement.allows("codexDesktop") && await new CodexDesktopLifecycle().isInstalled());
+        return { kind, package: agentPackages[kind], installed: false, installedButBroken: false, updateAvailable: false,
+          installationSource: "unknown", installations: [], copies: [], desktopInstalled };
+      }
       const copies = await findAgentCopies(kind, process.env);
       const entry = process.env[`ORBIS_${kind.toUpperCase()}_ENTRY`] ?? copies[0]?.entry;
       const local: LocalAgent = { installed: false, installedButBroken: false, ...(entry ? { entry } : {}) };
@@ -363,11 +427,11 @@ export class DesktopRuntime {
       }
       if (kind === "dsh") {
         // DeepSeek Desktop is its own entry: installing it registers no dsh command (ADR-0076 F01).
-        status.desktopInstalled = !this.#qa && await new DshDesktopLifecycle({ stateDir: this.#stateDir }).isInstalled();
+        status.desktopInstalled = !this.#qa && this.#agentEnablement.allows("dshDesktop") && await new DshDesktopLifecycle({ stateDir: this.#stateDir }).isInstalled();
       }
       if (kind === "codex") {
         // 桌面版自带 CLI，是否装了 npm 版 codex 与能否接入桌面版无关。
-        status.desktopInstalled = !this.#qa && await new CodexDesktopLifecycle().isInstalled();
+        status.desktopInstalled = !this.#qa && this.#agentEnablement.allows("codexDesktop") && await new CodexDesktopLifecycle().isInstalled();
         const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
         const shim = await codexShimStatus(runtimeRoot);
         status = { ...status, terminalIntegration: this.#selectionError ? "repair" : shim.state,
@@ -386,17 +450,18 @@ export class DesktopRuntime {
         // 终端接入默认启用：Host 真的在跑（用户在用它）且 Codex 兼容时静默装好 shim，
         // 不再让普通用户看到“终端接入”这个概念。需要提权的系统 PATH 冲突不在这里弹 UAC。
         if (!this.#qa && entry !== undefined && shouldAutoEnableCodexTerminal({ platform: process.platform, hostRunning: this.#desired !== undefined,
-          installed: local.installed, compatible: status.terminalCompatible, state: shim.state, needsElevation: shim.needsElevation })) {
+          installed: local.installed && this.#agentEnablement.allows("codex"), compatible: status.terminalCompatible, state: shim.state, needsElevation: shim.needsElevation })) {
           await this.#autoEnableCodexTerminal(runtimeRoot, entry);
         }
       }
       this.#detected.set(kind, status);
       this.#service?.refreshHostFacts();
-      return { ...status, path: local.entry, connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : kind === "dsh" ? this.#dshRuntime?.isReady() ?? false : this.#codexRuntime?.isReady() ?? false };
+      return { ...status, ...(local.entry === undefined ? {} : { path: local.entry }), connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : kind === "dsh" ? this.#dshRuntime?.isReady() ?? false : this.#codexRuntime?.isReady() ?? false };
     }));
   }
 
   #scheduleClaudeDetection(): void {
+    if (!this.#agentEnablement.allows("claude")) return;
     // CLAUDE-MODS-MIN-03: optional native version I/O must not delay unrelated
     // Host initialization or Agent discovery. Concurrent refreshes share one read.
     this.#claudeDetection ??= this.#detectClaude()
@@ -411,6 +476,7 @@ export class DesktopRuntime {
   }
 
   #scheduleClaudeLatestCheck(): void {
+    if (!this.#agentEnablement.allows("claude")) return;
     if (this.#claudeLatestCheck) return;
     this.#claudeLatest = { ...this.#claudeLatest, latestChecking: true };
     this.#emitClaudeStatus();
@@ -487,6 +553,7 @@ export class DesktopRuntime {
     if (this.#qa) throw new Error("QA Host 不修改系统终端命令");
     if (process.platform !== "darwin") throw new Error("Windows 会自动维护 pi 命令");
     if (action === "install") {
+      await this.#requireAgentEnabled("pi");
       const runtime = this.#packagedRuntime();
       if (runtime === undefined) throw new Error("开发运行时不安装 pi 命令");
       await installMacPiCommand(runtime.node, this.#managedRoot());
@@ -501,6 +568,7 @@ export class DesktopRuntime {
 
   async setPiIntegration(enabled: boolean): Promise<void> {
     if (this.#qa) throw new Error("QA Host 不修改全局 Pi 集成");
+    if (enabled) await this.#requireAgentEnabled("pi");
     if (process.platform !== "darwin") throw new Error("Pi 集成开关仅用于 macOS；Windows 由安装器维护");
     const extensionDir = fileURLToPath(new URL("../../pi-extension/", import.meta.url));
     if (!extensionDir.includes(".app/Contents/Resources/runtime/")) {
@@ -515,6 +583,7 @@ export class DesktopRuntime {
 
   async setClaudeIntegration(enabled: boolean, allowMissing = false, signal?: AbortSignal): Promise<void> {
     if (this.#qa) throw new Error("QA Host 不修改全局 Claude 集成");
+    if (enabled) await this.#requireAgentEnabled("claude");
     const pluginDir = fileURLToPath(new URL("../../claude-mod/", import.meta.url));
     if (!/[\\/]runtime[\\/]packages[\\/]claude-mod[\\/]?$/u.test(pluginDir)) {
       this.log("开发运行时不改动 Claude Code 配置；打包后的 Orbis Host 才会登记 Claude Code 插件");
@@ -535,7 +604,9 @@ export class DesktopRuntime {
    * run the same `claude plugin` commands, which must not interleave.
    */
   async configureClaudeIntegration(enabled: boolean): Promise<void> {
+    this.#claudeIntegrationPreference = { claudeIntegrationEnabled: enabled };
     if (enabled) {
+      await this.#requireAgentEnabled("claude");
       await this.#claudeIntegrationTask;
       if (this.#claudeIntegrationInstalled) return;
     } else {
@@ -552,7 +623,7 @@ export class DesktopRuntime {
    * command must not prevent the Host from opening or connecting; the result is reported as an event.
    */
   #ensureClaudeIntegration(settings: Pick<DesktopSettings, "claudeIntegrationEnabled">): void {
-    if (this.#qa || settings.claudeIntegrationEnabled === false || this.#claudeIntegrationInstalled || this.#claudeIntegrationTask !== undefined) return;
+    if (this.#qa || !this.#agentEnablement.allows("claude") || settings.claudeIntegrationEnabled === false || this.#claudeIntegrationInstalled || this.#claudeIntegrationTask !== undefined) return;
     const abort = this.#claudeIntegrationAbort = new AbortController();
     this.#emit({ event: "preparation", kind: "claude", state: "preparing" });
     const task: Promise<void> = this.setClaudeIntegration(true, true, abort.signal).then(() => {
@@ -599,12 +670,11 @@ export class DesktopRuntime {
     if (this.#desired) throw new Error("Host 已在运行，请先暂停连接");
     await this.#checkExistingHost();
     if (this.#installation) throw new Error("请等待 Agent 安装完成或取消后再启动 Host");
+    this.#legacyDshEnabled ||= settings.dshEnabled === true;
+    this.#legacyCodexEnabled ||= settings.codexEnabled === true;
+    await this.#agentEnablement.read();
     await this.#environment(settings);
-    if (!this.#qa && process.platform === "darwin" && settings.piIntegrationEnabled !== false) {
-      // 失败不阻止 Host 启动：最坏只是终端里的 Pi 连不上，Host 打开的 Pi 仍带着扩展。
-      await this.setPiIntegration(true).catch(error => this.log(`登记 Pi 扩展失败：${error instanceof Error ? error.message : String(error)}`));
-    }
-    this.#ensureClaudeIntegration(settings);
+    this.#claudeIntegrationPreference = settings;
     if (generation !== this.#lifecycleGeneration) return;
     this.#desired = settings;
     this.#attempt = 0;
@@ -642,44 +712,51 @@ export class DesktopRuntime {
       // Closures below stay bound to this attempt's lifecycle. Disposal revokes
       // its field before draining the service; activation loss and retry can
       // keep the same settings while queued requests from that service settle.
-      const desktopLifecycle = this.#codexDesktopLifecycle = new CodexDesktopLifecycle({
-        log: line => this.log(line),
-        onReady: runtime => {
-          if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle) throw new Error("Host 正在暂停，已取消 Codex 桌面版接入");
-          return this.#service?.attachCodexDesktopRuntime(runtime);
-        },
-        onOffline: runtime => {
-          if (this.#desired === settings && this.#codexDesktopLifecycle === desktopLifecycle) this.#service?.detachCodexDesktopRuntime(runtime);
-        },
-        resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
-        resolveStartupFailure: waiting => readDesktopRecoveryReason(endpointPath, waiting),
-        desktopRefresh: { journalDirectory: join(this.#stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
-        launchApp: async signal => {
-          if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath, undefined, signal)) return;
-          signal?.throwIfAborted();
-          await launchCodexDesktopApp(process.env, signal);
-        },
-        // 分档变了才回调（探测每 2s 一次，不能把它变成心跳）：一条给 Host 界面，
-        // 一条给已配对的手机，否则手机上只能靠 device.ready 的偶然重播。
-        onStatusChange: status => {
-          if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle) return;
-          this.log(`Codex 桌面版接入：${status.state} · ${status.reason}`);
-          this.#emit({ event: "codexDesktop", status });
-          this.#service?.announceCodexDesktopStatus();
-        },
-      });
+      const createCodexDesktop = (): CodexDesktopLifecycle => {
+        const desktopLifecycle = new CodexDesktopLifecycle({
+          log: line => this.log(line),
+          onReady: runtime => {
+            if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle || !this.#agentEnablement.allows("codexDesktop")) throw new Error("Host 正在暂停，已取消 Codex 桌面版接入");
+            return this.#service?.attachCodexDesktopRuntime(runtime);
+          },
+          onOffline: runtime => {
+            if (this.#desired === settings && this.#codexDesktopLifecycle === desktopLifecycle) this.#service?.detachCodexDesktopRuntime(runtime);
+          },
+          resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
+          resolveStartupFailure: waiting => readDesktopRecoveryReason(endpointPath, waiting),
+          desktopRefresh: { journalDirectory: join(this.#stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
+          launchApp: async signal => {
+            if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath, undefined, signal)) return;
+            signal?.throwIfAborted();
+            await launchCodexDesktopApp(process.env, signal);
+          },
+          // 分档变了才回调（探测每 2s 一次，不能把它变成心跳）：一条给 Host 界面，
+          // 一条给已配对的手机，否则手机上只能靠 device.ready 的偶然重播。
+          onStatusChange: status => {
+            if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle) return;
+            this.log(`Codex 桌面版接入：${status.state} · ${status.reason}`);
+            this.#emit({ event: "codexDesktop", status });
+            this.#service?.announceCodexDesktopStatus();
+          },
+        });
+
+        return desktopLifecycle;
+      };
 
       // HOST-PREP-05: the DeepSeek Web backend (local service lock up to 60 s, Web handshake 15 s)
       // is attached after the Relay is online, like the terminal Codex backend; see #prepareDsh.
-      let dshLaunchable = false;
-      try { await resolveDshCommand(await this.#providers.environment("dsh")); dshLaunchable = true; }
-      catch { /* DSH stays unavailable when its CLI or native provider configuration is missing. */ }
-      const codexDesktopLaunchable = !this.#qa && await desktopLifecycle.isInstalled();
+      const probeDsh = async (): Promise<boolean> => {
+        try { await resolveDshCommand(await this.#providers.environment("dsh")); return true; }
+        catch { return false; }
+      };
       const connectDshRuntime = async (existingOnly = false): Promise<DshRuntime | undefined> => {
+        const lease = this.#agentEnablement.lease("dsh");
+        if (!lease) return undefined;
         if (this.#dshRuntime?.isReady()) return this.#dshRuntime;
         const env = await this.#providers.environment("dsh");
+        if (lease?.isCurrent() === false || this.#desired !== settings) return undefined;
         const runtime = existingOnly ? await DshRuntime.connectExisting(env) : await DshRuntime.create(env);
-        if (this.#desired !== settings) {
+        if (this.#desired !== settings || lease?.isCurrent() === false) {
           await runtime?.stop().catch(() => {});
           if (!existingOnly) throw new Error("Host 正在暂停，已取消 DeepSeek 启动");
           return undefined;
@@ -687,17 +764,19 @@ export class DesktopRuntime {
         if (runtime) this.#dshRuntime = runtime;
         return runtime;
       };
-      const dshDesktopLifecycle = this.#dshDesktopLifecycle = new DshDesktopLifecycle({
-        stateDir: this.#stateDir,
-        log: line => this.log(line),
-        onStatusChange: status => {
-          if (this.#desired !== settings) return;
-          this.log(`DeepSeek Desktop 接入：${status.state} · ${status.reason}`);
-          this.#emit({ event: "dshDesktop", status });
-          this.#service?.announceDshDesktopStatus();
-        },
-      });
-      const dshDesktopLaunchable = !this.#qa && await dshDesktopLifecycle.isInstalled();
+      const createDshDesktopLifecycle = (): DshDesktopLifecycle => {
+        const lifecycle = new DshDesktopLifecycle({
+          stateDir: this.#stateDir,
+          log: line => this.log(line),
+          onStatusChange: status => {
+            if (this.#desired !== settings || this.#dshDesktopLifecycle !== lifecycle || !this.#agentEnablement.allows("dshDesktop")) return;
+            this.log(`DeepSeek Desktop 接入：${status.state} · ${status.reason}`);
+            this.#emit({ event: "dshDesktop", status });
+            this.#service?.announceDshDesktopStatus();
+          },
+        });
+        return lifecycle;
+      };
       if (this.#desired !== settings) { await this.#dispose(); return; }
       const connectDshDesktop = async (existingOnly = false): Promise<DshRuntime | undefined> => {
         if (this.#qa) {
@@ -708,9 +787,12 @@ export class DesktopRuntime {
           if (!existingOnly) throw new Error("Host 正在暂停，已取消 DeepSeek Desktop 接入");
           return undefined;
         }
+        const dshDesktopLifecycle = this.#dshDesktopLifecycle;
+        const lease = this.#agentEnablement.lease("dshDesktop");
+        if (!lease || !dshDesktopLifecycle) return undefined;
         if (this.#dshDesktopRuntime?.isReady()) return this.#dshDesktopRuntime;
         const runtime = existingOnly ? await dshDesktopLifecycle.connectExisting() : await dshDesktopLifecycle.ensure();
-        if (this.#desired !== settings) {
+        if (this.#desired !== settings || this.#dshDesktopLifecycle !== dshDesktopLifecycle || !lease.isCurrent()) {
           // Release only Orbis's connection; Desktop keeps running (DSH-DESKTOP-07).
           await runtime?.stop().catch(() => {});
           if (!existingOnly) throw new Error("Host 正在暂停，已取消 DeepSeek Desktop 接入");
@@ -719,18 +801,26 @@ export class DesktopRuntime {
         if (runtime) this.#dshDesktopRuntime = runtime;
         return runtime;
       };
-      const kimi = this.#qa ? undefined : await loadKimiCodeConfig(this.#stateDir).catch(() => {
-        this.log("Kimi Code Web: 无法读取本地接入配置");
-        return undefined;
-      });
-      if (this.#desired !== settings) { await this.#dispose(); return; }
-      const kimiRuntime = kimi?.kimiCodeEnabled ? new KimiRuntime({ stateDir: this.#stateDir, homeDir: kimi.kimiCodeHome,
-        ...(kimi.kimiCodeEndpoint === undefined ? {} : { endpoint: kimi.kimiCodeEndpoint }), log: line => this.log(`Kimi Code Web · ${line}`) }) : undefined;
+      const createKimiCodeRuntime = async (): Promise<KimiRuntime> => {
+        const config = await loadKimiCodeConfig(this.#stateDir);
+        return new KimiRuntime({ stateDir: this.#stateDir, homeDir: config.kimiCodeHome,
+          ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }), log: line => this.log(`Kimi Code Web · ${line}`) });
+      };
       let relayAuthenticated = false;
       const service = await HostService.create({
-        ...(kimiRuntime === undefined ? {} : { kimiCodeRuntime: kimiRuntime }),
-        ...(this.#qa ? { openClaw: false } : {}),
+        ...(this.#qa ? {} : { createKimiCodeRuntime }),
+        agentEnablement: this.#agentEnablement,
+        ...(this.#qa ? { openClaw: false as const } : {}),
         providers: this.#providers,
+        prepareLocalAgent: async (kind, lease) => {
+          if (this.#desired !== settings || !lease.isCurrent()) return;
+          if (kind === "pi") {
+            await this.#environment(settings, kind);
+            if (!this.#qa && lease.isCurrent() && process.platform === "darwin" && settings.piIntegrationEnabled !== false) {
+              await this.setPiIntegration(true);
+            }
+          } else this.#prepareClaudeIntegration();
+        },
         providerUsage: (kind, id) => this.#usage.get(kind, id),
         managementBackends: () => (["pi", "codex", "dsh"] as const).map(kind => {
           const status = this.#detected.get(kind);
@@ -741,8 +831,8 @@ export class DesktopRuntime {
         ...(settings.lanPort === undefined ? {} : { lanPort: settings.lanPort }),
         // 终端 Codex 后端在后台接入（见 #prepareCodex）。启动时它可能还没就绪：
         // 这里只给接入点，不等待它，否则一次下载就能把手机挡在中继外面。
-        codexLaunch: (request: { cwd: string }) => {
-          const runtime = this.#codexRuntime;
+        codexLaunch: async (request: { cwd: string }) => {
+          const runtime = await this.#ensureCodex(settings);
           // The terminal shim falls back to the standalone CLI either way; the log should still say why.
           if (runtime === undefined) throw new Error(!settings.codexEnabled ? "Codex 终端接入未启用"
             : this.#codexPrepare !== undefined ? "Codex 后端正在准备，请稍后重试" : "Codex 终端接入未就绪");
@@ -750,20 +840,67 @@ export class DesktopRuntime {
         },
         ensureCodexDesktop: async () => {
           if (this.#qa) throw new Error("QA Host 不连接正式 Codex 桌面会话");
-          if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle) throw new Error("Host 正在暂停，已取消 Codex 桌面版接入");
-          return desktopLifecycle.ensureReady();
+          const lifecycle = this.#codexDesktopLifecycle;
+          const lease = this.#agentEnablement.lease("codexDesktop");
+          if (this.#desired !== settings || this.#service !== service || !lifecycle || !lease) throw new Error("Host 正在暂停，已取消 Codex 桌面版接入");
+          return lifecycle.ensureReady();
         },
-        codexDesktopLaunchable,
-        codexDesktopStatus: () => desktopLifecycle.status,
+        ensureCodexRuntime: () => this.#service === service ? this.#ensureCodex(settings) : Promise.resolve(undefined),
+        prepareManagedCodex: async (kind, lease) => {
+          if (this.#desired !== settings || !lease.isCurrent()) return false;
+          if (kind === "codex") {
+            await this.#environment(settings, kind);
+            if (!lease.isCurrent()) return false;
+            if (settings.codexEnabled) void this.#ensureCodex(settings);
+            return resolveCodexCommand().then(() => true, () => false);
+          }
+          if (this.#qa) return false;
+          const lifecycle = this.#codexDesktopLifecycle = createCodexDesktop();
+          const installed = await lifecycle.isInstalled();
+          if (lease.isCurrent() && this.#codexDesktopLifecycle === lifecycle) void lifecycle.probe().catch(() => {});
+          return installed;
+        },
+        releaseManagedCodex: async kind => {
+          if (kind === "codex") { await this.#stopCodex(); this.#emit({ event: "preparation", kind, state: "idle" }); }
+          else {
+            const lifecycle = this.#codexDesktopLifecycle;
+            this.#codexDesktopLifecycle = undefined;
+            if (lifecycle?.runtime) service.detachCodexDesktopRuntime(lifecycle.runtime);
+            this.#emit({ event: "codexDesktop", status: null });
+            await lifecycle?.stop();
+          }
+        },
+        codexDesktopStatus: () => this.#codexDesktopLifecycle?.status,
         ensureDshRuntime: () => connectDshRuntime(),
         recoverDshRuntime: () => connectDshRuntime(true),
-        dshLaunchable,
+        ...(this.#qa ? { codexDesktopLaunchable: false, dshDesktopLaunchable: false } : {}),
         ...(!this.#qa ? { hermes: {} } : {}),
-        dshDesktopLaunchable,
-        dshDesktopStatus: () => dshDesktopLifecycle.status,
+        prepareManagedDsh: async (kind, lease) => {
+          if (this.#desired !== settings || !lease.isCurrent()) return false;
+          if (kind === "dsh") {
+            await this.#environment(settings, kind);
+            if (!lease.isCurrent()) return false;
+            if (settings.dshEnabled) void this.#prepareDsh(settings, service, lease.isCurrent);
+            return probeDsh();
+          }
+          if (this.#qa) return false;
+          const lifecycle = this.#dshDesktopLifecycle = createDshDesktopLifecycle();
+          const installed = await lifecycle.isInstalled();
+          if (lease.isCurrent() && this.#desired === settings && this.#dshDesktopLifecycle === lifecycle) lifecycle.watch();
+          return installed;
+        },
+        releaseManagedDsh: kind => {
+          if (kind === "dsh") { this.#dshRuntime = undefined; this.#emit({ event: "preparation", kind, state: "idle" }); }
+          else {
+            this.#dshDesktopLifecycle?.stop(); this.#dshDesktopLifecycle = undefined; this.#dshDesktopRuntime = undefined;
+            this.#cancelDshDesktopOpen();
+            this.#emit({ event: "dshDesktop", status: null });
+          }
+        },
+        dshDesktopStatus: () => this.#dshDesktopLifecycle?.status,
         ensureDshDesktopRuntime: () => connectDshDesktop(),
         recoverDshDesktopRuntime: () => connectDshDesktop(true),
-        onDshDesktopOffline: reason => dshDesktopLifecycle.noteOffline(reason),
+        onDshDesktopOffline: reason => this.#dshDesktopLifecycle?.noteOffline(reason),
         claude: { launcher: this.#claudeLauncher(), ...(this.#qa ? { configDir: join(this.#qa.home, ".claude") } : {}) },
         log: line => this.log(line),
         // 只有“当前这次连接”的链路状态才会到界面：暂停或重启后被作废的尝试还在收尾巴，
@@ -791,14 +928,8 @@ export class DesktopRuntime {
         })]);
       } finally { if (deadline) clearTimeout(deadline); }
       this.#attempt = 0;
-      if (!this.#qa && this.#codexDesktopLifecycle !== undefined) {
-        await this.#codexDesktopLifecycle.probe().catch(error => this.log(`Codex 桌面版探测失败：${error instanceof Error ? error.message : String(error)}`));
-      }
-      if (!this.#qa) this.#dshDesktopLifecycle?.watch();
       this.status();
       // 中继已经连上、手机已经可用；Codex 与 DeepSeek Web 后端在后台接。
-      if (settings.codexEnabled) void this.#prepareCodex(settings);
-      if (settings.dshEnabled) void this.#prepareDsh(settings, service);
       // Host 跑起来后跑一次检测：既把 Agent 状态推给界面，也顺便静默修复终端接入。
       void this.detect(settings).catch(error => this.log(`Agent 检测失败：${error instanceof Error ? error.message : String(error)}`));
     } catch (error) {
@@ -825,20 +956,30 @@ export class DesktopRuntime {
    * 后台启动所选 CLI 的 app-server，握手后挂到已经在跑的服务上。
    * 路由配置与原生启动仍可能耗时，因此不阻挡中继连接。
    */
-  async #prepareCodex(settings: DesktopSettings): Promise<void> {
+  #ensureCodex(settings: DesktopSettings): Promise<CodexRuntime | undefined> {
+    const lease = this.#agentEnablement.lease("codex");
+    if (this.#desired !== settings || !lease) return Promise.resolve(undefined);
+    if (this.#codexRuntime?.isReady()) return Promise.resolve(this.#codexRuntime);
+    if (this.#codexPending) return this.#codexPending;
+    const pending = this.#prepareCodex(settings, lease.isCurrent)
+      .finally(() => { if (this.#codexPending === pending) this.#codexPending = undefined; });
+    return this.#codexPending = pending;
+  }
+
+  async #prepareCodex(settings: DesktopSettings, current: () => boolean): Promise<CodexRuntime | undefined> {
     const controller = new AbortController();
     this.#codexPrepare = controller;
     this.#emit({ event: "preparation", kind: "codex", state: "preparing" });
     try {
       // The app-server reads Codex configuration that local routing may still be rewriting.
       await this.#routing;
-      if (this.#desired !== settings || controller.signal.aborted) return;
+      if (this.#desired !== settings || controller.signal.aborted || !current()) return;
       const server = await CodexAppServer.create({
         log: line => this.log(line),
         onExit: () => this.log("Codex 终端后端已断开，可暂停后重新启动 Host"),
       });
       // 这次接入可能已经因为暂停或改设置而作废：不留没人要的后台进程。
-      if (this.#desired !== settings || controller.signal.aborted) { await server.stop().catch(() => undefined); return; }
+      if (this.#desired !== settings || controller.signal.aborted || !current()) { await server.stop().catch(() => undefined); return; }
       const runtime = new CodexRuntime({ server, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, log: line => this.log(line), onEvent: () => {} });
       this.#codex = server;
       this.#codexRuntime = runtime;
@@ -847,8 +988,9 @@ export class DesktopRuntime {
       if (service === undefined) { await this.#stopCodex(); return; }
       service.attachCodexRuntime(runtime);
       this.#emit({ event: "preparation", kind: "codex", state: "ready" });
+      return runtime;
     } catch (error) {
-      if (controller.signal.aborted || this.#desired !== settings) return;
+      if (controller.signal.aborted || !current() || this.#desired !== settings) return;
       const message = error instanceof Error ? error.message : String(error);
       this.log(`Codex 暂不可用：${message}`);
       this.#emit({ event: "preparation", kind: "codex", state: "error", message });
@@ -861,14 +1003,14 @@ export class DesktopRuntime {
    * HOST-PREP-05: start or reuse the DeepSeek Web backend after the Relay is online. The service's own
    * DSH slot deduplicates this with the automatic recovery and with a phone that opens DeepSeek first.
    */
-  async #prepareDsh(settings: DesktopSettings, service: HostService): Promise<void> {
+  async #prepareDsh(settings: DesktopSettings, service: HostService, current = (): boolean => true): Promise<void> {
     this.#emit({ event: "preparation", kind: "dsh", state: "preparing" });
     try {
       const runtime = await service.prepareDshRuntime();
-      if (this.#desired !== settings) return;
+      if (this.#desired !== settings || !current()) return;
       this.#emit({ event: "preparation", kind: "dsh", state: runtime?.isReady() ? "ready" : "idle" });
     } catch (error) {
-      if (this.#desired !== settings) return;
+      if (this.#desired !== settings || !current()) return;
       const message = error instanceof Error ? error.message : String(error);
       // A phone that opens DeepSeek later starts it on demand, so this is not the last chance.
       this.log(`DeepSeek Harness 暂不可用：${message}`);
@@ -878,6 +1020,7 @@ export class DesktopRuntime {
 
   /** 停止终端 Codex 后端（app-server 子进程与它的 runtime）。 */
   async #stopCodex(): Promise<void> {
+    this.#codexPrepare?.abort(); this.#codexPending = undefined;
     const codex = this.#codex; const codexRuntime = this.#codexRuntime;
     this.#codex = undefined; this.#codexRuntime = undefined;
     const service = this.#service;
@@ -1009,6 +1152,7 @@ export class DesktopRuntime {
 
   async install(kind: string, version = "latest", mode = "current"): Promise<AgentInstallResult> {
     const selected = agentKind(kind);
+    await this.#requireAgentEnabled(selected);
     if (selected === "claude") throw new Error("Claude Code 请使用官方安装程序");
     if (!["current", "managed"].includes(mode)) throw new Error("未知安装方式");
     if (selected === "dsh" && version !== "latest" && compareAgentVersions(version, DSH_VERSION) === -1) throw new Error(`Orbis 手机接入需要 DeepSeek Harness ${DSH_VERSION} 或兼容版本`);
@@ -1070,6 +1214,7 @@ export class DesktopRuntime {
 
   async updateAgent(kind: string): Promise<AgentInstallResult> {
     const selected = agentKind(kind);
+    await this.#requireAgentEnabled(selected);
     if (selected === "claude") return this.#updateClaude();
     let status = this.#detected.get(selected);
     if (!status) status = (await this.detect()).find(candidate => candidate.kind === selected);
@@ -1115,6 +1260,7 @@ export class DesktopRuntime {
 
   async activateInstallation(kind: string, id: string): Promise<{ entry: string; version: string }> {
     const selected = agentKind(kind);
+    await this.#requireAgentEnabled(selected);
     if (selected === "claude") throw new Error("Claude Code 请使用官方安装程序");
     if (this.#desired || this.#installation) throw new Error("请先暂停 Host，并等待当前安装完成");
     this.#installation = new AbortController();
@@ -1132,6 +1278,7 @@ export class DesktopRuntime {
   }
 
   async selectCodexEntry(entry: string): Promise<{ entry: string; version: string }> {
+    await this.#requireAgentEnabled("codex");
     if (this.#desired || this.#installation) throw new Error("请先暂停 Host，再切换 Codex 版本");
     await this.#checkExistingHost();
     const copies = await findAgentCopies("codex", process.env);
@@ -1148,6 +1295,7 @@ export class DesktopRuntime {
 
   async enableCodexTerminal(runtimeRoot: string): Promise<AgentInstallStatus[]> {
     if (this.#qa) throw new Error("QA Host 不修改系统终端命令");
+    await this.#requireAgentEnabled("codex");
     if (process.platform !== "win32") throw new Error("终端接入仅支持 Windows");
     const codex = this.#detected.get("codex");
     if (!codex?.installed || !codex.entry) throw new Error("请先检测并安装可运行的 Codex");
@@ -1163,11 +1311,13 @@ export class DesktopRuntime {
     if (!["install", "update"].includes(action)) throw new Error("未知安装操作");
     if (this.#desired) throw new Error("请先暂停 Host，再安装或更新 Agent");
     this.#batchCancelled = false;
+    await this.#agentEnablement.read();
     const targets: string[] = (["pi", "codex", "dsh"] as const).flatMap(kind => {
       const status = this.#detected.get(kind);
+      if (!this.#agentEnablement.allows(kind)) return [];
       return status && (action === "update" ? !status.installed || status.updateAvailable || status.installedButBroken : !status.installed) ? [kind] : [];
     });
-    if (action === "update" && this.#claudeStatus.installed && !this.#claudeStatus.detecting && (!this.#claudeStatus.compatible
+    if (action === "update" && (this.#qa || this.#agentEnablement.allows("claude")) && this.#claudeStatus.installed && !this.#claudeStatus.detecting && (!this.#claudeStatus.compatible
       || compareAgentVersions(this.#claudeLatest.latestVersion ?? "", String(this.#claudeStatus.version ?? "")) === 1)) targets.push("claude");
     const failures: string[] = []; const warnings: string[] = []; let succeeded = 0;
     for (const target of targets) {
@@ -1274,12 +1424,14 @@ export class DesktopRuntime {
     return this.#service ? this.#service.changeProvider("codex", work) : work();
   }
   async reorderProviders(kind: string, ids: unknown): Promise<ProviderSummary[]> {
+    await this.#requireProviderEnabled(agentKind(kind));
     const result = await this.#providers.reorder(agentKind(kind), ids);
     this.#service?.announceProviderChange(agentKind(kind));
     return result;
   }
   async mutateProvider(kind: string, operation: "save" | "switch" | "remove" | "copy", params: Record<string, unknown>): Promise<ProviderSummary[]> {
     const selected = agentKind(kind);
+    await this.#requireProviderEnabled(selected);
     if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
     const work = async (): Promise<ProviderSummary[]> => {
       let result: ProviderSummary[];
@@ -1301,6 +1453,7 @@ export class DesktopRuntime {
   }
 
   async restartDshServer(): Promise<void> {
+    await this.#requireAgentEnabled("dsh");
     if (this.#desired) throw new Error("请先在概览中暂停 Host 连接，再重启 DSH Server");
     if (this.#installation) throw new Error("请等待 Agent 安装完成后再重启 DSH Server");
     await this.#checkExistingHost();
@@ -1319,16 +1472,42 @@ export class DesktopRuntime {
     this.log(restarted ? "DSH Server 已重启，请从 Host 重新打开网页工作台" : "DSH Server 未运行，已启动，请从 Host 打开网页工作台");
   }
 
+  #prepareClaudeIntegration(): void {
+    if (!this.#agentEnablement.allows("claude")) return;
+    this.#ensureClaudeIntegration(this.#claudeIntegrationPreference);
+    this.#scheduleClaudeDetection();
+  }
+
+  async #requireProviderEnabled(kind: AgentKind): Promise<void> {
+    if (kind === "codex") {
+      await this.#agentEnablement.read();
+      if (this.#agentEnablement.allows("codexDesktop")) return;
+    }
+    await this.#requireAgentEnabled(kind);
+  }
+
+  async #requireAgentEnabled(kind: AgentKind): Promise<void> {
+    await this.#agentEnablement.read();
+    if (!this.#agentEnablement.allows(kind)) throw new Error("请先在 Agent 设置中启用此接入");
+  }
+
   async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {
-    if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
     if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop")) throw new Error("QA Host 不打开正式桌面会话");
+    const source = AgentKindSchema.safeParse(kind);
+    if (source.success) await this.#requireAgentEnabled(source.data);
+    const lease = source.success ? this.#agentEnablement.lease(source.data) : undefined;
+    const requireCurrent = () => { if (!lease?.isCurrent()) throw new Error("此 Agent 已停用"); };
+    if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
     if (kind === "dsh") {
       const env = await this.#providers.environment("dsh");
+      requireCurrent();
       const service = await ensureDshWebService(env);
-      const client = await DshWebClient.connect({ url: service.url, env, ...(service.cli ? { cli: service.cli } : {}) });
-      try { await applyDshWebProvider(client, env); } finally { await client.stop(); }
       const script = `Start-Process -FilePath '${service.url.replaceAll("'", "''")}' -ErrorAction Stop`;
       try {
+        requireCurrent();
+        const client = await DshWebClient.connect({ url: service.url, env, ...(service.cli ? { cli: service.cli } : {}) });
+        try { requireCurrent(); await applyDshWebProvider(client, env); } finally { await client.stop(); }
+        requireCurrent();
         if (process.platform === "darwin") await execute("open", [service.url], { timeout: 15_000 });
         else await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15_000 });
       } catch { throw new Error("无法打开 DeepSeek 网页工作台，请检查默认浏览器"); }
@@ -1348,20 +1527,22 @@ export class DesktopRuntime {
     }
     if (kind === "claude") {
       const workingDirectory = await terminalWorkspace(cwd);
-      await this.#claudeLauncher().launch({ cwd: workingDirectory, launchId: randomUUID(), setup: mode === "setup" });
+      await this.#claudeLauncher().launch({ cwd: workingDirectory, launchId: randomUUID(), setup: mode === "setup", requireCurrent });
       return;
     }
     if (kind !== "pi" && kind !== "codex") throw new Error("未知 agent");
     if (kind === "codex") await this.#routing;
     const workingDirectory = kind === "pi" || mode === "tui" ? await terminalWorkspace(cwd) : homedir();
     const cli = kind === "pi" ? await resolvePiCommand() : await resolveCodexCommand();
+    requireCurrent();
     const remote = kind === "codex" && mode === "tui" && this.#codexRuntime?.isReady()
       ? await this.#codexRuntime.prepareTerminalLaunch(workingDirectory) : undefined;
     const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
     const args = kind === "pi" ? [...cli.prefixArgs, ...PI_WORKSPACE_APPROVAL_ARGS, "-e", defaultExtensionPath()] : mode === "setup" ? [...cli.prefixArgs, "login"] : remote ? [...remote.prefixArgs, ...CODEX_STARTUP_ARGS, "--remote", remote.endpoint] : [...cli.prefixArgs, ...CODEX_STARTUP_ARGS, ...codexWorkspaceApprovalArgs(workingDirectory)];
     const command = remote?.command ?? cli.command;
+    requireCurrent();
     if (process.platform === "darwin") {
-      await openMacAgentTerminal({ stateDir: this.#stateDir, cwd: workingDirectory, command, args,
+      await openMacAgentTerminal({ stateDir: this.#stateDir, cwd: workingDirectory, command, args, requireCurrent,
         env: { ...process.env, ORBIS_STATE_DIR: this.#stateDir, ...(kind === "pi" ? PI_STARTUP_ENV : {}) }, ...(kind === "codex" ? { unsetEnv: ["CODEX_INTERNAL_ORIGINATOR_OVERRIDE"] } : {}) });
       return;
     }
@@ -1388,6 +1569,7 @@ export class DesktopRuntime {
   #dispose(): Promise<void> {
     // HOST-DESKTOP-CANCEL-01: revoke every lifecycle before the first await. A
     // slow service drain cannot leave a Desktop launch or native probe authorized.
+    this.#codexPending = undefined;
     const prepare = this.#codexPrepare; this.#codexPrepare = undefined; prepare?.abort();
     const service = this.#service; this.#service = undefined;
     const desktopLifecycle = this.#codexDesktopLifecycle; this.#codexDesktopLifecycle = undefined;
@@ -1426,6 +1608,13 @@ export class DesktopRuntime {
    * open, so it runs beside the serialized command queue and reports through `dshDesktopOpen` events. A second
    * click while it runs keeps the same open.
    */
+  #cancelDshDesktopOpen(): void {
+    const abort = this.#dshDesktopOpenAbort;
+    if (!abort) return;
+    abort.abort();
+    this.#emit({ event: "dshDesktopOpen", state: "idle" });
+  }
+
   #openDshDesktop(): void {
     if (this.#dshDesktopOpening !== undefined) return;
     const abort = this.#dshDesktopOpenAbort = new AbortController();

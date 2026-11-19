@@ -114,7 +114,9 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     // Keychain or a re-signed app). It used to run here on the UI thread, before the window existed.
     if (!m_qaMode) loadStoredActivation();
     connect(&m_bridge, &QProcess::started, this, [this] {
-        command("initialize", {{"claudeIntegrationEnabled", m_automaticIntegrations && claudeIntegrationEnabled()}}, [this](const QJsonValue &result) {
+        command("initialize", {{"claudeIntegrationEnabled", m_automaticIntegrations && claudeIntegrationEnabled()}, {"dshEnabled", dshEnabled()}, {"codexEnabled", m_settings.contains("codexEnabled") && codexEnabled()},
+            {"piIntegrationEnabled", m_settings.contains("piIntegrationEnabled") && piIntegrationEnabled()},
+            {"legacyClaudeEnabled", m_settings.contains("claudeIntegrationEnabled") && claudeIntegrationEnabled()}}, [this](const QJsonValue &result) {
             const auto obj = result.toObject();
             const auto actualId = obj.value("hostId").toString();
             m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
@@ -122,6 +124,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_hostPub = obj.value("hostPub").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
             refreshDeviceUpdateIndicators();
+            applyAgentEnablement(obj.value("agentEnablement").toObject());
             m_openClaw = obj.value("openClaw").toObject().toVariantMap();
             m_bridgeReady = true;
             emit openClawChanged();
@@ -156,6 +159,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         if (error == QProcess::FailedToStart) { m_state = "error"; setMessage("无法启动内置 Host：" + m_bridge.errorString()); }
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
+        m_agentEnablement.clear(); emit agentEnablementChanged();
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
         // 在途命令随内核一起没了：进度说明也必须跟着消失，否则会永久停在“正在做什么”。
         m_activity.clear(); m_activityOrder.clear(); m_claudeDetecting = false;
@@ -241,6 +245,7 @@ static QPair<QString, QString> activityFor(const QString &method, const QJsonObj
     if (method == "activateInstallation") return { "agentVersion", "正在切换 Agent 版本" };
     if (method == "claudeIntegration") return { "claude", "正在更新 Claude Code 插件" };
     if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
+    if (method == "agent.enablement.write") return { "agentEnablement", "正在保存 Agent 设置" };
     if (method == "openclaw.save") return { "openClaw", "正在保存 OpenClaw 配置" };
     if (method == "rename") return { "host", "正在保存电脑名称" };
     if (method.startsWith("provider.")) {
@@ -406,6 +411,7 @@ void HostController::receiveLine(const QJsonObject &line) {
                 m_settings.setValue(kind + "Entry", line.value("entry").toString()); m_settings.sync();
             }
         }
+        else if (event == "agentEnablement") { applyAgentEnablement(line.value("snapshot").toObject()); }
         else if (event == "status") {
             m_devices = line.value("devices").toArray().toVariantList(); refreshDeviceUpdateIndicators(); m_runtimeCount = line.value("runtimeCount").toInt();
             // The running service's own model; offline status events (rename/revoke while paused) carry none.
@@ -793,6 +799,25 @@ void HostController::startHost() {
     params.insert("claudeIntegrationEnabled", claudeIntegrationEnabled());
     command("start", params);
 }
+void HostController::applyAgentEnablement(const QJsonObject &snapshot) {
+    if (!snapshot.value("revision").isDouble() || !snapshot.value("agents").isArray()) return;
+    if (!m_agentEnablement.isEmpty() && snapshot.value("revision").toDouble() <= m_agentEnablement.value("revision").toDouble()) return;
+    m_agentEnablement = snapshot.toVariantMap();
+    emit agentEnablementChanged();
+    if (m_bridgeReady && !m_exiting) detectAgents();
+}
+void HostController::setAgentEnabled(const QString &kind, bool enabled, double expectedRevision, bool confirmDisable) {
+    if (!m_bridgeReady || busy() || m_agentEnablement.isEmpty()) return;
+    const auto revision = m_agentEnablement.value("revision").toDouble();
+    if (expectedRevision >= 0 && expectedRevision != revision) { setMessage("Agent 设置已在其他设备更新，请确认后重试"); return; }
+    QJsonObject params{{"kind", kind}, {"enabled", enabled}, {"expectedRevision", revision}};
+    if (confirmDisable) params.insert("confirmDisable", true);
+    command("agent.enablement.write", params, [this](const QJsonValue &value) {
+        const auto result = value.toObject();
+        applyAgentEnablement(result.value("snapshot").toObject());
+        if (result.value("status").toString() == "conflict") setMessage("Agent 设置已在其他设备更新，请确认后重试");
+    });
+}
 void HostController::saveOpenClaw(const QString &url, const QString &token) {
     if (!m_bridgeReady || busy() || m_openClaw.value("source").toString() != "file") return;
     command("openclaw.save", {{"url", url}, {"token", token}}, [this](const QJsonValue &result) {
@@ -800,7 +825,7 @@ void HostController::saveOpenClaw(const QString &url, const QString &token) {
         emit openClawChanged();
         // Preserve the current connection when validation or persistence failed.
         reconnectOpenClaw();
-        setMessage(m_openClaw.value("url").toString().isEmpty() ? "OpenClaw 已停用" : "OpenClaw 配置已保存");
+        setMessage(m_openClaw.value("url").toString().isEmpty() ? "OpenClaw 连接配置已移除" : "OpenClaw 配置已保存");
     });
 }
 void HostController::reconnectOpenClaw() {

@@ -41,6 +41,7 @@ export type HostLoopbackServerOptions = {
   hostId: string;
   log?: (line: string) => void;
   /** 本机 runtime 注册（含 `/reload` 之后带着同一个 runtimeId 重新注册）。 */
+  admitRuntime?: () => boolean;
   onRuntimeOnline?: (runtime: RuntimeMetadata) => void;
   onRuntimeOffline?: (runtimeId: string, reason: string) => void;
   onRuntimeEvent?: (runtimeId: string, sequence: number, event: RuntimeEvent) => void;
@@ -226,6 +227,15 @@ export class HostLoopbackServer {
     this.#runtimes.get(runtimeId)?.socket.close(1000, reason);
   }
 
+  /** Retire the registration before closing the sockets; in-flight frames cannot reattach it. */
+  disconnectRuntimes(reason: string): void {
+    for (const [runtimeId, entry] of this.#runtimes) {
+      this.#runtimes.delete(runtimeId);
+      entry.socket.close(1000, reason);
+      this.#options.onRuntimeOffline?.(runtimeId, reason);
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
 
   async #handleHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -350,6 +360,7 @@ export class HostLoopbackServer {
     let protocolVersion: DeviceProtocolVersion | undefined;
 
     socket.on("message", (raw, isBinary) => {
+      if (authenticated && (this.#options.admitRuntime?.() === false || (runtimeId !== undefined && this.#runtimes.get(runtimeId)?.socket !== socket))) return;
       if (isBinary) {
         if (!authenticated || runtimeId === undefined) return;
         const bytes = Buffer.from(raw as ArrayBuffer);
@@ -402,6 +413,10 @@ export class HostLoopbackServer {
             message: "loopback token 不匹配，请确认连的是当前正在运行的 Host",
           }));
           socket.close(1008, "loopback token 不匹配");
+          return;
+        }
+        if (this.#options.admitRuntime?.() === false) {
+          socket.close(1008, "Agent disabled");
           return;
         }
         authenticated = true;

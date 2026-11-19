@@ -33,6 +33,7 @@ export type ClaudeLaunchRequest = {
   launchId: string;
   /** Explicit local setup may show native account/onboarding UI instead of requiring login. */
   setup?: boolean;
+  requireCurrent?: () => void;
   configuration?: import("@orbis/protocol").SessionConfigurationValues;
 };
 
@@ -120,6 +121,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
       if (checked.defaults.permissions?.mode !== request.configuration.permissions.mode)
         throw new Error("Claude 原生启动参数未确认所选权限模式，已停止启动");
     }
+    request.requireCurrent?.();
     await trustClaudeWorkspace({ cwd: request.cwd, configFile: config.file, env,
       ...(this.#options.home === undefined ? {} : { home: this.#options.home }) });
     const scripts = join(this.#options.stateDir, "tmp");
@@ -138,6 +140,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
       await writeFile(script, posixScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, startedFile, env: launchEnv }), { mode: 0o700, flag: "wx" });
       await chmod(script, 0o700);
       try {
+        request.requireCurrent?.();
         terminalAttempted = true;
         await run("/usr/bin/open", ["-a", "Terminal", script]);
         await waitForMacTerminalScriptStart(startedFile, "Terminal 未确认执行 Claude Code 启动脚本，请在电脑上检查终端窗口或系统提示后重试");
@@ -153,6 +156,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
     await writeFile(script, windowsScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, env: launchEnv }));
     try {
       const window = windowsClaudeConsole(script, request.cwd, env);
+      request.requireCurrent?.();
       terminalAttempted = true;
       if (this.#options.run === undefined) {
         await openWindowsConsole(window, { env }).catch((error: unknown) => {

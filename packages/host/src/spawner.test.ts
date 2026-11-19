@@ -364,6 +364,21 @@ describe("SessionSpawner", () => {
     expect(fake.options[0]?.env).toMatchObject({ ORBIS_STATE_DIR: stateDir, APPDATA: cliRoot });
   });
 
+  // A source revoked during async preflight must never reach the native process opener.
+  it("checks the launch generation at the spawn boundary", async () => {
+    const cwd = await tempDir();
+    const entry = join(cwd, "cli.js");
+    await writeFile(entry, "// isolated test fixture", "utf8");
+    const fake = fakeSpawn();
+    const spawner = new SessionSpawner({ spawnImpl: fake.impl as never, env: { ORBIS_PI_ENTRY: entry } });
+    const requireCurrent = vi.fn().mockImplementationOnce(() => {}).mockImplementation(() => { throw new Error("lease revoked"); });
+    await expect(spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd }, spawnMode: "headless", requireCurrent })).rejects.toThrow("lease revoked");
+    expect(requireCurrent).toHaveBeenCalledTimes(2);
+    expect(fake.options).toHaveLength(0);
+    await spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd }, spawnMode: "headless" });
+    expect(fake.options).toHaveLength(1);
+  });
+
   it("同一会话重复 resume 只拉起一次：先发现，再决定拉不拉", async () => {
     const dir = await tempDir();
     const fake = fakeSpawn();
