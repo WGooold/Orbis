@@ -19,6 +19,7 @@
   "dependencies": {
     "@openclaw/gateway-client": "2026.11.5",
     "@openclaw/gateway-protocol": "2026.11.5",
+    "@opencode/client": "2.3.2",
     "@orbis/e2e": "0.1.0",
     "@orbis/protocol": "0.1.0",
     "@orbis/runtime-bridge": "0.1.0",

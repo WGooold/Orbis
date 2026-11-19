@@ -94,3 +94,24 @@ struct LocalizationTests {
         #expect(L10n.hostText("Vendor custom 工作区可写 label", language: .english) == "Vendor custom 工作区可写 label")
     }
 }
+
+
+@Suite
+struct OpenCodeAvailabilityTests {
+    @Test func backendAvailabilityIsAdvertisedAndNotInferred() {
+        #expect(OpenCodeAvailability(backends: .array([.object(["kind": .string("pi"), "ready": .bool(true)])])) == nil)
+        #expect(OpenCodeAvailability(backends: .array([.object(["kind": .string("opencode"), "ready": .string("true")])])) == nil)
+        let ready = OpenCodeAvailability(backends: .array([.object(["kind": .string("opencode"), "ready": .bool(true)])]))
+        #expect(ready?.ready == true)
+        #expect(ready?.message == nil)
+        func unavailable(_ reason: String) -> OpenCodeAvailability? {
+            OpenCodeAvailability(backends: .array([.object(["kind": .string("opencode"), "ready": .bool(false), "reason": .string(reason)])]))
+        }
+        let missing = unavailable("service_not_found"), incompatible = unavailable("unsupported_version")
+        #expect(missing?.ready == false)
+        #expect(incompatible?.ready == false)
+        #expect(missing?.message != nil)
+        #expect(incompatible?.message != nil)
+        #expect(missing?.message != incompatible?.message)
+    }
+}
