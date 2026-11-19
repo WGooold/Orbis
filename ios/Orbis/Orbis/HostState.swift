@@ -42,6 +42,31 @@ indirect enum HostJSON: Codable, Equatable {
     }
 }
 
+// Public Host backends projection. A missing row means the Host has not advertised OpenCode.
+struct OpenCodeAvailability: Equatable {
+    let ready: Bool
+    let reason: String?
+
+    init?(backends: HostJSON) {
+        guard let row = backends.array.first(where: { $0["kind"].string == "opencode" }),
+              let ready = row["ready"].bool else { return nil }
+        self.ready = ready
+        reason = row["reason"].string
+    }
+
+    var message: String? {
+        guard !ready else { return nil }
+        switch reason {
+        case "service_not_found": return L10n.tr("OpenCode 共享服务未运行。请在电脑上启动 OpenCode。")
+        case "unsupported_version": return L10n.tr("OpenCode 版本不兼容。请在电脑上使用 Host 支持的版本。")
+        case "invalid_endpoint": return L10n.tr("OpenCode 服务注册地址无效。请检查电脑上的 OpenCode 服务配置。")
+        case "connection_failed": return L10n.tr("Host 无法连接 OpenCode 共享服务。请检查电脑上的服务状态和认证配置。")
+        case "event_stream_unavailable": return L10n.tr("OpenCode 实时连接未就绪。请稍后再试。")
+        default: return L10n.tr("OpenCode 当前不可用。请检查电脑上的服务状态。")
+        }
+    }
+}
+
 struct HostDomain: Decodable, Equatable {
     let domain: String
     let modelEpoch: String

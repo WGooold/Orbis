@@ -16,7 +16,7 @@ import { SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, RuntimeEventSchema
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { CODEX_RUNTIME_ID, CodexRequestError, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
-import { CodexRuntime, codexHeadWindowLaunch } from "./codex-runtime.js";
+import { CodexRuntime, codexHeadWindowLaunch, type CodexRuntimeOptions } from "./codex-runtime.js";
 import type { CodexTerminalConnectionInput } from "./codex-terminal-connection.js";
 
 function makeHarness(options?: {
@@ -31,6 +31,9 @@ function makeHarness(options?: {
   holdInitialHistory?: boolean;
   sourceCoalesceMs?: number;
   desktop?: boolean;
+  headless?: boolean;
+  endpoint?: string;
+  openHeadWindow?: CodexRuntimeOptions["openHeadWindow"];
   taskRegistry?: unknown[];
 }): {
   runtime: CodexRuntime;
@@ -88,15 +91,18 @@ function makeHarness(options?: {
     stop: vi.fn(async () => {}),
     request,
     notify: vi.fn(),
+    ...(options?.endpoint === undefined ? {} : { endpoint: options.endpoint }),
   } as unknown as CodexAppServer;
   // 磁盘 rollout 扫描指向空临时目录：既不让测试读到本机真实的 ~/.codex/sessions，
   // 又给磁盘目录用例一个可写入的根。
   const rolloutRoot = testDirectorySync(join(tmpdir(), "orbis-codex-rollout-"));
   const runtime = new CodexRuntime({
     server,
+    ...(options?.headless === undefined ? {} : { headless: options.headless }),
     onEvent: (event) => events.push(event),
     rolloutRoot,
     sourceCoalesceMs: options?.sourceCoalesceMs ?? 0,
+    ...(options?.openHeadWindow === undefined ? {} : { openHeadWindow: options.openHeadWindow }),
   });
   return {
     runtime,
@@ -166,7 +172,7 @@ function syncHistory(h: ReturnType<typeof makeHarness>, options: Partial<Session
   const command: SessionSyncRequest = {
     type: "session.sync", sessionId: "th-1", syncId: "sync", range: "preview", ...options,
   };
-  h.runtime.handleCommand(command, "sync-command", command.sessionId);
+  h.runtime.dispatchCommand(command.sessionId.startsWith("codex-desktop:") ? command.sessionId : `codex:${command.sessionId}`, "sync-command", command);
   return h.events.slice(start).find((event) => event.type === "session.snapshot");
 }
 
@@ -1381,14 +1387,16 @@ describe("Codex recoverable source checkpoints", () => {
 describe("Codex bounded canonical history", () => {
   const item = (id: string, text = id) => ({ id, type: "agentMessage", text });
 
-  it.each(["", "（code=-32600）"])("syncs an unmaterialized app-created thread as empty, then accepts its first message (%s)", async suffix => {
-    const h = makeHarness({ initialHistoryError: new Error(
+  it.each([false, true].flatMap(desktop => ["", "（code=-32600）"].map(suffix => ({ desktop, suffix }))))(
+    "syncs a pre-created App thread before its first message (desktop=$desktop, error suffix=$suffix)", async ({ desktop, suffix }) => {
+    const h = makeHarness({ desktop, initialHistoryError: new Error(
       `thread th-1 is not materialized yet; thread/turns/list is unavailable before first user message${suffix}`,
     ) });
     const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" });
     h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", path: null, turns: [] } });
-    await activating;
-    expect(syncHistory(h)).toMatchObject({ entries: [], complete: true, source: { ready: true } });
+    const sessionId = desktop ? "codex-desktop:th-1" : "th-1";
+    expect(await activating).toMatchObject({ sessionId });
+    expect(syncHistory(h, { sessionId })).toMatchObject({ entries: [], complete: true, source: { ready: true } });
     expect(h.events.at(-1)).toMatchObject({ type: "command.result", commandId: "sync-command", ok: true });
 
     h.runtime.handleCommand({ type: "user_message", text: "Hello", messageId: "phone-1" }, "send-1", "th-1");
@@ -1400,7 +1408,7 @@ describe("Codex bounded canonical history", () => {
     } });
     h.notify("item/completed", { threadId: "th-1", turnId: "first", item: item("reply-1", "Hi") });
     h.notify("turn/completed", { threadId: "th-1", turn: { id: "first" } });
-    expect(syncHistory(h)).toMatchObject({ source: { ready: true }, cursor: { leafId: "reply-1" }, entries: [
+    expect(syncHistory(h, { sessionId })).toMatchObject({ source: { ready: true }, cursor: { leafId: "reply-1" }, entries: [
       { entryId: "user-1", parentId: null }, { entryId: "reply-1", parentId: "user-1" },
     ] });
     h.server.onExit?.(0);
@@ -1633,6 +1641,30 @@ describe("Codex bounded canonical history", () => {
 });
 
 describe("CodexRuntime", () => {
+  // LINUX-AGENT-HEADLESS-02: an auto request on a Linux CLI Host stays in app-server and never opens a TUI.
+  it("reports headless and skips TUI setup for a server-owned Linux profile", async () => {
+    const openHeadWindow = vi.fn();
+    const h = makeHarness({ headless: true, endpoint: "ws://127.0.0.1:12345", openHeadWindow });
+    const onCreated = vi.fn();
+    const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" }, { spawnMode: "auto", onCreated });
+    h.resolveNext({ thread: { id: "th-headless", cwd: "D:/repo", turns: [] } });
+
+    await expect(activating).resolves.toEqual({ sessionId: "th-headless", spawnMode: "headless" });
+    expect(onCreated).toHaveBeenCalledWith({ sessionId: "th-headless", spawnMode: "headless" });
+    expect(openHeadWindow).not.toHaveBeenCalled();
+    expect(h.requests).not.toHaveBeenCalledWith("config/read", expect.anything(), expect.anything());
+    h.server.onExit?.(0);
+  });
+
+  it("rejects an explicit TUI request before creating a thread on a headless Host", async () => {
+    const h = makeHarness({ headless: true, endpoint: "ws://127.0.0.1:12345" });
+    const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" }, { spawnMode: "tui" });
+
+    await expect(activating).rejects.toMatchObject({ code: "spawn_failed" });
+    expect(h.requests).not.toHaveBeenCalledWith("thread/start", expect.anything(), expect.anything());
+    h.server.onExit?.(0);
+  });
+
   it("archive state follows native success; retries and external notifications preserve the same session", async () => {
     const h = makeHarness();
     h.runtime.markStarted();
@@ -3894,6 +3926,36 @@ describe("Codex all-state input lifecycle (AIN-04)", () => {
     h.runtime.handleCommand({ type: "slash.execute", name: "quit", args: "" }, "quit", "th-1");
     await vi.waitFor(() => expect(h.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "quit", ok: false, status: "failure" })));
     expect(h.runtime.activeThreadIds()).toEqual(["th-1"]);
+    h.server.onExit?.(0);
+  });
+
+  it("fires onCatalogChange only on persistent session changes rather than transient status or token updates", async () => {
+    const h = makeHarness();
+    const metadataChanges = vi.fn();
+    const catalogChanges = vi.fn();
+    h.runtime.onMetadataChange = metadataChanges;
+    h.runtime.onCatalogChange = catalogChanges;
+    await activate(h);
+    catalogChanges.mockClear();
+    metadataChanges.mockClear();
+
+    h.notify("thread/status/changed", { threadId: "th-1", status: { type: "active" } });
+    h.notify("thread/tokenUsage/updated", { threadId: "th-1", tokenUsage: { last: { inputTokens: 42 }, modelContextWindow: 200000 } });
+    h.notify("thread/settings/updated", { threadId: "th-1", threadSettings: { approvalPolicy: "on-request" } });
+    expect(metadataChanges).toHaveBeenCalledTimes(3);
+    expect(catalogChanges).not.toHaveBeenCalled();
+
+    h.notify("thread/name/updated", { threadId: "th-1", threadName: "Renamed session" });
+    expect(catalogChanges).toHaveBeenCalledTimes(1);
+
+    h.notify("item/completed", { threadId: "th-1", turnId: "t1", item: { type: "userMessage", id: "u1", content: [{ type: "text", text: "hi" }] } });
+    expect(catalogChanges).toHaveBeenCalledTimes(2);
+
+    h.notify("turn/completed", { threadId: "th-1", turn: { id: "t1", status: "completed" } });
+    expect(catalogChanges).toHaveBeenCalledTimes(3);
+
+    h.notify("thread/settings/updated", { threadId: "th-1", threadSettings: { cwd: "/other/repo" } });
+    expect(catalogChanges).toHaveBeenCalledTimes(4);
     h.server.onExit?.(0);
   });
 });

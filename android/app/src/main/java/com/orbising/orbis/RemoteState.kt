@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -109,6 +110,7 @@ data class RuntimeSummary(
     val contextUsage: RuntimeContextUsage? = null,
     val permissions: RuntimePermissions? = null,
     val permissionManagement: RuntimePermissionManagement? = null,
+    val steerSupported: Boolean? = null,
     /** Host 模型的会话身份；不从 runtime 路由前缀推断。 */
     val agentKind: String? = null,
     /** 镜像可用性供界面区分最后已知值与当前已确认事实。 */
@@ -615,12 +617,14 @@ data class RemoteState(
     val sessionConfigurationSupported: Boolean = false,
     val kimiCodeSupported: Boolean = false,
     val openClawNegotiated: Boolean = false,
+    val prefersAutoSessionSpawn: Boolean = false,
     val sessionConfiguration: SessionConfigurationState = SessionConfigurationState(),
     /**
      * Codex 桌面版 app-server 的接入状态；null = 未知或这台电脑没跑这条后端。
      * 它比 [launchableAgents] 多回答一个问题：桌面版装了但没打开、还是打开了却接入失败。
      */
     val codexDesktop: CodexDesktopAttach? = null,
+    val openCodeAvailability: OpenCodeAvailability? = null,
     /** Native backend modelProvider keys, keyed by agentKind; never Host-managed profile ids. */
     val currentProviders: Map<String, String> = emptyMap(),
     val providerCatalogs: Map<String, List<AgentProvider>> = emptyMap(),
@@ -796,6 +800,7 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
         contextUsage = sameSession?.contextUsage,
         permissions = null,
         permissionManagement = sameSession?.permissionManagement,
+        steerSupported = steerSupported ?: sameSession?.steerSupported,
         // This reserved Host route establishes OpenClaw identity before the model read.
         agentKind = sameSession?.agentKind ?: agentKind.takeIf { it == "openclaw" && runtimeId.startsWith("openclaw:") },
         domainAvailability = sameSession?.domainAvailability.orEmpty(),
@@ -1795,6 +1800,7 @@ internal fun RemoteState.markReconnecting(): RemoteState {
         connection = RelayConnection.RECONNECTING,
         homeDirectoryReceived = false,
         kimiCodeSupported = false,
+        prefersAutoSessionSpawn = false,
         toolInventories = emptyMap(), pendingToolConversations = emptyMap(),
         turnChanges = turnChanges.mapValues { (_, value) -> value.copy(request = null, queriedEntries = emptySet(), queriedTurns = emptySet(), manifests = value.manifests.mapValues { (_, manifest) -> manifest.copy(requestId = null) }) },
         changeViewer = null,
@@ -2039,6 +2045,7 @@ class RelayReducer(
                 val runtimes = message["runtimes"]?.let {
                     json.decodeFromJsonElement<List<RuntimeSummary>>(it)
                 }.orEmpty().map { it.withOpenClawKind().withKimiIdentity() }.associateBy(RuntimeSummary::runtimeId)
+                val managedAgentView = readyAdmitsAgentEnablement(message)
                 val openClawNegotiated = readyAdmitsOpenClaw(message)
                 val projectionChanged = state.openClawNegotiated != openClawNegotiated
                 // 「这台电脑支持哪些 agent」只有 Host 说得准。中继那条种子 device.ready 发的是
@@ -2133,6 +2140,7 @@ class RelayReducer(
                     sessionConfigurationSupported = message["sessionConfiguration"]?.jsonPrimitive?.intOrNull == 1,
                     kimiCodeSupported = kimiCodeSupported,
                     openClawNegotiated = openClawNegotiated,
+                    prefersAutoSessionSpawn = (message["hostFeatures"] as? JsonArray)?.contains(JsonPrimitive("session.spawn.auto")) == true,
                     sessions = sessions,
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
@@ -2148,9 +2156,10 @@ class RelayReducer(
                     agentCatalogRange = state.agentCatalogRange?.takeIf { !projectionChanged && state.agentModelEpoch == message.string("modelEpoch") },
                     agentCatalogRangeRequest = null,
                     catalogQuery = state.catalogQuery.takeUnless { projectionChanged },
-                    supportedAgents = if (openClawNegotiated || projectionChanged) supportedAgents else state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
-                    launchableAgents = if (openClawNegotiated || projectionChanged) launchableAgents else state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    supportedAgents = if (managedAgentView || openClawNegotiated || projectionChanged) supportedAgents else state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    launchableAgents = if (managedAgentView || openClawNegotiated || projectionChanged) launchableAgents else state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     codexDesktop = state.codexDesktop.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    openCodeAvailability = state.openCodeAvailability.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     sessionListRequests = emptySet(),
                     sessionListRequestEpochs = emptyMap(),
                     runtimeSessionViews = runtimeViews,
@@ -2332,12 +2341,14 @@ class RelayReducer(
                     agentEnablementPending = null, agentEnablementFailed = false,
                     homeDirectoryReceived = false,
                     kimiCodeSupported = false,
+                    prefersAutoSessionSpawn = false,
                     currentProviders = emptyMap(),
                     sessionActivateRequests = emptySet(),
                     sessionActivateTargets = emptyMap(),
                     activatedSessionToOpen = null,
                     runtimes = emptyMap(),
                     codexDesktop = null,
+                    openCodeAvailability = null,
                     pendingCommands = emptyMap(),
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith {
                         CommandResult(ok = false, status = "cancelled")

@@ -5,6 +5,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
 import android.util.Log
+import android.os.SystemClock
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -26,6 +28,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -219,7 +222,7 @@ internal class HostConnection(
         relay.sendDeviceMessage(buildJsonObject { put("type", "session.launch.read"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id); put("launchId", id) })
     }
 
-    private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String, firstMessage: String = ""): Boolean {
+    private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String? = null, firstMessage: String = ""): Boolean {
         val state = mutableState.value; val config = state.sessionConfiguration; val snapshot = config.snapshot
         if (kind == KIMI_CODE_KIND && (!state.kimiCodeSupported || !state.sessionConfigurationSupported)) return false
         val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded, configuredLaunchJournal.snapshot != null)
@@ -233,7 +236,7 @@ internal class HostConnection(
         val id = UUID.randomUUID().toString()
         val firstId = UUID.randomUUID().toString()
         val firstCommand = UUID.randomUUID().toString()
-        val payload = configuredLaunchPayload(id, confirmed, config.values, kimiSpawnMode(kind, spawnMode))
+        val payload = state.configuredSessionLaunchRequest(id, confirmed, spawnMode)
         // Reserve in memory immediately, then persist off UI before writing to the transport.
         val journal = JsonObject(payload + mapOf("firstMessage" to JsonPrimitive(firstMessage), "firstMessageId" to JsonPrimitive(firstId), "firstCommandId" to JsonPrimitive(firstCommand)))
         val persisted = configuredLaunchJournal.update(null) { journal } ?: return false
@@ -904,6 +907,247 @@ internal class HostConnection(
     /** Reconcile provider summaries on demand while preserving the connection's other domains. */
     fun refreshProviderModel() = refreshHostModel(listOf("providers"), force = true)
 
+    private val importDelivery = ExternalImportDelivery()
+    private class ImportUpload(
+        val task: UploadTask, val channel: Any, val current: () -> Boolean,
+        val result: CompletableDeferred<String?> = CompletableDeferred(),
+    ) {
+        @Volatile var uploadId: String? = null
+        @Volatile var activity = SystemClock.elapsedRealtime()
+        val reading = AtomicBoolean(false)
+    }
+    private class ImportWait(
+        val attempt: ExternalImportAttempt, val target: ExternalImportTarget, val query: Boolean,
+        val reply: CompletableDeferred<ExternalImportReceipt> = CompletableDeferred(),
+    )
+    @Volatile private var importUpload: ImportUpload? = null
+    @Volatile private var importWait: ImportWait? = null
+
+    private class ImportLaunchWait(val launch: ExternalImportLaunch, val requestId: String, val query: Boolean,
+        val reply: CompletableDeferred<ImportLaunchResult> = CompletableDeferred())
+    @Volatile private var importLaunchWait: ImportLaunchWait? = null
+    private val importLaunchGate = Mutex()
+
+    internal fun canLaunchExternalImport(): Boolean = shouldConnect && mutableState.value.let {
+        it.sessionConfigurationSupported && it.canOperateSessions && it.homeDirectoryReceived
+    } && relay.externalImportChannel() != null
+
+    suspend fun launchImport(batch: ExternalImportBatch, inbox: ExternalImportStore, agent: String, cwd: String, instruction: String) = withContext(Dispatchers.IO) {
+        if (!importLaunchGate.tryLock()) reject(ImportProblem.BUSY)
+        try {
+            val channel = relay.externalImportChannel() ?: reject(ImportProblem.HOST_UPGRADE)
+            if (!canLaunchExternalImport()) reject(ImportProblem.HOST_UPGRADE)
+            val state = mutableState.value
+            val config = state.sessionConfiguration
+            val snapshot = config.snapshot ?: reject(ImportProblem.LAUNCH_CONFIGURATION)
+            if (config.requestId != null || config.error != null || snapshot.agentKind != agent || snapshot.cwd != cwd ||
+                agent !in (state.launchableAgents ?: state.supportedAgents).orEmpty()) reject(ImportProblem.LAUNCH_CONFIGURATION)
+            val launch = ExternalImportLaunch("import-launch:" + UUID.randomUUID(), hostId, externalImportPairingKey(pairing),
+                pairing.hostName ?: hostId, agent, cwd, instruction)
+            externalImportMessage(batch.text, instruction, L10n.tr("请查看附件。"), L10n.tr("导入的内容："))
+            inbox.reserveLaunch(batch.id, launch)
+            if (!matchesImportLaunch(launch) || relay.externalImportChannel() !== channel || mutableState.value.agentModelEpoch != state.agentModelEpoch ||
+                mutableState.value.sessionConfiguration != config) {
+                inbox.failLaunch(batch.id, launch.id)
+                reject(ImportProblem.LAUNCH_CONFIGURATION)
+            }
+            continueImportLaunch(batch, inbox, launch, requestImportLaunch(launch, channel, snapshot))
+        } finally { importLaunchGate.unlock() }
+    }
+
+    suspend fun recoverImportLaunch(batch: ExternalImportBatch, inbox: ExternalImportStore) = withContext(Dispatchers.IO) {
+        if (!importLaunchGate.tryLock()) reject(ImportProblem.BUSY)
+        try {
+            val launch = batch.launch ?: reject(ImportProblem.TARGET_UNAVAILABLE)
+            if (launch.failed || batch.attempt != null || !matchesImportLaunch(launch)) reject(ImportProblem.TARGET_UNAVAILABLE)
+            val channel = relay.externalImportChannel() ?: reject(ImportProblem.HOST_UPGRADE)
+            continueImportLaunch(batch, inbox, launch, requestImportLaunch(launch, channel, null))
+        } finally { importLaunchGate.unlock() }
+    }
+
+    private fun matchesImportLaunch(launch: ExternalImportLaunch) =
+        hostId == launch.hostId && externalImportPairingKey(pairing) == launch.pairingKey && canLaunchExternalImport()
+
+    private suspend fun continueImportLaunch(batch: ExternalImportBatch, inbox: ExternalImportStore, launch: ExternalImportLaunch, result: ImportLaunchResult) {
+        if (result == ImportLaunchResult.Failed) { inbox.failLaunch(batch.id, launch.id); return }
+        if (result !is ImportLaunchResult.Ready || !matchesImportLaunch(launch)) return
+        val bound = inbox.bindLaunch(batch.id, launch, result.sessionId)
+        val target = checkNotNull(bound.destination?.target)
+        repeat(50) {
+            if (!matchesImportLaunch(launch)) return
+            val runtime = importRuntime(target)
+            if (runtime != null && (runtime.agentKind ?: mutableState.value.sessions[target.sessionId]?.agentKind ?: "pi") == launch.agent) {
+                deliverImport(bound, inbox, launch.instruction)
+                return
+            }
+            delay(100)
+        }
+        reject(ImportProblem.TARGET_UNAVAILABLE)
+    }
+
+    private suspend fun requestImportLaunch(launch: ExternalImportLaunch, channel: Any, config: SessionConfigurationSnapshot?): ImportLaunchResult {
+        val request = "import-launch:" + UUID.randomUUID()
+        val wait = ImportLaunchWait(launch, request, config == null)
+        importLaunchWait = wait
+        try {
+            if (!relay.sendExternalImport(buildJsonObject {
+                put("type", if (config == null) "session.launch.read" else "session.launch"); put("protocolVersion", PROTOCOL_VERSION)
+                put("requestId", request); put("launchId", launch.id)
+                if (config != null) {
+                    put("agentKind", launch.agent); put("cwd", launch.cwd); put("binding", config.binding)
+                    put("revision", config.revision); put("values", config.values.payload())
+                    put("spawnMode", mutableState.value.sessionSpawnMode(null))
+                }
+            }, channel)) return ImportLaunchResult.Unconfirmed
+            val start = SystemClock.elapsedRealtime()
+            val window = if (config == null) 20_000L else 90_000L
+            while (relay.externalImportChannel() === channel && SystemClock.elapsedRealtime() - start < window) {
+                withTimeoutOrNull(250) { wait.reply.await() }?.let { return it }
+            }
+            return ImportLaunchResult.Unconfirmed
+        } finally { importLaunchWait = null }
+    }
+
+    private fun importPairingReady(target: ExternalImportTarget): Boolean {
+        val state = mutableState.value
+        return shouldConnect && target.hostId == hostId && target.pairingKey == externalImportPairingKey(pairing) &&
+            state.canOperateSessions && state.homeDirectoryReceived
+    }
+
+    private fun importRuntime(target: ExternalImportTarget): RuntimeSummary? = if (importPairingReady(target)) {
+        mutableState.value.externalImportRuntimes().firstOrNull { it.sessionId == target.sessionId && it.cwd == target.cwd }
+    } else null
+
+    suspend fun deliverImport(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String?) = withContext(Dispatchers.IO) {
+        val target = batch.destination?.target ?: reject(ImportProblem.TARGET_UNAVAILABLE)
+        val connection = generation
+        val epoch = mutableState.value.agentModelEpoch
+        val channel = relay.externalImportChannel()
+        fun paired() = generation == connection && importPairingReady(target)
+        fun capable() = paired() && channel != null && relay.externalImportChannel() === channel
+        fun current() = if (paired() && epoch == mutableState.value.agentModelEpoch) importRuntime(target) else null
+        if (instruction == null) {
+            importDelivery.check(batch, inbox, ::capable) { attempt, _ -> waitForExternalImport(attempt, target, channel!!, null) }
+        } else {
+            importDelivery.send(batch, inbox, instruction, ::current, ::capable,
+                upload = { source, id -> uploadExternalImport(source, target, id, channel!!) { capable() && current()?.runtimeId == id } },
+                request = { attempt, command -> waitForExternalImport(attempt, target, channel!!, command) })
+        }
+    }
+
+    private suspend fun uploadExternalImport(source: ImportUploadSource, target: ExternalImportTarget, runtimeId: String,
+                                             channel: Any, current: () -> Boolean): String {
+        val hash = ArtifactUploadStore.inspectImport(source)
+        if (!current()) reject(ImportProblem.TARGET_UNAVAILABLE)
+        val task = UploadTask(taskId = "import:" + UUID.randomUUID(), runtimeId = runtimeId, hostId = hostId, sourceUri = "",
+            displayName = source.metadata.name, size = source.metadata.bytes, sha256 = hash, directory = uploadDirectoryFor(target.cwd, hash))
+        val transfer = ImportUpload(task, channel, current)
+        artifactUploadStore.registerImport(task, source.file)
+        importUpload = transfer
+        var verified = false
+        try {
+            if (!relay.sendExternalImport(buildJsonObject {
+                put("type", "file.upload.init"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", task.taskId)
+                put("runtimeId", runtimeId); put("directory", task.directory); put("fileName", task.displayName)
+                put("sha256", task.sha256); put("size", task.size); put("importTarget", target.wire())
+            }, channel)) reject(ImportProblem.TARGET_UNAVAILABLE)
+            while (current() && SystemClock.elapsedRealtime() - transfer.activity < 30_000) {
+                withTimeoutOrNull(250) { transfer.result.await() ?: reject(ImportProblem.UPLOAD_FAILED) }?.let {
+                    verified = true
+                    return it
+                }
+            }
+            reject(ImportProblem.UPLOAD_FAILED)
+        } finally {
+            importUpload = null
+            if (!verified) transfer.uploadId?.let { relay.cancelExternalImport(it, channel) }
+            artifactUploadStore.releaseImport(task.taskId)
+        }
+    }
+
+    private suspend fun waitForExternalImport(attempt: ExternalImportAttempt, target: ExternalImportTarget,
+                                              channel: Any, command: JsonObject?): ExternalImportReceipt {
+        val wait = ImportWait(attempt, target, command == null)
+        importWait = wait
+        try {
+            if (!relay.sendExternalImport(attempt.wire(target, command), channel)) return ExternalImportReceipt.UNCONFIRMED
+            val elapsed = SystemClock.elapsedRealtime()
+            val timeout = if (wait.query) 10_000L else 65_000L
+            while (relay.externalImportChannel() === channel && SystemClock.elapsedRealtime() - elapsed < timeout) {
+                withTimeoutOrNull(250) { wait.reply.await() }?.let { return it }
+            }
+            return ExternalImportReceipt.UNCONFIRMED
+        } finally { importWait = null }
+    }
+
+    /** Consumes only scoped replies; legacy composer uploads keep their original handler. */
+    private fun consumeExternalImport(message: JsonObject): Boolean {
+        if (message.containsKey("protocolVersion") && supportedProtocolVersion(message["protocolVersion"]) == null) return false
+        val type = message.importString("type") ?: return false
+        if (type == "session.launch.result" || type == "protocol.error") {
+            val requestId = message.importString("requestId")
+            if (requestId?.startsWith("import-launch:") == true) {
+                importLaunchWait?.takeIf { it.requestId == requestId }?.let { wait ->
+                    wait.launch.result(message, wait.query)?.let(wait.reply::complete)
+                }
+                return true
+            }
+        }
+        val wait = importWait
+        if (wait != null) {
+            val (ours, receipt) = importReceiptFor(message, wait.attempt, wait.target, wait.query)
+            if (ours) { if (receipt != null) wait.reply.complete(receipt); return true }
+        } else if (type == "external-import.result") return true
+        if (!type.startsWith("file.upload.") && type != "protocol.error") return false
+        val upload = importUpload
+        val id = message.importString("uploadId")
+        val requestId = message.importString("requestId")
+        if (upload == null || (requestId != upload.task.taskId && (id == null || id != upload.uploadId))) {
+            if (requestId?.startsWith("import:") != true) return false
+            // The user may have left while the ready receipt was still in flight.
+            if (type == "file.upload.ready" && id != null) {
+                relay.externalImportChannel()?.let { relay.cancelExternalImport(id, it) }
+            }
+            return true
+        }
+        val task = upload.task
+        fun num(key: String) = (message[key] as? JsonPrimitive)?.longOrNull
+        if (!upload.current() || upload.result.isCompleted) {
+            if (type == "file.upload.ready" && id != null) relay.cancelExternalImport(id, upload.channel)
+            return true
+        }
+        when (type) {
+            "file.upload.ready" -> {
+                val size = num("receivedBytes")
+                if (requestId != task.taskId || upload.uploadId != null || id.isNullOrBlank() || id.length > 256 || size == null || size !in 0L..task.size) {
+                    upload.result.complete(null)
+                } else { upload.uploadId = id; upload.activity = SystemClock.elapsedRealtime() }
+            }
+            "file.upload.read" -> {
+                val offset = num("offset") ?: return true
+                val length = num("length") ?: return true
+                if (id == null || upload.uploadId != id || offset !in 0L..task.size || length !in 1..1_048_576L || length > task.size - offset ||
+                    !upload.reading.compareAndSet(false, true)) return true
+                upload.activity = SystemClock.elapsedRealtime()
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        if (importUpload !== upload || !upload.current()) return@launch
+                        val bytes = artifactUploadStore.read(task.taskId, offset, length.toInt())
+                        if (bytes.size.toLong() != length) upload.result.complete(null)
+                        else if (importUpload === upload && upload.current()) relay.sendUploadChunk(task.runtimeId, id, offset, bytes, upload.channel)
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { upload.result.complete(null) }
+                    finally { upload.reading.set(false) }
+                }
+            }
+            "file.upload.progress" -> if (id != null && id == upload.uploadId && num("receivedBytes")?.let { it in 0L..task.size } == true)
+                upload.activity = SystemClock.elapsedRealtime()
+            "file.upload.finished" -> if (id != null && id == upload.uploadId) upload.result.complete(task.verifiedImportPath(message))
+            "file.upload.failed", "protocol.error" -> upload.result.complete(null)
+        }
+        return true
+    }
+
     /** ADR-0049 §6.4 `archive`：卡片立即移到目标列表；回执、断线、期限与核对全部交给账本（替代原 30 秒超时）。 */
     fun setSessionArchived(sessionId: String, archived: Boolean) {
         val state = mutableState.value
@@ -1008,7 +1252,7 @@ internal class HostConnection(
             put("type", "resume")
             put("sessionId", sessionId)
             (if (kimi) KIMI_CODE_KIND else state.sessions[sessionId]?.agentKind)?.let { put("agentKind", it) }
-        }, kimiSpawnMode(if (kimi) KIMI_CODE_KIND else null, "tui"))
+        }, if (kimi) "headless" else null)
     }
 
     private fun validateNewSessionTarget(expectedHostId: String?): Boolean {
@@ -1018,8 +1262,8 @@ internal class HostConnection(
     }
 
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
-    /** [spawnMode] overrides the default `tui`; the UI-02 capture harness asks for `headless`. */
-    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean {
+    /** [spawnMode] overrides the Host-negotiated default; the UI-02 capture harness asks for `headless`. */
+    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String? = null): Boolean {
         if (agentKind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return false
         if (!mutableState.value.supportsSessionConfiguration(agentKind) && (!configuredLaunchJournal.isLoaded || configuredLaunchJournal.snapshot != null)) {
             updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(agentKind = agentKind, cwd = cwd,
@@ -1035,7 +1279,7 @@ internal class HostConnection(
         }, spawnMode)
     }
 
-    private fun activateTarget(target: JsonObject, spawnMode: String = "tui"): Boolean {
+    private fun activateTarget(target: JsonObject, spawnMode: String? = null): Boolean {
         lastSessionRestorer.cancel()
         val requestId = UUID.randomUUID().toString()
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”，草稿和消息先归属启动请求。
@@ -1045,17 +1289,7 @@ internal class HostConnection(
             ?: fields["cwd"]?.trimEnd('/', '\\')?.substringAfterLast('/')?.substringAfterLast('\\')?.ifBlank { null } ?: L10n.tr("新会话")
         val sent = sendSessionPayload(
             requestId = requestId,
-            payload = buildJsonObject {
-                put("type", "session.activate")
-                put("protocolVersion", PROTOCOL_VERSION)
-                put("requestId", requestId)
-                put("target", target)
-                // 明确要「有头」。`auto` 会把判定交给电脑侧的启发式（Windows 上看
-                // SESSIONNAME），而从服务、计划任务或 IDE 内部启动的 Host 根本没有它，
-                // 结果是一律降级成无窗口——那样手机就永远要不到窗口了。电脑侧探不到
-                // 开窗入口时会报启动失败，不把明确的有头请求改成无头。
-                put("spawnMode", spawnMode)
-            },
+            payload = mutableState.value.sessionActivationRequest(requestId, target, spawnMode),
             register = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests + requestId,
                 sessionActivateTargets = if (target["type"]?.jsonPrimitive?.contentOrNull == "resume") {
@@ -1063,7 +1297,7 @@ internal class HostConnection(
                 } else emptyMap(),
                 activatedSessionToOpen = null,
                 sessionConfiguration = if (fields["type"] == "new") it.sessionConfiguration.copy(launchError = null, waitingForLaunchJournal = false) else it.sessionConfiguration,
-            ).createLaunch(requestId, fields, title, System.currentTimeMillis()).first },
+            ).createLaunch(requestId, fields, title, System.currentTimeMillis(), spawnModeOverride = spawnMode).first },
             rollback = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests - requestId,
                 sessionActivateTargets = it.sessionActivateTargets - requestId,
@@ -1109,7 +1343,7 @@ internal class HostConnection(
         updateState { it.copy(launching = null, sessionActivateRequests = it.sessionActivateRequests - launch.requestId) }
         val kind = launch.target["agentKind"] ?: launch.target["sessionId"]?.takeIf { isKimiCode(null, it) }?.let { KIMI_CODE_KIND }
         if (kind == KIMI_CODE_KIND && (!mutableState.value.kimiCodeSupported || launch.target["type"] == "new")) return
-        activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } }, kimiSpawnMode(kind, "tui"))
+        activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } }, if (kind == KIMI_CODE_KIND) "headless" else launch.spawnModeOverride)
     }
 
     fun loadAgentProviders(kind: String) {
@@ -1171,6 +1405,29 @@ internal class HostConnection(
             return
         }
         requestAgentProviders(provider.kind, provider.id, false)
+    }
+
+    @Volatile private var voiceProviderGeneration = -1
+    private data class VoiceProviderPending(val generation: Int, val reply: kotlinx.coroutines.CompletableDeferred<JsonObject>)
+    private val voiceProviderPending = java.util.concurrent.ConcurrentHashMap<String, VoiceProviderPending>()
+
+    internal suspend fun requestVoiceProvider(action: String, provider: VoiceCleanupProvider?, model: String?, text: String?): JsonObject {
+        val current = mutableState.value
+        val requestGeneration = generation
+        check(current.e2eReady && current.connection == RelayConnection.ONLINE && voiceProviderGeneration == requestGeneration)
+        val requestId = UUID.randomUUID().toString()
+        val pending = VoiceProviderPending(requestGeneration, kotlinx.coroutines.CompletableDeferred())
+        voiceProviderPending[requestId] = pending
+        try {
+            check(generation == requestGeneration && relay.sendDeviceMessage(buildJsonObject {
+                put("type", "voice.cleanup.provider.request"); put("protocolVersion", PROTOCOL_VERSION)
+                put("requestId", requestId); put("action", action)
+                provider?.let { put("kind", it.kind); put("id", it.id) }
+                model?.let { put("model", it) }; text?.let { put("text", it) }
+            }))
+            val reply = kotlinx.coroutines.withTimeoutOrNull(17_000) { pending.reply.await() }
+            return requireNotNull(reply).also { check(generation == requestGeneration && it["error"] == null) }
+        } finally { voiceProviderPending.remove(requestId, pending) }
     }
 
     private fun requestAgentProviders(kind: String, id: String?, enabled: Boolean) {
@@ -1765,7 +2022,7 @@ internal class HostConnection(
             if (kind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return@synchronized null
             if (!mutableState.value.supportsSessionConfiguration(kind)) updateState { it.copy(sessionConfiguration =
                 it.sessionConfiguration.copy(agentKind = kind, cwd = cwd)) }
-            // S49 / SC70: reuse the original windowed launch without a send operation.
+            // S49 / SC70: an empty first message launches without a send operation.
             if (text.isBlank()) return@synchronized if (createSession(kind, cwd, expectedHost)) FirstSessionSubmission(null) else null
             if (!validateMessageInput(text, newSession = true)) return@synchronized null
             // One local transaction owns both slots; another state writer cannot consume the send slot after launch.
@@ -1774,7 +2031,7 @@ internal class HostConnection(
                 return@synchronized null
             }
             if (mutableState.value.supportsSessionConfiguration(kind)) {
-                if (!validateNewSessionTarget(expectedHost) || !createConfiguredSession(kind, cwd, if (kind == "openclaw") "headless" else "tui", text)) return@synchronized null
+                if (!validateNewSessionTarget(expectedHost) || !createConfiguredSession(kind, cwd, firstMessage = text)) return@synchronized null
                 val id = configuredLaunchId ?: return@synchronized null
                 return@synchronized FirstSessionSubmission(mutableState.value.pendingSends.values.firstOrNull { it.sessionId == "launch:$id" }?.commandId)
             }
@@ -1895,10 +2152,10 @@ internal class HostConnection(
         }
         // 附件没传成的失败：从原文件重新上传，作为一条新的等待消息（L6：新操作、新身份）。
         if (send.uploadIds.isNotEmpty() && send.attachments.isEmpty()) return resendAfterUpload(runtimeId, send)
-        // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
+        // Match runtime capabilities on resend: Claude supports steer only when steerSupported == true.
         val delivery = when {
             runtime.status == "idle" -> null
-            send.delivery == "steer" && runtime.agentKind != "claude" -> "steer"
+            send.delivery == "steer" && (runtime.agentKind != "claude" || runtime.steerSupported == true) -> "steer"
             else -> "followUp"
         }
         val commandId = sendUserMessage(runtimeId, send.text, delivery, send.attachments) ?: return null
@@ -1967,7 +2224,12 @@ internal class HostConnection(
      */
     fun detachUploads(taskIds: Set<String>) {
         if (taskIds.isEmpty()) return
-        updateState { it.copy(uploads = it.uploads - taskIds) }
+        updateState { state ->
+            val waitingIds = state.pendingSends.values
+                .filter { it.state is PendingSendState.Waiting }
+                .flatMapTo(linkedSetOf()) { it.uploadIds }
+            state.copy(uploads = state.uploads - (taskIds - waitingIds))
+        }
     }
 
     /**
@@ -2736,6 +2998,19 @@ internal class HostConnection(
                 var payload = interactive.payload
                 val interactiveChannel = interactive.channel
                 var incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
+                if (interactiveChannel != null && incomingMessage != null && consumeExternalImport(incomingMessage)) continue
+                if (interactiveChannel != null && incomingMessage != null && currentGeneration == generation &&
+                    supportedProtocolVersion(incomingMessage["protocolVersion"]) != null) {
+                    when ((incomingMessage["type"] as? JsonPrimitive)?.contentOrNull) {
+                        "device.ready" -> voiceProviderGeneration = if ((incomingMessage["hostFeatures"] as? JsonArray)
+                            ?.any { (it as? JsonPrimitive)?.contentOrNull == "voice.cleanup.provider.v1" } == true) currentGeneration else -1
+                        "voice.cleanup.provider.result" -> {
+                            val id = (incomingMessage["requestId"] as? JsonPrimitive)?.contentOrNull
+                            if (id != null) voiceProviderPending[id]?.takeIf { it.generation == currentGeneration }?.reply?.complete(incomingMessage)
+                            continue
+                        }
+                    }
+                }
                 if (interactiveChannel != null && incomingMessage != null && incomingMessage.get("type")?.jsonPrimitive?.contentOrNull == "device.ready") {
                     // Wait for the acknowledged view without tying negotiation to whether Gateway is online.
                     val fallback = "_orbisFilteredFallback" in incomingMessage

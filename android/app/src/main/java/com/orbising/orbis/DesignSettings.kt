@@ -32,10 +32,18 @@ import androidx.compose.ui.unit.dp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: Boolean,
-    onApplyProtocol: (RelayTransportMode) -> Unit,
+    onApplyProtocol: (RelayTransportMode) -> Unit, model: RemoteViewModel? = null,
     onAgentEnabled: (String, Boolean, Long, Boolean) -> Unit = { _, _, _, _ -> }, onAgentRefresh: () -> Unit = {}) {
     var protocolOpen by rememberSaveable { mutableStateOf(false) }
     var languageOpen by rememberSaveable { mutableStateOf(false) }
+    var voiceOpen by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var voiceApiEnabled by remember { mutableStateOf(false) }
+    LaunchedEffect(context) {
+        try { voiceApiEnabled = VoiceCleanupApiStore(context).load() != null }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { }
+    }
     var disableAgent by remember(state.hostId, state.agentEnablementRevision, state.e2eReady) { mutableStateOf<AgentEnablementRow?>(null) }
     Scaffold(containerColor = MaterialTheme.colorScheme.surface, topBar = {
         RemoteTopAppBar(title = { Text(L10n.tr("设置"), fontWeight = FontWeight.SemiBold) }, navigationIcon = {
@@ -81,6 +89,10 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
                 if (state.agentEnablementPending != null) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if (state.agentEnablementFailed) TextButton(onClick = onAgentRefresh) { Text(L10n.tr("刷新")) }
             }
+            SettingsGroup(L10n.tr("语音"), padding = 8.dp) {
+                SettingsRow(L10n.tr("语音清理"), L10n.tr(if (voiceApiEnabled) "自定义模型 API" else "手机本地规则"),
+                    "settings-voice-cleanup", onClick = { voiceOpen = true })
+            }
             SettingsGroup(L10n.tr("外观")) { AppearancePicker() }
             SettingsGroup(L10n.tr("语言"), padding = 8.dp, tag = "settings-language-group") {
                 SettingsRow(L10n.tr("语言"), if (AppLocalization.language == AppLanguage.Chinese) "简体中文" else "English",
@@ -97,6 +109,9 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
                 disableAgent = null
                 state.agentEnablementRevision?.let { onAgentEnabled(agent.kind, false, it, true) }
             }) { Text(L10n.tr("停用")) } })
+    }
+    if (voiceOpen && model != null) VoiceCleanupSettings(model, onDismiss = { voiceOpen = false }) {
+        voiceApiEnabled = it; voiceOpen = false
     }
     if (protocolOpen) ProtocolChoiceSheet(state.relayTransportMode, state.hostId != null, { protocolOpen = false }) {
         protocolOpen = false; onApplyProtocol(it)

@@ -265,5 +265,14 @@ internal fun deliveryChoicesVisible(requested: Boolean, runtimeStatus: String?):
  */
 internal enum class ComposerAction { Send, Abort }
 
-internal fun composerAction(isWorking: Boolean, input: String): ComposerAction =
-    if (isWorking && input.isBlank()) ComposerAction.Abort else ComposerAction.Send
+internal fun composerAction(
+    isWorking: Boolean,
+    input: String,
+    hasAttachments: Boolean = false,
+): ComposerAction =
+    if (isWorking && input.isBlank() && !hasAttachments) ComposerAction.Abort else ComposerAction.Send
+
+internal fun shouldShowPendingStatus(
+    state: PendingSendState?,
+    submissionConfirmed: Boolean = false,
+): Boolean = state != null && !(state == PendingSendState.Accepted && submissionConfirmed)

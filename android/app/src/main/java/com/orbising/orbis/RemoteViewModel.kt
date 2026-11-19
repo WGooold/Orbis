@@ -374,6 +374,44 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         connection.selectRuntime(runtimeId)
     }
 
+    internal suspend fun externalImportDestinations(): List<ExternalImportDestination> = withContext(Dispatchers.Default) {
+        val current = synchronized(lock) { connections.values.toList() }
+        current.flatMap { connection ->
+            val pairing = connection.pairing
+            val state = connection.state.value
+            val pairingKey = externalImportPairingKey(pairing)
+            val hostName = HostSnapshot(pairing, state, hasPendingInteraction = false).name
+            state.externalImportRuntimes().mapNotNull { runtime ->
+                val session = runtime.sessionId ?: return@mapNotNull null
+                ExternalImportDestination(ExternalImportTarget(pairing.hostId, pairingKey, session, runtime.cwd),
+                    hostName, state.sessionDisplayName(session, runtime))
+            }
+        }
+    }
+
+    internal suspend fun deliverExternalImport(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String?) {
+        val hostId = batch.destination?.target?.hostId ?: batch.launch?.hostId ?: reject(ImportProblem.TARGET_UNAVAILABLE)
+        val connection = connectionFor(hostId) ?: reject(ImportProblem.TARGET_UNAVAILABLE)
+        if (batch.destination == null && instruction == null) connection.recoverImportLaunch(batch, inbox)
+        else connection.deliverImport(batch, inbox, instruction)
+    }
+
+    internal fun externalImportHosts(): List<Pair<HostSnapshot, HostConnection>> = synchronized(lock) {
+        connections.values.mapNotNull { connection ->
+            if (!connection.canLaunchExternalImport()) null else HostSnapshot(connection.pairing, connection.state.value, false) to connection
+        }
+    }
+
+    internal fun externalImportConnection(hostId: String): HostConnection? = connectionFor(hostId)
+
+    internal fun externalImportRuntime(target: ExternalImportTarget): RuntimeSummary? {
+        val connection = connectionFor(target.hostId) ?: return null
+        if (externalImportPairingKey(connection.pairing) != target.pairingKey) return null
+        val state = connection.state.value
+        if (state.hostId != target.hostId) return null
+        return state.externalImportRuntimes().firstOrNull { it.sessionId == target.sessionId && it.cwd == target.cwd }
+    }
+
     fun setSessionArchived(sessionId: String, archived: Boolean) =
         active()?.setSessionArchived(sessionId, archived)
 
@@ -389,7 +427,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     internal fun currentLaunchPresentation(): LaunchState? = active()?.state?.value?.launching
 
-    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String = "tui"): Boolean =
+    fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String? = null): Boolean =
         active()?.createSession(agentKind, cwd, expectedHostId, spawnMode) == true
 
     internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =
@@ -564,6 +602,27 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun removeUploads(taskIds: Set<String>) = active()?.removeUploads(taskIds)
 
 
+
+    internal suspend fun requestVoiceProvider(provider: VoiceCleanupProvider, action: String,
+        model: String? = null, text: String? = null): kotlinx.serialization.json.JsonObject =
+        requestVoiceProviderOn(provider.hostId, action, provider, model, text)
+
+    internal suspend fun discoverVoiceProviders(hostId: String): List<VoiceCleanupProvider> {
+        val host = requireNotNull(hosts.value.find { it.hostId == hostId })
+        val reply = requestVoiceProviderOn(hostId, "providers")
+        return kotlinx.serialization.json.Json.decodeFromJsonElement(
+            kotlinx.serialization.builtins.ListSerializer(VoiceCleanupProvider.serializer()), requireNotNull(reply["providers"]),
+        ).map { it.copy(hostId = hostId, hostName = host.name) }
+    }
+
+    private suspend fun requestVoiceProviderOn(hostId: String, action: String, provider: VoiceCleanupProvider? = null,
+        model: String? = null, text: String? = null): kotlinx.serialization.json.JsonObject {
+        // The provider's computer is independent of the active chat. Never reroute to another Host.
+        val connection = requireNotNull(connectionFor(hostId))
+        return connection.requestVoiceProvider(action, provider, model, text).also {
+            check(connectionFor(hostId) === connection)
+        }
+    }
 
     private fun connectionFor(hostId: String): HostConnection? = synchronized(lock) { connections[hostId] }
 

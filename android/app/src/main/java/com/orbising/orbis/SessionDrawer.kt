@@ -100,7 +100,8 @@ internal enum class DrawerAgentFilter(
     Claude("claude", "Claude Code", "claude"),
     Kimi(KIMI_CODE_KIND, "Kimi Code", KIMI_CODE_KIND),
     OpenClaw("openclaw", "OpenClaw", "openclaw"),
-    Hermes("hermes", "Hermes Agent", "hermes");
+    Hermes("hermes", "Hermes Agent", "hermes"),
+    OpenCode("opencode", "OpenCode", "opencode");
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
     val label: String get() = L10n.tr(labelKey)
@@ -122,6 +123,7 @@ private fun DrawerAgentFilterMenu(
     kimiCode: Boolean = false,
     openClaw: Boolean = false,
     hermes: Boolean = false,
+    openCode: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
@@ -165,6 +167,7 @@ private fun DrawerAgentFilterMenu(
                     DrawerAgentFilter.Kimi -> kimiCode
                     DrawerAgentFilter.Hermes -> hermes || filter == selected
                     DrawerAgentFilter.OpenClaw -> openClaw
+                    DrawerAgentFilter.OpenCode -> openCode || filter == selected
                     else -> true
                 }
             }.forEach { filter ->
@@ -238,6 +241,8 @@ internal fun SessionDrawer(
     var savedAgentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
     val agentFilterKey = savedAgentFilterKey.takeUnless { it == KIMI_CODE_KIND && !state.kimiCodeSupported || it == "openclaw" && !state.openClawNegotiated } ?: DrawerAgentFilter.All.key
     val agentFilter = drawerAgentFilter(agentFilterKey)
+    val openCodeUnavailable = state.openCodeAvailability
+        ?.takeIf { state.e2eReady && agentFilter == DrawerAgentFilter.OpenCode }?.message()
     val currentProvider = state.currentProviders[agentFilter.key]
     val hostProvider = activeHostState?.currentProviders?.get(agentFilter.key)
     var requestedProviderKey by rememberSaveable(activeHostId, agentFilterKey) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
@@ -419,6 +424,8 @@ internal fun SessionDrawer(
                             state.sessions.values.any { it.agentKind == "openclaw" }),
                         hermes = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "hermes" in it } ||
                             state.sessions.values.any { it.agentKind == "hermes" },
+                        openCode = state.openCodeAvailability != null || state.supportedAgents?.contains("opencode") == true ||
+                            state.sessions.values.any { it.agentKind == "opencode" },
                     )
 
                 }
@@ -499,7 +506,7 @@ internal fun SessionDrawer(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                if (searchTerm.isEmpty()) {
+                                openCodeUnavailable ?: if (searchTerm.isEmpty()) {
                                     if (showArchived) L10n.tr("没有已归档的会话")
                                     else if (agentFilter.hasProviderFilter && providerKey == CURRENT_CODEX_PROVIDER && currentProvider == null) L10n.tr("尚未获取当前 provider")
                                     else if (agentFilter == DrawerAgentFilter.All) L10n.tr("还没有可显示的会话")

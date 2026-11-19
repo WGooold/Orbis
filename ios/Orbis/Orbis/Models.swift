@@ -142,6 +142,7 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
     var modelSelection: SessionConfigurationValues? = nil
     var executionTurnId: String? = nil
     var permissionManagement: PermissionManagement? = nil
+    var steerSupported: Bool? = nil
     var sessionGraphSync: Bool? = nil
     var sessionLeafId: String? = nil
     /// Host execution activity; kept separate from the phase used by send/stop logic.

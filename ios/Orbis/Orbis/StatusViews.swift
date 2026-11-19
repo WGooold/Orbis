@@ -12,6 +12,8 @@ struct ConnectionStatusView: View {
     @EnvironmentObject private var overlay: OrbisOverlay
     @State private var connectionOpen = false
     @State private var languageOpen = false
+    @State private var voiceCleanupOpen = false
+    @State private var voiceCleanupUsesAPI = false
     @State private var protocolOpen = false
     @State private var proposedProtocol: RelayTransportMode = .auto
     var root = false
@@ -65,6 +67,17 @@ struct ConnectionStatusView: View {
                             }
                         }
                     }
+                    StatusSection(title: L10n.tr("语音")) {
+                        OrbisMotionButton { voiceCleanupOpen = true } label: {
+                            HStack(spacing: 8) {
+                                Text(L10n.tr("语音清理")).font(.orbisBody(.semibold))
+                                Spacer()
+                                Text(L10n.tr(voiceCleanupUsesAPI ? "自定义模型 API" : "手机本地规则"))
+                                    .font(.orbisLabel()).foregroundStyle(palette.secondary)
+                                Image(systemName: "chevron.right").font(.orbisLabel()).foregroundStyle(palette.secondary)
+                            }.frame(minHeight: 56).contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityIdentifier("settings-voice-cleanup")
+                    }
                     StatusSection(title: L10n.tr("外观")) { appearancePicker.padding(.vertical, 12) }
                     StatusSection(title: L10n.tr("语言")) {
                         OrbisMotionButton { languageOpen = true } label: {
@@ -88,6 +101,13 @@ struct ConnectionStatusView: View {
                     ForEach(AppLanguage.allCases, id: \.rawValue) { choice in languageChoice(choice) }
                     Spacer(minLength: 0)
                 }.padding(16).orbisSheet([.medium])
+            }
+            .task { voiceCleanupUsesAPI = (try? SecureStore.shared.voiceCleanupAPIConfig()) != nil }
+            .orbisBottomSheet(isPresented: $voiceCleanupOpen) {
+                VoiceCleanupSettings(onClose: { voiceCleanupOpen = false }, onSaved: { enabled in
+                    voiceCleanupUsesAPI = enabled
+                    voiceCleanupOpen = false
+                }).orbisSheet([.large])
             }
             .orbisBottomSheet(isPresented: $protocolOpen) { protocolSheet.orbisSheet([.medium, .large]) }
     }

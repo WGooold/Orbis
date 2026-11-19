@@ -1,8 +1,8 @@
-# ADR-0090：Host 统一管理 Agent 启用
+# ADR-0093：Host 统一管理 Agent 启用
 
 日期：2026-11-19
 
-状态：桌面 Host、iOS／Android 与九种 Agent 的启停实现已接入；通过定向自动验证，未部署，待用户安装验收。
+状态：桌面 Host、iOS／Android 与十种 Agent 的启停实现已接入；通过定向自动验证，未部署，待用户安装验收。
 
 ## HOST-AGENT-01｜设置与默认值
 
@@ -10,7 +10,7 @@
 
 **启用、已安装／已配置、可启动、已连接是不同状态。** 安装或配置不等于启用；启用不等于预启动，也不自动启动原生桌面应用。现有预启动、终端接入、供应商和权限选项保留为从属设置，不再决定总开关。外部配置（包括环境变量）可提供连接参数，但不覆盖已保存的关闭意愿。
 
-升级只迁移一次：逐项保留可证明的既有接入，例如已配置的 OpenClaw、显式开启的 Kimi、已开启的终端接入或已有明确使用记录的来源。仅检测到安装、存在供应商配置、曾被旧 Host 默认公告，均不算启用证据；已有明确关闭决定优先。没有证据的来源关闭，原配置保留供用户开启后复用。持久化完成前不启动适配器；读取失败应提示错误，不回退到全开。CLI Host 也使用同一状态文件和生命周期；运行期间通过已配对 App 修改，不从第二个进程改写该文件。旧 CLI 标志只参与首次启用迁移；Codex 与 DeepSeek 的预启动在对应总开关开启时才执行。
+升级只迁移一次：逐项保留可证明的既有接入，例如已配置的 OpenClaw、显式开启的 Kimi、已显式开启的预启动／终端接入。仅检测到安装、存在供应商配置、曾被旧 Host 默认公告，均不算启用证据；已有明确关闭决定优先。没有证据的来源关闭，原配置保留供用户开启后复用。持久化完成前不启动适配器；读取失败应提示错误，不回退到全开。CLI Host 也使用同一状态文件和生命周期；运行期间通过已配对 App 修改，不从第二个进程改写该文件。旧 CLI 标志只参与首次启用迁移；Codex 与 DeepSeek 的预启动在对应总开关开启时才执行。
 
 ## HOST-AGENT-02｜各来源的设置、启动与停用
 
@@ -23,7 +23,8 @@
 | DeepSeek Desktop (`dshDesktop`) | 桌面接入状态、由 Orbis 打开／重试 | 停止桌面检测、附着与恢复，取消待完成的打开；不退出 Desktop，不影响 DeepSeek 终端 |
 | Claude Code (`claude`) | CLI 版本、终端接入、插件接入状态及供应商设置 | 跳过插件／Hook 登记，拒绝已有接入点发来的会话注册与事件；不卸载插件，不终止原生 TUI |
 | Hermes Agent (`hermes`) | Gateway profile、连接状态及按需接入 | 跳过发现与按需连接，释放 Orbis 连接；不关闭原生 Gateway、不改 profile |
-| Kimi Code (`kimiCode`) | 原生 Web 地址／主目录、接入状态 | 不发现、不探测、不连接原生 Web 服务；保留参数，不启动或关闭原生服务 |
+| Kimi Code (`kimiCode`) | Web／Desktop 来源、接入状态；保留原生 Web 地址／主目录参数 | 不发现、不探测、不连接所选原生服务；不启停 Web 或 Desktop |
+| OpenCode (`opencode`) | 共享服务接入状态 | 停止发现、事件订阅和会话请求；不启动或停止共享服务 |
 | OpenClaw (`openclaw`) | Gateway 地址、令牌、连接／重试状态 | 断开 Orbis 客户端并停止重连；不清空地址或令牌，不改变 Gateway。移除配置是独立操作 |
 
 每个 `AgentKind` 独立管理。共享配置、凭据、连接或历史按实际所有权保留；关闭其中一项不应让另一来源掉线。新增来源须先登记默认值、设置项、后台任务、启动入口、资源所有权及显示规则，再接入 Host。
@@ -84,3 +85,10 @@ Pi 与 Claude 的原生桥在接纳和接收请求时核对策略；停用只撤
 实现：[原生桥及启停注册](../../packages/host/src/host-service.ts)、[适配器启动契约](../../packages/host/src/agent-backend.ts)、[CLI Host 组合](../../packages/host/src/cli.ts)。新增来源检查清单：添加 `AgentKind`、Host 目录行和生命周期注册；复用启动租约、设备投影及设置协议；补充关闭与开启正对照。只在会话协议不兼容时新增会话能力协商，设置 UI 不增加专用开关。
 
 验证证据： [Node 类型检查及 404 项定向回归](../../.artifacts/agent-enablement-all/node-verified.log)，覆盖双设备广播、重连及撤销、冲突、Pi/Claude 原生桥隔离、刚停用的启动门禁；用 `v0.1.24`、`android-v0.1.60` 源码中的协议验证旧端公告，并以 [v0.1.24 Host 源码构建](../../.artifacts/agent-enablement-all/old-host-compat.log) 验证无管理能力时仍能握手与读取目录。另有 [Qt macOS 构建](../../.artifacts/agent-enablement-all/qt-final.log)、[21 项控制器通过](../../.artifacts/agent-enablement-all/qt-recheck.log)、[Swift 5 项](../../.artifacts/agent-enablement-all/swift.log)、[iOS 无签名模拟器构建](../../.artifacts/agent-enablement-all/ios.log) 及 [Android 定向单元测试](../../.artifacts/agent-enablement-all/android.log)。未以构建或合成 Peer 代替实际安装及交互验收；未部署。
+
+
+## HOST-AGENT-10｜主线接入验证
+
+OpenCode 只在当前启用租约内创建连接监视器和会话适配器。停用撤销订阅和重试；重新启用新建连接代次，不复用已关闭的连接或重发历史操作。会话能力仍按 `agent.opencode` 单独协商。Kimi Code 的 Web／Desktop 是同一个会话来源的两种互斥接入方式，保留来源选择，去掉旧的重复启用控件；显式的旧桌面关闭在首次迁移时优先于继承配置。Linux 保留无头启动策略，不启用桌面发现或原生窗口。
+
+本轮自动证据：[Node 和隔离 OpenCode 加密往返](../../.artifacts/agent-enablement-all/node-integration-final.log)、[桌面控制器](../../.artifacts/agent-enablement-all/qt-integration-final.log)、[Swift 定向回归](../../.artifacts/agent-enablement-all/swift-integration/run.log)、[iOS 模拟器构建](../../.artifacts/agent-enablement-all/ios-integration/run.log)、[Android 定向回归](../../.artifacts/agent-enablement-all/android-integration-final/build.log)。待同一 QA Case 的新候选安装验收；未部署。

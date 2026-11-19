@@ -544,6 +544,30 @@ final class OrbisUITests: XCTestCase {
         agent.typeKey(.home, modifierFlags: [])
         capture("design-provider-keyboard-focus", app: app)
     }
+    func testOpenCodeDraftShowsReadyOrIncompatibleService() {
+        for ready in [false, true] {
+            let fixture = ready ? "--preview-opencode-ready" : "--preview-opencode-incompatible"
+            let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design", fixture])
+            let newSession = app.buttons["home-new-session"]
+            XCTAssertTrue(newSession.waitForExistence(timeout: 8)); newSession.tap()
+            let openCode = app.buttons["draft-agent-opencode"]
+            XCTAssertTrue(openCode.waitForExistence(timeout: 5))
+            let unavailable = app.staticTexts["draft-opencode-unavailable"]
+            if ready {
+                XCTAssertTrue(openCode.isEnabled)
+                XCTAssertFalse(unavailable.exists)
+                openCode.tap()
+                XCTAssertTrue(openCode.isSelected)
+                capture("openCode-ready", app: app)
+            } else {
+                XCTAssertFalse(openCode.isEnabled)
+                XCTAssertTrue(unavailable.waitForExistence(timeout: 2))
+                capture("openCode-incompatible", app: app)
+            }
+            app.terminate()
+        }
+    }
+
     // SC55: native text submission must preserve Shift+Return as a newline.
     func testDraftHardwareReturnAndDesktopOnlySelection() {
         let app = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design", "--preview-draft-desktop-only"])
@@ -3187,6 +3211,7 @@ final class OrbisUITests: XCTestCase {
         let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
         let seededDraft = String(repeating: "跨平台会话输入保持稳定，", count: 24)
         XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["chat-voice-input"].exists, "The composer should expose voice input without changing the send target.")
         let seeded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             composer.value as? String == seededDraft
         }, object: nil)
@@ -3237,7 +3262,7 @@ final class OrbisUITests: XCTestCase {
             XCTAssertEqual(sample.editor.maxY, sample.rowSize.height, accuracy: 0.5)
             XCTAssertEqual(sample.trailing.maxY, sample.rowSize.height, accuracy: 0.5)
         }
-        XCTAssertEqual(app.buttons["发送文件到电脑"].firstMatch.frame.width, 48, accuracy: 0.5)
+        XCTAssertEqual(app.buttons["添加附件"].firstMatch.frame.width, 48, accuracy: 0.5)
         XCTAssertEqual(app.buttons["发送消息"].firstMatch.frame.width, 48, accuracy: 0.5)
         // No extra tap: Capture must retain the real editor and its focus.
         composer.typeText("!")
@@ -3730,6 +3755,8 @@ final class OrbisUITests: XCTestCase {
         let transcript = chatTranscript(app)
         let delivery = app.buttons["preview-history-deliver"]
         XCTAssertTrue(delivery.waitForExistence(timeout: 3))
+        // CHAT-PAGING-02: hold the response and observe the foreground paging indicator.
+        let historyProgress = app.descendants(matching: .any)["chat-history-loading"].firstMatch
         func protocolFields() -> [String: String] {
             Dictionary(uniqueKeysWithValues: ((delivery.value as? String) ?? "").split(separator: ";").compactMap { field in
                 let pair = field.split(separator: "=", maxSplits: 1)
@@ -3742,12 +3769,15 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(protocolFields()["requests"], "0", "Paging starts only after the reader scrolls toward older content")
         XCTAssertEqual(protocolFields()["publishedMessages"], "12")
         XCTAssertEqual(protocolFields()["publishedHistory20"], "false")
+        XCTAssertFalse(historyProgress.exists)
         for _ in 0..<12 where !delivery.isEnabled {
             transcript.swipeDown()
             settle()
         }
         XCTAssertTrue(waitUntilEnabled(delivery, timeout: 3), (delivery.value as? String) ?? "Missing history request")
         guard delivery.isEnabled else { return }
+        XCTAssertTrue(historyProgress.waitForExistence(timeout: 3))
+        XCTAssertEqual(historyProgress.label, "正在加载更早的历史…")
         let pending = protocolFields()
         XCTAssertEqual(pending["requests"], "1")
         XCTAssertEqual(pending["responses"], "0")
@@ -3809,6 +3839,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(completed["publishedMessages"], "32")
         XCTAssertEqual(completed["publishedHistory20"], "true")
         XCTAssertEqual(completed["error"], "none")
+        XCTAssertTrue(historyProgress.waitForNonExistence(timeout: 3))
         capture("history-prepend-reading-anchor", app: app)
         let jump = app.buttons["跳到最新消息"]
         XCTAssertTrue(jump.waitForExistence(timeout: 3))

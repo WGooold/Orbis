@@ -11,7 +11,7 @@
  */
 import { homedir, hostname } from "node:os";
 import { readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { createProcessToolContentStore, type ToolContentStore } from "@orbis/runtime-bridge";
@@ -46,10 +46,16 @@ import {
 import {
   DeviceE2ePayloadSchema,
   DEVICE_FEATURE_MESSAGE_RENDER,
+  DEVICE_FEATURE_OPENCODE,
   DEVICE_FEATURE_KIMI_CODE,
   DEVICE_FEATURE_OPENCLAW,
   DEVICE_FEATURE_HERMES,
-  HOST_FEATURE_DEVICE_FEATURES, AGENT_ENABLEMENT_FEATURE,
+  DEVICE_FEATURE_COMPACT_BOOTSTRAP,
+  DEVICE_FEATURE_CLAUDE_SEND_NOW,
+  HOST_FEATURE_DEVICE_FEATURES,
+  HOST_FEATURE_IMPORT_TARGET,
+  HOST_FEATURE_SESSION_SPAWN_AUTO,
+  AGENT_ENABLEMENT_FEATURE,
   PROTOCOL_VERSION,
   type AgentKind,
   type HostProviderSummary,
@@ -59,6 +65,7 @@ import {
   type DeviceE2ePayload,
   type EnvelopeChannel,
   type EnvelopeV2,
+  type ExternalImportTarget,
   type OutboundQueueSource,
   type PathKind,
   type HostCatalogBackend,
@@ -93,7 +100,7 @@ import { HostDownloadService, hostArtifactIndexPath } from "./artifact-download.
 import { normalizeDeviceRequest } from "./device-protocol.js";
 import { FieldTrafficMeter } from "./field-traffic-meter.js";
 import { SessionWireContent } from "./session-wire-content.js";
-import { encodeDeviceMessage, projectCompactDeviceMessage } from "./device-message-projection.js";
+import { encodeDeviceMessage, omitRuntimeSendNow, projectCompactDeviceMessage, type DeviceMessageProjectionOptions } from "./device-message-projection.js";
 import { CompactStateModel } from "./compact-state-model.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
@@ -107,8 +114,10 @@ import { ClaudeModsBridge } from "./claude-mods-bridge.js";
 import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { OpenCodeServiceConnection, type OpenCodeServiceStatus } from "./opencode-service-connection.js";
+import { OpenCodeBackend } from "./opencode-backend.js";
 import type { DshRuntime } from "./dsh-runtime.js";
-import { DSH_DESKTOP_KIND, policyAgentViews, allowsAgent, allowsAgentIdentity, allowsAgentRequest, allowsRuntime, applyDeviceViewEpoch, deviceAgentView,
+import { DSH_DESKTOP_KIND, OPENCODE_KIND, OPENCODE_RUNTIME_PREFIX, policyAgentViews, allowsAgent, allowsAgentIdentity, allowsAgentRequest, allowsRuntime, applyDeviceViewEpoch, deviceAgentView,
   hiddenKinds, negotiatedAgentFeature, projectAgentMessage, projectBackendDomain, type AgentView } from "./device-agent-visibility.js";
 import { OpenClawBackend } from "./openclaw-backend.js";
 import { loadOpenClawConfig, type OpenClawConfig } from "./openclaw-gateway.js";
@@ -131,6 +140,7 @@ import { ClaudeStartupBlocked } from "./claude-startup.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { ProviderManager, ProviderError } from "./provider-manager.js";
 import { SessionConfigurationStore, SessionConfigurationError, validateSessionConfiguration } from "./session-configuration-store.js";
+import { parseVoiceCleanupRequest, runVoiceCleanup, VOICE_CLEANUP_FEATURE, type VoiceCleanupRequest } from "./voice-cleanup.js";
 import { parseProviderRequest, providerResult, type ProviderRequest } from "./provider-messages.js";
 import type { UsageSnapshot } from "./provider-usage-cache.js";
 
@@ -211,6 +221,8 @@ export type HostServiceOptions = {
   adminToken?: string;
   stateDir?: string;
   reconnect?: boolean;
+  /** ADR-0090: recommend `auto` to clients using the Linux headless CLI profile. */
+  preferAutoSessionSpawn?: boolean;
   /** 关掉本机 loopback 端点（只有测试会这么做：它要的是纯 Relay 路径）。 */
   loopback?: boolean;
   /** 关掉 LAN 端点。关掉后只剩 Relay 一条路径，不影响其他功能。 */
@@ -244,6 +256,9 @@ export type HostServiceOptions = {
    */
   codexRuntime?: CodexRuntime;
   codexDesktopRuntime?: CodexRuntime;
+  /** Read-only connection monitor for the already-running OpenCode shared service. */
+  opencodeConnection?: OpenCodeServiceConnection | false;
+  createOpenCodeConnection?: () => OpenCodeServiceConnection;
   /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
   ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
   /** Codex 桌面版已安装，可在手机新建会话时按需启动；不代表 GUI 当前在线。 */
@@ -394,6 +409,7 @@ export class HostService {
         await connection?.close();
       },
     },
+    opencode: { start: async lease => this.#startOpenCode(true, lease.isCurrent), stop: async () => this.#stopOpenCode() },
     openclaw: { start: async lease => this.#startOpenClaw(lease.isCurrent), stop: async () => this.#stopManagedOpenClaw() },
   } satisfies Record<AgentKind, AgentLifecycleRegistration>, (kind, phase) => this.#options.log?.(`Agent ${kind} ${phase} failed`));
   #managedPolicy: AgentEnablementSnapshot | undefined;
@@ -681,13 +697,14 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#kimi ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#openCodeBackend ? [OPENCODE_KIND] as const : []), ...(this.#kimi ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
     if (this.#hermes?.installed) kinds.push("hermes");
+    const openCodeReason = this.#opencodeConnection?.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "event_stream_unavailable";
     facts.backends({ backends: kinds.filter(kind => !this.#disabledSources.has(kind)).map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
-        reason: backend === undefined ? "backend_not_attached" : backend.isReady() ? null
+        reason: kind === OPENCODE_KIND ? (backend?.isReady() ? null : openCodeReason) : backend === undefined ? "backend_not_attached" : backend.isReady() ? null
           : kind === KIMI_KIND ? this.#kimi?.reason ?? "backend_not_ready" : "backend_not_ready" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
     const catalog = this.#hostStateFacts.read();
@@ -805,6 +822,10 @@ export class HostService {
   #providerFactsGeneration = 0;
   #providerFactsClosing = false;
   #serviceClosed = false;
+  #opencodeConnection: OpenCodeServiceConnection | undefined;
+  #openCodeBackend: OpenCodeBackend | undefined;
+  readonly #openCodePublishedRuntimes = new Set<string>();
+  #unsubscribeOpenCodeStatus: (() => void) | undefined;
   readonly #providerFactsPending = new Set<Promise<void>>();
   #modelLifecycle: HostManagementState["lifecycle"] = "stopped";
   #activationsPending = 0;
@@ -819,6 +840,7 @@ export class HostService {
   readonly #kimiConfigurations: SessionConfigurationStore;
   // Published Hosts strictly decode their launch journal. New Agent records cannot poison it on rollback.
   readonly #openClawLaunches: SessionConfigurationStore;
+  readonly #openCodeConfigurations: SessionConfigurationStore;
   readonly #hermesConfigurations: SessionConfigurationStore;
   #desktopLedgerWrite: Promise<void> = Promise.resolve();
 
@@ -834,6 +856,7 @@ export class HostService {
     // Released Hosts parse every launch entry strictly; never mix new kinds into their file.
     this.#kimiConfigurations = new SessionConfigurationStore(join(stateDir, "kimi-session-configuration.json"));
     this.#openClawLaunches = new SessionConfigurationStore(join(stateDir, "openclaw-session-configuration.json"));
+    this.#openCodeConfigurations = new SessionConfigurationStore(join(stateDir, "opencode-session-configuration.json"));
     this.#hermesConfigurations = new SessionConfigurationStore(join(stateDir, "hermes-session-configuration.json"));
     // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
     this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
@@ -1076,6 +1099,7 @@ export class HostService {
       this.#kimi = options.kimiCodeRuntime;
       this.#attachKimiBackend(this.#kimi);
     }
+    if (!options.agentEnablement) this.#startOpenCode(false);
     this.refreshHostFacts();
   }
 
@@ -1162,8 +1186,8 @@ export class HostService {
       const runtimeId = threadId === undefined ? codex.runtimeId : codex.runtimeIdFor(threadId);
       this.#publishRuntimeEvent(runtimeId, event);
     });
+    codex.onCatalogChange = () => this.#invalidateCatalog();
     codex.onMetadataChange = () => {
-      if (codex.kind === "codexDesktop") this.#invalidateCatalog();
       for (const runtime of codex.directoryEntries()) {
         if (!this.#notifications.has(runtime.runtimeId) || this.#notifications.needsAttach(runtime.runtimeId)) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
         this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
@@ -1230,6 +1254,59 @@ export class HostService {
     this.#dsh[kind].runtime = dsh;
   }
 
+  #startOpenCode(start: boolean, current = (): boolean => true): void {
+    if (this.#options.opencodeConnection === false || !current()) return;
+    const connection = this.#options.createOpenCodeConnection?.() ?? this.#options.opencodeConnection ?? new OpenCodeServiceConnection();
+    this.#opencodeConnection = connection;
+    const admitted = () => current() && this.#opencodeConnection === connection && !this.#providerFactsClosing;
+    this.#unsubscribeOpenCodeStatus = connection.subscribe(() => {
+      if (!admitted()) return;
+      this.refreshHostFacts();
+      this.#invalidateCatalog();
+    });
+    const backend = this.#openCodeBackend = new OpenCodeBackend({
+      connection,
+      hostId: this.#identity.hostId,
+      onRuntimeOnline: runtime => { if (admitted()) this.#registerOpenCodeRuntime(runtime); },
+      onRuntimeOffline: (runtimeId, reason) => this.#unregisterOpenCodeRuntime(runtimeId, reason),
+      onEvent: (runtimeId, event) => { if (admitted()) this.#publishRuntimeEvent(runtimeId, event); },
+      onCatalogChange: () => { if (admitted()) this.#invalidateCatalog(); },
+      onAvailabilityChange: () => { if (admitted()) this.#broadcastDeviceReady(); },
+    });
+    this.#backends.push(backend);
+    if (start) { backend.start(); void connection.start(); }
+  }
+
+  #stopOpenCode(): void {
+    const backend = this.#openCodeBackend, connection = this.#opencodeConnection;
+    this.#openCodeBackend = this.#opencodeConnection = undefined;
+    this.#unsubscribeOpenCodeStatus?.(); this.#unsubscribeOpenCodeStatus = undefined;
+    if (backend) this.#backends = this.#backends.filter(item => item !== backend);
+    backend?.close();
+    connection?.close();
+    this.#invalidateCatalog();
+  }
+
+  #registerOpenCodeRuntime(runtime: RuntimeMetadata): void {
+    const alreadyPublished = this.#openCodePublishedRuntimes.has(runtime.runtimeId);
+    const displaced = this.#agentFacts.displacedRuntime(runtime.runtimeId, runtime);
+    if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
+    this.#openCodePublishedRuntimes.add(runtime.runtimeId);
+    this.#agentFacts.observe(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
+    if (!alreadyPublished) this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
+    if (alreadyPublished) this.#publishRuntimeEvent(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
+    else this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
+    this.refreshHostFacts();
+  }
+
+  #unregisterOpenCodeRuntime(runtimeId: string, reason: string): void {
+    if (!this.#openCodePublishedRuntimes.delete(runtimeId) && this.#agentFacts.scopeOf(runtimeId) === undefined) return;
+    this.#notifications.end(runtimeId);
+    this.#markRuntimeOffline(runtimeId, reason);
+    this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
+    this.refreshHostFacts();
+  }
+
   /** Attach a newly connected DeepSeek backend and publish the changed capability. */
   async attachDshRuntime(runtime: DshRuntime, current = (): boolean => !this.#disabledSources.has(runtime.kind)): Promise<void> {
     if (!current()) return;
@@ -1284,6 +1361,7 @@ export class HostService {
     if (index < 0 || runtime.kind !== "codex") return;
     runtime.setEventSink(() => {});
     runtime.onMetadataChange = undefined;
+    runtime.onCatalogChange = undefined;
     runtime.onOffline = undefined;
     runtime.onArchiveChange = undefined;
     this.#backends.splice(index, 1);
@@ -1309,6 +1387,7 @@ export class HostService {
     if (index < 0 || runtime.kind !== "codexDesktop") return;
     runtime.setEventSink(() => {});
     runtime.onMetadataChange = undefined;
+    runtime.onCatalogChange = undefined;
     runtime.onOffline = undefined;
     runtime.onArchiveChange = undefined;
     runtime.onDesktopThread = undefined;
@@ -1349,9 +1428,13 @@ export class HostService {
     return this.#pairing;
   }
 
+  get kimiCodeConnectionState() { return this.#kimi?.connectionState ?? (this.#managedPolicy && !this.#disabledSources.has(KIMI_KIND) ? "unavailable" : "disabled"); }
+
   get relayState(): HostRelayState {
     return this.#relay?.state ?? "closed";
   }
+
+  get opencodeServiceStatus(): OpenCodeServiceStatus { return this.#opencodeConnection?.status ?? { state: "closed" }; }
 
   /** 本机 loopback 端点。未启用或未启动时为 `undefined`。 */
   get loopback(): HostLoopbackServer | undefined {
@@ -1451,6 +1534,10 @@ export class HostService {
    * 「这台电脑不知道这个会话」。
    */
   async #handleAgentStateRequest(deviceId: string, request: Extract<DeviceE2ePayload, { type: "agent.state.request" }>): Promise<void> {
+    const compact = request.stateFormat === "compact-v1" || request.stateFormat === "compact-v2";
+    // Cancel the fallback replay timer synchronously before any async work so slow
+    // cold connections never emit redundant legacy bootstrap events mid-handshake.
+    if (compact) this.#cancelBootstrapReplay(deviceId);
     const authenticatedLink = this.#links.get(deviceId);
     const view = this.#agentView(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
     this.refreshHostFacts();
@@ -1488,7 +1575,6 @@ export class HostService {
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
     if (request.runtimeId && request.domains?.includes("records")) this.#agentFacts.refreshRecords(request.runtimeId);
-    const compact = request.stateFormat === "compact-v1" || request.stateFormat === "compact-v2";
     const registry = compact ? this.#compactState.ensure(scope) : this.#agentStateRegistry;
     const subscriptions = compact ? this.#compactStateSubscriptions : this.#agentStateSubscriptions;
     if (request.subscribe !== undefined) (compact ? this.#agentStateSubscriptions : this.#compactStateSubscriptions).register(deviceId, scope, { ...request, subscribe: false });
@@ -1557,6 +1643,10 @@ export class HostService {
   }
 
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
+    if (scope.kind === "agent" && domain === "identity"
+      && !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW)) {
+      return omitRuntimeSendNow(value);
+    }
     const view = this.#agentView(deviceId);
     if (!view) return value;
     if (scope.kind === "host") {
@@ -1797,17 +1887,37 @@ export class HostService {
       launchableAgents: this.#launchableAgentsSnapshot(),
       codexDesktop: this.#codexDesktopSnapshot(),
       dshDesktop: this.#dshDesktopSnapshot(),
-      hostFeatures: [HOST_FEATURE_DEVICE_FEATURES, ...(this.#managedPolicy ? [AGENT_ENABLEMENT_FEATURE] : []), DEVICE_FEATURE_MESSAGE_RENDER, DEVICE_FEATURE_OPENCLAW, DEVICE_FEATURE_HERMES, ...(this.#kimi || this.#options.createKimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : [])],
+      hostFeatures: [
+        HOST_FEATURE_DEVICE_FEATURES,
+        ...(this.#managedPolicy ? [AGENT_ENABLEMENT_FEATURE] : []),
+        HOST_FEATURE_IMPORT_TARGET,
+        ...(this.#options.preferAutoSessionSpawn === true ? [HOST_FEATURE_SESSION_SPAWN_AUTO] : []),
+        DEVICE_FEATURE_MESSAGE_RENDER,
+        DEVICE_FEATURE_OPENCLAW,
+        DEVICE_FEATURE_HERMES,
+        DEVICE_FEATURE_OPENCODE,
+        DEVICE_FEATURE_COMPACT_BOOTSTRAP,
+        DEVICE_FEATURE_CLAUDE_SEND_NOW,
+        ...(this.#kimi || this.#options.createKimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : []),
+        ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : []),
+      ],
       sessionConfiguration: 1,
       ...(features && (features.has(DEVICE_FEATURE_OPENCLAW) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
     };
   }
 
+  #cancelBootstrapReplay(deviceId: string): void {
+    const old = this.#bootstrapReplayTimers.get(deviceId);
+    if (old === undefined) return;
+    clearTimeout(old);
+    this.#bootstrapReplayTimers.delete(deviceId);
+  }
+
   /** Give compact clients time to request their scoped model after device.ready;
    * strict old clients still receive the full menu after the bounded grace period. */
   #scheduleBootstrapReplay(deviceId: string, kind: PathKind): void {
-    const old = this.#bootstrapReplayTimers.get(deviceId);
-    if (old !== undefined) clearTimeout(old);
+    this.#cancelBootstrapReplay(deviceId);
+    if (this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_COMPACT_BOOTSTRAP)) return;
     const timer = setTimeout(() => {
       if (this.#bootstrapReplayTimers.get(deviceId) !== timer) return;
       this.#bootstrapReplayTimers.delete(deviceId);
@@ -1822,7 +1932,7 @@ export class HostService {
         this.#sendToDeviceOn(deviceId, kind, { type: "runtime.event", protocolVersion: PROTOCOL_VERSION, runtimeId,
           sequence: this.#nextEventSequence(runtimeId, channelForDeviceMessage({ type: "runtime.event", event })), event });
       }
-    }, Math.max(0, Math.min(1_000, this.#options.bootstrapReplayDelayMs ?? 250)));
+    }, Math.max(0, Math.min(1_000, this.#options.bootstrapReplayDelayMs ?? 1_000)));
     this.#bootstrapReplayTimers.set(deviceId, timer);
   }
 
@@ -1985,7 +2095,11 @@ export class HostService {
     this.#modelLifecycle = "running";
     this.#kimi?.start();
     if (this.#managedPolicy) void this.#managedAgents.reconcile(this.#managedPolicy, true);
-    else void this.#startOpenClaw();
+    else {
+      void this.#startOpenClaw();
+      this.#openCodeBackend?.start();
+      void this.#opencodeConnection?.start();
+    }
     // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
     // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
     // prestarted backend settled, so it cannot open a second connection beside one still starting.
@@ -2193,6 +2307,7 @@ export class HostService {
     // Close publication gates before the first await: pending provider reads can
     // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
+    if (!this.#managedPolicy) this.#stopOpenCode();
     clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
@@ -2321,6 +2436,7 @@ export class HostService {
     this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
     this.#downloads.releaseDevice(deviceId);
     this.#uploads.releaseDevice(deviceId, "artifact_transport_disconnected");
+    this.#uploads.forgetImportAttachments(deviceId);
     this.#sessionSync.clearDevice(deviceId);
     this.#notifications.releaseDevice(deviceId);
     this.#deviceViewFacts.forget(deviceId);
@@ -2448,8 +2564,10 @@ export class HostService {
       const managementChanged = !!this.#managedPolicy && (!!previous?.has(AGENT_ENABLEMENT_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_FEATURE) ||
         !!previous?.has(DEVICE_FEATURE_OPENCLAW) !== message.features.includes(DEVICE_FEATURE_OPENCLAW));
       this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature => feature !== DEVICE_FEATURE_KIMI_CODE || this.#kimi !== undefined || this.#options.createKimiCodeRuntime !== undefined)));
+      const hadClaudeSendNow = previous?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ?? false;
+      if (message.features.includes(DEVICE_FEATURE_COMPACT_BOOTSTRAP)) this.#cancelBootstrapReplay(deviceId);
       const after = this.#agentView(deviceId);
-      if (before === after && !managementChanged && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER)) return;
+      if (before === after && !managementChanged && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER) && hadClaudeSendNow === message.features.includes(DEVICE_FEATURE_CLAUDE_SEND_NOW)) return;
       this.#resetAgentView(deviceId);
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
       for (const runtime of this.#runtimesSnapshot()) {
@@ -2548,6 +2666,15 @@ export class HostService {
       this.#sendToDevice(deviceId, this.#compactState.menuOptions.read(scope && this.#agentStateRegistry.read(scope, "capabilities")?.availability === "ready" ? JSON.stringify(scope) : undefined, message));
       return;
     }
+    if (message.type === "voice.cleanup.provider.request") {
+      const manager = this.#options.providers;
+      const reply = (result: object): void => this.#sendJsonToDevice(deviceId, {
+        type: "voice.cleanup.provider.result", protocolVersion: PROTOCOL_VERSION, requestId: message.requestId, ...result,
+      }, "ctl");
+      if (!manager) reply({ error: "unavailable" });
+      else void runVoiceCleanup(manager, message).then(reply, () => reply({ error: "unavailable" }));
+      return;
+    }
     if (message.type === "provider.list" || message.type === "provider.switch" || message.type === "provider.subscription") {
       void this.#handleProviderRequest(deviceId, message);
       return;
@@ -2583,7 +2710,30 @@ export class HostService {
           requestId: message.requestId, code: "unsupported_command", message: "OpenClaw 会话不支持附件" });
         return;
       }
-      void this.#uploads.handleInit(deviceId, message);
+      const target = message.importTarget;
+      if (target === undefined) {
+        void this.#uploads.handleInit(deviceId, message);
+      } else {
+        const isCurrent = this.#externalImportFence(deviceId, message.runtimeId, target);
+        const directory = join(target.cwd, ".orbis-uploads", message.sha256);
+        if (!isAbsolute(target.cwd) || !isAbsolute(message.directory) || normalize(message.directory) !== directory || !isCurrent()) {
+          this.#sendToDevice(deviceId, { type: "file.upload.failed", protocolVersion: PROTOCOL_VERSION,
+            requestId: message.requestId, code: "import_target_changed", message: "所选会话已不可用" });
+          return;
+        }
+        void this.#uploads.handleInit(deviceId, { ...message, directory }, isCurrent);
+      }
+      return;
+    }
+    if (message.type === "external-import.result.read") {
+      if (!findActiveDeviceRecord(this.#store, deviceId)) return;
+      const { runtimeId, commandId, importTarget } = message;
+      const receipt = this.#commandOwners.importReceipt(deviceId, runtimeId, commandId, importTarget);
+      const status = receipt === undefined ? "unknown" : receipt.type === "runtime.error" ? "unconfirmed"
+        : receipt.status === "pending" ? "pending" : receipt.status === "unconfirmed" || receipt.status === "message_id_conflict" ? "unconfirmed"
+        : receipt.ok && (receipt.status === undefined || receipt.status === "success") ? "accepted" : "failed";
+      this.#sendToDeviceOn(deviceId, path, { type: "external-import.result", protocolVersion: PROTOCOL_VERSION,
+        runtimeId, commandId, importTarget, status });
       return;
     }
     if (message.type === "file.upload.cancel") {
@@ -2664,6 +2814,12 @@ export class HostService {
     if (isKimiId(message.runtimeId) && (command.type === "file.download" || command.type.startsWith("artifact.") || command.type.startsWith("session.change"))) {
       this.#sendToDevice(deviceId, { type: "protocol.error", commandId: message.commandId, code: "unsupported_command", message: "Kimi Code 不提供文件操作" }); return;
     }
+    if (message.importTarget && (command.type !== "user_message" || command.messageId === undefined || command.delivery === "steer"
+      || message.commandId.length > 256)) {
+      this.#sendToDevice(deviceId, { type: "protocol.error", code: "invalid_command", commandId: message.commandId,
+        message: "导入内容只支持发送普通消息或排队" });
+      return;
+    }
     if (this.#providerChanging && ["user_message", "slash.execute", "permissions.update"].includes(command.type) && this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(message.runtimeId))) {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "provider_switching", commandId: message.commandId, message: "正在切换供应商，请稍后重新打开会话" });
       return;
@@ -2739,6 +2895,9 @@ export class HostService {
     deviceId: string,
     message: Extract<DeviceE2ePayload, { type: "runtime.command" }>,
   ): void {
+    const importTarget = message.importTarget;
+    const importFence = importTarget === undefined ? undefined : this.#externalImportFence(deviceId, message.runtimeId, importTarget,
+      message.command.type === "user_message" && message.command.delivery === "followUp");
     if (message.command.type === "slash.execute" && message.command.optionCatalogId !== undefined) {
       const scope = this.#agentFacts.scopeOf(message.runtimeId);
       if (!scope || this.#agentStateRegistry.read(scope, "capabilities")?.availability !== "ready"
@@ -2752,15 +2911,23 @@ export class HostService {
     }
     const { runtimeId, commandId, command } = message;
     if (command.type === "user_message") {
-      const sessionId = this.#runtimesSnapshot().find(item => item.runtimeId === runtimeId)?.sessionId;
+      const rejectTarget = () => this.#sendToDevice(deviceId, { type: "protocol.error", code: "import_target_changed", commandId,
+        message: "所选会话已不可用" });
+      if (importFence && !importFence()) { rejectTarget(); return; }
+      const sessionId = importTarget?.sessionId ?? this.#runtimesSnapshot().find(item => item.runtimeId === runtimeId)?.sessionId;
       if (sessionId !== undefined) {
         // A configured launch may publish runtime.online before native settings are confirmed.
         const epoch = this.#deviceViewEpochs.get(deviceId);
-        void (isKimiId(sessionId) ? this.#kimiConfigurations : sessionId.startsWith(OPENCLAW_PREFIX) ? this.#openClawLaunches : this.#sessionConfigurations).blocks(sessionId).then(blocked => {
+        void (isKimiId(sessionId) ? this.#kimiConfigurations : sessionId.startsWith(OPENCLAW_PREFIX) ? this.#openClawLaunches
+          : runtimeId.startsWith(OPENCODE_RUNTIME_PREFIX) ? this.#openCodeConfigurations : this.#sessionConfigurations).blocks(sessionId).then(async blocked => {
+          const attachmentsVerified = !importTarget || blocked || await this.#uploads.ownsImportAttachments(deviceId, importTarget, command.attachments ?? []);
           if (epoch !== this.#deviceViewEpochs.get(deviceId) || !allowsRuntime(this.#agentView(deviceId), runtimeId)) return;
-          if (blocked) this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "command.result", commandId,
+          if (importFence && !importFence()) rejectTarget();
+          else if (blocked) this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId, { type: "command.result", commandId,
             ok: false, status: "failure", error: "会话启动配置尚未确认，消息未发送" }));
-          else this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command);
+          else if (!attachmentsVerified) this.#sendToDevice(deviceId, { type: "protocol.error", code: "import_attachments_unverified", commandId,
+            message: "请重新上传导入附件" });
+          else this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command, importTarget);
         }).catch(() => this.#sendToDevice(deviceId, this.#runtimeEventMessage(runtimeId,
           { type: "command.result", commandId, ok: false, status: "unconfirmed", error: "启动配置记录无法核对，消息未发送" })));
         return;
@@ -2825,6 +2992,22 @@ export class HostService {
     this.#dispatchRuntimeInput(deviceId, runtimeId, commandId, command);
   }
 
+  /** IMPORT-06: the authenticated device and exact session/project must still own this route. */
+  #externalImportFence(deviceId: string, runtimeId: string, target: ExternalImportTarget, allowRunning = true): () => boolean {
+    const link = this.#links.get(deviceId);
+    const pairing = findActiveDeviceRecord(this.#store, deviceId);
+    return () => {
+      if (this.#serviceClosed || !link?.active || this.#links.get(deviceId) !== link || !pairing
+        || findActiveDeviceRecord(this.#store, deviceId) !== pairing) return false;
+      const matches = this.#runtimesSnapshot().filter(runtime => runtime.runtimeId === runtimeId || runtime.sessionId === target.sessionId);
+      const runtime = matches[0];
+      return matches.length === 1 && runtime?.runtimeId === runtimeId && runtime.sessionId === target.sessionId
+        && runtime.cwd === target.cwd && (runtime.status === "idle" || allowRunning && runtime.status === "running")
+        && this.#backends.filter(backend => backend.isReady() && backend.ownsRuntime(runtimeId)).length === 1
+        && !this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(runtimeId));
+    };
+  }
+
   async #readSessionEntry(deviceId: string, runtimeId: string, command: Extract<import("@orbis/protocol").RuntimeCommand, { type: "session.entry.request" }>): Promise<void> {
     const scope = this.#agentFacts.scopeOf(runtimeId), link = this.#links.get(deviceId);
     if (scope?.kind !== "agent" || scope.key.sessionId !== command.sessionId) {
@@ -2844,10 +3027,11 @@ export class HostService {
       }));
   }
 
-  #dispatchRuntimeInput(deviceId: string, runtimeId: string, commandId: string, command: import("@orbis/protocol").RuntimeCommand): void {
+  #dispatchRuntimeInput(deviceId: string, runtimeId: string, commandId: string, command: import("@orbis/protocol").RuntimeCommand,
+    importTarget?: ExternalImportTarget): void {
     const inputScope = this.#agentFacts.scopeOf(runtimeId);
     const admission = this.#commandOwners.begin(deviceId, runtimeId, commandId, command,
-      inputScope?.kind === "agent" ? agentKeyId(inputScope.key) : runtimeId);
+      inputScope?.kind === "agent" ? agentKeyId(inputScope.key) : runtimeId, importTarget);
     if (admission.kind === "reject") {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: admission.error, commandId,
         message: admission.error === "host_busy" ? "Host 命令任务过多，请稍后重试" : admission.error === "message_id_conflict" ? "消息身份已由另一个命令使用，请核对原消息" : "命令身份与已有请求冲突" });
@@ -2946,28 +3130,38 @@ export class HostService {
 
   /** 实际扫一遍所有后端（`#catalogWithCache` 的唯一慢路径）。 */
   async #collectCatalogs(epoch: number): Promise<AgentSessionSummary[]> {
-    const sessions: AgentSessionSummary[] = [];
+    // Query ready backends concurrently so one slow backend does not stall the whole catalog.
     // 逐后端记结果：拉取失败或后端没就绪，在模型里都不能退化成「它没有会话」（ADR-0032 模块 03）。
-    const backends: HostCatalogBackend[] = [];
-    for (const backend of this.#backends) {
-      if (this.#disabledSources.has(backend.kind)) continue;
+    const results = await Promise.all(this.#backends.filter(backend => !this.#disabledSources.has(backend.kind)).map(async (backend): Promise<{
+      sessions: AgentSessionSummary[];
+      summary: HostCatalogBackend;
+    }> => {
       if (!backend.isReady()) {
-        backends.push({ kind: backend.kind, ready: false, sessions: 0, complete: false, elapsedMs: 0 });
-        continue;
+        return { sessions: [], summary: { kind: backend.kind, ready: false, sessions: 0, complete: false, elapsedMs: 0 } };
       }
       const started = Date.now();
       try {
         const load = (archived: boolean) => backend.catalogCoverage?.(archived)
           ?? (archived ? backend.catalog(true) : backend.catalog()).then(sessions => ({ sessions, complete: true }));
-        const [active, archived] = await Promise.all([load(false), backend.archivedCatalogSupported === false ? Promise.resolve({ sessions: [], complete: true }) : load(true)]);
+        const [active, archived] = await Promise.all([
+          load(false),
+          backend.archivedCatalogSupported === false ? Promise.resolve({ sessions: [], complete: true }) : load(true),
+        ]);
         const catalog = [...new Map([...active.sessions, ...archived.sessions].map((entry) => [entry.sessionId, entry])).values()];
         this.#options.log?.(`[debug] session.list：${backend.kind} 返回 ${catalog.length} 条（${Date.now() - started}ms）`);
-        sessions.push(...catalog);
         const complete = typeof backend.catalogComplete === "function" ? backend.catalogComplete() : backend.catalogComplete !== false;
-        const reasons = [ ...(backend.archivedCatalogSupported === false ? ["archived_catalog_unsupported"] : []),
-          ...(!complete ? ["catalog_limit_reached"] : []) ];
-        backends.push({ kind: backend.kind, ready: true, sessions: catalog.length, complete: active.complete && archived.complete && reasons.length === 0,
-          elapsedMs: Date.now() - started, ...(reasons.length ? { error: reasons.join(",") } : {}) });
+        const reasons = [
+          ...(backend.archivedCatalogSupported === false ? ["archived_catalog_unsupported"] : []),
+          ...(!complete ? ["catalog_limit_reached"] : []),
+        ];
+        return {
+          sessions: catalog,
+          summary: {
+            kind: backend.kind, ready: true, sessions: catalog.length,
+            complete: active.complete && archived.complete && reasons.length === 0,
+            elapsedMs: Date.now() - started, ...(reasons.length ? { error: reasons.join(",") } : {}),
+          },
+        };
       } catch (error) {
         const detail = describeError(error).slice(0, 500);
         this.#options.log?.(`拉取 ${backend.kind} 会话目录失败，本次跳过该后端：${detail}`);
@@ -2975,9 +3169,14 @@ export class HostService {
           scope: "host", agentKind: backend.kind, sessionId: null, category: "catalog", severity: "error",
           message: `拉取 ${backend.kind} 会话目录失败`, detail: { agentKind: backend.kind, reason: detail.slice(0, 256) },
         });
-        backends.push({ kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail });
+        return {
+          sessions: [],
+          summary: { kind: backend.kind, ready: true, sessions: 0, complete: false, elapsedMs: Date.now() - started, error: detail },
+        };
       }
-    }
+    }));
+    const sessions = results.flatMap(result => result.sessions);
+    const backends = results.map(result => result.summary);
     const desktopIds = this.#desktopOwnedIds;
     const visible = sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId));
 
@@ -3061,7 +3260,7 @@ export class HostService {
     const current = () => sourceCurrent() && link?.active !== undefined && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId);
     if (!current() || !allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message); return; }
     let ledger = kind === KIMI_KIND ? this.#kimiConfigurations : kind === OPENCLAW_KIND ? this.#openClawLaunches
-      : kind === "hermes" ? this.#hermesConfigurations : this.#sessionConfigurations;
+      : kind === "hermes" ? this.#hermesConfigurations : kind === OPENCODE_KIND ? this.#openCodeConfigurations : this.#sessionConfigurations;
     const sendLaunch = async (launchId: string) => {
       const observed = await ledger.result(deviceId, launchId, message.requestId);
       if (!current()) return;
@@ -3077,6 +3276,8 @@ export class HostService {
         if (allowsAgent(this.#agentView(deviceId), OPENCLAW_KIND) && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#openClawLaunches;
         if (!current()) return;
         if (allowsAgent(this.#agentView(deviceId), "hermes") && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#hermesConfigurations;
+        if (!current()) return;
+        if (allowsAgent(this.#agentView(deviceId), OPENCODE_KIND) && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#openCodeConfigurations;
         if (!current()) return;
         await this.#recoverSessionLaunch(ledger, deviceId, message.launchId, current);
         await sendLaunch(message.launchId); return;
@@ -3253,7 +3454,8 @@ export class HostService {
     const receipted = message.type === "session.archive" || message.type === "session.activate";
     const operationRuntimeId = message.type === "session.archive" ? message.sessionId : message.type === "session.activate"
       ? message.target.type === "resume" ? message.target.sessionId : message.target.agentKind === DSH_DESKTOP_KIND ? "dsh-desktop:launch"
-        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : message.target.agentKind === OPENCLAW_KIND ? "openclaw:launch" : message.target.agentKind === "hermes" ? "hermes:launch" : this.#identity.hostId
+        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : message.target.agentKind === OPENCLAW_KIND ? "openclaw:launch" : message.target.agentKind === "hermes" ? "hermes:launch"
+        : message.target.agentKind === OPENCODE_KIND ? `${OPENCODE_RUNTIME_PREFIX}launch` : this.#identity.hostId
       : this.#identity.hostId;
     // Scope receipts for gated runtimes before a device reconnects with an older build.
     const receiptRuntimeId = allowsRuntime(deviceAgentView(), operationRuntimeId) ? this.#identity.hostId : operationRuntimeId;
@@ -3425,7 +3627,7 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady() || !allowsAgent(this.#agentView(deviceId), backend.kind)) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND || backend.kind === OPENCLAW_KIND || backend.kind === "hermes")) continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND || backend.kind === OPENCLAW_KIND || backend.kind === "hermes" || backend.kind === OPENCODE_KIND)) continue;
         try {
           const requireCurrent = requireLaunch(backend.kind);
           requireCurrent();
@@ -3561,14 +3763,16 @@ export class HostService {
     const backend = codex && rich && scope?.kind === "agent" ? this.#backends.find(candidate => candidate.kind === scope.key.agentKind) as CodexRuntime | undefined : undefined;
     const rendered = this.#deviceMessageRendering.project(deviceId, message, { rich, codex, ...(cwd === undefined ? {} : { cwd }),
       ...(backend && runtimeId ? { generatedImagePath: (id: string) => backend.generatedImagePath?.(runtimeId, id) } : {}) });
+    const claudeSendNow = this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) === true;
     return this.#encodeMeasured(this.#compactStateSubscriptions.supportsSharedContent(deviceId)
-      ? (rich ? this.#richSessionWireContent : this.#sessionWireContent).project(projectCompactDeviceMessage(rendered), rich ? deviceId : undefined) : rendered);
+      ? (rich ? this.#richSessionWireContent : this.#sessionWireContent).project(projectCompactDeviceMessage(rendered), rich ? deviceId : undefined)
+      : rendered, { claudeSendNow });
   }
 
   readTransportFields(): ReturnType<FieldTrafficMeter["snapshot"]> { return this.#fieldTraffic.snapshot(); }
 
-  #encodeMeasured(message: object): Buffer {
-    const payload = encodeDeviceMessage(message);
+  #encodeMeasured(message: object, options?: DeviceMessageProjectionOptions): Buffer {
+    const payload = encodeDeviceMessage(message, options);
     this.#measurePayload(payload, message); return payload;
   }
 
@@ -3968,7 +4172,7 @@ function isAddressInUse(error: unknown): boolean {
     (error as { code?: unknown }).code === "EADDRINUSE";
 }
 
-function parseDevicePayload(payload: Buffer): DeviceE2ePayload | LanDiscoveryRequest | GitBranchRequest | ProviderRequest | undefined {
+function parseDevicePayload(payload: Buffer): DeviceE2ePayload | LanDiscoveryRequest | GitBranchRequest | ProviderRequest | VoiceCleanupRequest | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(payload.toString("utf8")) as unknown;
@@ -3977,5 +4181,5 @@ function parseDevicePayload(payload: Buffer): DeviceE2ePayload | LanDiscoveryReq
   }
   const result = DeviceE2ePayloadSchema.safeParse(parsed);
   if (result.success) return result.data;
-  return parseLanDiscoveryRequest(parsed) ?? parseGitBranchRequest(parsed) ?? parseProviderRequest(parsed);
+  return parseLanDiscoveryRequest(parsed) ?? parseGitBranchRequest(parsed) ?? parseProviderRequest(parsed) ?? parseVoiceCleanupRequest(parsed);
 }

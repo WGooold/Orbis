@@ -377,8 +377,8 @@ export class ClaudeBackend implements AgentBackend {
 
     if (command.type === "user_message") {
       if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
-      // Claude Mods only submits once the turn ends; a Pi-style steer would be a lie.
-      if (command.delivery === "steer") {
+      // Older Claude Mods plugins without prompt.sendNow cannot interrupt a running turn.
+      if (command.delivery === "steer" && !this.#options.modsBridge.supportsPromptSendNow(runtimeId)) {
         this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false,
           status: "failure", error: "claude_steer_unsupported" });
         return "handled";
@@ -387,7 +387,9 @@ export class ClaudeBackend implements AgentBackend {
       const text = command.attachments === undefined || command.attachments.length === 0
         ? command.text : `${command.text}\n\n附件路径：\n${command.attachments.join("\n")}`;
       const result = this.#options.modsBridge.sendCommand(runtimeId, commandId,
-        { type: "user_message", text, ...(command.messageId === undefined ? {} : { messageId: command.messageId }) });
+        { type: "user_message", text,
+          ...(command.messageId === undefined ? {} : { messageId: command.messageId }),
+          ...(command.delivery === undefined ? {} : { delivery: command.delivery }) });
       return this.#reportModsCommandResult(runtimeId, commandId, result);
     }
     if (command.type === "slash.execute") {
@@ -417,8 +419,20 @@ export class ClaudeBackend implements AgentBackend {
       return this.#reportModsCommandResult(runtimeId, commandId, result);
     }
     if (command.type === "user_message.cancel") {
-      this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: false,
-        status: "not_cancelable", error: "claude_prompt_submit_not_cancelable" });
+      if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
+      const result = this.#options.modsBridge.cancelQueuedMessage(runtimeId, command.messageId);
+      if (result === "offline") return "offline";
+      if (result === "cancelled") {
+        this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: true, status: "cancelled" });
+        return "handled";
+      }
+      this.#options.onCommandResult?.(runtimeId, {
+        type: "command.result",
+        commandId,
+        ok: false,
+        status: result,
+        error: result === "already_delivered" ? "消息已送达或不存在" : "claude_prompt_submit_not_cancelable",
+      });
       return "handled";
     }
     if (command.type === "session.sync") {
@@ -449,8 +463,7 @@ export class ClaudeBackend implements AgentBackend {
 
   async #sync(runtimeId: string, commandId: string, command: Extract<RuntimeCommand, { type: "session.sync" }>): Promise<void> {
     const emit = (event: RuntimeEvent): void => this.#options.onEvent?.(runtimeId, event);
-    // Claude submits wait for idle inside the TUI; there is no Host-visible delivery queue.
-    emit({ type: "delivery.snapshot", items: [], complete: true });
+    emit(this.#options.modsBridge.deliverySnapshot(runtimeId) ?? { type: "delivery.snapshot", items: [], complete: true });
     const activity = this.#options.modsBridge.activity(runtimeId);
     if (activity !== undefined) emit(activity);
     let snapshot: Awaited<ReturnType<ClaudeModsBridge["sync"]>>;

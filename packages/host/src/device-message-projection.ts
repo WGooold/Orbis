@@ -40,42 +40,53 @@ const record = (value: unknown, project: Projection): unknown => {
   return next ?? value;
 };
 
+export type DeviceMessageProjectionOptions = {
+  /** Keep `steerSupported` only for devices that advertised `claude.send-now.v1` (ADR-0064). */
+  readonly claudeSendNow?: boolean;
+};
+
 const option: Projection = value => omit(value, ["description"]);
 const argument: Projection = value => field(omit(value, ["hint"]), "options", value => array(value, option));
 const command: Projection = value => field(omit(value, ["description", "hint"]), "argument", argument);
 const management: Projection = value => field(value, "settings", value => array(value,
   value => field(value, "options", value => array(value, option))));
-const metadata: Projection = value => field(value, "permissionManagement", management);
+export const omitRuntimeSendNow: Projection = value => omit(value, ["steerSupported"]);
+const metadataProjection = (claudeSendNow: boolean): Projection => value => {
+  const projected = field(value, "permissionManagement", management);
+  return claudeSendNow ? projected : omitRuntimeSendNow(projected);
+};
 
-const runtimeEvent: Projection = value => {
+const runtimeEventProjection = (claudeSendNow: boolean): Projection => value => {
   if (!isObject(value)) return value;
   if (value.type === "runtime.capabilities") return field(value, "capabilities",
     value => field(value, "commands", value => array(value, command)));
-  if (value.type === "runtime.metadata") return field(value, "metadata", metadata);
+  if (value.type === "runtime.metadata") return field(value, "metadata", metadataProjection(claudeSendNow));
   return value;
 };
 
-const domain: Projection = value => {
+const domainProjection = (claudeSendNow: boolean): Projection => value => {
   if (!isObject(value)) return value;
   if (value.domain === "capabilities" || value.domain === "resources") return field(value, "value", value => record(value, command));
-  if (value.domain === "identity") return field(value, "value", metadata);
+  if (value.domain === "identity") return field(value, "value", metadataProjection(claudeSendNow));
   if (value.domain === "permissions") return field(value, "value", value => field(value, "management", management));
   return value;
 };
 
-export function projectDeviceMessage(message: object): object {
+export function projectDeviceMessage(message: object, options?: DeviceMessageProjectionOptions): object {
+  const claudeSendNow = options?.claudeSendNow ?? true;
   const value = message as ObjectValue;
   switch (value.type) {
-    case "runtime.event": return field(value, "event", runtimeEvent) as object;
-    case "runtime.online": return field(value, "runtime", metadata) as object;
-    case "device.ready": return field(value, "runtimes", value => array(value, metadata)) as object;
+    case "runtime.event": return field(value, "event", runtimeEventProjection(claudeSendNow)) as object;
+    case "runtime.online": return field(value, "runtime", metadataProjection(claudeSendNow)) as object;
+    case "device.ready": return field(value, "runtimes", value => array(value, metadataProjection(claudeSendNow))) as object;
     case "agent.state.snapshot": return value.scope === "agent"
-      ? field(value, "domains", value => array(value, domain)) as object : message;
+      ? field(value, "domains", value => array(value, domainProjection(claudeSendNow))) as object : message;
     default: return message;
   }
 }
 
-export const encodeDeviceMessage = (message: object): Buffer => Buffer.from(JSON.stringify(projectDeviceMessage(message)), "utf8");
+export const encodeDeviceMessage = (message: object, options?: DeviceMessageProjectionOptions): Buffer =>
+  Buffer.from(JSON.stringify(projectDeviceMessage(message, options)), "utf8");
 
 const compactEvents = new WeakMap<object, unknown>();
 const pick = (value: unknown, keys: readonly string[]): unknown => !isObject(value) ? {} :

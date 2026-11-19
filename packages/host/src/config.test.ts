@@ -29,7 +29,7 @@ describe("Orbis Host configuration", () => {
     const stateDir = await mkdtemp(join(tmpdir(), "orbis-desktop-kimi-config-"));
     temporaryDirectories.push(stateDir);
     expect((await loadKimiCodeConfig(stateDir, {})).kimiCodeEnabled).toBe(false);
-    const settings = { kimiCodeEnabled: true, kimiCodeHome: join(stateDir, "kimi"), kimiCodeEndpoint: "http://127.0.0.1:58627" };
+    const settings = { kimiCodeSource: "web", kimiCodeEnabled: true, kimiCodeHome: join(stateDir, "kimi"), kimiCodeEndpoint: "http://127.0.0.1:58627" };
     await writeFile(join(stateDir, "config.json"), JSON.stringify(settings));
     expect(await loadKimiCodeConfig(stateDir, {})).toEqual(settings);
     expect(await loadKimiCodeConfig(stateDir, { KIMI_CODE_HOME: join(stateDir, "other") }))

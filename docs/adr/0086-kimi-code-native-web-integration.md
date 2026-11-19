@@ -72,3 +72,21 @@ Kimi 作为独立 `AgentBackend`（`agentKind: "kimiCode"`）接入 Host。`sess
 [sessions]: https://github.com/MoonshotAI/kimi-code/blob/b0de2fbd2de04d87689225aafd3912e5d193b62d/docs/en/reference/server-api-sessions.md
 [acp]: https://github.com/MoonshotAI/kimi-code/blob/b0de2fbd2de04d87689225aafd3912e5d193b62d/docs/en/reference/kimi-acp.md
 [instances]: https://github.com/MoonshotAI/kimi-code/blob/b0de2fbd2de04d87689225aafd3912e5d193b62d/packages/kap-server/src/instanceRegistry.ts
+
+## KIMI-10：桌面图形界面（[#58](https://github.com/WGooold/Orbis/issues/58)）
+
+在 Host「设置 → 常规」复用现有开关与应用按钮。保存显式选择后，运行中的 Host 按既有流程重连；暂停的 Host 不自动启动。首次未选择时继承原有本地配置；图形界面的显式选择仅覆盖桌面运行，不改 CLI 配置。共享 QA 构建不展示生产接入开关。
+
+连接状态来自当前适配器，不从开关、安装状态或 Relay 连接推断。只显示短状态，启动说明放在按需提示中，不要求粘贴凭据，也不代启停 Kimi。移动端继续按协商能力显示原有选择器和会话组件。
+
+已实现。macOS Qt 构建、定向测试与最小窗口设置渲染通过；证据见 `verification.json` 中的 `desktopUi`。Windows 安装与手动验收待完成，未部署。
+
+## KIMI-11：Kimi Code Desktop 内嵌服务（[#59](https://github.com/WGooold/Orbis/issues/59)）
+
+保留独立 Web 路径；桌面模式直接接官方 Kimi Code 应用自己的服务，不另启 `kimi web`，不使用 Browser MCP，不包装或改写桌面应用，也不调用 `takeover`。两个模式均可选择，每个 Host 对同一数据根只接一种来源；共享数据目录不是共享运行状态。切换来源必须显式操作，不做跨来源回退。
+
+先验证 macOS arm64 Desktop 1.3.7（内嵌 2.6.2）的实例登记 PID、应用签名和 API 契约，再复用会话、输入和交互适配。非已验证桌面平台不宣告支持。验收区分原生桌面服务上的链路验证与桌面／手机 UI 验收。
+
+Host 设置在「常规 → 接入 Kimi Code」选择 Web／桌面版；CLI 用 `ORBIS_KIMI_CODE_SOURCE=desktop orbis host --kimi-code`，未配置来源仍走 Web。桌面服务只接受同一注册 PID 的签名应用和实际监听地址。桌面会话与 Web 会话使用不同的 Orbis ID 前缀，避免跨来源误恢复或发送；现有 Web ID 保持不变。两者复用原有 `agent.kimiCode` 协商及移动端界面。
+
+**验证。** 官方桌面包与 Web 服务分别通过实际加密链路：从原生端新建并暂停在审批中的同一会话，可由参考设备续接、拒绝审批，原生订阅者收到终态；另验证 Orbis 新建、历史、重连、精确停止且不清除后续原生队列。Desktop 另通过发布版 Relay 与旧 Host JS runtime 回退；macOS Qt 的来源选择与最小窗口渲染通过。Node 全量 2,576 通过、19 跳过；首轮继承本机 Codex wrapper 配置引起的两项失败保留，隔离该配置后复跑通过。证据：`.artifacts/kimi-desktop-discovery/verification.json`。未部署；Kimi 窗口实际操作、手机安装及用户验收仍待完成。

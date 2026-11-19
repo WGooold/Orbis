@@ -1248,9 +1248,12 @@ private final class PreviewTransport: OrbisTransport {
                         self.event(["type": "command.result", "commandId": commandId, "ok": false, "status": "failure", "error": "runtime_busy"], runtimeId: runtime)
                         return
                     }
+                    if mode == "pi" {
+                        self.event(["type": "command.result", "commandId": commandId, "ok": true, "status": "pending"], runtimeId: runtime)
+                        // Long enough for UI automation to observe the pending row before the Host commits it.
+                        try? await Task.sleep(nanoseconds: 3_600_000_000)
+                    }
                     self.event(["type": "command.result", "commandId": commandId, "ok": true, "status": "success"], runtimeId: runtime)
-                    // Long enough for UI automation to observe the pending row before the Host commits it.
-                    if mode == "pi" { try? await Task.sleep(nanoseconds: 4_000_000_000) }
                     self.commitSent(text: text, clientId: clientId, runtime: runtime)
                 }
             } else if type == "slash.execute" {
@@ -1305,9 +1308,20 @@ private final class PreviewTransport: OrbisTransport {
         case "diagnostics": return ["records": 3, "dropped": 0, "persistFailures": 0, "checkedAt": 1793232000000]
         case "catalog": return ["totalSessions": 7, "truncated": false, "nextCursor": NSNull(),
                                 "backends": ["pi", "codex", "dsh"].map { ["kind": $0, "ready": true, "complete": true] }]
-        case "backends": return ["backends": ["pi", "codex", "dsh"].map { ["kind": $0, "ready": true] },
-                                 "agents": ["pi", "codex", "dsh"], "launchableAgents": ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop-only") ? ["codexDesktop"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop") ? ["pi", "codex", "codexDesktop", "dsh"] : ["pi", "codex", "dsh"],
-                                 "codexDesktop": ["state": "closed", "reason": "Codex 桌面版未打开"]]
+        case "backends":
+            let arguments = ProcessInfo.processInfo.arguments
+            let openCodeReady = arguments.contains("--preview-opencode-ready")
+            let openCodeIncompatible = arguments.contains("--preview-opencode-incompatible")
+            let agents = ["pi", "codex", "dsh"] + (openCodeReady ? ["opencode"] : [])
+            let launchable = arguments.contains("--preview-draft-desktop-only") ? ["codexDesktop"] : arguments.contains("--preview-draft-desktop") ? ["pi", "codex", "codexDesktop", "dsh"] : agents
+            var rows: [[String: Any]] = ["pi", "codex", "dsh"].map { ["kind": $0, "ready": true] }
+            if openCodeReady {
+                rows.append(["kind": "opencode", "ready": true])
+            } else if openCodeIncompatible {
+                rows.append(["kind": "opencode", "ready": false, "reason": "unsupported_version"])
+            }
+            return ["backends": rows, "agents": agents, "launchableAgents": launchable,
+                    "codexDesktop": ["state": "closed", "reason": "Codex 桌面版未打开"]]
         case "management": return ["lifecycle": "running", "platform": "darwin", "nodeVersion": "v24"]
         default: return [:]
         }

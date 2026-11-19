@@ -207,11 +207,14 @@ final class HostConnection: ObservableObject {
     @Published private(set) var commands: [String: [SlashCommand]] = [:] { didSet { homeViewRevision &+= 1; chatRewindRevision &+= 1 } }
     @Published private(set) var supportedAgents: [String]?
     @Published private(set) var launchableAgents: [String]?
+    @Published private(set) var openCodeAvailability: OpenCodeAvailability?
     @Published private(set) var sessionConfigurationSupported = false
     @Published private(set) var kimiCodeSupported = false {
         didSet { if oldValue != kimiCodeSupported { directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
     }
     @Published private(set) var openClawNegotiated = false
+    // ADR-0090: only an authenticated Host that advertises `session.spawn.auto` changes the legacy default.
+    private var defaultSessionSpawnMode = "tui"
     @Published private(set) var sessionConfiguration: SessionConfigurationSnapshot?
     @Published private(set) var proposedSessionConfiguration: SessionConfigurationValues?
     @Published private(set) var sessionConfigurationRequest: String?
@@ -336,7 +339,7 @@ final class HostConnection: ObservableObject {
         guard creation == .created else { return false }
         let payload: [String: Any] = ["type": "session.launch", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id,
             "agentKind": agent, "cwd": cwd, "binding": config.binding, "revision": config.revision, "values": agent == "openclaw" ? SessionConfigurationValues().payload : sessionConfigurationValues.payload,
-            "spawnMode": agent == "openclaw" ? "headless" : kimiSpawnMode(agent)]
+            "spawnMode": agent == "openclaw" ? "headless" : kimiSpawnMode(agent, otherwise: defaultSessionSpawnMode)]
         let firstId = UUID().uuidString, firstCommand = UUID().uuidString
         guard let persisted = writeLaunchJournal(payload.merging(["firstMessage": firstMessage, "firstMessageId": firstId, "firstCommandId": firstCommand]) { _, new in new }, creating: true) else {
             ledger.remove(id); return false
@@ -423,6 +426,7 @@ final class HostConnection: ObservableObject {
         var unconfirmed = false
         /// 用户仍停在这个启动页：成功后切到真实会话；离开后不再把用户拉回，会话照常出现在首页。
         var following = true
+        var spawnModeOverride: String? = nil
     }
     @Published private(set) var launching: LaunchState?
     /// 启动期间消息的占位 Session → 确认后的 Session。
@@ -503,6 +507,265 @@ final class HostConnection: ObservableObject {
         return cards.filter { !closing.contains($0.id) }.map { card in var copy = card; copy.error = runtimeIndex[card.id]?.sessionId == card.runtime.sessionId ? objectError(card.id) : nil; return copy }
     }
     var homeRuntimes: [RuntimeSummary] { homeCards.map(\.runtime) }
+    /// IMPORT-06: read the live catalog, not the selected chat or cached history.
+    func externalImportRuntime(_ target: ExternalImportTarget) -> RuntimeSummary? {
+        guard let host = selectedHost, target.hostId == host.hostId,
+              target.pairingKey == PushNotificationIdentity.pairingKey(host) else { return nil }
+        return externalImportRuntimes().first { $0.sessionId == target.sessionId && $0.cwd == target.cwd }
+    }
+
+    func externalImportDestinations() -> [ExternalImportDestination] {
+        guard let host = selectedHost else { return [] }
+        let pairingKey = PushNotificationIdentity.pairingKey(host)
+        return externalImportRuntimes().compactMap { runtime in
+            guard let sessionId = runtime.sessionId else { return nil }
+            return ExternalImportDestination(target: .init(hostId: host.hostId, pairingKey: pairingKey,
+                sessionId: sessionId, cwd: runtime.cwd), hostName: host.hostName,
+                sessionName: directoryCatalog.titles[sessionId] ?? sessionTitle(runtime: runtime, session: sessionIndex[sessionId]))
+        }
+    }
+
+    private func externalImportRuntimes() -> [RuntimeSummary] {
+        guard connection == .secured, homeDirectoryReceived else { return [] }
+        let counts = Dictionary(grouping: runtimes.compactMap(\.sessionId), by: { $0 }).mapValues(\.count)
+        let closing = closingRuntimeIds, archiving = OperationKinds.archiveOverrides(ledger)
+        return runtimes.filter { runtime in
+            guard let id = runtime.sessionId, !id.isEmpty, counts[id] == 1, !runtime.cwd.isEmpty,
+                  ["idle", "running"].contains(runtime.status), !closing.contains(runtime.runtimeId),
+                  archiving[id] == nil else { return false }
+            guard let session = sessionIndex[id] else { return true }
+            return session.archived != true && providerMismatch(session) == nil
+        }
+    }
+    // IMPORT-06: sending a draft must not resolve through the currently selected chat or Host.
+    private var importReady = false
+    private var importDeliveryActive = false
+    private var importWait: (attempt: ExternalImportAttempt, target: ExternalImportTarget, query: Bool,
+                             continuation: CheckedContinuation<ExternalImportReceipt, Never>, timeout: Task<Void, Never>)?
+
+    private func importConnection(_ target: ExternalImportTarget) -> Bool {
+        guard let host = selectedHost, host.hostId == target.hostId,
+              PushNotificationIdentity.pairingKey(host) == target.pairingKey else { return false }
+        return connection == .secured && homeDirectoryReceived && importReady && transport.allowsExternalImports
+    }
+
+    var canLaunchExternalImport: Bool {
+        connection == .secured && homeDirectoryReceived && importReady && transport.allowsExternalImports && sessionConfigurationSupported
+    }
+
+    private enum ImportLaunchResult: Equatable { case ready(String), failed, unconfirmed }
+    private var importLaunchWait: (launch: ExternalImportLaunch, requestId: String, query: Bool,
+                                   continuation: CheckedContinuation<ImportLaunchResult, Never>, timeout: Task<Void, Never>)?
+
+    private func matchesImportLaunch(_ launch: ExternalImportLaunch) -> Bool {
+        guard let host = selectedHost else { return false }
+        return host.hostId == launch.hostId && PushNotificationIdentity.pairingKey(host) == launch.pairingKey && canLaunchExternalImport
+    }
+
+    func launchExternalImport(_ batch: ExternalImportBatch, from inbox: ExternalImportStore,
+                              agent: String, cwd: String, instruction: String) async throws {
+        guard !importDeliveryActive else { throw ExternalImportProblem.busy }
+        guard canLaunchExternalImport, let host = selectedHost else { throw ExternalImportProblem.hostUpgrade }
+        guard let config = sessionConfiguration, config.agentKind == agent, config.cwd == cwd,
+              sessionConfigurationRequest == nil, sessionConfigurationError == nil,
+              (launchableAgents ?? supportedAgents ?? []).contains(agent), !cwd.isEmpty else { throw ExternalImportProblem.launchConfiguration }
+        importDeliveryActive = true; defer { importDeliveryActive = false }
+        let launch = ExternalImportLaunch(id: "import-launch:" + UUID().uuidString, hostId: host.hostId,
+            pairingKey: PushNotificationIdentity.pairingKey(host), hostName: host.hostName, agent: agent, cwd: cwd, instruction: instruction)
+        let generation = connectionGeneration, history = historyGeneration, epoch = admittedModelEpoch
+        let fallback = L10n.tr("请查看附件。"), prefix = L10n.tr("导入的内容：")
+        try await Task.detached {
+            _ = try ExternalImportStore.messageBody(text: batch.text, instruction: instruction, attachmentFallback: fallback, quotedPrefix: prefix)
+            try inbox.reserveLaunch(batch.id, launch: launch)
+        }.value
+        guard matchesImportLaunch(launch), generation == connectionGeneration, history == historyGeneration, epoch == admittedModelEpoch,
+              config == sessionConfiguration, sessionConfigurationRequest == nil, sessionConfigurationError == nil else {
+            try await Task.detached { try inbox.failLaunch(batch.id, launchId: launch.id) }.value
+            throw ExternalImportProblem.launchConfiguration
+        }
+        let result = await waitForExternalLaunch(launch, configuration: config)
+        try await continueExternalLaunch(batch, launch: launch, result: result, inbox: inbox)
+    }
+
+    /// Recovery reads the original Host launch. It never sends another create, even if Host reports absence.
+    func recoverExternalLaunch(_ batch: ExternalImportBatch, in inbox: ExternalImportStore) async throws {
+        guard !importDeliveryActive else { throw ExternalImportProblem.busy }
+        guard batch.attempt == nil, let launch = batch.launch, !launch.failed, matchesImportLaunch(launch) else { throw ExternalImportProblem.targetUnavailable }
+        importDeliveryActive = true; defer { importDeliveryActive = false }
+        let result = await waitForExternalLaunch(launch, configuration: nil)
+        try await continueExternalLaunch(batch, launch: launch, result: result, inbox: inbox)
+    }
+
+    private func continueExternalLaunch(_ batch: ExternalImportBatch, launch: ExternalImportLaunch,
+                                        result: ImportLaunchResult, inbox: ExternalImportStore) async throws {
+        if result == .failed { try await Task.detached { try inbox.failLaunch(batch.id, launchId: launch.id) }.value; return }
+        guard case .ready(let sessionId) = result, matchesImportLaunch(launch) else { return }
+        let target = ExternalImportTarget(hostId: launch.hostId, pairingKey: launch.pairingKey, sessionId: sessionId, cwd: launch.cwd)
+        let bound = try await Task.detached {
+            try inbox.bindLaunch(batch.id, launch: launch, destination: .init(target: target, hostName: launch.hostName,
+                sessionName: directoryTitle(launch.cwd)))
+        }.value
+        // Ready confirms configuration separately from the live runtime directory.
+        for _ in 0..<50 {
+            guard matchesImportLaunch(launch) else { return }
+            if let runtime = externalImportRuntime(target), agentKind(runtime) == launch.agent {
+                try await deliverExternalBatch(bound, from: inbox, instruction: launch.instruction)
+                return
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw ExternalImportProblem.targetUnavailable
+    }
+
+    private func waitForExternalLaunch(_ launch: ExternalImportLaunch, configuration: SessionConfigurationSnapshot?) async -> ImportLaunchResult {
+        await withCheckedContinuation { continuation in
+            let query = configuration == nil, requestId = "import-launch:" + UUID().uuidString
+            let timeout = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(query ? 20 : 90)) } catch { return }
+                guard self?.importLaunchWait?.requestId == requestId else { return }
+                self?.finishExternalLaunch(.unconfirmed)
+            }
+            importLaunchWait = (launch, requestId, query, continuation, timeout)
+            var wire: [String: Any] = ["type": query ? "session.launch.read" : "session.launch", "protocolVersion": orbisProtocolVersion,
+                                       "requestId": requestId, "launchId": launch.id]
+            if let configuration {
+                wire["agentKind"] = launch.agent; wire["cwd"] = launch.cwd; wire["binding"] = configuration.binding
+                wire["revision"] = configuration.revision; wire["values"] = configuration.values.payload; wire["spawnMode"] = defaultSessionSpawnMode
+            }
+            if !transport.send(wire) { finishExternalLaunch(.unconfirmed) }
+        }
+    }
+
+    private func finishExternalLaunch(_ result: ImportLaunchResult) {
+        guard let wait = importLaunchWait else { return }
+        importLaunchWait = nil; wait.timeout.cancel(); wait.continuation.resume(returning: result)
+    }
+
+    private func consumeExternalLaunch(_ message: [String: Any], type: String) -> Bool {
+        guard type == "session.launch.result" || type == "protocol.error",
+              let request = message["requestId"] as? String, request.hasPrefix("import-launch:") else { return false }
+        guard let wait = importLaunchWait, wait.requestId == request else { return true }
+        if type == "protocol.error" { finishExternalLaunch(.unconfirmed); return true }
+        guard message["launchId"] as? String == wait.launch.id else { return true }
+        switch message["phase"] as? String {
+        case "ready":
+            if message["agentKind"] as? String == wait.launch.agent, message["cwd"] as? String == wait.launch.cwd,
+               let sessionId = message["sessionId"] as? String, !sessionId.isEmpty {
+                finishExternalLaunch(.ready(sessionId))
+            } else { finishExternalLaunch(.unconfirmed) }
+        case "failed": finishExternalLaunch(message["sessionId"] == nil ? .failed : .unconfirmed)
+        case "unknown", "absent": finishExternalLaunch(.unconfirmed)
+        default: if wait.query { finishExternalLaunch(.unconfirmed) }
+        }
+        return true
+    }
+
+    func sendExternalImport(_ batch: ExternalImportBatch, from inbox: ExternalImportStore, instruction: String) async throws {
+        guard !importDeliveryActive else { throw ExternalImportProblem.busy }
+        importDeliveryActive = true; defer { importDeliveryActive = false }
+        try await deliverExternalBatch(batch, from: inbox, instruction: instruction)
+    }
+
+    private func deliverExternalBatch(_ batch: ExternalImportBatch, from inbox: ExternalImportStore, instruction: String) async throws {
+        guard let target = batch.destination?.target, let runtime = externalImportRuntime(target) else { throw ExternalImportProblem.targetUnavailable }
+        guard importConnection(target) else { throw ExternalImportProblem.hostUpgrade }
+        let generation = connectionGeneration, history = historyGeneration, epoch = admittedModelEpoch
+        let runtimeId = runtime.runtimeId, ownership = runtimeOwnership[runtimeId]
+        func current() -> Bool {
+            !Task.isCancelled && connectionGeneration == generation && historyGeneration == history && admittedModelEpoch == epoch &&
+                runtimeOwnership[runtimeId] == ownership && importConnection(target) && externalImportRuntime(target)?.runtimeId == runtimeId
+        }
+        let sources = try await Task.detached { try inbox.uploadSources(batch.id, target: target) }.value
+        let fallback = L10n.tr("请查看附件。"), prefix = L10n.tr("导入的内容：")
+        let body = try await Task.detached {
+            try ExternalImportStore.messageBody(text: batch.text, instruction: instruction, attachmentFallback: fallback, quotedPrefix: prefix)
+        }.value
+        var paths: [String] = []
+        for (source, file) in sources {
+            paths.append(try await transfers.uploadImport(source, file: file, target: target, runtimeId: runtimeId, ifReady: current))
+        }
+        guard current() else { throw ExternalImportProblem.targetUnavailable }
+        let attempt = ExternalImportAttempt(id: UUID(), runtimeId: runtimeId, receipt: .pending, instruction: instruction)
+        try await Task.detached { try inbox.beginDelivery(batch.id, target: target, attempt: attempt) }.value
+        let receipt: ExternalImportReceipt
+        if current(), let runtime = externalImportRuntime(target) {
+            let id = attempt.id.uuidString
+            var command: [String: Any] = ["type": "user_message", "text": body, "messageId": id]
+            if runtime.status == "running" { command["delivery"] = "followUp" }
+            if !paths.isEmpty { command["attachments"] = paths }
+            receipt = await waitForImport(attempt, target: target, query: false, command: command)
+        } else { receipt = .failed }
+        try await Task.detached { try inbox.recordDelivery(batch.id, attempt: attempt.id, receipt: receipt) }.value
+    }
+
+    func checkExternalImport(_ batch: ExternalImportBatch, in inbox: ExternalImportStore) async throws {
+        guard !importDeliveryActive else { throw ExternalImportProblem.busy }
+        guard let target = batch.destination?.target, let attempt = batch.attempt,
+              attempt.receipt != .accepted, attempt.receipt != .failed else { return }
+        guard importConnection(target) else { throw ExternalImportProblem.targetUnavailable }
+        importDeliveryActive = true; defer { importDeliveryActive = false }
+        let receipt = await waitForImport(attempt, target: target, query: true)
+        try await Task.detached { try inbox.recordDelivery(batch.id, attempt: attempt.id, receipt: receipt) }.value
+    }
+
+    private func waitForImport(_ attempt: ExternalImportAttempt, target: ExternalImportTarget, query: Bool,
+                               command: [String: Any]? = nil) async -> ExternalImportReceipt {
+        guard importConnection(target) else { return query ? .unconfirmed : .failed }
+        return await withCheckedContinuation { completion in
+            let id = attempt.id.uuidString
+            let timeout = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(query ? 10 : 65)) } catch { return }
+                guard self?.importWait?.attempt.id == attempt.id else { return }
+                self?.finishExternalImport(.unconfirmed)
+            }
+            importWait = (attempt, target, query, completion, timeout)
+            var wire: [String: Any] = ["type": query ? "external-import.result.read" : "runtime.command",
+                "protocolVersion": orbisProtocolVersion, "runtimeId": attempt.runtimeId, "commandId": id,
+                "importTarget": ["sessionId": target.sessionId, "cwd": target.cwd]]
+            if let command { wire["command"] = command }
+            if !transport.send(wire) { finishExternalImport(query ? .unconfirmed : .failed) }
+        }
+    }
+
+    private func finishExternalImport(_ result: ExternalImportReceipt) {
+        guard let wait = importWait else { return }
+        importWait = nil; wait.timeout.cancel(); wait.continuation.resume(returning: result)
+    }
+
+    private func consumeExternalImport(_ message: [String: Any], type: String) -> Bool {
+        if type == "external-import.result" {
+            if let wait = importWait, wait.query, message["commandId"] as? String == wait.attempt.id.uuidString,
+               message["runtimeId"] as? String == wait.attempt.runtimeId, let target = message["importTarget"] as? [String: String],
+               target["sessionId"] == wait.target.sessionId, target["cwd"] == wait.target.cwd,
+               let status = (message["status"] as? String).flatMap(ExternalImportReceipt.init(rawValue:)) {
+                finishExternalImport(status)
+            }
+            return true
+        }
+        guard let wait = importWait else { return false }
+        if type == "protocol.error", message["commandId"] as? String == wait.attempt.id.uuidString {
+            let definite = ["import_target_changed", "import_attachments_unverified", "runtime_offline", "unsupported_command", "provider_switching", "host_busy", "invalid_command"]
+            finishExternalImport(!wait.query && definite.contains(message["code"] as? String ?? "") ? .failed : .unconfirmed)
+            return true
+        }
+        if type == "runtime.event", !wait.query, message["runtimeId"] as? String == wait.attempt.runtimeId,
+           let event = message["event"] as? [String: Any], event["commandId"] as? String == wait.attempt.id.uuidString {
+            switch event["type"] as? String {
+            case "command.result":
+                switch event["status"] as? String {
+                case "pending": break
+                case "failure": finishExternalImport(.failed)
+                case "success", nil: finishExternalImport(event["ok"] as? Bool == true ? .accepted : .failed)
+                default: finishExternalImport(.unconfirmed)
+                }
+                return true
+            case "runtime.error": finishExternalImport(.unconfirmed); return true
+            default: break
+            }
+        }
+        return false
+    }
+
     private var homeActionsRevision = -1
     private var selectableHomeIds: Set<String> = []
     private var closableHomeIds: Set<String> = []
@@ -805,6 +1068,10 @@ final class HostConnection: ObservableObject {
         do { identity = try secure.deviceIdentity() }
         catch { recordConnectionEvent(String(describing: error)); connectionFeedback(.pairing) }
         transfers.send = { [weak self] in self?.transport.send($0) ?? false }
+        transfers.canUploadImport = { [weak self] target, runtimeId in
+            guard let self else { return false }
+            return self.importConnection(target) && self.externalImportRuntime(target)?.runtimeId == runtimeId
+        }
         hostState.send = { [weak self] in self?.transport.send($0) ?? false }
         agentState.send = { [weak self] in self?.transport.send($0) ?? false }
         agentStateObservation = agentState.objectWillChange.sink { [weak self] _ in
@@ -835,6 +1102,7 @@ final class HostConnection: ObservableObject {
                 // A missing list means unknown (no restriction), the same as Android; never "nothing can start".
                 self.supportedAgents = backends.value["agents"].isArray ? backends.value["agents"].array.compactMap(\.string) : nil
                 self.launchableAgents = backends.value["launchableAgents"].isArray ? backends.value["launchableAgents"].array.compactMap(\.string) : nil
+                self.openCodeAvailability = OpenCodeAvailability(backends: backends.value["backends"])
                 self.codexDesktop = backends.value["codexDesktop"].decoded(CodexDesktopAttach.self).flatMap { $0.valid ? $0 : nil }
             }
         }
@@ -998,6 +1266,7 @@ final class HostConnection: ObservableObject {
         }
         pairings = []
         guard selectedHostId == hostId else { return }
+        importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
         connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
@@ -1021,6 +1290,7 @@ final class HostConnection: ObservableObject {
 
     func shutdown() {
         clearFeedbackScope()
+        importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
         connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
@@ -1051,6 +1321,8 @@ final class HostConnection: ObservableObject {
 
     private func connect(pairing: HostPairing, identity: DeviceIdentity) {
         homeDirectoryReceived = false
+        defaultSessionSpawnMode = "tui"
+        importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
         connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
@@ -1092,7 +1364,7 @@ final class HostConnection: ObservableObject {
         interactions = [:]; queuedMessages = [:]; interactionOutcomes = [:]
         workingBranches = [:]; dismissPreview()
         actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; composerActionDrafts = [:]; pendingActionIds = []; setActionFeedback(nil)
-        pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil; kimiCodeSupported = false
+        pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil; kimiCodeSupported = false; openCodeAvailability = nil
         dismissBrowse(); clearActivation()
         clearSyncs()
         transport.connect(pairing: pairing, identity: identity, receive: { [weak self] message, channel in
@@ -1106,7 +1378,7 @@ final class HostConnection: ObservableObject {
             else { self.ledgerOpenConnection() }
             self.connection = state
             if state != .secured { self.pathRTT = nil }
-            if state != .secured { self.homeDirectoryReceived = false; self.filteredReady = nil; self.resetAgentEnablement() }
+            if state != .secured { self.homeDirectoryReceived = false; self.defaultSessionSpawnMode = "tui"; self.filteredReady = nil; self.resetAgentEnablement(); self.importReady = false; self.finishExternalImport(.unconfirmed); self.finishExternalLaunch(.unconfirmed) }
             self.recordConnectionEvent(L10n.tr("连接：{0}", state.rawValue))
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
             if state != .secured { self.openClawNegotiated = false; self.kimiCodeSupported = false; self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
@@ -1917,7 +2189,7 @@ final class HostConnection: ObservableObject {
         var target: [String: Any] = ["type": "resume", "sessionId": session.sessionId]
         let kind = kimi ? kimiCodeKind : session.agentKind
         if let kind { target["agentKind"] = kind }
-        activateTarget(target, sessionId: session.sessionId, spawnMode: kimiSpawnMode(kind))
+        activateTarget(target, sessionId: session.sessionId, spawnMode: kimi ? "headless" : nil)
     }
 
     func createSession(agentKind: String, cwd: String) {
@@ -1925,7 +2197,7 @@ final class HostConnection: ObservableObject {
         if supportsSessionConfiguration(for: agentKind) { _ = createSession(agentKind: agentKind, cwd: cwd, firstMessage: ""); return }
         activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new")
     }
-    /// S49 / SC70: an empty draft reuses the original windowed launch; a first sentence also queues a send.
+    /// S49 / SC70: an empty draft only launches; a first sentence also queues a send.
     func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
         reconcilePendingSends()
         guard !cwd.isEmpty, connection == .secured, activationRequestId == nil else { return false }
@@ -1966,7 +2238,7 @@ final class HostConnection: ObservableObject {
     }
     #endif
 
-    private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String = "tui", displayTitle: String? = nil) {
+    private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String? = nil, displayTitle: String? = nil) {
         guard connection == .secured, activationRequestId == nil else { return }
         let requestId = UUID().uuidString
         let placeholder = "launch:" + requestId
@@ -1975,7 +2247,7 @@ final class HostConnection: ObservableObject {
                                      payload: .launch(requestId: requestId, placeholder: placeholder), written: false, now: Date())
         guard creation == .created else { return }
         guard transport.send(["type": "session.activate", "protocolVersion": orbisProtocolVersion,
-                              "requestId": requestId, "target": target, "spawnMode": spawnMode]) else {
+                              "requestId": requestId, "target": target, "spawnMode": spawnMode ?? defaultSessionSpawnMode]) else {
             ledger.remove(requestId); handleLedger([])
             sessionLaunchError = L10n.tr("未连接到电脑，连接恢复后可重试。"); sessionLaunchErrorAwaitsConnection = true; return
         }
@@ -1991,7 +2263,7 @@ final class HostConnection: ObservableObject {
             ?? (cwd.split(separator: "/").last.map(String.init) ?? L10n.tr("新会话"))
         launching = LaunchState(requestId: requestId, placeholder: placeholder,
                                 target: target.compactMapValues { $0 as? String }, title: title, cwd: cwd,
-                                agentKind: target["agentKind"] as? String, resumed: resumed, sessionId: resumed)
+                                agentKind: target["agentKind"] as? String, resumed: resumed, sessionId: resumed, spawnModeOverride: spawnMode)
         if let resumed, let session = sessionIndex[resumed], openCachedSession(session) { return }
         toolContent.close(); turnFileChanges.clear(); dismissPreview()
         selectedOfflineSession = nil; selectedRuntimeId = placeholder; messages = []; cachedHistoryOptions = []
@@ -2010,7 +2282,7 @@ final class HostConnection: ObservableObject {
         var target: [String: Any] = launch.target
         if let kind { target["agentKind"] = kind }
         launching = nil
-        activateTarget(target, sessionId: launch.resumed ?? "new", spawnMode: kimiSpawnMode(kind), displayTitle: launch.title)
+        activateTarget(target, sessionId: launch.resumed ?? "new", spawnMode: kind == kimiCodeKind ? "headless" : launch.spawnModeOverride, displayTitle: launch.title)
     }
 
     /// 用户离开了启动页：启动继续，成功后不把用户拉回，会话照常出现在首页。
@@ -2697,9 +2969,9 @@ final class HostConnection: ObservableObject {
             let restarted = transfers.tasks.filter { send.uploadIds.contains($0.id) }
             return sendWhenReady(send.text, delivery: send.delivery, uploads: restarted, runtime: runtime)
         }
-        // 按当前状态选择投递方式：忙时直发会被拒绝，Claude 也不支持插入。
+        // Match runtime capabilities on resend: Claude supports steer only when steerSupported == true.
         let delivery: String? = runtime.status == "idle" ? nil
-            : send.delivery == "steer" && agentKind(runtime) != "claude" ? "steer" : "followUp"
+            : send.delivery == "steer" && (agentKind(runtime) != "claude" || runtime.steerSupported == true) ? "steer" : "followUp"
         pendingSends.remove(messageId)
         guard sendUserMessage(send.text, delivery: delivery, attachments: send.attachments, runtime: runtime) else {
             pendingSends.add(send); publishMessages(); return false
@@ -2992,6 +3264,7 @@ final class HostConnection: ObservableObject {
             connectionFeedback(.version)
             return
         }
+        if consumeExternalImport(message, type: type) || consumeExternalLaunch(message, type: type) { return }
         if type == "protocol.error", connectionFatalProtocolCodes.contains(message["code"] as? String ?? "") {
             recordConnectionEvent("protocol.error.fatal: " + String(describing: message))
             connectionFeedback(FeedbackText.protocolCondition(message["code"] as? String) ?? .version)
@@ -3122,6 +3395,7 @@ final class HostConnection: ObservableObject {
             let modelEpoch = message["modelEpoch"] as? String
             let hostRestarted = modelEpoch != nil && authenticatedModelEpoch != nil && modelEpoch != authenticatedModelEpoch
             if let modelEpoch { authenticatedModelEpoch = modelEpoch }
+            importReady = (message["hostFeatures"] as? [String])?.contains("external-import.target-v1") == true
             homeDirectoryReceived = true
             let selectedLeafChanged = next.first(where: { $0.runtimeId == selectedRuntimeId }).map { next in
                 runtimes.first(where: { $0.runtimeId == next.runtimeId })?.sessionLeafId != next.sessionLeafId
@@ -3152,6 +3426,7 @@ final class HostConnection: ObservableObject {
             launchableAgents = message["launchableAgents"] as? [String]
             sessionConfigurationSupported = message["sessionConfiguration"] as? Int == 1
             kimiCodeSupported = hasNegotiatedKimiCode(message)
+            defaultSessionSpawnMode = features.contains("session.spawn.auto") ? "auto" : "tui"
             recoverConfiguredLaunch()
             codexDesktop = (message["codexDesktop"] as? [String: Any]).flatMap(jsonDecode).flatMap { $0.valid ? $0 : nil }
             notifications.ready(epoch: message["notificationEpoch"] as? String, runtimes: runtimes)

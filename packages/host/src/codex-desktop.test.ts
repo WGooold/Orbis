@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CodexAppServer, type CodexTransport } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
@@ -28,10 +28,16 @@ function transport(reply: (frame: Record<string, unknown>) => Record<string, unk
   return { value, close };
 }
 
+const runtimes: CodexRuntime[] = [];
+afterEach(async () => { for (const runtime of runtimes.splice(0)) await runtime.stop(); });
+
 function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: string) {
   const loaded = new Set<string>();
   const native = new Set<string>();
   const subagents = new Set<string>();
+  const ephemeral = new Set<string>();
+  const history = new Map<string, unknown[]>();
+  const noRollout = new Set<string>();
   const parents = new Map<string, string>();
   const events: Array<{ event: RuntimeEvent; threadId?: string }> = [];
   const archived = new Set<string>();
@@ -40,19 +46,21 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
   const stop = vi.fn(async () => {});
   let releaseResume: (() => void) | undefined;
   let pauseResume = false;
-  const request = vi.fn(async (method: string, params?: { threadId?: string; archived?: boolean }) => {
+  const request = vi.fn(async (method: string, params?: { threadId?: string; archived?: boolean; includeTurns?: boolean; limit?: number }) => {
     calls.push(method);
     if (method === "model/list" || method === "skills/list" || method === "mcpServerStatus/list") return { data: [] };
     if (method === "thread/loaded/list") return { data: [...loaded] };
     if (method === "thread/list") return { data: [...native].filter(id => archived.has(id) === (params?.archived === true)).map(id => ({
       id, cwd: "D:/repo", name: id, createdAt: 1_780_000_000, updatedAt: 1_780_000_001, turns: [],
       ...(subagents.has(id) ? { source: { subAgent: "review" } } : {}),
+      ...(ephemeral.has(id) ? { ephemeral: true, threadSource: "thread_title" } : {}),
     })) };
     const id = params?.threadId ?? "";
     const thread = { id, cwd: "D:/repo", name: id, path: archived.has(id) ? "D:/archived_sessions/rollout.jsonl" : "D:/sessions/rollout.jsonl", status: { type: status.get(id) ?? "idle" }, turns: [],
       ...(subagents.has(id) ? { source: { subAgent: "review" } } : {}),
+      ...(ephemeral.has(id) ? { ephemeral: true, threadSource: "thread_title" } : {}),
       ...(parents.has(id) ? { parentThreadId: parents.get(id), agentNickname: id } : {}) };
-    if (method === "thread/read") return { thread };
+    if (method === "thread/read") return { thread: { ...thread, turns: params?.includeTurns ? history.get(id) ?? [] : [] } };
     if (method === "thread/archive" || method === "thread/unarchive") {
       if (method === "thread/archive") archived.add(id);
       else archived.delete(id);
@@ -60,7 +68,10 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
     }
     if (method === "thread/start") return { thread: { id: "fresh", cwd: "D:/repo", name: "fresh", path: "D:/sessions/rollout.jsonl", status: { type: "idle" }, turns: [] }, model: "gpt-5.5" };
     if (method === "thread/unsubscribe") return {};
-    if (method === "thread/turns/list") return { data: [] };
+    if (method === "thread/turns/list") {
+      if (noRollout.has(id)) throw new Error(`thread ${id} is not materialized yet; thread/turns/list is unavailable before first user message`);
+      return { data: history.get(id) ?? [] };
+    }
     if (method === "thread/resume") {
       if (pauseResume) await new Promise<void>(resolve => { releaseResume = resolve; });
       return { thread, model: "gpt-5.5" };
@@ -69,9 +80,11 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
   });
   const server = { mode, endpoint, request, stop, notify: vi.fn() } as unknown as CodexAppServer;
   const opened: string[] = [];
-  const runtime = new CodexRuntime({ server, onEvent: (event, threadId) => { events.push({ event, ...(threadId ? { threadId } : {}) }); }, rolloutRoot: testDirectorySync(join(tmpdir(), "orbis-desktop-test-")), openHeadWindow: ({ sessionId }) => { opened.push(sessionId); } });
+  const rolloutRoot = testDirectorySync(join(tmpdir(), "orbis-desktop-test-"));
+  const runtime = new CodexRuntime({ server, onEvent: (event, threadId) => { events.push({ event, ...(threadId ? { threadId } : {}) }); }, rolloutRoot, openHeadWindow: ({ sessionId }) => { opened.push(sessionId); } });
+  runtimes.push(runtime);
   const notify = (method: string, params: unknown) => server.onNotification?.(method, params);
-  return { loaded, native, subagents, parents, events, archived, status, calls, stop, request, server, runtime, notify, opened,
+  return { loaded, native, subagents, parents, ephemeral, history, noRollout, events, archived, status, calls, stop, request, server, runtime, notify, opened, rolloutRoot,
     pause: () => { pauseResume = true; },
     release: () => { releaseResume?.(); },
   };
@@ -129,6 +142,7 @@ describe("Codex desktop attachment", () => {
   it("discovers loaded idle and later desktop threads, then removes closed sessions", async () => {
     const h = desktopHarness();
     h.loaded.add("first");
+    h.native.add("first");
     h.runtime.markStarted();
     await vi.waitFor(() => expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["codex-desktop:first"]));
     expect(h.runtime.kind).toBe("codexDesktop");
@@ -136,6 +150,7 @@ describe("Codex desktop attachment", () => {
     expect(h.runtime.ownsRuntime("codex-desktop:first")).toBe(true);
     expect(h.calls).toContain("thread/resume");
     h.loaded.add("second");
+    h.native.add("second");
     h.notify("thread/started", { threadId: "second" });
     await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(2));
     h.loaded.delete("first");
@@ -146,10 +161,132 @@ describe("Codex desktop attachment", () => {
     expect(h.stop).toHaveBeenCalledOnce();
   });
 
+  // CODEX-DESKTOP-DRAFT-01: reproduce the two visible native IDs plus Desktop's internal title thread.
+  it.each([false, true])("keeps a passive draft hidden and adopts the first real turn (same ID=%s)", async reuseDraft => {
+    const h = desktopHarness();
+    h.loaded.add("draft");
+    h.noRollout.add("draft"); // thread/read still advertises a rollout path.
+    h.runtime.onDesktopThread = vi.fn();
+    h.runtime.markStarted();
+    await vi.waitFor(() => expect(h.request.mock.calls.some(([method, p]) => method === "thread/turns/list" && p?.threadId === "draft")).toBe(true));
+    expect(h.runtime.directoryEntries()).toEqual([]);
+    expect(h.runtime.onDesktopThread).not.toHaveBeenCalled();
+
+    const id = reuseDraft ? "draft" : "conversation";
+    h.loaded.add(id);
+    h.noRollout.delete(id);
+    h.history.set(id, [{ id: "first", status: "completed", items: [
+      { id: "first-user", type: "userMessage", content: [{ type: "text", text: "first message" }] },
+    ] }]);
+    // The status may already be idle and the catalog may lag a fast first turn.
+    h.loaded.add("title");
+    h.status.set("title", "active");
+    h.ephemeral.add("title");
+    h.history.set("title", [{ id: "title-turn", status: "inProgress", items: [] }]);
+    h.notify("thread/status/changed", { threadId: id, status: { type: "idle" } });
+    await vi.waitFor(() => expect(h.runtime.directoryEntries()).toMatchObject([{
+      sessionId: `codex-desktop:${id}`, sessionLeafId: "first-user",
+    }]));
+    expect(h.request.mock.calls.filter(([method]) => method === "thread/resume").map(([, p]) => p?.threadId)).toEqual([id]);
+    expect(h.runtime.onDesktopThread).toHaveBeenCalledExactlyOnceWith(id);
+  });
+
+  it("keeps a running Desktop thread even when catalog and history have not materialized", async () => {
+    const h = desktopHarness();
+    h.loaded.add("busy");
+    h.noRollout.add("busy");
+    h.status.set("busy", "active");
+    h.runtime.markStarted();
+    await vi.waitFor(() => expect(h.runtime.directoryEntries()).toMatchObject([{ sessionId: "codex-desktop:busy", status: "running" }]));
+  });
+
+  it.each([false, true])("keeps real idle history without a catalog match (legacy turns API=%s)", async legacy => {
+    const h = desktopHarness();
+    h.loaded.add("gone");
+    h.loaded.add("real");
+    h.history.set("real", [{ id: "t", status: "completed", items: [] }]);
+    const original = h.request.getMockImplementation()!;
+    h.request.mockImplementation((method, params) => {
+      if (method === "thread/read" && params?.threadId === "gone") return Promise.reject(new Error("thread not found"));
+      if (method === "thread/list" && params?.limit === 200) return Promise.reject(new Error("temporary catalog failure"));
+      if (legacy && method === "thread/turns/list" && params?.limit === 1) return Promise.reject(new Error("method not found（code=-32601）"));
+      return original(method, params);
+    });
+    h.runtime.markStarted();
+    await vi.waitFor(() => expect(h.runtime.directoryEntries()).toMatchObject([{ sessionId: "codex-desktop:real" }]));
+  });
+
+  it("does not undo an App pre-create when an older loaded snapshot arrives after activation", async () => {
+    const h = desktopHarness();
+    const original = h.request.getMockImplementation()!;
+    let staleReply!: (value: { data: string[] }) => void;
+    let stale = true;
+    h.request.mockImplementation((method, params) => {
+      if (method === "thread/loaded/list" && stale) {
+        stale = false;
+        return new Promise(resolve => { staleReply = resolve; });
+      }
+      return original(method, params);
+    });
+    h.noRollout.add("fresh");
+    h.runtime.markStarted();
+    await vi.waitFor(() => expect(staleReply).toBeTypeOf("function"));
+    const created = await h.runtime.activate({ type: "new", cwd: "D:/repo" });
+    h.loaded.add("fresh");
+    h.notify("thread/started", { thread: { id: "fresh" } });
+    staleReply({ data: [] });
+    await vi.waitFor(() => expect(h.request.mock.calls.filter(([method]) => method === "thread/loaded/list")).toHaveLength(2));
+    expect(h.runtime.directoryEntries()).toMatchObject([{ sessionId: created.sessionId!, status: "idle" }]);
+    expect(h.calls).not.toContain("thread/unsubscribe");
+    expect(h.calls).not.toContain("thread/resume");
+    expect(h.opened).toEqual([]);
+  });
+
+  it("does not resume a thread from the desktop watcher while the App is configuring that same launch", async () => {
+    const h = desktopHarness();
+    let finish!: () => void;
+    const configuring = new Promise<void>(resolve => { finish = resolve; });
+    h.runtime.markStarted();
+    const create = h.runtime.activate({ type: "new", cwd: "D:/repo" }, {
+      configuration: {}, onCreated: () => configuring,
+    });
+    try {
+      h.loaded.add("fresh");
+      h.native.add("fresh");
+      h.status.set("fresh", "active");
+      h.notify("thread/started", { thread: { id: "fresh" } });
+      await vi.waitFor(() => expect(h.request).toHaveBeenCalledWith("thread/read", { threadId: "fresh", includeTurns: false }, 5_000));
+      expect(h.runtime.directoryEntries()).toEqual([]);
+      expect(h.calls).not.toContain("thread/resume");
+    } finally { finish(); await create; }
+    expect(h.runtime.directoryEntries()).toMatchObject([{ sessionId: "codex-desktop:fresh" }]);
+  });
+
+  it("does not revive old Desktop drafts from shared disk, but keeps catalog-confirmed and real history", async () => {
+    const h = desktopHarness();
+    const disk = (id: string, originator: string, extra: unknown[] = []) => writeFileSync(join(h.rolloutRoot, `rollout-${id}.jsonl`), [
+      { type: "session_meta", payload: { id, cwd: "D:/repo", originator } }, ...extra,
+    ].map(line => JSON.stringify(line)).join("\n") + "\n");
+    disk("draft", "Codex Desktop"); // May already have been persisted by an older Host.
+    disk("unknown-draft", "Codex Desktop");
+    disk("listed-empty", "Codex Desktop");
+    disk("real-no-preview", "Codex Desktop", [{ type: "event_msg", payload: { type: "task_started" } }]);
+    disk("terminal-empty", "codex_cli_rs");
+    h.native.add("listed-empty");
+    h.runtime.seedDesktopThreads(["draft", "listed-empty", "real-no-preview"]);
+    const terminal = new CodexRuntime({ server: { mode: "owned", request: h.request, notify: vi.fn(), stop: vi.fn() } as unknown as CodexAppServer,
+      onEvent: () => {}, rolloutRoot: h.rolloutRoot });
+    runtimes.push(terminal);
+    terminal.seedDesktopThreads(["draft", "listed-empty", "real-no-preview"]);
+    expect((await h.runtime.catalog()).map(entry => entry.sessionId)).toEqual(["codex-desktop:listed-empty", "codex-desktop:real-no-preview"]);
+    expect((await terminal.catalog()).map(entry => entry.sessionId)).toEqual(["terminal-empty"]);
+  });
+
   // Startup ordering is arbitrary: descendants only become tasks of an adopted root.
   it("restores already loaded nested children without attaching them as sessions", async () => {
     const h = desktopHarness();
     for (const id of ["grandchild", "child", "parent"]) h.loaded.add(id);
+    h.native.add("parent");
     h.parents.set("child", "parent"); h.parents.set("grandchild", "child");
     h.runtime.markStarted();
     await vi.waitFor(() => expect(h.events.filter(item => item.event.type === "execution.tasks").at(-1)).toMatchObject({
@@ -159,7 +296,6 @@ describe("Codex desktop attachment", () => {
     }));
     expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["codex-desktop:parent"]);
     expect(h.request.mock.calls.filter(([method]) => method === "thread/resume").map(([, args]) => args?.threadId)).toEqual(["parent"]);
-    await h.runtime.stop();
   });
 
   it("does not expose subagent threads from loaded or persistent desktop catalogs", async () => {
@@ -173,8 +309,7 @@ describe("Codex desktop attachment", () => {
 
     await vi.waitFor(() => expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["codex-desktop:parent"]));
     expect((await h.runtime.catalog()).map(entry => entry.sessionId)).toEqual(["codex-desktop:parent"]);
-    expect(h.request).toHaveBeenCalledWith("thread/read", { threadId: "child", includeTurns: false });
-    await h.runtime.stop();
+    expect(h.request).toHaveBeenCalledWith("thread/read", { threadId: "child", includeTurns: false }, 5_000);
   });
 
   // “桌面版后端”，这套后端会退回成终端语义：runtimeId 变成 `codex`、桌面 thread 发现
@@ -187,24 +322,24 @@ describe("Codex desktop attachment", () => {
     const activated = await h.runtime.activate({ type: "new", cwd: "D:/repo" });
     expect(activated.spawnMode).toBe("headless");
     expect(h.opened).toEqual([]);
-    await h.runtime.stop();
   });
 
   it("treats an external app-server endpoint as the desktop backend", async () => {
     const h = desktopHarness("external");
     h.loaded.add("wrapped");
+    h.native.add("wrapped");
     h.runtime.markStarted();
     await vi.waitFor(() => expect(h.runtime.directoryEntries().map(entry => entry.sessionId)).toEqual(["codex-desktop:wrapped"]));
     expect(h.runtime.kind).toBe("codexDesktop");
     expect(h.runtime.runtimeId).toBe("codex-desktop");
     expect(h.runtime.directoryEntries()[0]?.runtimeId).toBe("codex-desktop:wrapped");
     expect(h.calls).toContain("thread/resume");
-    await h.runtime.stop();
   });
 
   it("unsubscribes after an in-flight resume settles when a view closes", async () => {
     const h = desktopHarness();
     h.loaded.add("closing");
+    h.native.add("closing");
     h.pause();
     h.runtime.markStarted();
     await vi.waitFor(() => expect(h.calls).toContain("thread/resume"));
@@ -214,12 +349,12 @@ describe("Codex desktop attachment", () => {
     h.release();
     await vi.waitFor(() => expect(h.request).toHaveBeenCalledWith("thread/unsubscribe", { threadId: "closing" }));
     expect(h.runtime.directoryEntries()).toEqual([]);
-    await h.runtime.stop();
   });
 
   it("replays status notifications after resume and keeps /quit local until new desktop work", async () => {
     const h = desktopHarness();
     h.loaded.add("first");
+    h.native.add("first");
     h.pause();
     h.runtime.markStarted();
     await vi.waitFor(() => expect(h.calls).toContain("thread/resume"));
@@ -240,12 +375,11 @@ describe("Codex desktop attachment", () => {
     expect(h.runtime.directoryEntries()).toHaveLength(0);
     h.status.set("first", "idle");
     h.notify("thread/status/changed", { threadId: "first", status: { type: "idle" } });
-    await vi.waitFor(() => expect(h.request).toHaveBeenCalledWith("thread/read", { threadId: "first", includeTurns: false }));
+    await vi.waitFor(() => expect(h.request).toHaveBeenCalledWith("thread/read", { threadId: "first", includeTurns: false }, 5_000));
     h.status.set("first", "active");
     h.notify("thread/status/changed", { threadId: "first", status: { type: "active" } });
     await vi.waitFor(() => expect(h.runtime.directoryEntries()).toHaveLength(1));
     expect(() => h.runtime.assertProviderSwitchReady()).toThrow("共享后端");
-    await h.runtime.stop();
   });
 
   it("keeps desktop history namespaced after closing and supports archive and unarchive", async () => {
@@ -272,7 +406,6 @@ describe("Codex desktop attachment", () => {
     await h.runtime.setArchived("codex-desktop:desktop-thread", false);
     expect((await h.runtime.catalog()).map(entry => entry.sessionId)).toEqual(["codex-desktop:desktop-thread"]);
     await expect(h.runtime.setArchived("desktop-thread", true)).rejects.toThrow("不属于 Codex 桌面版");
-    await h.runtime.stop();
   });
 
   it("does not let the terminal backend claim an observed desktop thread", async () => {
@@ -297,6 +430,5 @@ describe("Codex desktop attachment", () => {
     await expect(terminal.activate({ type: "resume", sessionId: "desktop-thread" })).rejects.toThrow("不属于 Codex");
     await expect(terminal.setArchived("desktop-thread", true)).rejects.toThrow("属于 Codex 桌面版");
     expect(terminalRequest).toHaveBeenCalledTimes(1);
-    await h.runtime.stop();
   });
 });

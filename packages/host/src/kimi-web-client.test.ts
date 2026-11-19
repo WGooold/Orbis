@@ -18,7 +18,7 @@ const contracts = {
 const serverId = "01KIMICODE123456789ABCDEFGH";
 const now = Date.now();
 
-async function fixture(options: { id?: string; auth?: boolean; bypass?: boolean; redirect?: boolean; delay?: boolean } = {}) {
+async function fixture(options: { id?: string; auth?: boolean; bypass?: boolean; redirect?: boolean; delay?: boolean; version?: string } = {}) {
   const homeDir = await mkdtemp(join(tmpdir(), "orbis-kimi-client-")); roots.push(homeDir);
   await mkdir(join(homeDir, "server", "instances"), { recursive: true });
   const token = randomBytes(32).toString("base64url");
@@ -31,7 +31,7 @@ async function fixture(options: { id?: string; auth?: boolean; bypass?: boolean;
     if (options.delay && req.url === "/api/v1/meta") { await new Promise(resolve => setTimeout(resolve, 100)); }
     if (options.auth !== false && req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401); res.end(); return; }
     if (req.url === "/api/v1/meta") res.end(JSON.stringify({ code: 0, data: {
-      server_id: options.id ?? serverId, server_version: "2.6.3", started_at: new Date(now).toISOString(), backend: "v2", dangerous_bypass_auth: options.bypass ?? false,
+      server_id: options.id ?? serverId, server_version: options.version ?? "2.6.3", started_at: new Date(now).toISOString(), backend: "v2", dangerous_bypass_auth: options.bypass ?? false,
       capabilities: { websocket: true },
     } }));
     else if (req.url === "/openapi.json") res.end(openapi);
@@ -53,7 +53,7 @@ async function fixture(options: { id?: string; auth?: boolean; bypass?: boolean;
   if (!address || typeof address === "string") throw new Error("fixture did not bind");
   await writeFile(join(homeDir, "server", "instances", `${serverId}.json`), JSON.stringify({
     server_id: serverId, pid: process.pid, host: "127.0.0.1", port: address.port,
-    started_at: now, heartbeat_at: now, host_version: "2.6.3",
+    started_at: now, heartbeat_at: now, host_version: options.version ?? "2.6.3",
   }));
   return { homeDir, endpoint: `http://127.0.0.1:${address.port}`, token };
 }
@@ -77,6 +77,22 @@ describe("Kimi Code local Web client", () => {
     });
     await expect(frame).resolves.toMatchObject({ type: "agent", session_id: "demo" });
     client.close();
+  });
+
+  // KIMI-11: the embedded contract is not enough without desktop ownership; never fall back to Web.
+  it("separates desktop and web even with both registrations in the same data root", async () => {
+    const value = await fixture({ version: "2.6.2" });
+    const endpoint = new URL(value.endpoint);
+    await writeFile(join(value.homeDir, "server", "instances", "01KIMICODESECOND123456789AB.json"), JSON.stringify({
+      server_id: "01KIMICODESECOND123456789AB", pid: process.pid, host: "127.0.0.1", port: 1,
+      started_at: now, heartbeat_at: now, host_version: "2.6.3",
+    }));
+    const options = { homeDir: value.homeDir, expectedContracts: contracts, source: "desktop" as const };
+    await expect(KimiWebClient.connect({ ...options, verifyDesktopOwner: async () => false })).rejects.toMatchObject({ reason: "unsupported" });
+    const client = await KimiWebClient.connect({ ...options, verifyDesktopOwner: async (pid, host, port) =>
+      pid === process.pid && host === endpoint.hostname && port === Number(endpoint.port) });
+    expect(client.meta.server_version).toBe("2.6.2"); client.close();
+    await expect(KimiWebClient.connect({ ...value, expectedContracts: contracts })).rejects.toMatchObject({ reason: "not_running" });
   });
 
   it("requires explicit selection when multiple fresh service registrations exist", async () => {

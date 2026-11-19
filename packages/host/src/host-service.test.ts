@@ -39,7 +39,10 @@ import {
   applyStateDelta, type AgentStateDomainSnapshot, type CatalogQueryPage,
   LOOPBACK_PATH,
   DEVICE_FEATURE_MESSAGE_RENDER,
+  DEVICE_FEATURE_COMPACT_BOOTSTRAP,
+  DEVICE_FEATURE_CLAUDE_SEND_NOW,
   PROTOCOL_VERSION,
+  HOST_FEATURE_IMPORT_TARGET,
   RelayToDeviceMessageSchema,
   ToolInventorySource, createToolSummary, createToolContentPage,
   selectSessionSyncSnapshot,
@@ -50,6 +53,7 @@ import {
   type CodexDesktopAttach,
   type EnvelopeV2,
   type PathKind,
+  type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
   type ToolContentReadRequest, type ToolInventorySnapshot,
@@ -72,6 +76,9 @@ import type { DshConnection } from "./dsh-client.js";
 import type { DshWebConnection } from "./dsh-web-client.js";
 import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { ProviderManager } from "./provider-manager.js";
+import { SessionConfigurationStore } from "./session-configuration-store.js";
+import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
+import { OpenCodeServiceConnection, type OpenCodeClient } from "./opencode-service-connection.js";
 import { relayBusinessDeviceURL, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 
 type EnvelopeFrame = { type?: unknown; envelope?: unknown };
@@ -773,6 +780,11 @@ describe("host end-to-end over relay", () => {
     expect(JSON.stringify(list)).not.toContain("never-send-this");
     expect(JSON.stringify(list)).not.toContain("private-notes-never-send");
     expect(JSON.stringify(list)).not.toContain("private-script-never-send");
+    // FT-VOICE-PROVIDER-01: authenticated discovery returns only saved profile identity, not credentials.
+    device.sendData(JSON.stringify({ type: "voice.cleanup.provider.request", protocolVersion: PROTOCOL_VERSION, requestId: "voice-providers", action: "providers" }));
+    expect(await device.receiveReply("voice-providers")).toMatchObject({ type: "voice.cleanup.provider.result", providers: [{ id: "custom", kind: "pi", name: "Custom" }] });
+    device.sendData(JSON.stringify({ type: "voice.cleanup.provider.request", protocolVersion: PROTOCOL_VERSION, requestId: "voice-injected", action: "models", kind: "pi", id: "custom", endpoint: "https://another.test/" }));
+    expect(await device.receiveReply("voice-injected")).toMatchObject({ type: "protocol.error", code: "invalid_request" });
     device.sendData(JSON.stringify({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "switch", kind: "pi", id: "custom", enabled: true }));
     const switched = await device.receiveReply("switch");
     expect(switched).toMatchObject({ type: "provider.result", requestId: "switch", providers: [{ id: "custom", enabled: true }] });
@@ -864,6 +876,80 @@ describe("host end-to-end over relay", () => {
     }
     throw new Error("Expected handover business message did not arrive");
   };
+
+  // IMPORT-06: use the real paired link and loopback adapter. A target mismatch must stop both
+  // the Host file write and the agent message, even when the supplied runtime ID is valid.
+  it("fences external imports at the paired Host and retains legacy command dispatch", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-import-target-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    expect(await readMatching(device, message => message.type === "device.ready"))
+      .toMatchObject({ hostFeatures: expect.arrayContaining([HOST_FEATURE_IMPORT_TARGET]) });
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    const target = { sessionId: "intended", cwd: stateDir };
+    const runtimeId = "pi-import";
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId, name: "Import target", status: "idle", ...target } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+    const receive = async (key: string, id: string) => {
+      for (let i = 0; i < 40; ++i) {
+        const message = await device!.receiveMessage();
+        if (message[key] === id || (message.event as Record<string, unknown> | undefined)?.[key] === id) return message;
+      }
+      throw new Error(`No correlated reply (${id})`);
+    };
+    const command = { type: "user_message", text: "Synthetic imported text", messageId: "import-message" } as const;
+    const submit = (commandId: string, importTarget: typeof target, body: RuntimeCommand = command) => device!.sendData(JSON.stringify({
+      type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId, commandId, command: body, importTarget,
+    }));
+    submit("wrong-session", { ...target, sessionId: "different" });
+    expect(await receive("commandId", "wrong-session")).toMatchObject({ type: "protocol.error", code: "import_target_changed" });
+    submit("steer", target, { ...command, delivery: "steer" });
+    expect(await receive("commandId", "steer")).toMatchObject({ type: "protocol.error", code: "invalid_command" });
+    submit("unverified-file", target, { ...command, attachments: [join(stateDir, "unverified.txt")] });
+    expect(await receive("commandId", "unverified-file")).toMatchObject({ type: "protocol.error", code: "import_attachments_unverified" });
+    const bytes = Buffer.from("local fixture file");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const invalidDirectory = join(stateDir, "outside-import-folder");
+    device.sendData(JSON.stringify({ type: "file.upload.init", protocolVersion: PROTOCOL_VERSION, runtimeId, requestId: "wrong-directory",
+      importTarget: target, fileName: "fixture.txt", directory: invalidDirectory, size: bytes.length, sha256 }));
+    expect(await receive("requestId", "wrong-directory")).toMatchObject({ type: "file.upload.failed", code: "import_target_changed" });
+    expect(existsSync(invalidDirectory)).toBe(false);
+
+    const directory = join(target.cwd, ".orbis-uploads", sha256);
+    device.sendData(JSON.stringify({ type: "file.upload.init", protocolVersion: PROTOCOL_VERSION, runtimeId, requestId: "safe-file",
+      importTarget: target, fileName: "fixture.txt", directory, size: bytes.length, sha256 }));
+    const { uploadId } = await receive("requestId", "safe-file");
+    expect(await readMatching(device, message => message.type === "file.upload.read")).toMatchObject({ uploadId, offset: 0 });
+    device.sendBinary(encodeArtifactChunkFrame({ runtimeId, transferId: uploadId as string, offset: 0, data: bytes }));
+    const finished = await readMatching(device, message => message.type === "file.upload.finished");
+    expect(finished).toMatchObject({ uploadId, sha256, fileName: "fixture.txt" });
+    const path = finished.path as string;
+    expect(await readFile(path)).toEqual(bytes);
+    const withFile = { ...command, attachments: [path] };
+    submit("confirmed-import", target, withFile);
+    await expect(runtime.next()).resolves.toMatchObject({ commandId: "confirmed-import", command: withFile });
+    runtime.publish(1, { type: "command.result", commandId: "confirmed-import", ok: true, status: "success" });
+    expect(await receive("commandId", "confirmed-import")).toMatchObject({ event: { ok: true, status: "success" } });
+    const read = (id: string, importTarget: typeof target) => device!.sendData(JSON.stringify({ type: "external-import.result.read",
+      protocolVersion: PROTOCOL_VERSION, runtimeId, commandId: id, importTarget }));
+    await handover("device", "ws", paired.pskRoot, paired.payload.hostId);
+    expect(await readMatching(device, message => message.type === "device.ready"))
+      .toMatchObject({ hostFeatures: expect.arrayContaining([HOST_FEATURE_IMPORT_TARGET]) });
+    await readMatching(device, message => message.type === "device.path");
+    await expect(runtime.next()).resolves.toMatchObject({ type: "runtime.resync", reason: "device_reconnected" });
+    read("confirmed-import", target);
+    expect(await receive("commandId", "confirmed-import")).toMatchObject({ type: "external-import.result", status: "accepted" });
+    read("confirmed-import", { ...target, sessionId: "different" });
+    expect(await receive("commandId", "confirmed-import")).toMatchObject({ type: "external-import.result", status: "unknown" });
+    read("unknown-import", target);
+    expect(await receive("commandId", "unknown-import")).toMatchObject({ type: "external-import.result", status: "unknown" });
+    device.sendCommand(runtimeId, "legacy-barrier", { type: "stop" });
+    await expect(runtime.next()).resolves.toMatchObject({ commandId: "legacy-barrier", command: { type: "stop" } });
+  });
 
   it.each(["device", "host"] as const)("keeps accepted commands and pending interaction results across Relay handovers without dispatching twice (%s)", async side => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-handover-command-")); relay = await startRelay(stateDir);
@@ -2407,7 +2493,7 @@ describe("host end-to-end over relay", () => {
 
     // FT-G10: the scoped compact menu satisfies bootstrap. The delayed legacy
     // compatibility replay must not enqueue the same 634 KB-class catalog.
-    const deadline = Date.now() + 400;
+    const deadline = Date.now() + 1_200;
     const legacyMenuEvents: Record<string, unknown>[] = [];
     while (Date.now() < deadline) {
       try {
@@ -2540,6 +2626,77 @@ describe("host end-to-end over relay", () => {
       runtimeId: "pi-restart",
       reason: "device_reconnected",
     });
+  });
+
+  it("cancels legacy bootstrap replay on state.compact-bootstrap.v1 and gates steerSupported on claude.send-now.v1", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
+    relay = await startRelay(stateDir);
+    host = await HostService.create({
+      relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
+      credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      reconnect: false, lan: false, bootstrapReplayDelayMs: 60,
+    });
+    await host.start();
+
+    const paired = await pairDevice({ relay, host });
+    device = paired.device;
+    const descriptor = host.loopback?.descriptor;
+    if (descriptor === undefined) throw new Error("loopback 端点没有启动");
+    runtime = await TestRuntime.connect({
+      url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-compact", name: "pi", cwd: "/work/repo", status: "idle", hostname: "devbox" },
+    });
+    await expect(runtime.next()).resolves.toMatchObject({ type: "runtime.ready" });
+    runtime.publish(1, {
+      type: "runtime.capabilities",
+      capabilities: { commands: [{ name: "model", description: "切换模型", source: "builtin" }] },
+    });
+    const claudeHelloResponse = await fetch(descriptor.url.replace(/^ws/u, "http") + "/v1/claude/mods/hello", {
+      method: "POST",
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        type: "hello", instanceId: "claude-inst", sessionId: "claude-send-now", cwd: "/work/repo",
+        claudeVersion: "2.1.312", bridgeVersion: "4", interactive: true,
+        capabilities: [
+          "prompt.submit", "prompt.sendNow", "turn.abort", "session.append",
+          "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list",
+        ],
+      }),
+    });
+    expect(await claudeHelloResponse.json()).toMatchObject({ ok: true });
+
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    const initialReady = await readMatching(device, message => message.type === "device.ready");
+    expect(initialReady.hostFeatures).toEqual(expect.arrayContaining([
+      DEVICE_FEATURE_COMPACT_BOOTSTRAP,
+      DEVICE_FEATURE_CLAUDE_SEND_NOW,
+    ]));
+    expect((initialReady.runtimes as Array<Record<string, unknown>>).find(r => r.runtimeId === "claude:claude-send-now"))
+      .not.toHaveProperty("steerSupported");
+
+    device.sendData(JSON.stringify({
+      type: "device.features", protocolVersion: PROTOCOL_VERSION,
+      features: [DEVICE_FEATURE_COMPACT_BOOTSTRAP, DEVICE_FEATURE_CLAUDE_SEND_NOW],
+    }));
+    const upgradedReady = await readMatching(device, message => message.type === "device.ready");
+    expect((upgradedReady.runtimes as Array<Record<string, unknown>>).find(r => r.runtimeId === "claude:claude-send-now"))
+      .toMatchObject({ steerSupported: true });
+
+    const deadline = Date.now() + 200;
+    const legacyMenuEvents: Record<string, unknown>[] = [];
+    while (Date.now() < deadline) {
+      try {
+        const incoming = await device.nextIncoming(deadline - Date.now());
+        if (!("payload" in incoming)) continue;
+        const message = JSON.parse(incoming.payload.toString("utf8")) as Record<string, unknown>;
+        const event = message.event as RuntimeEvent | undefined;
+        if (message.type === "runtime.event" && event?.type === "runtime.capabilities") legacyMenuEvents.push(message);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("超时")) break;
+        throw error;
+      }
+    }
+    expect(legacyMenuEvents).toEqual([]);
   });
 
   it("同局域网的设备先握 LAN 就直接走 LAN，拔掉 LAN 立刻回落 Relay", async () => {
@@ -2960,6 +3117,133 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     device.sendPayload(Buffer.from(JSON.stringify(message), "utf8"));
   };
 
+  it("gates OpenCode by device feature and keeps deduplicated command receipts private", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-opencode-feature-"));
+    relay = await startRelayLocal(stateDir);
+    const info = { id: "oc-session", title: "OpenCode fixture", location: { directory: stateDir }, time: { created: 1000, updated: 2000 } };
+    const selected = { providerID: "fixture-provider", id: "fixture-model" };
+    const newId = "oc-configured";
+    let nativeSelection: typeof selected | undefined;
+    const get = vi.fn(async ({ sessionID }: { sessionID: string }) => sessionID === newId ? { ...info, id: newId, model: nativeSelection } : info);
+    const create = vi.fn(async () => ({ ...info, id: newId }));
+    const switchModel = vi.fn(async ({ model }: { model: typeof selected }) => { nativeSelection = model; });
+    const prompt = vi.fn(async ({ sessionID, text, metadata }: { sessionID: string; text: string; metadata?: unknown }) =>
+      ({ id: "oc-inbox", sessionID, type: "user", delivery: "queue", time: { created: 3000 }, payload: { text, metadata } }));
+    const client = {
+      server: { info: async () => ({ version: "2.3.2", pid: 1 }) },
+      event: { async *subscribe({ signal }: { signal: AbortSignal }) {
+        yield { type: "server.connected", data: {} };
+        if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      } },
+      session: { get, create, switchModel, active: async () => ({}), list: async () => ({ data: [info], cursor: {} }), prompt,
+        form: { list: async () => [] }, inbox: { list: async () => [] } },
+      message: { list: async () => ({ data: [], cursor: {} }) }, permission: { list: async () => [] },
+      model: { list: async () => ({ data: [{ ...selected, enabled: true, name: "Fixture model", variants: [] }] }),
+        default: async () => ({ data: selected }) }, agent: { list: async () => ({ data: [] }) },
+    };
+    const discover = vi.fn(async () => ({ url: "http://127.0.0.1:4096" }));
+    const createOpenCodeConnection = vi.fn(() => new OpenCodeServiceConnection({ discover,
+      createClient: () => client as unknown as OpenCodeClient }));
+    const policy = new AgentEnablementController(new AgentEnablementStore(stateDir), () => {});
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "sessions"), reconnect: false, lan: false, agentEnablement: policy, createOpenCodeConnection });
+    await host.start();
+    expect(createOpenCodeConnection).not.toHaveBeenCalled();
+    expect(discover).not.toHaveBeenCalled();
+    await policy.set({ kind: "pi", enabled: true, expectedRevision: 0 });
+    await policy.set({ kind: "opencode", enabled: true, expectedRevision: 1 });
+    await vi.waitFor(() => expect(host!.opencodeServiceStatus.state).toBe("ready"));
+    device = await readyDevice({ host, relay });
+    const owner = device;
+    const other = await readyDevice({ host, relay });
+    try {
+      const until = async (phone: TestDevice, predicate: (message: Record<string, unknown>) => boolean) => {
+        for (let i = 0; i < 100; i++) {
+          const message = await phone.receiveMessage(true);
+          if (predicate(message)) return message;
+        }
+        throw new Error("OpenCode E2E response missing");
+      };
+      const request = (phone: TestDevice, payload: Record<string, unknown>) => sendRequest(phone, { protocolVersion: PROTOCOL_VERSION, ...payload });
+      const reply = (phone: TestDevice, requestId: string) => until(phone, message => message.requestId === requestId);
+      const runtimeId = "opencode:oc-session";
+      const kind = { agentKind: "opencode", cwd: stateDir };
+      const launches = new SessionConfigurationStore(join(stateDir, "opencode-session-configuration.json"));
+      await launches.begin(owner.deviceId, { type: "session.launch", requestId: "seed", launchId: "known-opencode-launch",
+        agentKind: "opencode", cwd: stateDir, binding: "fixture", revision: 0, values: {} });
+      await launches.update(owner.deviceId, "known-opencode-launch", { phase: "ready", sessionId: info.id, spawnMode: "headless" });
+
+      for (const [requestId, payload] of [
+        ["config-hidden", { type: "session.configuration.read", ...kind }],
+        ["launch-hidden", { type: "session.launch", ...kind, binding: "fixture", revision: 0, values: {}, launchId: "hidden-launch" }],
+        ["archive-hidden", { type: "session.archive", agentKind: "opencode", sessionId: info.id, archived: true }],
+        ["resume-hidden", { type: "session.activate", target: { type: "resume", sessionId: info.id, agentKind: "opencode" } }],
+      ] as const) {
+        request(owner, { requestId, ...payload });
+        await expect(reply(owner, requestId)).resolves.toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+      }
+      request(owner, { type: "session.launch.read", requestId: "launch-read-hidden", launchId: "known-opencode-launch" });
+      await expect(reply(owner, "launch-read-hidden")).resolves.toMatchObject({ type: "session.launch.result", phase: "absent" });
+      request(owner, { type: "session.activate", requestId: "resume-legacy", target: { type: "resume", sessionId: info.id } });
+      await expect(reply(owner, "resume-legacy")).resolves.toMatchObject({ type: "protocol.error", code: "session_not_found" });
+      const input = { type: "runtime.command", runtimeId, commandId: "oc-input",
+        command: { type: "user_message", text: "Fixture prompt", messageId: "app-id" } };
+      request(owner, input);
+      await expect(until(owner, message => message.commandId === input.commandId)).resolves.toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+      expect(get).not.toHaveBeenCalled();
+      expect(prompt).not.toHaveBeenCalled();
+
+      request(owner, { type: "device.features", features: ["agent.opencode"] });
+      await until(owner, message => message.type === "device.ready");
+      request(owner, { type: "session.configuration.read", requestId: "config-visible", ...kind });
+      const config = await reply(owner, "config-visible");
+      expect(config).toMatchObject({ type: "session.configuration.result", agentKind: "opencode" });
+      request(owner, { type: "session.launch", requestId: "launch-visible", launchId: "stable-opencode-launch", ...kind,
+        binding: config.binding, revision: config.revision, values: config.values });
+      const unknown = await until(owner, message => message.requestId === "launch-visible" && message.phase === "unknown");
+      expect(unknown).toMatchObject({ sessionId: newId, agentKind: "opencode" });
+      request(owner, { type: "session.launch.read", requestId: "restore-config", launchId: "stable-opencode-launch" });
+      await expect(reply(owner, "restore-config")).resolves.toMatchObject({ phase: "ready", sessionId: newId, agentKind: "opencode" });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(switchModel).toHaveBeenCalledExactlyOnceWith({ sessionID: newId, model: selected }, expect.anything());
+      request(owner, { type: "session.launch.read", requestId: "lookup-visible", launchId: "known-opencode-launch" });
+      await expect(reply(owner, "lookup-visible")).resolves.toMatchObject({ phase: "ready", sessionId: info.id, agentKind: "opencode" });
+      const receipt = (phone: TestDevice) => until(phone, message =>
+        message.type === "runtime.event" && (message.event as { commandId?: string })?.commandId === input.commandId);
+      request(owner, input);
+      await expect(receipt(owner)).resolves.toMatchObject({ runtimeId, event: { type: "command.result", ok: true, status: "success" } });
+      request(owner, input);
+      await expect(receipt(owner)).resolves.toMatchObject({ runtimeId, event: { type: "command.result", ok: true, status: "success" } });
+      expect(prompt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ metadata: { "orbis.clientMessageId": "app-id" } }), expect.anything());
+
+      // For the other device, the E2E payloads sent before opting in contain neither the runtime nor the private receipt.
+      request(other, { type: "session.list", requestId: "legacy-list" });
+      const legacy = await until(other, message => {
+        expect(JSON.stringify(message)).not.toMatch(/oc-session|oc-input|opencode/);
+        return message.requestId === "legacy-list";
+      });
+      expect(legacy.sessions).toEqual([]);
+      request(other, { type: "device.features", features: ["agent.opencode"] });
+      await until(other, message => message.type === "device.ready");
+      request(other, input);
+      const conflict = await until(other, message => {
+        expect((message.event as { commandId?: string } | undefined)?.commandId).not.toBe(input.commandId);
+        return message.commandId === input.commandId;
+      });
+      expect(conflict).toMatchObject({ type: "protocol.error", code: "command_id_conflict" });
+      expect(prompt).toHaveBeenCalledTimes(1);
+      await policy.set({ kind: "opencode", enabled: false, expectedRevision: 2, confirmDisable: true });
+      await vi.waitFor(() => expect(host!.opencodeServiceStatus.state).toBe("closed"));
+      request(owner, { type: "session.configuration.read", requestId: "config-disabled", ...kind });
+      await expect(reply(owner, "config-disabled")).resolves.toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+      expect(host.readHostState(["backends"]).domains[0]?.value).toMatchObject({ agents: expect.arrayContaining(["pi"]) });
+      await policy.set({ kind: "opencode", enabled: true, expectedRevision: 3 });
+      await vi.waitFor(() => expect(host!.opencodeServiceStatus.state).toBe("ready"));
+      expect(createOpenCodeConnection).toHaveBeenCalledTimes(2);
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally { other.close(); }
+  });
+
   it("session.browse 返回目录和可下载文件，并标出有会话历史的目录", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     const sessionsRoot = await mkdtemp(join(tmpdir(), "orbis-sessions-"));
@@ -3308,13 +3592,14 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
 
   // S51 / SC73: the durable snapshot precedes native create; lost receipts and
   // failed configuration recover the same native identity without a second start.
-  it("recovers configured launch by exact identity after a lost receipt and configuration refusal", async () => {
+  it.each(["codex", "codexDesktop"] as const)("recovers configured %s launch by exact identity after a lost receipt and configuration refusal", async kind => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-configured-host-"));
     relay = await startRelayLocal(stateDir);
     let refuse = true; let created = false;
     const settings = { model: "model-a", reasoningEffort: "high", modelProvider: "fixture", approvalPolicy: "never",
       approvalsReviewer: "user", sandboxPolicy: { type: "readOnly", networkAccess: false } };
     const thread = { id: "configured-thread", cwd: stateDir, status: { type: "idle" }, turns: [] };
+    const sessionId = kind === "codexDesktop" ? `codex-desktop:${thread.id}` : thread.id;
     const request = vi.fn(async (method: string) => {
       if (method === "model/list") return { data: [{ id: "model-a", model: "model-a", displayName: "Fixture A", isDefault: true,
         defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }] }] };
@@ -3329,10 +3614,10 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       if (method === "thread/loaded/list") return { data: created ? [thread.id] : [] };
       return { data: [] };
     });
-    const runtime = new CodexRuntime({ server: { request, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+    const runtime = new CodexRuntime({ server: { mode: kind === "codexDesktop" ? "desktop" : "owned", request, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
       onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts") });
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
-      stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, codexRuntime: runtime });
+      stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, ...(kind === "codexDesktop" ? { codexDesktopRuntime: runtime } : { codexRuntime: runtime }) });
     await host.start();
     const connected = await readyDeviceCapturing({ host, relay }); device = connected.device;
     expect(connected.ready.sessionConfiguration).toBe(1);
@@ -3343,17 +3628,17 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       }
       throw new Error(`missing configured launch result ${id} ${phase}`);
     };
-    sendRequest(device, { type: "session.configuration.read", protocolVersion: PROTOCOL_VERSION, requestId: "config", agentKind: "codex", cwd: stateDir });
+    sendRequest(device, { type: "session.configuration.read", protocolVersion: PROTOCOL_VERSION, requestId: "config", agentKind: kind, cwd: stateDir });
     const config = await response("config");
-    const launch = { type: "session.launch", protocolVersion: PROTOCOL_VERSION, requestId: "launch", launchId: "stable-launch", agentKind: "codex",
+    const launch = { type: "session.launch", protocolVersion: PROTOCOL_VERSION, requestId: "launch", launchId: "stable-launch", agentKind: kind,
       cwd: stateDir, binding: config.binding, revision: config.revision, values: config.values, spawnMode: "tui" };
     sendRequest(device, launch);
-    expect(await response("launch", "unknown")).toMatchObject({ sessionId: "configured-thread", error: "synthetic managed refusal" });
+    expect(await response("launch", "unknown")).toMatchObject({ sessionId, error: "synthetic managed refusal" });
     refuse = false;
     sendRequest(device, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "lost-receipt", launchId: "stable-launch" });
-    expect(await response("lost-receipt", "ready")).toMatchObject({ sessionId: "configured-thread", values: config.values });
+    expect(await response("lost-receipt", "ready")).toMatchObject({ sessionId, values: config.values });
     sendRequest(device, { ...launch, requestId: "duplicate" });
-    expect(await response("duplicate", "ready")).toMatchObject({ sessionId: "configured-thread" });
+    expect(await response("duplicate", "ready")).toMatchObject({ sessionId });
     expect(request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(1);
     expect(request.mock.calls.filter(([method]) => method === "thread/resume")).toHaveLength(1);
     sendRequest(device, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "absent", launchId: "never-sent" });
@@ -3595,7 +3880,17 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const launch = { requestId: "launch", launchId: "kimi-launch", agentKind: "kimiCode", cwd, binding: "kimi-code:fixture:local", revision: 0, values: {}, spawnMode: "headless" };
     await handshake();
     const initial = await wait(message => message.type === "device.ready", true);
-    expect(initial.hostFeatures).toEqual(["device.features", "message.content-render.v1", "agent.openclaw", "agent.hermes", "agent.kimiCode"]);
+    expect(initial.hostFeatures).toEqual([
+      "device.features",
+      HOST_FEATURE_IMPORT_TARGET,
+      "message.content-render.v1",
+      "agent.openclaw",
+      "agent.hermes",
+      "agent.opencode",
+      "state.compact-bootstrap.v1",
+      "claude.send-now.v1",
+      "agent.kimiCode",
+    ]);
     expect(initial.agents).not.toContain("kimiCode");
     const hidden = await read("host-hidden");
     for (const [type, body] of [
@@ -3641,21 +3936,22 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(activate).toHaveBeenCalledTimes(1);
   });
 
-  // KIMI-09: opt-in real Kimi Web and released Orbis runtime probes. The fixture owns the isolated native server.
+  // KIMI-09/11: opt-in real Kimi Web/Desktop and released Orbis runtime probes. The fixture owns the isolated native server.
   it.skipIf(!process.env.ORBIS_TEST_KIMI_FIXTURE)("drives real Kimi Web through the encrypted Relay channel", async () => {
     const fixture = JSON.parse(await readFile(process.env.ORBIS_TEST_KIMI_FIXTURE!, "utf8")) as {
-      homeDir: string; endpoint: string; cwd: string; oldRelay?: string; oldHost?: string; result: string;
+      homeDir: string; endpoint?: string; source?: "desktop"; cwd: string; oldRelay?: string; oldHost?: string; result: string;
     };
     stateDir = await mkdtemp(join(tmpdir(), "orbis-kimi-chain-"));
     const options = { port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(stateDir, "relay.json") };
     const releasedRelay = fixture.oldRelay ? await import(/* @vite-ignore */ fixture.oldRelay) as { createRelayServer: typeof createRelayServer } : undefined;
     relay = await (releasedRelay?.createRelayServer ?? createRelayServer)(options);
-    const kimi = new KimiRuntime({ stateDir, homeDir: fixture.homeDir, endpoint: fixture.endpoint });
+    const nativeOptions = { homeDir: fixture.homeDir, ...(fixture.endpoint ? { endpoint: fixture.endpoint } : {}), ...(fixture.source ? { source: fixture.source } : {}) };
+    const kimi = new KimiRuntime({ stateDir, ...nativeOptions });
     const hostOptions = { relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
       sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false };
     host = await HostService.create({ ...hostOptions, kimiCodeRuntime: kimi });
     await host.start();
-    await vi.waitFor(() => expect(kimi.isReady()).toBe(true), { timeout: 12_000 });
+    await vi.waitFor(() => expect(kimi.isReady(), kimi.reason ?? "Kimi not ready").toBe(true), { timeout: 12_000 });
     const opened = await host.openPairingWindow();
     const connected = await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
       qrText: encodePairingQrText(opened.payload), deviceName: "Isolated Kimi wire client" });
@@ -3694,6 +3990,44 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect((await ready(false)).hostFeatures).toContain("agent.kimiCode");
     send("device.features", { features: ["agent.kimiCode"] });
     await ready(true);
+    // Open a native-owned session before Orbis requests activation, while an approval is live.
+    const nativePeer = await KimiWebClient.connect(nativeOptions);
+    try {
+      const existing = await nativePeer.requestJson("/api/v1/sessions", { method: "POST", body: {
+        metadata: { cwd: fixture.cwd }, environment_id: "local",
+      } }) as { id: string };
+      const configForResume = await kimi.sessionConfiguration(fixture.cwd);
+      id = `${configForResume.binding.slice(0, -"local".length)}${existing.id}`;
+      if (fixture.source === "desktop") expect(id).toMatch(/^kimi-code:desktop-/u);
+      const frames: Record<string, unknown>[] = [];
+      const peer = nativePeer.openSocket(frame => frames.push(frame), () => {});
+      await vi.waitFor(() => expect(peer.readyState).toBe(WebSocket.OPEN));
+      peer.send(JSON.stringify({ type: "subscribe", request_id: "peer-subscribe", session_id: existing.id }));
+      await vi.waitFor(() => expect(frames).toContainEqual(expect.objectContaining({ type: "turns", session_id: existing.id })));
+      await nativePeer.requestJson(`/api/v1/sessions/${existing.id}/prompts`, { method: "POST", body: {
+        agent_id: "main", prompt_id: "peer-prompt", content: [{ type: "text", text: "native-approval-existing-fixture" }],
+      } });
+      await vi.waitFor(() => expect(frames).toContainEqual(expect.objectContaining({ type: "interaction", kind: "approval", status: "pending" })), { timeout: 5000 });
+      send("session.activate", { requestId: "attach-existing", target: { type: "resume", agentKind: "kimiCode", sessionId: id }, spawnMode: "headless" });
+      let attached = false;
+      let pending: Extract<RuntimeEvent, { type: "interaction.requested" | "interaction.snapshot" }> | undefined;
+      await wait("native activation and pending interaction", (m, e) => {
+        if (m.requestId === "attach-existing") {
+          expect(m).toMatchObject({ type: "session.activated", sessionId: id });
+          attached = true;
+        }
+        if (m.runtimeId === id && (e?.type === "interaction.requested" || e?.type === "interaction.snapshot" && e.requests?.length === 1)) {
+          pending = e as typeof pending;
+        }
+        return attached && pending !== undefined;
+      });
+      const e = pending!;
+      const approval = e.type === "interaction.requested" ? e.request : e.requests[0]!;
+      device.sendCommand(id, "peer-answer", { type: "interaction.respond", extensionId: approval.extensionId, requestId: approval.requestId, response: { kind: "confirm", value: false } });
+      expect(await receipt("peer-answer")).toMatchObject({ status: "success" });
+      await vi.waitFor(() => expect(frames).toContainEqual(expect.objectContaining({ type: "interaction", kind: "approval", outcome: "rejected", status: "ended" })));
+      expect(JSON.stringify(await snapshot("peer-history"))).toContain("native-approval-existing-fixture");
+    } finally { nativePeer.close(); }
     send("session.configuration.read", { requestId: "config", agentKind: "kimiCode", cwd: fixture.cwd });
     const config = await reply("config");
     expect(config).toMatchObject({ type: "session.configuration.result", agentKind: "kimiCode" });
@@ -3740,7 +4074,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     // Keep the current turn at an actual approval; a second native client queues its successor.
     device.sendCommand(id, "running", { type: "user_message", messageId: "running", text: "native-approval-stop-fixture" });
     await event("interaction.requested", e => e.request.kind === "confirm" && e.request.requestId !== card.requestId);
-    const native = await KimiWebClient.connect({ homeDir: fixture.homeDir, endpoint: fixture.endpoint });
+    const native = await KimiWebClient.connect(nativeOptions);
     try {
       const path = `/api/v1/sessions/${id.split(":").at(-1)}/prompts`;
       const queued = await native.requestJson(path, { method: "POST", body: { prompt_id: "native-queued", agent_id: "main",
@@ -3764,7 +4098,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(final).toContain("native-next-fixture");
       expect(final).not.toContain("must not enqueue");
     } finally { native.close(); }
-    const report = { relay: fixture.oldRelay ? "released" : "current", checks: ["configuration", "launch and exact recovery", "prompt identity",
+    const report = { relay: fixture.oldRelay ? "released" : "current", checks: ["resume a native-owned active session and resolve its pending approval", "configuration", "launch and exact recovery", "prompt identity",
       "native approval rejection", "history and reconnect", "unnegotiated isolation", "idle stop rejected", "exact running stop and queued successor"], releasedHost: false };
     if (fixture.oldHost) {
       const ledgerPath = join(stateDir, "kimi-session-configuration.json");
@@ -3832,7 +4166,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(ready.ready.agents).not.toContain("dshDesktop");
       expect(ready.ready.launchableAgents).not.toContain("dshDesktop");
       expect(ready.ready).not.toHaveProperty("dshDesktop");
-      expect(ready.ready.hostFeatures).toEqual(expect.arrayContaining(["device.features"]));
+      expect(ready.ready.hostFeatures).toEqual(expect.arrayContaining(["device.features", HOST_FEATURE_IMPORT_TARGET]));
       expect(ready.ready.hostFeatures).toContain("agent.openclaw");
       RelayToDeviceMessageSchema.parse(ready.ready);
       const until = async (predicate: (message: Record<string, unknown>) => boolean) => {
@@ -4095,6 +4429,22 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         command: { type: "user_message", text: "after quit", messageId: "reopened-send" } });
       await vi.waitFor(() => expect(request).toHaveBeenCalledWith("session/prompt", { request: expect.objectContaining({ sessionId: "browser", content: [{ type: "text", text: "after quit" }] }) }));
     } finally { await runtime.stop(); }
+  });
+
+  it.each([false, true])("advertises automatic session spawn only when enabled (%s)", async preferAutoSessionSpawn => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-spawn-capability-"));
+    relay = await startRelayLocal(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url),
+      credential: "runtime-secret", adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "sessions"),
+      reconnect: false, lan: false, preferAutoSessionSpawn });
+    await host.start();
+    const result = await readyDeviceCapturing({ host, relay });
+    device = result.device;
+    const ready = RelayToDeviceMessageSchema.parse(result.ready);
+    expect(ready.type).toBe("device.ready");
+    if (ready.type !== "device.ready") throw new Error("expected device.ready");
+    expect(ready.hostFeatures).toContain("device.features");
+    expect(ready.hostFeatures?.includes("session.spawn.auto")).toBe(preferAutoSessionSpawn);
   });
 
   it("device.ready 带上这台电脑支持的 agent：没启用 Codex 就只有 pi", async () => {
@@ -4706,20 +5056,29 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     }
   });
 
-  it.each(["codex", "codexDesktop"] as const)("new %s sessions complete homepage model reads and retries without reconnecting", async kind => {
+  // CODEX-DESKTOP-DRAFT-01: Both mobile launch APIs must keep the empty runtime
+  // usable without a native history row, including the first input on that ID.
+  it.each((["codex", "codexDesktop"] as const).flatMap(kind => [false, true].map(configured => ({ kind, configured }))))(
+    "pre-creates $kind over the device protocol (configured=$configured), syncs and sends on the same thread", async ({ kind, configured }) => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-desktop-new-home-"));
     relay = await startRelayLocal(stateDir);
-    const thread = { id: "desktop-new", cwd: "D:/work/demo", status: { type: "idle" }, turns: [] };
+    const thread = { id: "desktop-new", cwd: stateDir, status: { type: "idle" }, turns: [] };
     let created = false;
+    const request = vi.fn(async (method: string, _params?: unknown) => {
+      if (method === "thread/loaded/list") return { data: created ? [thread.id] : [] };
+      if (method === "thread/start") { created = true; return { thread }; }
+      if (method === "thread/read" || method === "thread/resume") return { thread };
+      if (method === "thread/turns/list") throw new Error(
+        `thread ${thread.id} is not materialized yet; thread/turns/list is unavailable before first user message`,
+      );
+      if (method === "turn/start") return { turn: { id: "first", status: "inProgress" } };
+      if (method === "config/read") return { config: {} };
+      if (["model/list", "thread/list", "skills/list", "mcpServerStatus/list"].includes(method)) return { data: [] };
+      throw new Error(`unexpected Codex RPC: ${method}`);
+    });
     const desktop = new CodexRuntime({
-      server: { mode: kind === "codexDesktop" ? "desktop" : "owned", request: vi.fn(async (method: string) => {
-        if (method === "thread/loaded/list") return { data: created ? [thread.id] : [] };
-        if (method === "thread/start") { created = true; return { thread }; }
-        if (method === "thread/read" || method === "thread/resume") return { thread };
-        if (method === "config/read") return { config: {} };
-        if (["model/list", "thread/list", "thread/turns/list", "skills/list", "mcpServerStatus/list"].includes(method)) return { data: [] };
-        throw new Error(`unexpected desktop RPC: ${method}`);
-      }), notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+      server: { mode: kind === "codexDesktop" ? "desktop" : "owned", request, notify: vi.fn(),
+        stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
       onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts"),
     });
     try {
@@ -4730,19 +5089,34 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       const connected = await readyDeviceCapturing({ host, relay });
       device = connected.device;
       expect(connected.ready).toMatchObject({ runtimes: [] });
-      const response = async (requestId: string): Promise<Record<string, unknown>> => {
-        for (let i = 0; i < 30; i += 1) {
+      const until = async (predicate: (message: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> => {
+        for (let i = 0; i < 40; i += 1) {
           const message = await device!.receiveMessage() as Record<string, unknown>;
-          if (message.requestId === requestId) return message;
+          expect(message.type).not.toBe("protocol.error");
+          if (predicate(message)) return message;
         }
-        throw new Error(`no response for ${requestId}`);
+        throw new Error("missing Codex device response");
       };
-      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "desktop-create",
-        target: { type: "new", agentKind: kind, cwd: thread.cwd } });
+      const response = (requestId: string) => until(message => message.requestId === requestId);
       const sessionId = kind === "codexDesktop" ? "codex-desktop:desktop-new" : "desktop-new";
       const runtimeId = desktop.runtimeIdFor(thread.id);
-      expect(await response("desktop-create")).toMatchObject({ type: "session.activated",
-        agentKind: kind, sessionId });
+      if (configured) {
+        sendRequest(device, { type: "session.configuration.read", protocolVersion: PROTOCOL_VERSION, requestId: "config", agentKind: kind, cwd: thread.cwd });
+        const config = await response("config");
+        const launch = { type: "session.launch", protocolVersion: PROTOCOL_VERSION, requestId: "launch",
+          launchId: "pre-create", agentKind: kind, cwd: thread.cwd, binding: config.binding, revision: config.revision, values: config.values,
+          spawnMode: "headless" };
+        sendRequest(device, launch);
+        expect(await until(message => message.requestId === "launch" && message.phase === "ready")).toMatchObject({ sessionId, agentKind: kind });
+        sendRequest(device, { ...launch, requestId: "retry" });
+        expect(await response("retry")).toMatchObject({ phase: "ready", sessionId });
+      } else {
+        sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "desktop-create",
+          target: { type: "new", agentKind: kind, cwd: thread.cwd }, spawnMode: "headless" });
+        expect(await response("desktop-create")).toMatchObject({ type: "session.activated", agentKind: kind, sessionId });
+      }
+      expect(request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(1);
+      expect(request.mock.calls.some(([method]) => method === "turn/start")).toBe(false);
       for (const requestId of ["desktop-first-read", "desktop-retry"]) {
         sendRequest(device, { type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId,
           scope: "agent", runtimeId, sessionId, ...(requestId === "desktop-retry" ? { agentKind: kind } : {}),
@@ -4760,6 +5134,19 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         expect(domains.get("identity")?.value).toMatchObject({ runtimeId, sessionId, agentKind: kind });
         expect(domains.get("interactions")?.value).toEqual({});
       }
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId, commandId: "sync-empty",
+        command: { type: "session.sync", sessionId, syncId: "empty", range: "preview" } });
+      expect(await until(message => (message.event as RuntimeEvent | undefined)?.type === "session.snapshot"))
+        .toMatchObject({ runtimeId, event: { syncId: "empty", sessionId, entries: [], source: { ready: true } } });
+      sendRequest(device, { type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId, commandId: "first-send",
+        command: { type: "user_message", text: "fixture first message", messageId: "phone-1" } });
+      expect(await until(message => {
+        const event = message.event as RuntimeEvent | undefined;
+        return event?.type === "command.result" && event.commandId === "first-send" && event.status !== "pending";
+      })).toMatchObject({ runtimeId, event: { type: "command.result", ok: true, status: "success" } });
+      expect(request).toHaveBeenCalledWith("turn/start", expect.objectContaining({ threadId: thread.id }));
+      expect(request.mock.calls.filter(([method]) => method === "thread/start" || method === "thread/resume").map(([method]) => method))
+        .toEqual(["thread/start"]);
     } finally {
       await desktop.stop();
     }
@@ -5237,10 +5624,10 @@ describe("APNS-L18/L19 per-phone push routing", () => {
     await paired.device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
     await until(paired.device, message => message.type === "device.path");
   };
-  const backend = async () => {
+  const backend = async (runtimeId = "runtime") => {
     const descriptor = host.loopback!.descriptor!;
     runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
-      metadata: { runtimeId: "runtime", sessionId: "session", name: "Synthetic Pi", cwd: directory, status: "idle" } });
+      metadata: { runtimeId, sessionId: "session", name: "Synthetic Pi", cwd: directory, status: "idle" } });
     await runtime.next();
   };
   const captureWake = () => {
@@ -5253,6 +5640,27 @@ describe("APNS-L18/L19 per-phone push routing", () => {
     await host?.stop(); await relay?.close();
     if (directory) await rm(directory, { recursive: true, force: true });
     runtime = undefined!; logs.length = 0;
+  });
+
+  it("does not send OpenCode APNs wake requests to devices without its handshake feature", async () => {
+    await setup();
+    const legacy = await pair(); await open(legacy);
+    const aware = await pair(); await open(aware);
+    aware.device.sendData(JSON.stringify({ type: "device.features", protocolVersion: PROTOCOL_VERSION, features: ["agent.opencode"] }));
+    await until(aware.device, message => message.type === "device.ready");
+    aware.device.sendData(JSON.stringify({ type: "session.history.capabilities.request", protocolVersion: PROTOCOL_VERSION, requestId: "history-enabled" }));
+    await until(aware.device, message => message.requestId === "history-enabled");
+    aware.device.sendData(JSON.stringify({ type: "session.history.interest", protocolVersion: PROTOCOL_VERSION,
+      requestId: "not-viewing", runtimeId: null, sessionId: null }));
+    expect(await until(aware.device, message => message.requestId === "not-viewing")).toMatchObject({ accepted: true });
+    const runtimeId = "opencode:synthetic-opencode";
+    await backend(runtimeId);
+    await until(aware.device, message => message.type === "runtime.online");
+    const wake = captureWake();
+    runtime.publish(1, { type: "interaction.requested", request: { runtimeId, requestId: "approval-opencode",
+      extensionId: "opencode.permission", kind: "confirm", title: "Continue?", expiresAt: Date.now() + 60_000 } });
+    await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(wake.mock.calls[0]![1]!.body as string)).toMatchObject({ category: "approval-requested", deviceIds: [aware.device.deviceId] });
   });
 
   it("wakes both a disconnected retained session and a never-connected phone", async () => {

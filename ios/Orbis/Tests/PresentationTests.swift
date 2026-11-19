@@ -220,6 +220,11 @@ struct PresentationTests {
         #expect(runtimeStatusTitle("unknown") == "状态待核对")
         #expect(queueStateTitle("accepted") == "已排队")
         #expect(queueStateTitle("not_cancelable") == "无法撤回")
+        let features = deviceAgentFeatures([
+            "hostFeatures": ["device.features", "state.compact-bootstrap.v1", "claude.send-now.v1"]
+        ])
+        #expect(features.contains("state.compact-bootstrap.v1"))
+        #expect(features.contains("claude.send-now.v1"))
     }
 
     @Test @MainActor func ordinaryInteractionDraftsRestoreWhileSecretsStayInMemory() throws {

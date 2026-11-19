@@ -15,6 +15,7 @@ export const agentEnablementCatalog = {
   hermes: { label: "Hermes Agent" },
   kimiCode: { label: "Kimi Code" },
   openclaw: { label: "OpenClaw" },
+  opencode: { label: "OpenCode" },
 } as const satisfies Record<AgentKind, { label: string }>;
 
 const fileName = "agent-enablement.json";

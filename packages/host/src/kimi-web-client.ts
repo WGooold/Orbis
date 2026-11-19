@@ -9,10 +9,17 @@ import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import WebSocket from "ws";
+import { kimiDesktopOwner, supportsKimiDesktop } from "./kimi-desktop-owner.js";
 
 export const KIMI_API_CONTRACT_SHA256 = Object.freeze({
   openapi: "8e7626237241e0fe9ba980903f68f579e94d096553780b827fecb9c46cce7036",
   asyncapi: "838d85a099e5cb2dc88d42fd5a4e86fd3cd6a6afb3f0c1e6cb757c2c7a7c730d",
+});
+
+export type KimiSource = "web" | "desktop";
+const DESKTOP_CONTRACTS = Object.freeze({
+  openapi: "9920b34adcf9458d7dcf00d42c8d4ce794f27f4a6a8f21b570e9e6b100ea985f",
+  asyncapi: "6f415309b2946045b0df41f0a529a6699821359fcf0237215ad69baab53ffd59",
 });
 
 const MAX_REGISTRATIONS = 64;
@@ -25,6 +32,7 @@ const API_PREFIX = "/api/v1";
 
 export type KimiInstance = {
   serverId: string;
+  pid: number;
   host: string;
   port: number;
   startedAt: number;
@@ -45,6 +53,9 @@ export type KimiServerMeta = {
 type ContractHashes = { openapi: string; asyncapi: string };
 
 export type KimiWebClientOptions = {
+  source?: KimiSource;
+  /** Test seam for a registered desktop owner. */
+  verifyDesktopOwner?: (pid: number, host: string, port: number) => Promise<boolean>;
   /** KIMI_CODE_HOME, or the platform user's default ~/.kimi-code directory. */
   homeDir?: string;
   /** Optional exact HTTP origin, e.g. http://127.0.0.1:58627, to disambiguate. */
@@ -87,6 +98,7 @@ function decodeRegistration(value: unknown, now: number): KimiInstance | undefin
   if (typeof value !== "object" || value === null) return undefined;
   const item = value as Partial<RegistrationDisk>;
   if (typeof item.server_id !== "string" || !/^[A-Za-z0-9_-]{8,80}$/u.test(item.server_id)
+    || !Number.isSafeInteger(item.pid) || item.pid! < 1
     || typeof item.host !== "string" || !isLoopbackLiteral(item.host)
     || !Number.isInteger(item.port) || item.port! < 1 || item.port! > 65535
     || !Number.isSafeInteger(item.started_at) || !Number.isSafeInteger(item.heartbeat_at)
@@ -94,6 +106,7 @@ function decodeRegistration(value: unknown, now: number): KimiInstance | undefin
     || item.heartbeat_at! > now + 5_000 || now - item.heartbeat_at! > INSTANCE_MAX_AGE_MS) return undefined;
   return {
     serverId: item.server_id,
+    pid: item.pid!,
     host: item.host,
     port: item.port!,
     startedAt: item.started_at!,
@@ -214,8 +227,14 @@ export class KimiWebClient {
   static async connect(options: KimiWebClientOptions = {}): Promise<KimiWebClient> {
     const homeDir = options.homeDir ?? process.env.KIMI_CODE_HOME ?? join(homedir(), ".kimi-code");
     const now = (options.now ?? Date.now)();
-    const registrations = await readRegistrations(homeDir, now);
-    if (registrations.length === 0) throw new KimiWebError("not_running", "未发现正在运行的 Kimi Code Web 服务");
+    const desktop = options.source === "desktop";
+    if (desktop && !supportsKimiDesktop && !options.verifyDesktopOwner) throw new KimiWebError("unsupported", "当前平台不支持 Kimi Code Desktop 接入");
+    const registered = await readRegistrations(homeDir, now);
+    const registrations = registered.filter(item => item.version === (desktop ? "2.6.2" : "2.6.3"));
+    if (registered.length && !registrations.length && !desktop && !registered.every(item => item.version === "2.6.2")) {
+      throw new KimiWebError("unsupported", "Kimi Code Web 服务版本不受支持");
+    }
+    if (registrations.length === 0) throw new KimiWebError("not_running", desktop ? "未发现支持的 Kimi Code Desktop 内嵌服务" : "未发现正在运行的 Kimi Code Web 服务");
 
     let selected: KimiInstance[];
     if (options.endpoint !== undefined) {
@@ -226,6 +245,10 @@ export class KimiWebClient {
     if (selected.length !== 1) throw new KimiWebError("ambiguous", "发现多个 Kimi Code 服务，请指定一个本机回环地址");
 
     const instance = selected[0]!;
+    const verifyOwner = options.verifyDesktopOwner ?? kimiDesktopOwner;
+    if (desktop && !await verifyOwner(instance.pid, instance.host, instance.port)) {
+      throw new KimiWebError("unsupported", "Kimi Code 服务不是已验证的桌面应用实例");
+    }
     const endpoint = parseEndpoint(`http://${instance.host.includes(":") ? `[${instance.host}]` : instance.host}:${instance.port}`);
     const token = await readPrivateToken(homeDir);
     const fetcher = options.fetch ?? globalThis.fetch;
@@ -266,7 +289,7 @@ export class KimiWebClient {
       throw new KimiWebError("unsafe", "Kimi Code 实例登记与认证服务启动身份不匹配");
     }
 
-    const expected = options.expectedContracts ?? KIMI_API_CONTRACT_SHA256;
+    const expected = options.expectedContracts ?? (desktop ? DESKTOP_CONTRACTS : KIMI_API_CONTRACT_SHA256);
     for (const [name, path] of [["openapi", "/openapi.json"], ["asyncapi", "/asyncapi.json"]] as const) {
       let bytes: Uint8Array;
       try { bytes = await request(path, MAX_SCHEMA_BYTES); }

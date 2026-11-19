@@ -60,6 +60,17 @@ internal fun SessionConfigurationValues.payload(): JsonObject = buildJsonObject 
     put("permissions", buildJsonObject { permissions.forEach { (key, value) -> put(key, value) } })
 }
 
+/** ADR-0090: opt in only after authenticated Host readiness; preserve old Hosts' windowed default. */
+internal fun RemoteState.sessionSpawnMode(explicit: String?): String = explicit ?: if (prefersAutoSessionSpawn) "auto" else "tui"
+
+internal fun RemoteState.sessionActivationRequest(id: String, target: JsonObject, spawnMode: String? = null): JsonObject = buildJsonObject {
+    put("type", "session.activate"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id)
+    put("target", target); put("spawnMode", sessionSpawnMode(spawnMode))
+}
+
+internal fun RemoteState.configuredSessionLaunchRequest(id: String, config: SessionConfigurationSnapshot, spawnMode: String? = null): JsonObject =
+    configuredLaunchPayload(id, config, sessionConfiguration.values, kimiSpawnMode(config.agentKind, sessionSpawnMode(spawnMode)))
+
 /** LAUNCH-WAIT-01: only the matching local journal can release a configured launch. */
 internal fun LaunchState.canAbandonConfiguredLaunch(journalLaunchId: String?): Boolean =
     requestId == journalLaunchId && (failure != null || unconfirmed)

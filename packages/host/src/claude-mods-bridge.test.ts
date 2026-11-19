@@ -385,18 +385,18 @@ describe("ClaudeModsBridge", () => {
       } finally { bridge.close(); }
     });
 
-  it("retires queued commands with an unknown-delivery failure when the bridge disconnects or reconnects", () => {
+  it("retires queued commands with unconfirmed when the bridge disconnects or reconnects", () => {
     const events: RuntimeEvent[] = [];
     const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event) });
     const first = online(bridge);
     bridge.sendCommand(first.runtimeId, "message-1", { type: "user_message", text: "hello" });
     const second = online(bridge);
-    expect(events).toContainEqual({ type: "command.result", commandId: "message-1", ok: false, status: "failure",
+    expect(events).toContainEqual({ type: "command.result", commandId: "message-1", ok: false, status: "unconfirmed",
       error: "claude_bridge_disconnected_result_unknown" });
     expect(bridge.poll(second.runtimeId, second.generation)).toMatchObject({ ok: true, commands: [] });
     bridge.sendCommand(second.runtimeId, "message-2", { type: "user_message", text: "again" });
     bridge.disconnect(second.runtimeId);
-    expect(events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "message-2", ok: false }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "message-2", ok: false, status: "unconfirmed" }));
   });
 
   it("disconnects the previous Session when the same Mods instance changes session and expires silent clients", () => {
@@ -548,5 +548,67 @@ describe("ClaudeModsBridge", () => {
 
   it("keeps the effort choice even before the TUI reports its model list", () => {
     expect(claudeCapabilities({}).commands.map(command => command.name)).toEqual(["effort"]);
+  });
+
+  it("advertises steerSupported only when the plugin declares prompt.sendNow and forwards delivery", () => {
+    const onlineEvents: ReturnType<ClaudeModsBridge["runtimeMetadata"]> = [];
+    const bridge = bridgeWith({ onRuntimeOnline: runtime => onlineEvents.push(runtime) });
+    try {
+      const legacy = online(bridge);
+      expect(bridge.supportsPromptSendNow(legacy.runtimeId)).toBe(false);
+      expect(onlineEvents.at(-1)?.steerSupported).toBeUndefined();
+
+      const modern = online(bridge, hello({ sessionId: "session-send-now", capabilities: [...CLAUDE_BRIDGE_CAPABILITIES, "prompt.sendNow"] }));
+      expect(bridge.supportsPromptSendNow(modern.runtimeId)).toBe(true);
+      expect(onlineEvents.at(-1)?.steerSupported).toBe(true);
+      expect(bridge.sendCommand(modern.runtimeId, "steer-1", { type: "user_message", text: "now", delivery: "steer" })).toBe("accepted");
+      expect(bridge.poll(modern.runtimeId, modern.generation)).toMatchObject({
+        ok: true,
+        commands: [{ commandId: "steer-1", command: { type: "user_message", text: "now", delivery: "steer" } }],
+      });
+    } finally { bridge.close(); }
+  });
+
+  it("queues followUp messages on the Host during an active turn and allows withdrawal before native polling", () => {
+    const events: RuntimeEvent[] = [];
+    const bridge = bridgeWith({ onEvent: (_id, event) => events.push(event) });
+    try {
+      const current = online(bridge, hello({ capabilities: [...CLAUDE_BRIDGE_CAPABILITIES, "prompt.sendNow"] }));
+      expect(bridge.receiveEvent(current.runtimeId, current.generation, { type: "turn.start", turnId: "t-busy", startedAt: 100 })).toBe("accepted");
+
+      expect(bridge.sendCommand(current.runtimeId, "cmd-q1", {
+        type: "user_message", text: "withdraw me", messageId: "msg-q1", delivery: "followUp",
+      })).toBe("accepted");
+      expect(bridge.sendCommand(current.runtimeId, "cmd-q2", {
+        type: "user_message", text: "deliver me", messageId: "msg-q2", delivery: "followUp",
+      })).toBe("accepted");
+      expect(events).toContainEqual({
+        type: "message.queued", queueId: "msg-q1", text: "withdraw me", delivery: "followUp", state: "accepted",
+      });
+      // Held on Host while turn is active so the user can withdraw from the queue panel.
+      expect(bridge.poll(current.runtimeId, current.generation)).toMatchObject({ ok: true, commands: [] });
+
+      expect(bridge.cancelQueuedMessage(current.runtimeId, "msg-q1")).toBe("cancelled");
+      expect(events).toContainEqual({
+        type: "message.queued", queueId: "msg-q1", text: "withdraw me", delivery: "followUp", state: "cancelled",
+      });
+      expect(bridge.cancelQueuedMessage(current.runtimeId, "msg-q1")).toBe("already_delivered");
+
+      expect(bridge.receiveEvent(current.runtimeId, current.generation, {
+        type: "turn.complete", turnId: "t-busy", durationMs: 50, reason: "answer", isAborted: false, answer: "done",
+      })).toBe("accepted");
+      expect(bridge.poll(current.runtimeId, current.generation)).toMatchObject({
+        ok: true,
+        commands: [{ commandId: "cmd-q2", command: { type: "user_message", text: "deliver me", messageId: "msg-q2", delivery: "followUp" } }],
+      });
+      // Once handed to the native plugin poll, withdrawal is no longer allowed.
+      expect(bridge.cancelQueuedMessage(current.runtimeId, "msg-q2")).toBe("not_cancelable");
+      expect(bridge.receiveEvent(current.runtimeId, current.generation, {
+        type: "command.result", commandId: "cmd-q2", ok: true, status: "success",
+      })).toBe("accepted");
+      expect(events).toContainEqual({
+        type: "message.queued", queueId: "msg-q2", text: "deliver me", delivery: "followUp", state: "delivered",
+      });
+    } finally { bridge.close(); }
   });
 });

@@ -33,11 +33,15 @@ struct ChatNoticesRegion: View, Equatable {
                 }.padding(.horizontal, 16).accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
             } else {
                 let history = model.transcript
-                if (history.hasOlder && history.historyError != nil) || viewport.retryingHistory {
-                    // An exclusive branch removes the question, including its outgoing animation and hit target.
+                if history.historyLoading || viewport.retryingHistory {
+                    // Share the question/retry slot without inserting a transcript row.
                     VStack(spacing: 0) {
-                        historyRetry(loading: viewport.retryingHistory || history.historyLoading,
-                                     enabled: !history.syncing && (history.canSend || history.cached))
+                        historyProgress
+                        if hasNotices { runtimeNotices }
+                    }
+                } else if history.hasOlder && history.historyError != nil {
+                    VStack(spacing: 0) {
+                        historyRetry(enabled: !history.syncing && (history.canSend || history.cached))
                         if hasNotices { runtimeNotices }
                     }
                 } else if hasNotices {
@@ -57,18 +61,30 @@ struct ChatNoticesRegion: View, Equatable {
         RuntimeNoticesView(model: model, actions: actions, runtimeId: actions.runtimeId,
                            supported: facts.supported).padding(.horizontal, 16)
     }
-    private func historyRetry(loading: Bool, enabled: Bool) -> some View {
+    private var historyProgress: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small).accessibilityHidden(true)
+            Text(L10n.tr("正在加载更早的历史…"))
+                .font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .neuSurface(radius: OrbisRadius.control, intensity: 0.6, concentric: false)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chat-history-loading")
+        .allowsHitTesting(false)
+        .padding(.horizontal, 16).padding(.top, 6)
+    }
+    private func historyRetry(enabled: Bool) -> some View {
         let p = OrbisPalette(scheme)
         return OrbisMotionButton { if ownsViewport { retryHistory() } } label: {
             HStack(spacing: 12) {
-                Text(L10n.tr(loading ? "正在加载更早的历史…" : "历史加载失败"))
-                    .foregroundStyle(loading ? p.secondary : p.error)
+                Text(L10n.tr("历史加载失败"))
+                    .foregroundStyle(p.error)
                     .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                if loading { ProgressView().accessibilityHidden(true) }
-                else { Text(L10n.tr("重试")).foregroundStyle(.tint).fixedSize(horizontal: true, vertical: false) }
+                Text(L10n.tr("重试")).foregroundStyle(.tint).fixedSize(horizontal: true, vertical: false)
             }.font(.orbisLabel()).padding(.horizontal, 14).padding(.vertical, 10).frame(minHeight: 48)
         }.buttonStyle(NeuButtonStyle())
-            .disabled(loading || !enabled)
+            .disabled(!enabled)
             .accessibilityIdentifier("chat-history-retry")
             .padding(.horizontal, 16).padding(.top, 6)
     }
@@ -167,7 +183,7 @@ struct ChatHeaderView: View, Equatable {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(L10n.tr("{0}，{1}，{2}", agentTitle(kind), facts.displayName, facts.connection == .secured ? runtime.presentationTitle : connectionTitle(facts.connection)))
                 .modifier(ChatTitleDiagnostics(value: [presentation.model, presentation.thinking, presentation.indicator].compactMap { $0 }.joined(separator: " · ")))
-                .accessibilityHint(L10n.tr("模型与深度")).accessibilityIdentifier("chat-title")
+                .accessibilityHint(runtime.agentKind == "opencode" ? L10n.tr("会话配置") : L10n.tr("模型与深度")).accessibilityIdentifier("chat-title")
                 .accessibilityAddTraits(.isButton)
         } trailing: {
             OrbisIconButton(symbol: "clock.arrow.circlepath", label: L10n.tr("历史与分支"), action: onHistory)

@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkProviderEndpoint, fetchProviderModels } from "./provider-network.js";
+import { checkProviderEndpoint, fetchProviderModels, parseScutilProxy, parseWindowsProxy, requestViaProxy, shouldBypassProxy } from "./provider-network.js";
 // Exercise the production worker boundary; npm run build/typecheck generates these files.
 import { queryProviderUsage } from "../dist/provider-usage.js";
 
@@ -71,5 +72,59 @@ describe("provider network operations", () => {
     const url = await endpoint((req, res) => { expect(req.headers.authorization).toBe("Bearer usage-key"); res.end('{"balance":12.5}'); });
     const script = { enabled: true, language: "javascript" as const, timeout: 5, code: "({ request: {url:'{{baseUrl}}/balance', headers:{Authorization:'Bearer {{apiKey}}'}}, extractor: r => ({ remaining:r.balance, unit:'USD', extra:typeof process }) })" };
     expect(await queryProviderUsage(script, { baseUrl: url, apiKey: "usage-key" })).toEqual([{ remaining: 12.5, unit: "USD", extra: "undefined" }]);
+  });
+  it("parses system proxy settings and routes requests through HTTP and SOCKS5 proxies", async () => {
+    const scutil = `
+<dictionary> {
+  ExceptionsList : <array> {
+    0 : *.local
+    1 : internal.example
+  }
+  HTTPEnable : 1
+  HTTPPort : 7890
+  HTTPProxy : 127.0.0.1
+  HTTPSEnable : 1
+  HTTPSPort : 7891
+  HTTPSProxy : 127.0.0.1
+}`;
+    expect(parseScutilProxy(scutil, "https:")).toEqual({ url: "http://127.0.0.1:7891/", exceptions: ["*.local", "internal.example"] });
+    expect(parseScutilProxy(scutil, "http:")).toEqual({ url: "http://127.0.0.1:7890/", exceptions: ["*.local", "internal.example"] });
+    expect(parseWindowsProxy("ProxyEnable    REG_DWORD    0x1\nProxyServer    REG_SZ    http=127.0.0.1:8080;https=127.0.0.1:8443\nProxyOverride    REG_SZ    *.local;<local>\n", "https:"))
+      .toEqual({ url: "http://127.0.0.1:8443/", exceptions: ["*.local", "<local>"] });
+    expect(shouldBypassProxy("api.internal.example", ["*.local", "internal.example"])).toBe(true);
+    expect(shouldBypassProxy("chatgpt.com", ["*.local", "internal.example"])).toBe(false);
+
+    const httpProxy = await endpoint((req, res) => {
+      expect(req.url).toBe("http://chatgpt.com/backend-api/wham/usage");
+      expect(req.headers.authorization).toBe("Bearer secret");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end('{"ok":"http-proxy"}');
+    });
+    const httpRes = await requestViaProxy("http://chatgpt.com/backend-api/wham/usage", { headers: { Authorization: "Bearer secret" } }, httpProxy);
+    expect(await httpRes.json()).toEqual({ ok: "http-proxy" });
+
+    const sockets = new Set<import("node:net").Socket>();
+    const socksServer = createTcpServer(socket => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      socket.once("data", () => {
+        socket.write(Buffer.from([0x05, 0x00]));
+        socket.once("data", req => {
+          expect(req[1]).toBe(0x01);
+          expect(req[3]).toBe(0x03);
+          socket.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 80]));
+          socket.once("data", httpReq => {
+            expect(httpReq.toString("utf8")).toContain("GET /backend-api/wham/usage HTTP/1.1");
+            socket.end("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{\"ok\":\"socks5\"}");
+          });
+        });
+      });
+    });
+    await new Promise<void>(resolve => socksServer.listen(0, "127.0.0.1", resolve));
+    cleanup.push(() => new Promise<void>((resolve, reject) => { for (const s of sockets) s.destroy(); socksServer.close(err => err ? reject(err) : resolve()); }));
+    const socksAddr = socksServer.address();
+    if (!socksAddr || typeof socksAddr === "string") throw new Error("No socks port");
+    const socksRes = await requestViaProxy("http://chatgpt.com/backend-api/wham/usage", { headers: { Authorization: "Bearer secret" } }, `socks5h://127.0.0.1:${socksAddr.port}`);
+    expect(await socksRes.json()).toEqual({ ok: "socks5" });
   });
 });

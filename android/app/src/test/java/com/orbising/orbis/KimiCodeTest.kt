@@ -17,6 +17,10 @@ class KimiCodeTest {
         assertEquals(listOf("agent.dshDesktop", "agent.kimiCode"), deviceAgentFeatures(filtered))
         assertFalse(hasNegotiatedKimiCode(filtered))
         assertTrue(hasNegotiatedKimiCode(ready("""{"hostFeatures":["device.features","agent.kimiCode"],"dshDesktop":null}""")))
+        assertEquals(
+            listOf("agent.dshDesktop", "state.compact-bootstrap.v1", "claude.send-now.v1"),
+            deviceAgentFeatures(ready("""{"hostFeatures":["device.features","state.compact-bootstrap.v1","claude.send-now.v1"]}""")),
+        )
         assertEquals("headless", kimiSpawnMode("kimiCode", "tui"))
         assertEquals("tui", kimiSpawnMode("codex", "tui"))
     }
@@ -28,6 +32,18 @@ class KimiCodeTest {
         val admitted = ready("""{"hostFeatures":["device.features","agent.enablement.v1"],"deviceFeatures":["agent.enablement.v1"],"dshDesktop":null}""")
         assertTrue(readyAdmitsAgentEnablement(admitted))
         assertTrue(requestedAgentFeatures(admitted).isEmpty())
+    }
+
+    @Test fun `managed ready preserves an explicitly empty Agent directory without OpenClaw`() {
+        val payload = """{"type":"device.ready","protocolVersion":19,"modelEpoch":"new","hostFeatures":["device.features","agent.enablement.v1"],"deviceFeatures":["agent.enablement.v1"],"runtimes":[],"agents":[],"launchableAgents":[]}"""
+        val state = RelayReducer().reduce(RemoteState(supportedAgents = setOf("pi"), launchableAgents = setOf("pi")), payload, channel = "ctl")
+        assertEquals(emptySet<String>(), state.supportedAgents)
+        assertEquals(emptySet<String>(), state.launchableAgents)
+    }
+
+    @Test fun `OpenCode declares its feature only to a Host that advertises it`() {
+        assertEquals(listOf("agent.dshDesktop", "agent.opencode"), deviceAgentFeatures(ready("""{"hostFeatures":["device.features","agent.opencode"]}""")))
+        assertEquals(emptyList<String>(), deviceAgentFeatures(ready("""{"hostFeatures":["agent.opencode"]}""")))
     }
 
     @Test fun `one native row retires all merged optimistic sends but never another same-text send`() {

@@ -168,6 +168,40 @@ describe.skipIf(process.env.ORBIS_CODEX_NATIVE_TEST !== "1")("Codex native termi
     expect(h.calls()).toBe(2);
   }, 60_000);
 
+  // CODEX-DESKTOP-DRAFT-01: exercise the loaded/read/catalog gate on the real
+  // protocol, without a live Desktop/Host or any real account/model request.
+  it("waits for the first native user turn before adopting an unlisted Desktop draft", async () => {
+    const h = await fixture();
+    const gui = await CodexAppServer.createExternal({ endpoint: h.server.endpoint!, clientName: "codex_desktop" });
+    cleanup.push(() => gui.stop());
+    const { thread } = await gui.request("thread/start", { cwd: h.cwd }) as { thread: NativeThread };
+    expect(await gui.request("thread/loaded/list", {})).toMatchObject({ data: [thread.id] });
+    const initial = await gui.request("thread/list", { limit: 200, modelProviders: [] }) as { data: NativeThread[] };
+    expect(initial.data.map(row => row.id)).not.toContain(thread.id);
+    const backend = await CodexAppServer.createExternal({ endpoint: h.server.endpoint! });
+    cleanup.push(() => backend.stop());
+    const read = vi.spyOn(backend, "request");
+    const desktop = new CodexRuntime({ server: backend, rolloutRoot: join(h.home, "sessions"), onEvent: () => {} });
+    cleanup.push(() => desktop.stop());
+    desktop.markStarted();
+    // Both the fixed read-only path and the old eager resume hit this barrier.
+    await vi.waitFor(() => expect(read.mock.calls.some(([method]) => method === "thread/turns/list" || method === "thread/resume")).toBe(true));
+    expect(read.mock.calls.some(([method]) => method === "thread/resume")).toBe(false);
+    expect(desktop.directoryEntries()).toEqual([]);
+
+    let completed = false;
+    gui.onNotification = (method, params) => {
+      if (method === "turn/completed" && (params as { threadId: string }).threadId === thread.id) completed = true;
+    };
+    await h.turn(gui, thread.id);
+    await vi.waitFor(() => expect(completed).toBe(true), { timeout: 10_000 });
+    await vi.waitFor(() => expect(desktop.directoryEntries()).toMatchObject([
+      { sessionId: `codex-desktop:${thread.id}`, status: "idle", sessionLeafId: expect.any(String) },
+    ]), { timeout: 5_000 });
+    expect((await desktop.catalog()).map(row => row.sessionId)).toEqual([`codex-desktop:${thread.id}`]);
+    expect(h.calls()).toBe(1);
+  }, 30_000);
+
   it("releases an idle writer after its last subscriber leaves, while retaining another window and running turns", async () => {
     const h = await fixture(); h.observe();
     const result = await h.server.request("thread/start", { cwd: h.cwd }) as { thread: NativeThread };

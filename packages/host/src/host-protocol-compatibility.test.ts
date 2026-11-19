@@ -12,7 +12,7 @@ import { EnvelopeReassembler, fragmentEnvelope, PROTOCOL_VERSION, LOOPBACK_PATH,
 import type { RelayServer } from "@orbis/relay";
 import { createBusinessRelayServer as createRelayServer, relayBusinessDeviceURL, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 import { HostService as SourceHostService } from "./host-service.js";
-import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
+import { agentEnablementCatalog, AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
 import { CLAUDE_BRIDGE_CAPABILITIES, CLAUDE_BRIDGE_VERSION } from "./claude-mods-bridge.js";
 import type { OpenClawConfig } from "./openclaw-gateway.js";
 
@@ -104,6 +104,11 @@ class OldPhone {
   }
 }
 
+// Optional source build of the released reference (own dependencies, not current aliases).
+const importReferenceRoot = process.env.ORBIS_IMPORT_REFERENCE_RUNTIME;
+const importReferenceProtocol = importReferenceRoot ? (await nativeRequire(join(importReferenceRoot, "packages/protocol/dist/index.js"))) as typeof import("@orbis/protocol") : undefined;
+const importReleasedHost = importReferenceRoot ? (await nativeImport(pathToFileURL(join(importReferenceRoot, "packages/host/dist/host-service.js")).href)).HostService : undefined;
+
 describe("unchanged legacy device behavior against a compatible Host", () => {
   let directory: string;
   let relay: RelayServer;
@@ -120,7 +125,9 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     keys.clear();
   });
   let management: AgentEnablementController | undefined;
-  const setup = async (openClaw: OpenClawConfig | false = false, manage = false): Promise<void> => {
+  const setup = async (openClaw: OpenClawConfig | false = false, mode: boolean | typeof HostService = false): Promise<void> => {
+    const manage = mode === true;
+    const implementation = typeof mode === "function" ? mode : HostService;
     directory = await mkdtemp(join(tmpdir(), "orbis-wire-compat-"));
     hostId = (await loadOrCreateHostIdentity({ dir: directory })).hostId;
     const devices = ["phone18", "phone19", ...(manage ? ["other19"] : [])].map(deviceId => {
@@ -130,7 +137,7 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     await saveDeviceStore(directory, { version: 1, devices });
     relay = await createRelayServer({ port: 0, runtimeCredentials: ["isolated-runtime"], deviceCredentials: devices.map(device => ({ deviceId: device.deviceId, hostId, name: device.label, credential: device.deviceId })) });
     management = manage ? new AgentEnablementController(new AgentEnablementStore(directory), () => {}) : undefined;
-    host = await HostService.create({ ...(management ? { agentEnablement: management } : {}), relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "isolated-runtime", stateDir: directory, openClaw, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
+    host = await implementation.create({ ...(management ? { agentEnablement: management } : {}), relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "isolated-runtime", stateDir: directory, openClaw, sessionsRoot: join(directory, "sessions"), lanPort: 0, reconnect: false, probeIntervalMs: 0 });
     await host.start();
   };
   const connect = async (version: 18 | 19, path: "relay" | "lan", outerVersion: 18 | 19 = version, bootstrap = true, deviceId = `phone${version}`): Promise<OldPhone> => {
@@ -151,6 +158,32 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     if (bootstrap) await phone.take("device.ready");
     return phone;
   };
+
+  // IMPORT-06/ADR-0064: same release protocol number, but request admission differs.
+  // Run both implementations with the same E2E fixture, including a fresh handshake.
+  const externalImportVersions: ("candidate" | "released")[] = importReleasedHost ? ["candidate", "released"] : ["candidate"];
+  it.each(externalImportVersions)("negotiates scoped imports against %s Host without breaking the released wire", async version => {
+    await setup(false, version === "released" ? importReleasedHost! : HostService);
+    const phone = await connect(19, "relay", 19, false);
+    const checkedReady = async () => {
+      phone.request({ type: "host.lan.request" });
+      const ready = await phone.take("device.ready");
+      importReferenceProtocol?.RelayToDeviceMessageSchema.parse(ready);
+      expect((ready.hostFeatures as string[]).includes("external-import.target-v1")).toBe(version === "candidate");
+    };
+    await checkedReady();
+    const target = { sessionId: "missing", cwd: directory };
+    const command = { type: "user_message", text: "synthetic import", messageId: "import-message" };
+    phone.request({ type: "runtime.command", runtimeId: "missing", commandId: "fenced", importTarget: target, command });
+    expect(await phone.take("protocol.error")).toMatchObject({ commandId: "fenced",
+      code: version === "released" ? "invalid_command" : "import_target_changed" });
+    await phone.handshake(keys.get(phone.deviceId)!);
+    await checkedReady();
+    phone.request({ type: "runtime.command", runtimeId: "missing", commandId: "legacy", command });
+    expect(await phone.take("protocol.error")).toMatchObject({ commandId: "legacy", code: "runtime_offline" });
+    phone.request({ type: "session.list", requestId: "legacy-after-reconnect" });
+    await phone.take("session.list.result", "legacy-after-reconnect");
+  });
 
   it.each([[18, "relay"], [19, "relay"], [18, "lan"], [19, "lan"]] as const)("protocol %s on %s reads, receives correlated errors and transfers original bytes", async (version, path) => {
     await setup();
@@ -222,7 +255,7 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
       expect(await app.take("device.ready")).toMatchObject({ hostFeatures: expect.arrayContaining(["agent.enablement.v1"]), deviceFeatures: expect.arrayContaining(["agent.openclaw", "agent.enablement.v1"]) });
       app.request({ type: "agent.enablement.read", requestId: "initial" });
       const initial = await app.take("agent.enablement.snapshot", "initial");
-      expect(initial).toMatchObject({ snapshot: { revision: 0, agents: ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", "hermes", "kimiCode", "openclaw"].map(kind => ({ kind, enabled: false })) } });
+      expect(initial).toMatchObject({ snapshot: { revision: 0, agents: Object.keys(agentEnablementCatalog).map(kind => ({ kind, enabled: false })) } });
       app.request({ type: "agent.enablement.write", requestId: "unmanaged", kind: "unknown-source", enabled: true, expectedRevision: 0 });
       expect(await app.take("protocol.error", "unmanaged")).toMatchObject({ code: "agent_feature_required" });
       expect(opened).toBe(0);

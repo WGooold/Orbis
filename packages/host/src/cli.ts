@@ -36,6 +36,7 @@ import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
 import { readOpenClawDesktopSettings } from "./openclaw-gateway.js";
+import { hostCliProfile } from "./cli-profile.js";
 
 const USAGE = `orbis —— 电脑侧的 Host 进程
 
@@ -55,6 +56,7 @@ const USAGE = `orbis —— 电脑侧的 Host 进程
                                  供隔离测试台或脚本把载荷交给客户端，不必用摄像头扫码
 
 环境变量：
+  ORBIS_KIMI_CODE_SOURCE    选择 web（默认）或 desktop（macOS arm64）
   ORBIS_LAN_PORT             覆盖 LAN 直连端口（默认 42130）
 `;
 
@@ -74,6 +76,11 @@ async function main(): Promise<void> {
   });
   const [command, ...rest] = parsed.positionals;
   const stateDir = parsed.values["state-dir"];
+
+  if (parsed.values.help === true && command !== undefined) {
+    console.log(USAGE);
+    return;
+  }
 
   switch (command) {
     case "pair":
@@ -99,7 +106,24 @@ async function runHost(
   sessionsRoot: string | undefined,
   kimiCodeFlag = false,
 ): Promise<void> {
+  const shutdown = waitForSignal();
+  try {
+    await runHostUntilShutdown(stateDirOption, codexEnabled, dshEnabled, sessionsRoot, kimiCodeFlag, shutdown.promise);
+  } finally {
+    shutdown.dispose();
+  }
+}
+
+async function runHostUntilShutdown(
+  stateDirOption: string | undefined,
+  codexEnabled: boolean,
+  dshEnabled: boolean,
+  sessionsRoot: string | undefined,
+  kimiCodeFlag: boolean,
+  shutdown: Promise<void>,
+): Promise<void> {
   const stateDir = resolveStateDir(stateDirOption);
+  const profile = hostCliProfile(process.platform);
   const config = await loadHostConfig({ stateDir });
 
   if (await isLocalHostAlive(stateDir)) throw new Error("此状态目录已有正在运行的 Host");
@@ -115,7 +139,7 @@ async function runHost(
   let codexRuntime: CodexRuntime | undefined, codexPending: Promise<CodexRuntime | undefined> | undefined;
   let codexGeneration = 0;
   let codexDesktop: CodexDesktopLifecycle | undefined, dshDesktop: DshDesktopLifecycle | undefined;
-  const log = (line: string) => console.log(`[host] ${line}`);
+  const log = (line: string) => console.error(`[host] ${line}`);
   const ensureCodex = (): Promise<CodexRuntime | undefined> => {
     const lease = enablement.lease("codex");
     if (!lease) return Promise.resolve(undefined);
@@ -125,7 +149,7 @@ async function runHost(
     const pending = (async () => {
       const server = await CodexAppServer.create({ log });
       if (!lease.isCurrent() || generation !== codexGeneration) { await server.stop(); return undefined; }
-      return codexRuntime = new CodexRuntime({ server, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, log, onEvent: () => {} });
+      return codexRuntime = new CodexRuntime({ server, ...(profile.headless ? { headless: true } : {}), sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, log, onEvent: () => {} });
     })().finally(() => { if (codexPending === pending) codexPending = undefined; });
     return codexPending = pending;
   };
@@ -140,14 +164,18 @@ async function runHost(
   try {
     service = await HostService.create({
       agentEnablement: enablement,
-      createKimiCodeRuntime: async () => new KimiRuntime({ stateDir, homeDir: config.kimiCodeHome,
-        ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }), log }),
+      createKimiCodeRuntime: async () => {
+        if (config.kimiCodeSource === "desktop" && !profile.launchDesktopAgents) throw new Error("当前平台不支持 Kimi Code 桌面接入");
+        return new KimiRuntime({ stateDir, source: config.kimiCodeSource, homeDir: config.kimiCodeHome,
+        ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }), log });
+      },
       providers,
       relayUrl: config.relayUrl,
       relayTransport: config.relayTransport,
       relayHistoryMode: config.relayHistoryMode,
       credential: config.runtimeCredential,
       stateDir,
+      preferAutoSessionSpawn: profile.headless,
       ...(config.adminToken === undefined ? {} : { adminToken: config.adminToken }),
       // 隔离测试台用：只列这个目录里的 Pi 会话，避免联调时把真实会话（以及它们的运行状态）拉进来。
       ...(sessionsRoot === undefined ? {} : { sessionsRoot }),
@@ -162,9 +190,10 @@ async function runHost(
       },
       prepareManagedCodex: async (kind, lease) => {
         if (kind === "codex") {
-          if (codexEnabled) void ensureCodex().then(runtime => { if (runtime && lease.isCurrent()) service?.attachCodexRuntime(runtime); }).catch(error => log(String(error)));
+          if (codexEnabled || profile.headless) void ensureCodex().then(runtime => { if (runtime && lease.isCurrent()) service?.attachCodexRuntime(runtime); }).catch(error => log(String(error)));
           return resolveCodexCommand().then(() => true, () => false);
         }
+        if (!profile.launchDesktopAgents) return false;
         const wrapper = resolveCodexWrapper();
         const endpointPath = codexDesktopEndpointPath(stateDir);
         const lifecycle = codexDesktop = new CodexDesktopLifecycle({
@@ -208,6 +237,7 @@ async function runHost(
           if (dshEnabled) void service?.prepareDshRuntime().catch(error => log(String(error)));
           return resolveDshCommand(env).then(() => true, () => false);
         }
+        if (!profile.launchDesktopAgents) return false;
         const lifecycle = dshDesktop = new DshDesktopLifecycle({ stateDir, log, onStatusChange: () => {
           if (lease.isCurrent()) service?.announceDshDesktopStatus();
         } });
@@ -221,35 +251,35 @@ async function runHost(
       recoverDshDesktopRuntime: () => dshDesktop?.connectExisting() ?? Promise.resolve(undefined),
       onDshDesktopOffline: reason => dshDesktop?.noteOffline(reason),
       claude: {},
-      log: (line) => console.log(`[host] ${line}`),
-      onStateChange: (state) => console.log(`[host] relay ${state}`),
+      log: (line) => console.error(`[host] ${line}`),
+      onStateChange: (state) => console.error(`[host] relay ${state}`),
       onPathChange: (deviceId, change) => {
-        console.log(`[host] 设备 ${deviceId} 切到${describePath(change.to)}`);
+        console.error(`[host] 设备 ${deviceId} 切到${describePath(change.to)}`);
       },
       onData: (_deviceId, payload) => {
-        console.log(`[host] 收到 ${payload.byteLength} 字节载荷，但没有对应的本机 runtime 能处理它`);
+        console.error(`[host] 收到 ${payload.byteLength} 字节载荷，但没有对应的本机 runtime 能处理它`);
       },
     });
 
     await service.start();
-    console.log(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
+    console.error(`[host] hostId=${service.hostId} 已就绪，共 ${service.devices.length} 台已配对设备`);
     if (service.lan !== undefined) {
       const endpoints = service.lan.endpoints.map((entry) => `${entry.host}:${entry.port}`).join("、");
-      console.log(`[host] LAN 直连已就绪：${endpoints.length === 0 ? "（未找到非回环网卡）" : endpoints}`);
+      console.error(`[host] LAN 直连已就绪：${endpoints.length === 0 ? "（未找到非回环网卡）" : endpoints}`);
     }
     if (service.loopback !== undefined) {
       for (const runtime of service.localRuntimes) {
-        console.log(`[host] 本机已接入 runtime ${runtime.runtimeId}（${runtime.cwd}）`);
+        console.error(`[host] 本机已接入 runtime ${runtime.runtimeId}（${runtime.cwd}）`);
       }
-      console.log("[host] Agent 可在配对 App 的 Host 设置中修改；Ctrl+C 退出");
+      console.error("[host] Agent 可在配对 App 的 Host 设置中修改；Ctrl+C 退出");
     }
 
-    await waitForSignal();
+    await shutdown;
   } finally {
     try { await service?.stop(); }
     finally { await providers.closeRouting(); }
   }
-  console.log("[host] 已退出");
+  console.error("[host] 已退出");
 }
 
 function cliEnablement(stateDir: string, choices: Partial<Record<AgentKind, boolean>> = {}): AgentEnablementController {
@@ -399,12 +429,18 @@ async function renderTerminalQr(text: string): Promise<string> {
   return await QRCode.toString(text, { type: "terminal", small: true });
 }
 
-function waitForSignal(): Promise<void> {
-  return new Promise<void>((resolve) => {
-    const done = (): void => resolve();
-    process.once("SIGINT", done);
-    process.once("SIGTERM", done);
-  });
+function waitForSignal(): { promise: Promise<void>; dispose: () => void } {
+  let resolveSignal!: () => void;
+  const promise = new Promise<void>(resolve => { resolveSignal = resolve; });
+  let settled = false;
+  const done = (): void => {
+    if (settled) return;
+    settled = true;
+    resolveSignal();
+  };
+  process.once("SIGINT", done);
+  process.once("SIGTERM", done);
+  return { promise, dispose: () => { process.off("SIGINT", done); process.off("SIGTERM", done); } };
 }
 
 await main();

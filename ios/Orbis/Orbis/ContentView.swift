@@ -41,6 +41,7 @@ private struct NavigationRoot: View, Equatable {
     @State private var draftNoticeToken = 0
     @State private var newSessionCwd: String?
     @StateObject private var overlay = OrbisOverlay()
+    @StateObject private var externalImports = ExternalImportInboxModel()
     #if DEBUG
     @State private var previewListOperationCount = 0
     #endif
@@ -94,6 +95,7 @@ private struct NavigationRoot: View, Equatable {
             }
         }
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
+        .environment(\.orbisImportInbox, externalImports)
         .environmentObject(facts.source.transfers)
         .environment(\.orbisFileActions, facts.source.transfers)
         .environmentObject(facts.source.toolInventories)
@@ -250,7 +252,10 @@ private struct NavigationRoot: View, Equatable {
 
     private var rootWithSceneUpdates: some View {
         rootWithNavigationUpdates
-        .onOpenURL { url in LiveActivityCoordinator.shared.receive(url) }
+        .onOpenURL { url in
+            if url.isFileURL { externalImports.openDocument(url) }
+            else { LiveActivityCoordinator.shared.receive(url) }
+        }
         .onReceive(LiveActivityCoordinator.shared.navigation) { target in
             guard let target else { return }
             LiveActivityCoordinator.shared.navigation.send(nil)
@@ -283,6 +288,7 @@ private struct NavigationRoot: View, Equatable {
             store.hostState.setCatalogVisible((drawerOpen || persistentDirectory) && scenePhase == .active)
             store.setHistoryWindowVisible(scenePhase == .active && navigation.pages.last == .chat)
             guard scenePhase == .active else { return }
+            externalImports.refresh()
             while !Task.isCancelled {
                 store.reconcileCatalog()
                 store.reconcileHistoryWindow()
@@ -311,6 +317,9 @@ private struct NavigationRoot: View, Equatable {
                     }.neuSurface(radius: OrbisRadius.dialog, padding: 30)
                 }.accessibilityAddTraits(.updatesFrequently)
             }
+        }
+        .orbisBottomSheet(isPresented: $externalImports.isOpen) {
+            ExternalImportInboxView(model: externalImports, store: store).orbisSheet([.large])
         }
         .orbisOverlayHost(overlay)
         .modifier(OrbisInputModality())
@@ -875,6 +884,7 @@ struct HomeView: View, Equatable {
         } trailing: {
             OrbisSelectionToolbar(selecting: selecting) { progress in
                 HStack(spacing: 8) {
+                    ExternalImportInboxButton()
                     OrbisIconButton(symbol: "arrow.down.to.line", label: L10n.tr("下载"), action: onDownloads)
                         .offset(x: 24 * progress).accessibilityIdentifier("home-downloads")
                     OrbisIconButton(symbol: draftOpen ? "xmark" : "plus", label: draftOpen ? L10n.tr("收起新会话") : L10n.tr("新建会话"), morphFrom: "plus", action: onDraft)
@@ -1454,6 +1464,8 @@ private struct HomeSystemToolbarModifier: ViewModifier {
                                     ToolbarItem(placement: .topBarLeading) { directoryButton }
                                         .axisBehavior(.verticalPreferred)
                                 }
+                                ToolbarItem(placement: .topBarTrailing) { ExternalImportInboxButton(native: true) }
+                                    .axisBehavior(.verticalPreferred)
                                 ToolbarItem(placement: .topBarTrailing) { downloadsButton }
                                     .axisBehavior(.verticalPreferred)
                                     .visibilityPriority(.high)
@@ -1487,6 +1499,7 @@ private struct HomeSystemToolbarModifier: ViewModifier {
                         if !persistentDirectory {
                             ToolbarItem(placement: .topBarLeading) { directoryButton }
                         }
+                        ToolbarItem(placement: .topBarTrailing) { ExternalImportInboxButton(native: true) }
                         ToolbarItem(placement: .topBarTrailing) { downloadsButton }
                         ToolbarItem(placement: .topBarTrailing) { newSessionButton }
                     }

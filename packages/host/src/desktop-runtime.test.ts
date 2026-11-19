@@ -12,6 +12,7 @@ import { CodexAppServer } from "./codex-daemon.js";
 import { CodexDesktopLifecycle } from "./codex-desktop-lifecycle.js";
 import * as claudeInstallation from "./claude-integration-install.js";
 import * as claudeVersion from "./claude-version.js";
+import { KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import * as dshDesktopLifecycle from "./dsh-desktop-lifecycle.js";
 import { HostService } from "./host-service.js";
@@ -45,6 +46,35 @@ describe("desktop Host lifecycle", () => {
       try { expect(await reopened.readAgentEnablement()).toEqual(changed.snapshot); }
       finally { await reopened.close(); }
     } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // An explicit legacy UI off wins once, while a later common switch starts
+  // the actual Kimi adapter with its separately selected native source.
+  it("migrates Kimi off once and uses Host policy for its connection status", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-kimi-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), root,
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const started = vi.spyOn(KimiRuntime.prototype, "start").mockImplementation(() => {});
+    vi.spyOn(KimiRuntime.prototype, "connectionState", "get").mockReturnValue("not_running");
+    const settings = { relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
+      piIntegrationEnabled: false, claudeIntegrationEnabled: false };
+    try {
+      await writeFile(join(root, "config.json"), JSON.stringify({ kimiCodeEnabled: true, kimiCodeHome: join(root, "kimi") }));
+      await runtime.start({ ...settings, kimiCodeEnabled: false });
+      expect(started).not.toHaveBeenCalled();
+      await runtime.stop();
+      await runtime.start(settings);
+      expect(started).not.toHaveBeenCalled();
+      runtime.status();
+      expect(events).toContainEqual(expect.objectContaining({ event: "status", kimiCodeState: "disabled" }));
+      await runtime.setAgentEnablement({ kind: "kimiCode", enabled: true, expectedRevision: 0 });
+      await vi.waitFor(() => expect(started).toHaveBeenCalledTimes(1));
+      runtime.status();
+      expect(events).toContainEqual(expect.objectContaining({ event: "status", kimiCodeState: "not_running" }));
+    } finally { await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
   });
 
   it("recovers an existing DSH bridge with prestart disabled and closes it when paused", async () => {

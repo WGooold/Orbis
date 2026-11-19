@@ -54,7 +54,7 @@ export class CompactStateModel {
     let value = state.value;
     if (scope.kind === "agent" && domain === "identity" && value && typeof value === "object") {
       const identity = value as Record<string, unknown>;
-      value = Object.fromEntries(["runtimeId", "name", "cwd", "sessionId", "sessionGraphSync", "hostname", "sessionName", "hostId", "agentKind"]
+      value = Object.fromEntries(["runtimeId", "name", "cwd", "sessionId", "sessionGraphSync", "hostname", "sessionName", "hostId", "agentKind", "steerSupported"]
         .filter(key => Object.hasOwn(identity, key)).map(key => [key, identity[key]]));
     } else if (scope.kind === "agent") {
       const projected = projectDeviceMessage({ type: "agent.state.snapshot", scope: "agent", domains: [{ domain, value }] }) as { domains: Array<{ value: unknown }> };

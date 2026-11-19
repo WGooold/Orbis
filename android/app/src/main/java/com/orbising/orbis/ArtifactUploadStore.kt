@@ -4,7 +4,10 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import java.io.File
 import java.io.InputStream
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.security.MessageDigest
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -89,6 +92,7 @@ class ArtifactUploadStore(context: Context) {
     private val metadataTemporaryFile = java.io.File(appContext.filesDir, "upload-tasks.json.tmp")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val tasks = linkedMapOf<String, UploadTask>()
+    private val importSources = mutableMapOf<String, File>()
 
     private class OpenSource(val stream: InputStream, var position: Long)
 
@@ -99,7 +103,7 @@ class ArtifactUploadStore(context: Context) {
     }
 
     @Synchronized
-    fun load(): List<UploadTask> = tasks.values.toList()
+    fun load(): List<UploadTask> = tasks.values.filterNot { it.taskId in importSources }
 
     @Synchronized
     fun find(taskId: String): UploadTask? = tasks[taskId]
@@ -108,6 +112,22 @@ class ArtifactUploadStore(context: Context) {
     fun register(task: UploadTask) {
         tasks[task.taskId] = task
         persistTasks()
+    }
+
+    /** The inbox owns these files. They are neither saved to the transfer list nor deleted here. */
+    @Synchronized
+    internal fun registerImport(task: UploadTask, source: File) {
+        check(task.taskId !in tasks)
+        importSources[task.taskId] = source
+        tasks[task.taskId] = task
+    }
+
+    @Synchronized
+    internal fun releaseImport(taskId: String) {
+        if (importSources.remove(taskId) != null) {
+            tasks.remove(taskId)
+            closeSource(taskId)
+        }
     }
 
     /**
@@ -230,7 +250,7 @@ class ArtifactUploadStore(context: Context) {
     }
 
     private fun openSource(task: UploadTask): OpenSource = open.getOrPut(task.taskId) {
-        val stream = appContext.contentResolver.openInputStream(Uri.parse(task.sourceUri))
+        val stream = importSources[task.taskId]?.inputStream() ?: appContext.contentResolver.openInputStream(Uri.parse(task.sourceUri))
             ?: error(L10n.tr("无法读取所选文件"))
         OpenSource(stream, 0)
     }
@@ -262,7 +282,7 @@ class ArtifactUploadStore(context: Context) {
 
     private fun persistTasks() {
         metadataFile.parentFile?.mkdirs()
-        metadataTemporaryFile.writeText(json.encodeToString(tasks.values.toList()))
+        metadataTemporaryFile.writeText(json.encodeToString(tasks.values.filterNot { it.taskId in importSources }))
         if (!metadataTemporaryFile.renameTo(metadataFile)) {
             metadataFile.delete()
             check(metadataTemporaryFile.renameTo(metadataFile)) { L10n.tr("无法保存上传记录") }
@@ -284,17 +304,30 @@ class ArtifactUploadStore(context: Context) {
          * 就得把哈希报过去。整文件读进内存会在 100 MB 上直接 OOM，所以只能流式。
          */
         fun digestOf(resolver: ContentResolver, uri: Uri): Pair<String, Long> {
+            return resolver.openInputStream(uri)?.use { digestOf(it) } ?: error(L10n.tr("无法读取所选文件"))
+        }
+
+        internal fun inspectImport(source: ImportUploadSource): String {
+            val (file, metadata) = source
+            if (!Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS) || metadata.bytes !in 1..MAX_UPLOAD_BYTES)
+                reject(ImportProblem.UNREADABLE)
+            return file.inputStream().use { input -> digestOf(input, metadata.bytes) }.let { (hash, read) ->
+                if (read != metadata.bytes) reject(ImportProblem.UNREADABLE)
+                hash
+            }
+        }
+
+        private fun digestOf(input: InputStream, maximum: Long = Long.MAX_VALUE): Pair<String, Long> {
             val digest = MessageDigest.getInstance("SHA-256")
             var size = 0L
-            resolver.openInputStream(uri)?.use { input ->
-                val buffer = ByteArray(64 * 1024)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count <= 0) break
-                    digest.update(buffer, 0, count)
-                    size += count
-                }
-            } ?: error(L10n.tr("无法读取所选文件"))
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count <= 0) break
+                size += count
+                if (size > maximum) reject(ImportProblem.UNREADABLE)
+                digest.update(buffer, 0, count)
+            }
             return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) } to size
         }
 

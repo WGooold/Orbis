@@ -1,5 +1,7 @@
 import SwiftUI
 import Observation
+import PhotosUI
+import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class ChatComposerFocus {
@@ -70,6 +72,35 @@ private struct ChatFileSelection {
     let capacity: Int
 }
 
+private struct ChatPhotoFile: Transferable {
+    let directory: URL
+    let fileURL: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            try Self.copy(received.file)
+        }
+        FileRepresentation(importedContentType: .movie) { received in
+            try Self.copy(received.file)
+        }
+    }
+
+    private static func copy(_ source: URL) throws -> ChatPhotoFile {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("orbis-photo-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileName = source.lastPathComponent.isEmpty ? "photo.dat" : source.lastPathComponent
+        let destination = directory.appendingPathComponent(fileName)
+        do {
+            try FileManager.default.copyItem(at: source, to: destination)
+            return ChatPhotoFile(directory: directory, fileURL: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
+}
+
 /// IOS-CHAT-03: every finite row width reaches the same native editor with a
 /// definite remaining width and an unspecified height.
 private struct ChatComposerRowLayout: Layout {
@@ -135,6 +166,7 @@ struct ChatComposerView: View, Equatable {
     let fallbackRuntime: RuntimeSummary
     private var target: ChatActionContext { actions.target }
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.orbisFoldReading) private var foldReading
     let composerFocus: ChatComposerFocus
     let sendFlight: MessageSendFlight
@@ -144,9 +176,20 @@ struct ChatComposerView: View, Equatable {
     @State private var deliveryChoices = false
     @State private var permissionsOpen = false
     @State private var filePickerOpen = false
+    @State private var photoPickerOpen = false
+    @State private var photoPickerItems: [PhotosPickerItem] = []
     @State private var draftStorage = ComposerDraftStorage()
     @State private var draftPresentation: ComposerDraftPresentation?
     @State private var fileSelection: ChatFileSelection?
+    @State private var photoSelection: ChatFileSelection?
+    @State private var photoLoadTask: Task<Void, Never>?
+    @State private var voiceInput = VoiceInputController()
+    @State private var voiceSavedDraft: String?
+    @State private var voiceCleanupInProgress = false
+    @State private var voiceCleanupStatus: String?
+    @State private var voiceCleanupTask: Task<Void, Never>?
+    @State private var voiceCleanupRawDraft: String?
+    @State private var voiceCleanupCleanedDraft: String?
 
     private var facts: ChatComposerState { model.composer }
     private var runtime: ChatComposerRuntimeFacts { facts.runtime ?? ChatComposerRuntimeFacts(fallbackRuntime) }
@@ -176,6 +219,9 @@ struct ChatComposerView: View, Equatable {
     private var draft: Binding<String> {
         Binding(get: { currentDraft }, set: { setProgrammaticDraft($0) })
     }
+    private var editorDraft: Binding<String> {
+        Binding(get: { voiceInput.draft?.text ?? currentDraft }, set: { setProgrammaticDraft($0) })
+    }
     private var hasText: Bool { !currentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var slash: Bool { currentDraft.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") }
     private var command: SlashCommand? { facts.commands.first { $0.name == selectedCommand } }
@@ -184,7 +230,7 @@ struct ChatComposerView: View, Equatable {
     }
     private var canSubmit: Bool {
         // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
-        guard facts.canSend, !facts.preparing, !kimiComposer || runtime.status != "running", attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
+        guard facts.canSend, !voiceInput.isActive, !facts.preparing, !kimiComposer || runtime.status != "running", attachments.allSatisfy({ !["failed", "cancelled"].contains($0.status) }),
               hasText || !attachments.isEmpty else { return false }
         if textOnly { return hasText && !slash && runtime.status != "running" }
         if slash {
@@ -260,21 +306,81 @@ struct ChatComposerView: View, Equatable {
             if let selectedCommand, let error = facts.menuErrors[selectedCommand] {
                 HStack { Label(error, systemImage: "exclamationmark.circle"); OrbisActionButton(title: L10n.tr("重试")) { actions.loadMenuOptions(selectedCommand) } }.font(.orbisCaption()).foregroundStyle(p.error).padding(.horizontal, 20)
             }
+            if voiceInput.isListening || voiceInput.isFinishing || voiceInput.errorMessage != nil || voiceCleanupInProgress || voiceCleanupStatus != nil {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: voiceInput.errorMessage == nil ? (voiceCleanupInProgress ? "sparkles" : "waveform") : "exclamationmark.circle")
+                        .foregroundStyle(voiceInput.errorMessage == nil ? accent : p.error)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(voiceInput.errorMessage.map { L10n.tr($0) } ?? L10n.tr(
+                            voiceInput.isFinishing ? "正在整理语音" : voiceCleanupInProgress ? "正在去除口癖" :
+                                voiceCleanupStatus ?? "正在聆听 · 结束后可编辑，不会自动发送"))
+                            .font(.orbisCaption()).foregroundStyle(voiceInput.errorMessage == nil ? p.secondary : p.error)
+                        if voiceCleanupInProgress {
+                            Text(L10n.tr("仅将本次识别文字发送到自定义 API"))
+                                .font(.orbisCaption()).foregroundStyle(p.secondary)
+                        } else if voiceInput.isListening || voiceInput.isFinishing {
+                            Text(L10n.tr("请勿口述密码等敏感信息"))
+                                .font(.orbisCaption()).foregroundStyle(p.secondary)
+                        }
+                        if voiceCleanupCleanedDraft == currentDraft, let original = voiceCleanupRawDraft {
+                            Button(L10n.tr("还原识别原文")) {
+                                setProgrammaticDraft(original)
+                                voiceCleanupCleanedDraft = nil
+                                voiceCleanupRawDraft = nil
+                                voiceCleanupStatus = nil
+                            }
+                            .font(.orbisCaption(.medium)).foregroundStyle(accent)
+                            .accessibilityIdentifier("voice-cleanup-restore")
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20).padding(.top, 6)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("voice-input-status")
+            }
             if !textOnly { AttachmentStrip(actions: actions, tasks: facts.attached, preparing: facts.preparing) }
-            if slash && !textOnly { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
+            if slash && !textOnly && !voiceInput.isActive { SlashPickerView(commands: facts.commands, selected: $selectedCommand, input: draft, onHistory: onHistory).padding(.top, 10) }
             ChatComposerRowLayout {
-                if textOnly && !(foldReading && focused) {
+                if foldReading && focused {
+                    OrbisIconButton(symbol: "keyboard.chevron.compact.down",
+                                    label: L10n.tr("收起键盘"), tint: accent) {
+                        composerFocus.focused = false
+                    }
+                } else if textOnly {
                     Color.clear.frame(width: 0, height: 0).accessibilityHidden(true)
                 } else {
-                    OrbisIconButton(symbol: foldReading && focused ? "keyboard.chevron.compact.down" : "paperclip",
-                                    label: L10n.tr(foldReading && focused ? "收起键盘" : "发送文件到电脑"), tint: accent) {
-                        if foldReading && focused { composerFocus.focused = false; return }
-                        guard actions.isCurrent else { return }
-                        fileSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
-                        composerFocus.focused = false; filePickerOpen = true
-                    }.disabled(!(foldReading && focused) && (!facts.canSend || facts.preparing || attachments.count >= 10))
+                    let canAttach = facts.canSend && !facts.preparing && attachments.count < 10
+                    Menu {
+                        Button {
+                            guard actions.isCurrent else { return }
+                            photoSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
+                            composerFocus.focused = false
+                            photoPickerOpen = true
+                        } label: {
+                            Label(L10n.tr("照片"), systemImage: "photo.on.rectangle")
+                        }
+                        Button {
+                            guard actions.isCurrent else { return }
+                            fileSelection = ChatFileSelection(actions: actions, capacity: max(0, 10 - attachments.count))
+                            composerFocus.focused = false
+                            filePickerOpen = true
+                        } label: {
+                            Label(L10n.tr("文件"), systemImage: "folder")
+                        }
+                    } label: {
+                        OrbisMotionGlyph(symbol: "paperclip", size: 22, activation: 0)
+                            .foregroundStyle(canAttach ? accent : p.faint)
+                            .frame(width: 40, height: 40)
+                            .neuSurface(inset: false, radius: 20, intensity: canAttach ? 0.65 : 0, concentric: false, press: false)
+                            .overlay { if !canAttach { Circle().strokeBorder(p.outline, lineWidth: 1) } }
+                            .frame(width: 48, height: 48)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(!canAttach)
+                    .accessibilityLabel(L10n.tr("添加附件"))
                 }
-                OrbisDraftEditor(text: draft,
+                OrbisDraftEditor(text: editorDraft,
                                  focused: Binding(get: { focused }, set: { if composerFocus.focused != $0 { composerFocus.focused = $0 } }),
                                  placeholder: L10n.tr(textOnly ? "发给 {0}" : "发给 {0}，/ 命令", agentTitle(kind)),
                                  ink: UIColor(p.text), placeholderInk: UIColor(p.secondary),
@@ -282,16 +388,30 @@ struct ChatComposerView: View, Equatable {
                                  font: .monospacedDigitSystemFont(ofSize: OrbisTextSize.body, weight: .regular),
                                  lineFragmentPadding: 0, submitsOnSoftwareReturn: false,
                                  identifier: "chat-composer",
-                                 programmaticRevision: facts.draftRevision &+ presentation.programmaticRevision,
+                                 programmaticRevision: facts.draftRevision &+ presentation.programmaticRevision &+ voiceInput.draftRevision,
                                  measuredHeight: presentation.measuredHeight,
                                  onEdit: { text, marked, height in handleUserDraftEdit(text, marked: marked, height: height) },
                                  onSubmit: handleReturnSubmit,
                                  onCancel: { composerFocus.focused = false })
-                    .padding(.horizontal, 16).padding(.vertical, 16)
+                    .allowsHitTesting(!voiceInput.isActive)
+                    .padding(.horizontal, 16).padding(.vertical, 16).padding(.trailing, 40)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(minHeight: 56)
                     .orbisField(focused: focused).orbisAnchor(sendFlight.composer)
-                if runtime.status == "running" && (textOnly || !hasText && attachments.isEmpty) {
+                    .overlay(alignment: .trailing) {
+                        OrbisIconButton(symbol: voiceInput.isListening || voiceInput.isFinishing ? "stop.fill" : "mic.fill",
+                                        label: L10n.tr(voiceInput.isListening ? "结束语音输入" : voiceInput.isFinishing ? "正在整理语音" : "开始语音输入"),
+                                        tint: voiceInput.isListening ? p.error : accent,
+                                        compact: true) {
+                            guard actions.isCurrent else { return }
+                            composerFocus.focused = false
+                            if voiceInput.isListening { finishVoiceInput() }
+                            else if !voiceInput.isActive { startVoiceInput() }
+                        }.disabled(!voiceInput.isListening && (!facts.canSend || voiceInput.isActive))
+                            .accessibilityIdentifier("chat-voice-input")
+                            .padding(.trailing, 2)
+                    }
+                if !voiceInput.isActive && runtime.status == "running" && (textOnly || !hasText && attachments.isEmpty) {
                     OrbisIconButton(symbol: "stop.fill", label: L10n.tr("停止生成"), tint: p.error) {
                         if actions.isCurrent, actions.stopRuntime() { OrbisHaptics.commit() }
                     }.disabled(!facts.canSend)
@@ -306,9 +426,19 @@ struct ChatComposerView: View, Equatable {
                 guard !textOnly, let selection = fileSelection else { fileSelection = nil; return }
                 fileSelection = nil
                 switch result {
-                case .success(let urls): selection.actions.upload(urls, capacity: selection.capacity)
+                case .success(let urls): _ = selection.actions.upload(urls, capacity: selection.capacity)
                 case .failure(let error): selection.actions.uploadFailed(error.localizedDescription)
                 }
+            }
+            .fileDialogDefaultDirectory(.documentsDirectory)
+            .photosPicker(
+                isPresented: $photoPickerOpen,
+                selection: $photoPickerItems,
+                maxSelectionCount: max(1, 10 - attachments.count),
+                matching: .any(of: [.images, .videos])
+            )
+            .onChange(of: photoPickerItems) { _, items in
+                handlePhotoSelection(items)
             }
             .orbisBottomSheet(isPresented: $permissionsOpen) {
                 PermissionsView(target: target, runtime: actions.runtime ?? fallbackRuntime).orbisSheet([.large])
@@ -320,12 +450,92 @@ struct ChatComposerView: View, Equatable {
             .onChange(of: selectedCommand) { old, _ in
                 if actions.ownsRuntime, let old, target.runtimeId != nil { actions.cancelMenuOptions(old) }
             }
-            .onDisappear { if actions.ownsRuntime, let selectedCommand, target.runtimeId != nil { actions.cancelMenuOptions(selectedCommand) } }
+            .onDisappear {
+                voiceInput.cancel()
+                voiceSavedDraft = nil
+                cancelVoiceCleanup()
+                photoLoadTask?.cancel()
+                photoLoadTask = nil
+                if actions.ownsRuntime, let selectedCommand, target.runtimeId != nil { actions.cancelMenuOptions(selectedCommand) }
+            }
+            .onChange(of: facts.identity) { _, _ in
+                voiceInput.cancel()
+                voiceSavedDraft = nil
+                cancelVoiceCleanup()
+            }
+            .onChange(of: facts.draftRevision) { _, _ in
+                voiceInput.cancel()
+                voiceSavedDraft = nil
+                cancelVoiceCleanup()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active && voiceInput.isListening { finishVoiceInput() }
+            }
             .onChange(of: runtime.status) { _, status in if status != "running" { deliveryChoices = false } }
+    }
+
+    private func startVoiceInput() {
+        cancelVoiceCleanup()
+        voiceSavedDraft = nil
+        let revision = facts.draftRevision
+        voiceInput.start(draft: currentDraft) { spoken in
+            let expected = voiceSavedDraft ?? spoken.original
+            voiceSavedDraft = nil
+            guard actions.isCurrent, facts.draftRevision == revision, currentDraft == expected,
+                  actions.draft == expected else { return }
+            let rawDraft = spoken.text
+            if rawDraft != expected { setProgrammaticDraft(rawDraft) }
+            cleanVoiceDraft(spoken, revision: revision)
+        }
+    }
+
+    private func finishVoiceInput() {
+        guard let spoken = voiceInput.stop(), !spoken.transcript.isEmpty,
+              actions.isCurrent, actions.draft == spoken.original else { return }
+        // Persist the visible text at the tap, even if the editor goes away before Speech finishes.
+        voiceSavedDraft = spoken.text
+        setProgrammaticDraft(spoken.text)
+    }
+
+    private func cleanVoiceDraft(_ spoken: VoiceDictationDraft, revision: Int) {
+        let rawDraft = spoken.text
+        voiceCleanupTask = Task { @MainActor in
+            let config = await Task.detached { try? SecureStore.shared.voiceCleanupAPIConfig() }.value
+            guard !Task.isCancelled, actions.isCurrent, facts.draftRevision == revision, currentDraft == rawDraft else { return }
+            voiceCleanupInProgress = config != nil
+            let result = await VoiceTextCleanupAPI.clean(spoken.transcript, config: config)
+            guard !Task.isCancelled else { return }
+            voiceCleanupTask = nil
+            voiceCleanupInProgress = false
+            guard actions.isCurrent, facts.draftRevision == revision, currentDraft == rawDraft,
+                  actions.draft == rawDraft else { return }
+            let cleanedDraft = spoken.replacingTranscript(with: result.text)
+            let changed = cleanedDraft != rawDraft
+            if changed {
+                setProgrammaticDraft(cleanedDraft)
+                voiceCleanupRawDraft = rawDraft
+                voiceCleanupCleanedDraft = cleanedDraft
+            }
+            switch result.method {
+            case .rules: voiceCleanupStatus = changed ? "已去除明显口癖" : nil
+            case .api: voiceCleanupStatus = changed ? "已用自定义模型清理口述" : nil
+            case .apiFallback: voiceCleanupStatus = "模型不可用，已使用手机本地规则"
+            }
+        }
+    }
+
+    private func cancelVoiceCleanup() {
+        voiceCleanupTask?.cancel()
+        voiceCleanupTask = nil
+        voiceCleanupInProgress = false
+        voiceCleanupStatus = nil
+        voiceCleanupRawDraft = nil
+        voiceCleanupCleanedDraft = nil
     }
 
     private func handleUserDraftEdit(_ text: String, marked: Bool, height: Int) {
         guard actions.isCurrent else { return }
+        if text != currentDraft { cancelVoiceCleanup() }
         draftStorage.updateFromUser(identity: target.identity, draftRevision: facts.draftRevision, text: text, height: height)
         actions.editDraft(text, persist: !marked)
         reconcileDraftSideEffects(text)
@@ -356,9 +566,60 @@ struct ChatComposerView: View, Equatable {
 
     private func handleReturnSubmit() {
         guard canSubmit else { return }
-        if runtime.status == "running" && !slash && claudeComposer { submit(delivery: "followUp") }
+        if runtime.status == "running" && !slash && claudeComposer && runtime.steerSupported != true {
+            submit(delivery: "followUp")
+        }
         else if runtime.status == "running" && !slash { deliveryChoices.toggle() }
         else { submit() }
+    }
+
+    private func handlePhotoSelection(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        photoPickerItems = []
+        guard !textOnly, let selection = photoSelection else {
+            photoSelection = nil
+            return
+        }
+        photoSelection = nil
+        let selectedItems = Array(items.prefix(selection.capacity))
+        guard !selectedItems.isEmpty else { return }
+        photoLoadTask?.cancel()
+        photoLoadTask = Task.detached(priority: .userInitiated) {
+            var urls: [URL] = []
+            var directories: [URL] = []
+            var failed = false
+            for item in selectedItems {
+                if Task.isCancelled { break }
+                do {
+                    if let copied = try await item.loadTransferable(type: ChatPhotoFile.self) {
+                        urls.append(copied.fileURL)
+                        directories.append(copied.directory)
+                    } else {
+                        failed = true
+                    }
+                } catch {
+                    failed = true
+                }
+            }
+            if Task.isCancelled {
+                for directory in directories { try? FileManager.default.removeItem(at: directory) }
+                return
+            }
+            await MainActor.run {
+                if !urls.isEmpty {
+                    let started = selection.actions.upload(
+                        urls,
+                        capacity: selection.capacity,
+                        temporarySourceDirectories: directories
+                    )
+                    if !started || failed {
+                        selection.actions.uploadFailed(L10n.tr("无法读取所选照片"))
+                    }
+                } else if failed {
+                    selection.actions.uploadFailed(L10n.tr("无法读取所选照片"))
+                }
+            }
+        }
     }
 
     private var cachedComposer: some View {
@@ -391,6 +652,7 @@ struct ChatComposerView: View, Equatable {
         if slash, let command { accepted = actions.executeSlash(command.name, args: commandArguments(command), composerDraft: messageSlash ? nil : text) }
         else { accepted = actions.sendMessage(text.isEmpty ? "请查看附件。" : text, delivery: delivery, attachmentIds: Set(attachments.map(\.id))) }
         if accepted {
+            cancelVoiceCleanup()
             onAcceptedSend(existing)
             OrbisHaptics.commit()
             if !slash || messageSlash {

@@ -134,6 +134,7 @@ struct FileTransfer: Codable, Identifiable, Equatable {
     var commandId: String?
     var requestId: String?
     var attached = true
+    var importTarget: ExternalImportTarget?
 }
 
 @MainActor
@@ -161,6 +162,7 @@ final class FileTransfers: ObservableObject {
     @Published var error: String?
     var send: ([String: Any]) -> Bool = { _ in false }
     var sendBinary: (Data) -> Bool = { _ in false }
+    var canUploadImport: (ExternalImportTarget, String) -> Bool = { _, _ in false }
     private let root: URL
     private let manifest: URL
     private let metadataWorker: TransferMetadataWorker
@@ -251,7 +253,7 @@ final class FileTransfers: ObservableObject {
         diskWorkers[id]?.invalidate(); diskGenerations[id] = nil
         if let worker = diskWorkers[id], let previous { enqueueIO { try? await worker.pause(generation: previous) } }
     }
-    var currentTasks: [FileTransfer] { tasks.filter { $0.hostKey == hostKey } }
+    var currentTasks: [FileTransfer] { tasks.filter { $0.hostKey == hostKey && $0.importTarget == nil } }
     var activeCount: Int { currentTasks.filter { ["queued", "downloading", "uploading", "verifying"].contains($0.status) }.count }
     var hostKey: String { pairing.map(Self.pairingKey) ?? "" }
     static func pairingKey(_ host: HostPairing) -> String {
@@ -289,7 +291,7 @@ final class FileTransfers: ObservableObject {
               tasks[index].status != "queued" || tasks[index].commandId == nil else { return }
         var task = tasks[index]
         task.status = "queued"; task.error = nil; task.transferId = nil; task.requestId = nil
-        let command = UUID().uuidString; task.commandId = command
+        let command = (task.importTarget == nil ? "" : "import:") + UUID().uuidString; task.commandId = command
         if task.direction == "download" {
             let (disk, generation) = renewGeneration(id)
             tasks[index] = task
@@ -309,14 +311,54 @@ final class FileTransfers: ObservableObject {
             guard task.localPath != nil, let hash = task.sha256, let directory = task.remotePath else { fail(id, L10n.tr("上传源文件不可用。请重新选择。")); return }
             _ = renewGeneration(id, path: task.localPath)
             task.requestId = command; tasks[index] = task
-            let request: [String: Any] = ["type": "file.upload.init", "protocolVersion": orbisProtocolVersion, "requestId": command,
+            var request: [String: Any] = ["type": "file.upload.init", "protocolVersion": orbisProtocolVersion, "requestId": command,
                 "runtimeId": task.runtimeId, "directory": directory, "fileName": task.name, "size": task.size, "sha256": hash]
+            if let target = task.importTarget {
+                guard canUploadImport(target, task.runtimeId) else { fail(id, L10n.tr("所选会话已不可用")); return }
+                request["importTarget"] = ["sessionId": target.sessionId, "cwd": target.cwd]
+            }
             if !send(request) { fail(id, L10n.tr("上传请求未送达。")) } else { arm(id) }
         }
         save()
     }
-    func upload(urls: [URL], runtime: RuntimeSummary) {
-        guard connected, let pairing, !preparing else { return }
+    /// Scoped uploads use the receiver-driven transfer engine without adding to the chat composer or persisting a second copy.
+    func uploadImport(_ source: URL, file: ExternalImportedFile, target: ExternalImportTarget,
+                      runtimeId: String, ifReady: () -> Bool) async throws -> String {
+        guard connected, ifReady(), canUploadImport(target, runtimeId) else { throw ExternalImportProblem.targetUnavailable }
+        let id = UUID().uuidString
+        let (disk, generation) = renewGeneration(id, path: source.path)
+        defer {
+            if let task = tasks.first(where: { $0.id == id }), task.status != "completed" { cancel(id) }
+            tasks.removeAll { $0.id == id }; invalidateDisk(id); diskWorkers[id] = nil
+        }
+        let fileInfo = try await disk.inspectImport(generation: generation, expectedBytes: file.bytes)
+        guard connected, ifReady(), canUploadImport(target, runtimeId) else { throw ExternalImportProblem.targetUnavailable }
+        let directory = remoteBrowsePath(parent: remoteBrowsePath(parent: target.cwd, name: ".orbis-uploads"), name: fileInfo.sha256)
+        tasks.append(FileTransfer(id: id, hostKey: hostKey, hostId: target.hostId, runtimeId: runtimeId, sessionId: target.sessionId,
+            direction: "upload", name: file.name, size: fileInfo.size, sha256: fileInfo.sha256, localPath: source.path, remotePath: directory,
+            attached: false, importTarget: target))
+        restart(id)
+        while !Task.isCancelled, ifReady(), canUploadImport(target, runtimeId), let task = tasks.first(where: { $0.id == id }) {
+            if task.status == "completed", let path = task.remotePath, !path.isEmpty { return path }
+            guard ["queued", "uploading"].contains(task.status) else { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw ExternalImportProblem.uploadFailed
+    }
+
+    @discardableResult
+    func upload(urls: [URL], runtime: RuntimeSummary, temporarySourceDirectories: [URL] = []) -> Bool {
+        let removeTemporarySources: @Sendable () -> Void = {
+            for directory in temporarySourceDirectories {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
+        guard connected, let pairing, !preparing else {
+            if !temporarySourceDirectories.isEmpty {
+                DispatchQueue.global(qos: .utility).async(execute: removeTemporarySources)
+            }
+            return false
+        }
         let key = hostKey, generation = UUID()
         preparing = true; preparingGeneration = generation
         var staged: [(String, TransferDiskWorker, UUID)] = []
@@ -326,6 +368,11 @@ final class FileTransfers: ObservableObject {
             staged.append((id, disk, token))
         }
         enqueueIO { [weak self] in
+            defer {
+                if !temporarySourceDirectories.isEmpty {
+                    removeTemporarySources()
+                }
+            }
             guard let self else { return }
             var prepared: [FileTransfer] = []
             do {
@@ -346,6 +393,7 @@ final class FileTransfers: ObservableObject {
                 if self.preparingGeneration == generation { self.preparing = false; self.error = error.localizedDescription }
             }
         }
+        return true
     }
     func cancel(_ id: String) {
         guard let index = tasks.firstIndex(where: { $0.id == id }) else { return }
@@ -394,6 +442,7 @@ final class FileTransfers: ObservableObject {
         remove(Set(tasks.filter { $0.hostKey == key }.map(\.id)))
     }
     private func removeFiles(_ task: FileTransfer) {
+        guard task.importTarget == nil else { return } // The inbox owns this source.
         let ownedLocalPath = task.localPath.flatMap { path in
             URL(fileURLWithPath: path).deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL ? path : nil
         }
@@ -443,6 +492,8 @@ final class FileTransfers: ObservableObject {
             tasks[index].transferId = upload; tasks[index].status = "uploading"; tasks[index].received = received
             arm(tasks[index].id); save(); return
         }
+        if type == "file.upload.ready", let request = object["requestId"] as? String, request.hasPrefix("import:"),
+           let upload = object["uploadId"] as? String { _ = send(["type": "file.upload.cancel", "protocolVersion": orbisProtocolVersion, "uploadId": upload]); return }
         if type.hasPrefix("file.upload."), let upload = object["uploadId"] as? String,
            let index = tasks.firstIndex(where: { $0.transferId == upload && $0.hostKey == hostKey && $0.status == "uploading" }) {
             let task = tasks[index]
@@ -455,6 +506,7 @@ final class FileTransfers: ObservableObject {
                     do {
                         let data = try await disk.read(offset: offset, length: length, generation: generation)
                         guard let self, self.current(task.id, generation: generation, status: "uploading") != nil else { return }
+                        guard task.importTarget.map({ self.canUploadImport($0, task.runtimeId) }) ?? true else { throw ExternalImportProblem.targetUnavailable }
                         guard data.count == length, self.sendBinary(try ArtifactChunk(runtimeId: task.runtimeId, transferId: upload, offset: offset, bytes: data).encoded()) else { throw transferError(L10n.tr("上传分片未送达。")) }
                         self.arm(task.id)
                     } catch { if let self, self.current(task.id, generation: generation) != nil { self.fail(task.id, error.localizedDescription) } }
@@ -587,7 +639,7 @@ final class FileTransfers: ObservableObject {
         let revision = metadataRevision, metadata = metadataWorker
         enqueueIO { [self] in
             await self.bootstrap?.value
-            do { _ = try await metadata.save(JSONEncoder().encode(self.tasks), revision: revision) }
+            do { _ = try await metadata.save(JSONEncoder().encode(self.tasks.filter { $0.importTarget == nil }), revision: revision) }
             catch { self.error = L10n.tr("无法保存传输进度：{0}", error.localizedDescription) }
         }
     }

@@ -20,6 +20,8 @@ import { readDesktopRecoveryReason } from "./codex-desktop-recovery.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { loadKimiCodeConfig } from "./config.js";
+import type { KimiSource } from "./kimi-web-client.js";
+import { supportsKimiDesktop } from "./kimi-desktop-owner.js";
 import { KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle, openDshDesktopFromHost } from "./dsh-desktop-lifecycle.js";
@@ -78,6 +80,9 @@ const providerPresets = [...existingProviderPresets, ...claudeProviderPresets];
 
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
+  /** Legacy preference imported once. Subsequent writes use the shared policy. */
+  kimiCodeEnabled?: boolean;
+  kimiCodeSource?: KimiSource;
   dshEnabled?: boolean; dshEntry?: string; dshWebUrl?: string;
   /** macOS：让用户自己在终端里运行的 Pi 也加载 Orbis 扩展（缺省开启）。 */
   piIntegrationEnabled?: boolean;
@@ -186,6 +191,7 @@ export class DesktopRuntime {
   #legacyCodexEnabled = false;
   #legacyPiEnabled = false;
   #legacyClaudeEnabled = false;
+  #legacyKimiEnabled: boolean | undefined;
   #claudeIntegrationPreference: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {};
 
   constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths, qa?: DesktopQaConfiguration) {
@@ -196,7 +202,8 @@ export class DesktopRuntime {
       if (this.#qa) return {};
       const openClaw = await readOpenClawDesktopSettings(this.#stateDir);
       const kimi = await loadKimiCodeConfig(this.#stateDir).catch(() => undefined);
-      return { ...(openClaw.url ? { openclaw: true } : {}), ...(kimi?.kimiCodeEnabled ? { kimiCode: true } : {}), ...(this.#legacyDshEnabled ? { dsh: true } : {}), ...(this.#legacyCodexEnabled ? { codex: true } : {}), ...(this.#legacyPiEnabled ? { pi: true } : {}), ...(this.#legacyClaudeEnabled ? { claude: true } : {}) };
+      const keepKimi = this.#legacyKimiEnabled ?? kimi?.kimiCodeEnabled;
+      return { ...(openClaw.url ? { openclaw: true } : {}), ...(keepKimi === undefined ? {} : { kimiCode: keepKimi }), ...(this.#legacyDshEnabled ? { dsh: true } : {}), ...(this.#legacyCodexEnabled ? { codex: true } : {}), ...(this.#legacyPiEnabled ? { pi: true } : {}), ...(this.#legacyClaudeEnabled ? { claude: true } : {}) };
     }), snapshot => {
       if (!snapshot.agents.some(row => row.kind === "dshDesktop" && row.enabled)) this.#cancelDshDesktopOpen();
       if (!this.#agentEnablement.allows("claude")) this.#claudeIntegrationAbort?.abort();
@@ -225,11 +232,12 @@ export class DesktopRuntime {
     });
   }
 
-  async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled" | "dshEnabled" | "codexEnabled" | "piIntegrationEnabled"> & { legacyClaudeEnabled?: boolean } = {}): Promise<unknown> {
+  async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled" | "dshEnabled" | "codexEnabled" | "piIntegrationEnabled" | "kimiCodeEnabled"> & { legacyClaudeEnabled?: boolean } = {}): Promise<unknown> {
     this.#legacyDshEnabled ||= settings.dshEnabled === true;
     this.#legacyCodexEnabled ||= settings.codexEnabled === true;
     this.#legacyPiEnabled ||= settings.piIntegrationEnabled === true;
     this.#legacyClaudeEnabled ||= settings.legacyClaudeEnabled === true;
+    this.#legacyKimiEnabled = settings.kimiCodeEnabled;
     this.#claudeIntegrationPreference = settings;
     // 先于一切 Agent 检测：从程序坞打开的 Host 只有 launchd 的最小 PATH。
     // 登录环境是例外：之后的每一次 Agent 检测和启动都依赖它，必须先就位。
@@ -247,7 +255,9 @@ export class DesktopRuntime {
     this.#poll.unref();
     this.#usage.start();
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
-    return { hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
+    const kimi = await this.#kimiCodeConfig();
+    return { kimiCodeSupported: !this.#qa, kimiCodeDefaultSource: kimi?.kimiCodeSource ?? "web",
+      kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
       agentEnablement: enablement,
       ...(this.#qa ? {} : { openClaw: await readOpenClawDesktopSettings(this.#stateDir) }),
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
@@ -284,6 +294,14 @@ export class DesktopRuntime {
       if (error instanceof Error && !("code" in error)) throw error;
       throw new Error("无法保存 OpenClaw 配置，请检查 Host 状态目录权限");
     }
+  }
+
+  async #kimiCodeConfig() {
+    if (this.#qa) return undefined;
+    return await loadKimiCodeConfig(this.#stateDir).catch(() => {
+      this.log("Kimi Code Web: 无法读取本地接入配置");
+      return undefined;
+    });
   }
 
   #managedRoot(): string { return agentInstallRoot(); }
@@ -672,6 +690,7 @@ export class DesktopRuntime {
     if (this.#installation) throw new Error("请等待 Agent 安装完成或取消后再启动 Host");
     this.#legacyDshEnabled ||= settings.dshEnabled === true;
     this.#legacyCodexEnabled ||= settings.codexEnabled === true;
+    this.#legacyKimiEnabled ??= settings.kimiCodeEnabled;
     await this.#agentEnablement.read();
     await this.#environment(settings);
     this.#claudeIntegrationPreference = settings;
@@ -803,14 +822,15 @@ export class DesktopRuntime {
       };
       const createKimiCodeRuntime = async (): Promise<KimiRuntime> => {
         const config = await loadKimiCodeConfig(this.#stateDir);
-        return new KimiRuntime({ stateDir: this.#stateDir, homeDir: config.kimiCodeHome,
-          ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }), log: line => this.log(`Kimi Code Web · ${line}`) });
+        const source = settings.kimiCodeSource ?? config.kimiCodeSource;
+        return new KimiRuntime({ stateDir: this.#stateDir, homeDir: config.kimiCodeHome, source,
+          ...(config.kimiCodeEndpoint === undefined || source !== config.kimiCodeSource ? {} : { endpoint: config.kimiCodeEndpoint }), log: line => this.log(line) });
       };
       let relayAuthenticated = false;
       const service = await HostService.create({
         ...(this.#qa ? {} : { createKimiCodeRuntime }),
         agentEnablement: this.#agentEnablement,
-        ...(this.#qa ? { openClaw: false as const } : {}),
+        ...(this.#qa ? { openClaw: false as const, opencodeConnection: false as const } : {}),
         providers: this.#providers,
         prepareLocalAgent: async (kind, lease) => {
           if (this.#desired !== settings || !lease.isCurrent()) return;
@@ -1057,7 +1077,7 @@ export class DesktopRuntime {
     const model = service.readHostState(["backends", "connections", "management", "operations"]);
     const backends = model.domains.find(domain => domain.domain === "backends")?.value as { backends?: { runtimeCount: number }[] } | undefined;
     const status = { event: "status", devices, runtimeCount: backends?.backends?.reduce((sum, backend) => sum + backend.runtimeCount, 0) ?? 0,
-      lan: service.lanEndpoints, model };
+      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, model };
     const text = JSON.stringify({ ...status, model: { ...model, domains: model.domains.map(domain => ({ ...domain, checkedAt: 0 })) } });
     if (text !== this.#lastStatus) { this.#lastStatus = text; this.#emit(status); }
   }

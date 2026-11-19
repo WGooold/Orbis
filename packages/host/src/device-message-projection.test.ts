@@ -125,4 +125,28 @@ describe("FT-G01 menu-only device projection", () => {
     expect(encodeDeviceMessage(output)).toEqual(encoded);
     console.info("FT-G01 synthetic 2,009-node menu", JSON.stringify({ beforeBytes: before, afterBytes: encoded.byteLength, removedBytes: before - encoded.byteLength }));
   });
+
+  it("strips steerSupported only for devices without claude.send-now.v1", () => {
+    const claudeMetadata = { ...metadata, steerSupported: true };
+    const snapshot = {
+      type: "agent.state.snapshot",
+      scope: "agent",
+      requestId: "r1",
+      modelEpoch: "epoch",
+      missing: [],
+      truncated: false,
+      domains: [{ domain: "identity", revision: 1, value: claudeMetadata }],
+    };
+    for (const input of [
+      { type: "runtime.online", runtime: claudeMetadata },
+      { type: "device.ready", protocolVersion: PROTOCOL_VERSION, deviceId: "phone", notificationEpoch: null, runtimes: [claudeMetadata], agents: ["claude"] },
+      eventMessage({ type: "runtime.metadata", metadata: claudeMetadata }),
+      snapshot,
+    ]) {
+      const legacy = JSON.parse(encodeDeviceMessage(input, { claudeSendNow: false }).toString());
+      expect(JSON.stringify(legacy)).not.toContain("steerSupported");
+      const modern = JSON.parse(encodeDeviceMessage(input, { claudeSendNow: true }).toString());
+      expect(JSON.stringify(modern)).toContain("steerSupported");
+    }
+  });
 });

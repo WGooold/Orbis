@@ -365,4 +365,20 @@ struct FileTransferTests {
         #expect(failures == [task.id])
     }
 
+    @Test func uploadCleansTemporarySourceDirectoriesAfterPreparation() async throws {
+        let path = root(), tempSource = root()
+        defer { try? FileManager.default.removeItem(at: path); try? FileManager.default.removeItem(at: tempSource) }
+        try FileManager.default.createDirectory(at: tempSource, withIntermediateDirectories: true)
+        let photo = tempSource.appendingPathComponent("photo.jpg")
+        try Data("photo-bytes".utf8).write(to: photo)
+        let store = FileTransfers(root: path)
+        store.send = { _ in true }; store.sendBinary = { _ in true }; store.setConnection(host(), connected: true)
+        await store.waitForPendingIO()
+        let runtime = RuntimeSummary(runtimeId: "agent", name: "Agent", cwd: "D:\\repo", status: "idle", sessionId: "s")
+        #expect(store.upload(urls: [photo], runtime: runtime, temporarySourceDirectories: [tempSource]))
+        await store.waitForPendingIO()
+        #expect(store.tasks.first?.name == "photo.jpg")
+        #expect(!FileManager.default.fileExists(atPath: tempSource.path))
+    }
+
 }

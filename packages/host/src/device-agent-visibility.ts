@@ -1,13 +1,15 @@
-import { DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_KIMI_CODE, DEVICE_FEATURE_OPENCLAW, DEVICE_FEATURE_HERMES, AgentKindSchema, type AgentKind } from "@orbis/protocol";
+import { DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_KIMI_CODE, DEVICE_FEATURE_OPENCLAW, DEVICE_FEATURE_HERMES, DEVICE_FEATURE_OPENCODE, AgentKindSchema, type AgentKind } from "@orbis/protocol";
 import { isKimiId, KIMI_KIND } from "./kimi-sessions.js";
 export const DSH_DESKTOP_KIND = "dshDesktop" satisfies AgentKind;
+export const OPENCODE_KIND = "opencode" satisfies AgentKind;
+export const OPENCODE_RUNTIME_PREFIX = "opencode:";
 
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Obj : undefined;
 
 /** Each distinct hidden-kind set is one directory/cursor projection. */
 const negotiatedAgents = [
-  [KIMI_KIND, DEVICE_FEATURE_KIMI_CODE], [DSH_DESKTOP_KIND, DEVICE_FEATURE_DSH_DESKTOP], ["openclaw", DEVICE_FEATURE_OPENCLAW], ["hermes", DEVICE_FEATURE_HERMES],
+  [KIMI_KIND, DEVICE_FEATURE_KIMI_CODE], [DSH_DESKTOP_KIND, DEVICE_FEATURE_DSH_DESKTOP], ["openclaw", DEVICE_FEATURE_OPENCLAW], ["hermes", DEVICE_FEATURE_HERMES], [OPENCODE_KIND, DEVICE_FEATURE_OPENCODE],
 ] as const;
 export type AgentView = number;
 export const agentViews = Array.from({ length: 1 << negotiatedAgents.length }, (_, view) => view);
@@ -30,7 +32,7 @@ export function negotiatedAgentFeature(kind: AgentKind): string | undefined {
 export const allowsAgent = (view: AgentView, kind: unknown): boolean => !hiddenKinds(view).some(hidden => hidden === kind);
 const runtimePrefixes: Readonly<Partial<Record<AgentKind, string>>> = {
   dshDesktop: "dsh-desktop:", dsh: "dsh:", openclaw: "openclaw:", hermes: "hermes:",
-  codex: "codex:", codexDesktop: "codex-desktop:", claude: "claude:",
+  opencode: OPENCODE_RUNTIME_PREFIX, codex: "codex:", codexDesktop: "codex-desktop:", claude: "claude:",
 };
 export const allowsRuntime = (view: AgentView, id: unknown): boolean => typeof id !== "string" || !hiddenKinds(view).some(kind => {
   if (kind === KIMI_KIND) return isKimiId(id);

@@ -81,10 +81,18 @@ struct ChatSessionActions: Equatable {
         isCurrent ? connection.acquireChatInterest(runtimeId: runtimeId, sessionId: sessionId) : nil
     }
     @MainActor func releaseInterest(_ lease: AgentInterestLease) { connection.releaseChatInterest(lease) }
-    @MainActor func upload(_ urls: [URL], capacity: Int) {
-        if isCurrent, let runtime, !isKimiCode(kind: connection.agentKind(runtime), id: runtime.runtimeId) {
-            connection.transfers.upload(urls: Array(urls.prefix(capacity)), runtime: runtime)
+    @MainActor @discardableResult func upload(_ urls: [URL], capacity: Int, temporarySourceDirectories: [URL] = []) -> Bool {
+        guard isCurrent, let runtime, !isKimiCode(kind: connection.agentKind(runtime), id: runtime.runtimeId) else {
+            if !temporarySourceDirectories.isEmpty {
+                DispatchQueue.global(qos: .utility).async {
+                    for directory in temporarySourceDirectories {
+                        try? FileManager.default.removeItem(at: directory)
+                    }
+                }
+            }
+            return false
         }
+        return connection.transfers.upload(urls: Array(urls.prefix(capacity)), runtime: runtime, temporarySourceDirectories: temporarySourceDirectories)
     }
     @MainActor func uploadFailed(_ message: String) { if isCurrent { connection.transfers.error = message } }
     @MainActor func restartUpload(_ id: String) { if isCurrent { connection.transfers.restart(id) } }

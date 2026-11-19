@@ -201,4 +201,21 @@ struct PendingSendTests {
         #expect(outbox.chatRows(sessionId: "s1").isEmpty)
         #expect(outbox.chatRows(sessionId: "s2").map(\.messageId) == ["other"])
     }
+
+    @Test func acceptedSendHidesStatusOnlyAfterNativeSubmissionIsConfirmed() {
+        var outbox = PendingSendOutbox()
+        outbox.add(send("msg"))
+        #expect(outbox.item("msg")?.state.showsStatus(submissionConfirmed: false) == true)
+        outbox.commandResult("c-msg", ok: true, status: "pending", error: nil, now: start)
+        let pendingAccepted = outbox.item("msg")
+        #expect(pendingAccepted?.state == .accepted)
+        #expect(pendingAccepted?.submissionConfirmed == false)
+        #expect(pendingAccepted?.state.showsStatus(submissionConfirmed: pendingAccepted?.submissionConfirmed ?? false) == true)
+
+        outbox.commandResult("c-msg", ok: true, status: "success", error: nil, now: start)
+        let confirmed = outbox.item("msg")
+        #expect(confirmed?.state == .accepted)
+        #expect(confirmed?.submissionConfirmed == true)
+        #expect(confirmed?.state.showsStatus(submissionConfirmed: confirmed?.submissionConfirmed ?? false) == false)
+    }
 }

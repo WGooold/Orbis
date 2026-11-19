@@ -4,7 +4,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { ProviderError } from "./provider-error.js";
-import { responseJson } from "./provider-network.js";
+import { proxyFetch, responseJson } from "./provider-network.js";
 
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj => value && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
@@ -44,7 +44,7 @@ export function managedAuthMarker(accountId: string, auth: unknown): ManagedAuth
 export class CodexOAuthAccounts {
   #pending = new Map<string, Pending>();
   #access = new Map<string, { value: string; expiresAt: number }>();
-  constructor(readonly path: string, readonly request: typeof fetch = fetch, readonly now = Date.now) {}
+  constructor(readonly path: string, readonly request: typeof fetch = (input, init) => proxyFetch(input, init), readonly now = Date.now) {}
   async #load(): Promise<Store> {
     let raw: string;
     try { raw = await readFile(this.path, "utf8"); }

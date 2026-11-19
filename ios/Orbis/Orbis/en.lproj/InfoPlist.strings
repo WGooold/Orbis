@@ -1,2 +1,5 @@
 "NSCameraUsageDescription" = "Scan the Orbis pairing QR code on your computer.";
 "NSLocalNetworkUsageDescription" = "Connect securely to your paired Orbis Host on the local network.";
+
+NSMicrophoneUsageDescription = "Convert your speech into a chat draft. It is never sent automatically.";
+NSSpeechRecognitionUsageDescription = "Convert speech into editable text. Apple provides recognition; audio may be sent to Apple when on-device recognition is unavailable. Don’t dictate passwords or other sensitive information.";

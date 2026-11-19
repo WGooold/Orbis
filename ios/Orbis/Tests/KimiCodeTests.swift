@@ -24,6 +24,12 @@ struct KimiCodeTests {
         #expect(readyAdmitsAgentEnablement(offer.merging(["deviceFeatures": ["agent.enablement.v1"]]) { _, new in new }))
     }
 
+    // OpenCode requires its own Host advertisement, independently of Kimi and Desktop.
+    @Test func declaresOpenCodeOnlyWhenAdvertised() {
+        #expect(deviceAgentFeatures(["hostFeatures": ["device.features", "agent.opencode"]]) == ["agent.dshDesktop", "agent.opencode"])
+        #expect(deviceAgentFeatures(["hostFeatures": ["agent.opencode"]]).isEmpty)
+    }
+
     @Test func mergedNativeRowSettlesEveryDeclaredIdentityAndNoSameTextNeighbor() throws {
         let message = try JSONDecoder().decode(ChatMessage.self, from: Data(#"{"messageId":"native","role":"user","content":[{"type":"text","text":"same"}],"timestamp":1,"clientMessageId":"a","clientMessageIds":["a","b"]}"#.utf8))
         let session = "kimi-code:fixture:session_inbox"

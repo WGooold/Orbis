@@ -45,7 +45,7 @@ input.on("line", line => {
       const p = request.params ?? {};
       let result: unknown = {};
       switch (request.method) {
-        case "initialize": result = await runtime.initialize({ claudeIntegrationEnabled: p.claudeIntegrationEnabled !== false, dshEnabled: p.dshEnabled === true, codexEnabled: p.codexEnabled === true, piIntegrationEnabled: p.piIntegrationEnabled === true, legacyClaudeEnabled: p.legacyClaudeEnabled === true }); break;
+        case "initialize": result = await runtime.initialize({ claudeIntegrationEnabled: p.claudeIntegrationEnabled !== false, dshEnabled: p.dshEnabled === true, codexEnabled: p.codexEnabled === true, piIntegrationEnabled: p.piIntegrationEnabled === true, legacyClaudeEnabled: p.legacyClaudeEnabled === true, ...(typeof p.legacyKimiEnabled === "boolean" ? { kimiCodeEnabled: p.legacyKimiEnabled } : {}) }); break;
         case "detect": result = await runtime.detect(p, p.checkLatest === true); break;
         case "state.read": {
           const domains = p.domains;

@@ -82,7 +82,8 @@ internal fun SessionModelConfigurationSheet(state: RemoteState, runtimeId: Strin
     val presentation = state.sessionModelPresentation(runtimeId)
     val commands = state.capabilities[runtimeId]?.commands.orEmpty()
     val command = commands.firstOrNull { it.name == setting }
-    OrbisChoiceSheet(L10n.tr("模型与深度"), onClose) {
+    val isOpenCode = runtime.agentKind == "opencode"
+    OrbisChoiceSheet(if (isOpenCode) L10n.tr("会话配置") else L10n.tr("模型与深度"), onClose) {
         val commit = LocalModalCommit.current
         fun select(name: String, value: String) {
             if (onSelect(name, value) != null) {
@@ -116,12 +117,18 @@ internal fun SessionModelConfigurationSheet(state: RemoteState, runtimeId: Strin
             }
             setting?.let { state.menuOptionErrors[runtimeId + ":" + it] }?.let { InlineFeedbackError(it) }
             if (command == null) {
-                for (name in listOf("model", "thinking")) {
-                    val nativeName = if (name == "model") name else commands.depthCommand()
+                val settings = listOf("model", "thinking") + if (isOpenCode && commands.any { it.name == "agent" && it.argument?.kind == "select" }) listOf("agent") else emptyList()
+                for (name in settings) {
+                    val nativeName = if (name == "thinking") commands.depthCommand() else name
                     val available = commands.firstOrNull { it.name == nativeName }
-                    NeumorphTextButton(L10n.tr(if (name == "model") "模型" else "思考深度"),
-                        dismissOnClick = false, onClick = { onSettingChange(nativeName) },
-                        enabled = state.e2eReady && available?.argument?.kind == "select", modifier = Modifier.fillMaxWidth())
+                    val title = when (name) {
+                        "model" -> L10n.tr("模型")
+                        "agent" -> L10n.tr("切换 OpenCode Agent")
+                        else -> L10n.tr("思考深度")
+                    }
+                    NeumorphTextButton(title, dismissOnClick = false, onClick = { onSettingChange(nativeName) },
+                        enabled = state.e2eReady && available?.argument?.kind == "select",
+                        modifier = Modifier.fillMaxWidth().testTag("session-config-$name"))
                 }
             } else {
                 NeumorphTextButton(L10n.tr("返回"), dismissOnClick = false, onClick = { onSettingChange(null) })
@@ -131,7 +138,7 @@ internal fun SessionModelConfigurationSheet(state: RemoteState, runtimeId: Strin
                 }
                 command.argument?.options.orEmpty().forEach { option ->
                     NeumorphTextButton(L10n.hostText(option.label),
-                        filled = OperationKinds.confirmedValue(runtime, command.name) == option.value,
+                        filled = command.name != "agent" && OperationKinds.confirmedValue(runtime, command.name) == option.value,
                         enabled = state.e2eReady, dismissOnClick = false,
                         onClick = { select(command.name, option.value) }, modifier = Modifier.fillMaxWidth())
                 }

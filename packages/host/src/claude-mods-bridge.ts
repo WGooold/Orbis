@@ -55,7 +55,7 @@ export type ClaudeModsHello = {
 };
 
 export type ClaudeModsCommand =
-  | { type: "user_message"; text: string; messageId?: string }
+  | { type: "user_message"; text: string; messageId?: string; delivery?: "steer" | "followUp" }
   | { type: "slash"; name: string; args: string }
   | { type: "stop" };
 
@@ -118,7 +118,8 @@ type Session = {
   bridgeVersion: string;
   capabilities: ReadonlySet<string>;
   generation: string;
-  commands: Map<string, { commandId: string; command: ClaudeModsCommand }>;
+  commands: Map<string, { commandId: string; command: ClaudeModsCommand; polled?: boolean }>;
+  queueResults: Map<string, Extract<RuntimeEvent, { type: "message.queued" }>>;
   lastSeenAt: number;
   history: ClaudeSessionHistory;
   state: ClaudeSessionState;
@@ -199,6 +200,7 @@ export class ClaudeModsBridge {
   runtimeIds(): readonly string[] { return [...this.#sessions.keys()]; }
   isOnline(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   supportsTurnConfiguration(runtimeId: string): boolean { return this.#sessions.get(runtimeId)?.capabilities.has("configuration.turn") === true; }
+  supportsPromptSendNow(runtimeId: string): boolean { return this.#sessions.get(runtimeId)?.capabilities.has("prompt.sendNow") === true; }
   statusOf(runtimeId: string): RuntimeMetadata["status"] | undefined { return this.#sessions.get(runtimeId)?.runtime.status; }
   runtimeMetadata(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => session.runtime); }
   findLaunch(launchId: string, expectedSessionId: string): RuntimeMetadata | undefined {
@@ -301,7 +303,8 @@ export class ClaudeModsBridge {
       ...(parsed.launchId === undefined ? {} : { launchId: parsed.launchId }),
       runtime: { runtimeId, name: "Claude Code", cwd: parsed.cwd, status: retained?.runtime.status ?? "idle", sessionId: parsed.sessionId, hostname: localHostname() },
       instanceId: parsed.instanceId, claudeVersion: parsed.claudeVersion, bridgeVersion: parsed.bridgeVersion,
-      capabilities, generation, commands: new Map(), completedStops: new Map(), completedTurns: new Set(retained?.completedTurns),
+      capabilities, generation, commands: new Map(), queueResults: new Map(retained?.queueResults),
+      completedStops: new Map(), completedTurns: new Set(retained?.completedTurns),
       runningTools: new Map(retained?.runningTools), ...(retained?.activeTurn === undefined ? {} : { activeTurn: retained.activeTurn }),
       lastSeenAt: Date.now(), history, state: retained?.state ?? {}, facts: retained?.facts ?? {}, compaction: retained?.compaction ?? "idle",
       published: { metadata: "", capabilities: "" },
@@ -365,8 +368,18 @@ export class ClaudeModsBridge {
     if (session.generation !== generation) return { ok: false, error: "stale_generation" };
     session.lastSeenAt = Date.now();
     // Keep commands outstanding until a native result arrives. Mods caches command IDs
-    // and replays that result if the HTTP response carrying it was lost.
-    const commands = [...session.commands.values()];
+    // and replays that result if the HTTP response carrying it was lost. Hold followUp
+    // messages on the Host while a turn or compaction is running so the phone can still
+    // withdraw them from the delivery queue before native submission begins.
+    const busy = session.activeTurn !== undefined || session.compaction === "running";
+    const commands: { commandId: string; command: ClaudeModsCommand }[] = [];
+    for (const entry of session.commands.values()) {
+      if (entry.command.type === "user_message" && entry.command.delivery === "followUp" && busy && !entry.polled) {
+        continue;
+      }
+      entry.polled = true;
+      commands.push({ commandId: entry.commandId, command: entry.command });
+    }
     const pending = this.#options.pendingInteractions?.(runtimeId) ?? 0;
     const answers = this.#options.questionAnswers?.(runtimeId) ?? [];
     return { ok: true, generation, commands, ...(pending > 0 ? { pendingInteractions: pending } : {}),
@@ -395,10 +408,56 @@ export class ClaudeModsBridge {
     if (previous !== undefined) return JSON.stringify(previous.command) === JSON.stringify(command) ? "accepted" : "id_conflict";
     if (command.type === "stop" && (session.activeTurn === undefined || session.pendingStopId !== undefined)) return "not_cancelable";
     if (session.commands.size >= 64) return "queue_full";
-    session.commands.set(commandId, { commandId, command });
-    if (command.type === "user_message" && command.messageId !== undefined) session.history.expectPrompt(command.messageId, command.text);
+    const busy = session.activeTurn !== undefined || session.compaction === "running"
+      || [...session.commands.values()].some(item => item.command.type === "user_message");
+    session.commands.set(commandId, { commandId, command, polled: false });
+    if (command.type === "user_message" && command.messageId !== undefined) {
+      session.history.expectPrompt(command.messageId, command.text);
+      if (command.delivery === "followUp" && busy) {
+        this.#queueEvent(runtimeId, session, {
+          type: "message.queued",
+          queueId: command.messageId,
+          text: command.text,
+          delivery: "followUp",
+          state: "accepted",
+        });
+      }
+    }
     if (command.type === "stop") session.pendingStopId = commandId;
     return "accepted";
+  }
+
+  cancelQueuedMessage(runtimeId: string, messageId: string): "cancelled" | "already_delivered" | "not_cancelable" | "offline" {
+    const session = this.#sessions.get(runtimeId);
+    if (session === undefined) return "offline";
+    const entry = [...session.commands.values()].find(
+      (item): item is { commandId: string; command: Extract<ClaudeModsCommand, { type: "user_message" }>; polled?: boolean } =>
+        item.command.type === "user_message" && item.command.messageId === messageId,
+    );
+    if (entry === undefined) return "already_delivered";
+    if (entry.polled) return "not_cancelable";
+    session.commands.delete(entry.commandId);
+    this.#queueEvent(runtimeId, session, {
+      type: "message.queued",
+      queueId: messageId,
+      text: entry.command.text,
+      delivery: entry.command.delivery ?? "followUp",
+      state: "cancelled",
+    });
+    return "cancelled";
+  }
+
+  deliverySnapshot(runtimeId: string): Extract<RuntimeEvent, { type: "delivery.snapshot" }> | undefined {
+    const session = this.#sessions.get(runtimeId);
+    if (session === undefined) return undefined;
+    const items = [...session.queueResults.values()].map(({ queueId, text, delivery, state, error }) => ({
+      queueId,
+      text: text.slice(0, 4096),
+      delivery,
+      state,
+      ...(error ? { error: error.slice(0, 4000) } : {}),
+    }));
+    return { type: "delivery.snapshot", complete: items.length <= 256, items: items.slice(-256) };
   }
 
   receiveEvent(runtimeId: string, generation: string, input: unknown): "accepted" | "invalid" | "stale" | "offline" {
@@ -525,6 +584,20 @@ export class ClaudeModsBridge {
       if (parsed.status !== "pending") {
         session.commands.delete(parsed.commandId);
         if (session.pendingStopId === parsed.commandId) delete session.pendingStopId;
+        if (pending.command.type === "user_message" && pending.command.messageId !== undefined) {
+          const queued = session.queueResults.get(pending.command.messageId);
+          if (queued !== undefined && (queued.state === "accepted" || queued.state === "unconfirmed")) {
+            const nextState = parsed.ok ? "delivered" : parsed.status === "unconfirmed" ? "unconfirmed" : "rejected";
+            this.#queueEvent(runtimeId, session, {
+              type: "message.queued",
+              queueId: queued.queueId,
+              text: queued.text,
+              delivery: queued.delivery,
+              state: nextState,
+              ...(parsed.ok || parsed.error === undefined ? {} : { error: parsed.error }),
+            });
+          }
+        }
       }
     }
     const events = normalizeNativeEvent(parsed, session);
@@ -601,6 +674,20 @@ export class ClaudeModsBridge {
     this.#options.onEvent?.(runtimeId, { type: "runtime.metadata", metadata: session.runtime });
     this.#options.onEvent?.(runtimeId, { type: "execution.tasks", tasks: session.tasks });
     this.#options.onEvent?.(runtimeId, { type: "runtime.capabilities", capabilities: claudeCapabilities(session.state, session.process !== undefined && agentTasksAllowQuit(session.tasks)) });
+    const delivery = this.deliverySnapshot(runtimeId);
+    if (delivery !== undefined) this.#options.onEvent?.(runtimeId, delivery);
+  }
+
+  #queueEvent(runtimeId: string, session: Session, event: Extract<RuntimeEvent, { type: "message.queued" }>): void {
+    session.queueResults.set(event.queueId, event);
+    while (session.queueResults.size > 256) {
+      const removable = [...session.queueResults].find(([, value]) => value.state !== "accepted" && value.state !== "unconfirmed");
+      if (!removable) break;
+      session.queueResults.delete(removable[0]);
+    }
+    this.#options.onEvent?.(runtimeId, event);
+    const snapshot = this.deliverySnapshot(runtimeId);
+    if (snapshot !== undefined) this.#options.onEvent?.(runtimeId, snapshot);
   }
 
   /**
@@ -609,8 +696,18 @@ export class ClaudeModsBridge {
    * because a submit may have run before the result was lost.
    */
   #abandonCommands(runtimeId: string, session: Session): void {
-    for (const { commandId } of session.commands.values()) {
-      this.#options.onEvent?.(runtimeId, { type: "command.result", commandId, ok: false, status: "failure",
+    for (const { commandId, command } of session.commands.values()) {
+      if (command.type === "user_message" && command.messageId !== undefined) {
+        const queued = session.queueResults.get(command.messageId);
+        if (queued !== undefined && queued.state === "accepted") {
+          this.#queueEvent(runtimeId, session, {
+            ...queued,
+            state: "unconfirmed",
+            error: "claude_bridge_disconnected_result_unknown",
+          });
+        }
+      }
+      this.#options.onEvent?.(runtimeId, { type: "command.result", commandId, ok: false, status: "unconfirmed",
         error: "claude_bridge_disconnected_result_unknown" });
     }
     session.commands.clear();
@@ -652,6 +749,7 @@ export class ClaudeModsBridge {
         percent: context.percent === undefined ? null : Math.min(100, Math.max(0, context.percent)),
       } }),
       ...(permissions === undefined ? {} : { permissionManagement: permissions }),
+      ...(session.capabilities.has("prompt.sendNow") ? { steerSupported: true } : {}),
     };
   }
 

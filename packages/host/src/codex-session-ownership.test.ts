@@ -17,10 +17,11 @@ const terminalId = "01a19c0e-942b-7751-934e-50cf9980194e";
 async function fixture(mode: "owned" | "external" = "owned", failOpen = false) {
   const root = await mkdtemp(join(tmpdir(), "orbis-codex-ownership-")); roots.push(root);
   const sessions = join(root, "sessions"); await mkdir(sessions);
-  const write = async (id: string, originator: string, source: unknown = "vscode", archived = false) => {
+  const write = async (id: string, originator: string, source: unknown = "vscode", archived = false, hasHistory = false) => {
     const path = join(root, archived ? "archived_sessions" : "sessions"); await mkdir(path, { recursive: true });
-    await writeFile(join(path, `rollout-${id}.jsonl`), JSON.stringify({ type: "session_meta",
-      payload: { id, cwd: root, timestamp: "2026-11-02T06:16:01Z", originator, source } }) + "\n");
+    const records = [{ type: "session_meta", payload: { id, cwd: root, timestamp: "2026-11-02T06:16:01Z", originator, source } },
+      ...(hasHistory ? [{ type: "event_msg", payload: { type: "user_message", message: "existing history" } }] : [])];
+    await writeFile(join(path, `rollout-${id}.jsonl`), records.map(record => JSON.stringify(record)).join("\n") + "\n");
   };
   const request = vi.fn(async (method: string, params?: { threadId?: string }) => {
     if (method === "thread/resume") return { thread: { id: params!.threadId, cwd: root, status: { type: "idle" }, turns: [] } };
@@ -42,7 +43,7 @@ describe("Codex session backend ownership", () => {
   it("does not turn historical Desktop origin into current backend ownership", async () => {
     const h = await fixture();
     h.runtime.markStarted();
-    await h.write(desktopId, "Codex Desktop");
+    await h.write(desktopId, "Codex Desktop", "vscode", false, true);
     await h.write(terminalId, "codex_vscode");
     const catalog = await h.runtime.catalog();
     expect(catalog.map(entry => [entry.sessionId, entry.agentKind]).sort()).toEqual([[desktopId, "codex"], [terminalId, "codex"]].sort());

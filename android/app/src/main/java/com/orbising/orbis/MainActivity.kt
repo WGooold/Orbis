@@ -7,10 +7,13 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import android.content.Intent
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.togetherWith
@@ -100,6 +103,7 @@ import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Psychology
@@ -176,6 +180,8 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
@@ -224,6 +230,13 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.JsonArray
 
 class MainActivity : ComponentActivity() {
+    private val externalImports: ExternalImportViewModel by viewModels()
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        externalImports.receive(intent)
+    }
+
     override fun onResume() {
         super.onResume()
         AppLocalization.refreshSystemLanguage()
@@ -238,6 +251,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         AppLocalization.configure(this)
         AppAppearance.configure(this)
+        if (savedInstanceState == null) externalImports.receive(intent)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
@@ -246,6 +260,7 @@ class MainActivity : ComponentActivity() {
                 val model: RemoteViewModel = viewModel()
                 val state by model.state.collectAsStateWithLifecycle()
                 val homeUi by model.homeUi.collectAsStateWithLifecycle()
+                val imports by externalImports.ui.collectAsStateWithLifecycle()
                 val hosts = homeUi.hosts
                 val pairingError by model.pairingError.collectAsStateWithLifecycle()
                 val pairingInProgress by model.pairingInProgress.collectAsStateWithLifecycle()
@@ -262,7 +277,9 @@ class MainActivity : ComponentActivity() {
                     LocalToolDetailAction provides { runtime, summary, part -> model.openToolDetail(runtime, summary, part) },
                     LocalToolContentAvailable provides (state.connection == RelayConnection.ONLINE),
                 ) {
-                    RemoteApp(state, hosts, pairingError, pairingInProgress, model, homeUi)
+                    RemoteApp(state, hosts, pairingError, pairingInProgress, model, homeUi,
+                        importCount = imports.batches.size, onOpenImports = externalImports::show)
+                    if (imports.open) ExternalImportSheet(imports, externalImports, model)
                     state.changeViewer?.let { viewer ->
                         state.turnChanges[viewer.runtimeId]?.manifests?.get(viewer.summary.versionKey)?.let { manifest ->
                             key(viewer.runtimeId, viewer.summary.versionKey) { FileChangeViewerSheet(viewer, manifest,
@@ -318,6 +335,8 @@ internal fun RemoteApp(
     pairingInProgress: Boolean,
     model: RemoteViewModel,
     homeUi: HomeUiSnapshot? = null,
+    importCount: Int = 0,
+    onOpenImports: () -> Unit = {},
 ) {
     val actionHaptic = rememberActionHaptic()
     val permanentDirectory = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600
@@ -411,6 +430,7 @@ internal fun RemoteApp(
                 preparedCatalog = homeUi?.catalog,
                 preparedSync = homeUi?.sync,
                 preparedDownloadCount = homeUi?.activeDownloads,
+                importCount = importCount, onOpenImports = onOpenImports,
                 onOpenRuntime = { hostId, runtimeId ->
                     cancelLaunchIntro()
                     allDownloadsOpen = false
@@ -525,6 +545,7 @@ internal fun RemoteApp(
                 model.pair(relayUrl, code, qrRaw) { addingHost = false }
             },
             clearError = { model.clearPairingError(); model.clearError() },
+            importCount = importCount, onOpenImports = onOpenImports,
             onCancel = if (hosts.isNotEmpty()) {
                 { addingHost = false; model.clearPairingError() }
             } else null,
@@ -663,6 +684,8 @@ private fun PairingScreen(
     pair: (String, String, String?) -> Unit,
     clearError: () -> Unit,
     onCancel: (() -> Unit)? = null,
+    importCount: Int = 0,
+    onOpenImports: () -> Unit = {},
 ) {
     var scannerOpen by remember { mutableStateOf(false) }
     var manualOpen by remember { mutableStateOf(false) }
@@ -686,6 +709,7 @@ private fun PairingScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Orbis", fontWeight = FontWeight.SemiBold) },
+                actions = { ExternalImportButton(importCount, onOpenImports) },
                 navigationIcon = {
                     if (onCancel != null && !pairingInProgress) {
                         NeumorphIconButton(
@@ -878,6 +902,8 @@ internal fun RuntimeListScreen(
     preparedCatalog: List<CachedHostGroup>? = null,
     preparedSync: HomeSyncStatus? = null,
     preparedDownloadCount: Int? = null,
+    importCount: Int = 0,
+    onOpenImports: () -> Unit = {},
     permanentDirectory: Boolean = false,
     draftOpen: Boolean = false,
     onToggleDraft: () -> Unit = {},
@@ -979,6 +1005,7 @@ internal fun RuntimeListScreen(
                     },
                     actions = {
                         SelectionToolbar(selecting = selecting, contentAlignment = Alignment.CenterEnd, normal = {
+                            ExternalImportButton(importCount, onOpenImports)
                             // New session rises from the source list instead of creating an empty remote session.
                             DownloadStatusButton(
                                 activeCount = preparedDownloadCount ?: state.downloads.count { it.value.status in setOf("queued", "downloading") },
@@ -1653,7 +1680,7 @@ internal fun ChatScreen(
     val historyState = state.sessionHistory[runtimeId]
     val historyRead = state.historyReadForWindow(runtimeId)
     val rangeError = state.sessionRangeFailures[sessionRangeFailureKey(runtimeId, "catchup")]
-    // One reserved status slot: sync, paging and error updates never insert transcript rows.
+    // One reserved status slot: display sync and error updates never insert transcript rows.
     val chatHeaderCount = 1
     val viewportMotion = remember(runtimeId, sessionId) { ChatViewportMotion() }
     // A catch-up can connect a large cached prefix in one projection. LazyColumn's nearby-key
@@ -1676,7 +1703,6 @@ internal fun ChatScreen(
     var historyAnchorOffset by remember(presentationIdentity) { mutableStateOf(0) }
     var historyAnchorGeneration by remember(presentationIdentity) { mutableStateOf(0L) }
     var historyPagingFeedback by remember(presentationIdentity) { mutableStateOf<String?>(null) }
-    var retryingHistory by remember(presentationIdentity) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val sendFlight = remember(state.hostId, runtimeId, sessionId) { MessageSendFlightState(scope) }
     LaunchedEffect(firstDraftSend?.send?.messageId, runtimeId, sessionId) {
@@ -1754,7 +1780,6 @@ internal fun ChatScreen(
         mutableStateOf(model.loadDraft(runtimeId))
     }
     val openClawComposer = (runtime?.agentKind ?: state.launchPage?.agentKind) == "openclaw"
-    val composerMode = composerAction(isWorking = runtime?.status == "running", input = if (openClawComposer || kimiCode) "" else input)
     var selectedSlashCommandName by remember(runtimeId) { mutableStateOf<String?>(null) }
     var modelConfigurationOpen by remember(runtimeId) { mutableStateOf(false) }
     var modelConfigurationSetting by remember(runtimeId) { mutableStateOf<String?>(null) }
@@ -1792,6 +1817,108 @@ internal fun ChatScreen(
     var commandFeedback by remember(runtimeId) { mutableStateOf<String?>(null) }
     var commandFeedbackTransient by remember(runtimeId) { mutableStateOf(false) }
     var showDeliveryChoices by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val voiceInput = remember(context, runtimeId, sessionId) { VoiceInputController(context) }
+    DisposableEffect(voiceInput) { onDispose { voiceInput.destroy() } }
+    val voiceLifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(voiceLifecycle, voiceInput) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE && voiceInput.phase == VoiceCapturePhase.Listening) {
+                voiceInput.stop()
+            }
+        }
+        voiceLifecycle.addObserver(observer)
+        onDispose { voiceLifecycle.removeObserver(observer) }
+    }
+    val voiceApiStore = remember(context) { VoiceCleanupApiStore(context) }
+    var voiceCleanupJob by remember(state.hostId, runtimeId, sessionId) { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var voiceCleanupInProgress by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    var voiceCleanupStatus by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    var voiceCleanupRawDraft by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    var voiceCleanupCleanedDraft by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    var voicePermissionError by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
+    var showVoicePrivacyNotice by remember { mutableStateOf(false) }
+    var systemSpeechExplained by rememberSaveable { mutableStateOf(false) }
+    fun cancelVoiceCleanup() {
+        voiceCleanupJob?.cancel()
+        voiceCleanupJob = null
+        voiceCleanupInProgress = false
+        voiceCleanupStatus = null
+        voiceCleanupRawDraft = null
+        voiceCleanupCleanedDraft = null
+    }
+    DisposableEffect(state.hostId, runtimeId, sessionId) {
+        onDispose { cancelVoiceCleanup() }
+    }
+    val beginVoiceRecognition: () -> Unit = {
+        voicePermissionError = null
+        showDeliveryChoices = false
+        focusManager.clearFocus()
+        cancelVoiceCleanup()
+        val expectedHost = state.hostId
+        voiceInput.start { recognized ->
+            if (model.state.value.hostId == expectedHost && model.state.value.selectedRuntimeId == runtimeId) {
+                val base = input
+                val prefix = base + if (base.isBlank() || base.endsWith("\n")) "" else "\n"
+                val rawDraft = prefix + recognized
+                input = rawDraft
+                model.saveDraft(runtimeId, rawDraft)
+                if (!matchesSelectedSlashCommand(rawDraft, selectedSlashCommandName)) selectedSlashCommandName = null
+                voiceCleanupJob = scope.launch {
+                    val config = try { voiceApiStore.load() }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { null }
+                    if (input != rawDraft || model.state.value.hostId != expectedHost) return@launch
+                    voiceCleanupInProgress = config != null
+                    val provider = config?.provider
+                    val result = if (provider != null) {
+                        try {
+                            val reply = model.requestVoiceProvider(provider, "clean", config.model, recognized)
+                            val text = (reply["text"] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+                            VoiceTextCleanupResult(requireNotNull(text?.takeIf { it.isNotBlank() }), VoiceCleanupMethod.Api)
+                        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                        catch (_: Exception) { VoiceTextCleanupResult(VoiceTextCleanupRules.clean(recognized), VoiceCleanupMethod.ApiFallback) }
+                    } else VoiceTextCleanupApi.shared.clean(recognized, config)
+                    voiceCleanupInProgress = false
+                    val current = model.state.value
+                    if (current.hostId != expectedHost || current.selectedRuntimeId != runtimeId ||
+                        current.runtimes[runtimeId]?.sessionId != sessionId || input != rawDraft) return@launch
+                    if (result.text != recognized) {
+                        val cleanedDraft = prefix + result.text
+                        input = cleanedDraft
+                        model.saveDraft(runtimeId, cleanedDraft)
+                        voiceCleanupRawDraft = rawDraft
+                        voiceCleanupCleanedDraft = cleanedDraft
+                    }
+                    voiceCleanupStatus = when (result.method) {
+                        VoiceCleanupMethod.ApiFallback -> "模型不可用，已使用手机本地规则"
+                        VoiceCleanupMethod.Api -> "已用自定义模型清理口述".takeIf { result.text != recognized }
+                        VoiceCleanupMethod.Rules -> "已去除明显口癖".takeIf { result.text != recognized }
+                    }
+                }
+            }
+        }
+    }
+    val voicePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) beginVoiceRecognition() else voicePermissionError = "请在系统设置中允许麦克风权限"
+    }
+    val requestVoicePermission: () -> Unit = {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            beginVoiceRecognition()
+        } else {
+            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    val startVoiceInput: () -> Unit = {
+        if (!VoiceInputController.hasOnDeviceRecognition(context) && !systemSpeechExplained) {
+            showVoicePrivacyNotice = true
+        } else {
+            requestVoicePermission()
+        }
+    }
     // 这个 composer 上挂着的上传任务（taskId）。只有传完的才能随消息发出。
     // 关联记在 ViewModel（按会话）：退出会话窗口再回来，chip 原样恢复——上传不因退出窗口取消。
     val sessionKey = "$runtimeId/$sessionId"
@@ -1810,20 +1937,37 @@ internal fun ChatScreen(
     val attachablePaths = attachedUploads.filter { it.status == "completed" }.mapNotNull(UploadTask::remotePath)
     // 基础协议支持附件路径，不使用 `messageAttachments` 能力位（ADR-0012）。
     val canAttachFiles = !kimiCode && !openClawComposer && runtime != null && state.hostId != null
-    val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris ->
-        if (!canAttachFiles) return@rememberLauncherForActivityResult
-        uris.take(MAX_ATTACHMENTS_PER_MESSAGE).forEach { uri ->
+    val hasComposerAttachments = canAttachFiles && attachedTaskIds.isNotEmpty()
+    val composerMode = composerAction(
+        isWorking = runtime?.status == "running",
+        input = if (openClawComposer || kimiCode) "" else input,
+        hasAttachments = hasComposerAttachments,
+    )
+    var attachmentMenuExpanded by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    LaunchedEffect(canAttachFiles) {
+        if (!canAttachFiles) attachmentMenuExpanded = false
+    }
+    val queueSelectedAttachments: (List<android.net.Uri>) -> Unit = queueAttachments@{ uris ->
+        if (!canAttachFiles || uris.isEmpty()) return@queueAttachments
+        val remaining = (MAX_ATTACHMENTS_PER_MESSAGE - attachedTaskIds.size).coerceAtLeast(0)
+        uris.take(remaining).forEach { uri ->
             // 登记完立刻把任务挂到 composer 的附件 chip 上——上传进度必须可见，
             // 否则用户不知道文件正在传、也不知道为什么发送键是灰的。
             model.queueUpload(uri, runtimeId) { taskId -> updateAttachedTaskIds(attachedTaskIds + taskId) }
         }
-        if (uris.size > MAX_ATTACHMENTS_PER_MESSAGE) {
+        if (uris.size > remaining) {
             commandFeedbackTransient = false
             commandFeedback = L10n.tr("一次最多发送 {0} 个文件", MAX_ATTACHMENTS_PER_MESSAGE)
         }
     }
+    val filePicker = rememberLauncherForActivityResult(
+        LocalDocumentsPicker(),
+        onResult = queueSelectedAttachments,
+    )
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(MAX_ATTACHMENTS_PER_MESSAGE),
+        onResult = queueSelectedAttachments,
+    )
     // Refresh replaces the visible conversation with a fresh projection. Remember the row the
     // user is looking at so the viewport can stay put instead of jumping to the newest message.
     var refreshAnchorMessageId by remember(runtimeId, sessionId) { mutableStateOf<String?>(null) }
@@ -1841,6 +1985,7 @@ internal fun ChatScreen(
     }
     fun submitMessage(commandId: String?) {
         if (commandId == null) return
+        cancelVoiceCleanup()
         animateSend(commandId)
         actionHaptic()
         commandFeedback = null
@@ -1848,8 +1993,25 @@ internal fun ChatScreen(
         selectedSlashCommandName = null
         model.clearDraft(runtimeId)
     }
+    fun submitComposerMessage(delivery: String? = null) {
+        showDeliveryChoices = false
+        val commandId = model.sendMessage(
+            input,
+            delivery = delivery,
+            attachments = attachablePaths,
+            uploadTaskIds = attachedTaskIds.toList(),
+        )
+        // 附件已经交给消息，chip 就不该继续挂在输入框上；仍在上传的继续上传，
+        // 写入通道后再从上传列表移走（ADR-0049 §6.2）。
+        if (commandId != null) {
+            if (attachedUploads.all { it.status == "completed" }) model.detachUploads(attachedTaskIds)
+            updateAttachedTaskIds(emptySet())
+        }
+        submitMessage(commandId)
+    }
     fun trackSubmission(commandId: String?) {
         if (commandId == null) return
+        cancelVoiceCleanup()
         actionHaptic()
         val submittedText = input
         commandFeedback = null
@@ -1901,7 +2063,6 @@ internal fun ChatScreen(
         // Lock before crossing to the worker. Do not let a short, non-scrollable window
         // reacquire tail following while that worker is prepending rows.
         historyAnchorPending = true
-        if (retrying) retryingHistory = true
         val wasFollowing = following
         val viewportGeneration = viewportMotion.generation
         following = false
@@ -1913,7 +2074,6 @@ internal fun ChatScreen(
             } else {
                 if (accepted.rejection != null) historyPagingFeedback = accepted.rejection
                 historyAnchorPending = false
-                retryingHistory = false
                 if (viewportMotion.generation == viewportGeneration) following = wasFollowing
             }
         }
@@ -1940,7 +2100,6 @@ internal fun ChatScreen(
             historyAnchorIndex = null
             historyAnchorPending = false
             historyAnchorOperationId = null
-            retryingHistory = false
         }
     }
 
@@ -2137,7 +2296,7 @@ internal fun ChatScreen(
             TopAppBar(
                 title = {
                     BoxWithConstraints(Modifier.testTag("session-model-entry").clickable(enabled = runtime != null,
-                        onClickLabel = L10n.tr("模型与深度")) { modelConfigurationOpen = true }) {
+                        onClickLabel = if (runtime?.agentKind == "opencode") L10n.tr("会话配置") else L10n.tr("模型与深度")) { modelConfigurationOpen = true }) {
                         val compactConfiguration = maxWidth < 200.dp * LocalDensity.current.fontScale
                         Column {
                         Row(
@@ -2228,8 +2387,7 @@ internal fun ChatScreen(
                             NeumorphTextButton(
                                 text = queuedMessageDeliveryText("followUp"),
                                 onClick = {
-                                    showDeliveryChoices = false
-                                    submitMessage(model.sendMessage(input, "followUp"))
+                                    submitComposerMessage("followUp")
                                 },
                                 enabled = pendingMessageCommandId == null,
                                 filled = true,
@@ -2238,8 +2396,7 @@ internal fun ChatScreen(
                             NeumorphTextButton(
                                 text = queuedMessageDeliveryText("steer"),
                                 onClick = {
-                                    showDeliveryChoices = false
-                                    submitMessage(model.sendMessage(input, "steer"))
+                                    submitComposerMessage("steer")
                                 },
                                 enabled = pendingMessageCommandId == null,
                                 filled = true,
@@ -2306,6 +2463,56 @@ internal fun ChatScreen(
                             },
                         )
                     }
+                    if (voiceInput.phase != VoiceCapturePhase.Idle || voicePermissionError != null || voiceInput.errorKey != null || voiceCleanupInProgress || voiceCleanupStatus != null) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Box(
+                                Modifier.padding(top = 6.dp).size(8.dp).clip(CircleShape)
+                                    .background(if (voicePermissionError != null || voiceInput.errorKey != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary),
+                            )
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                val status = when {
+                                    voicePermissionError != null -> voicePermissionError!!
+                                    voiceInput.errorKey != null -> voiceInput.errorKey!!
+                                    voiceInput.phase == VoiceCapturePhase.Finishing -> "正在整理语音"
+                                    voiceCleanupInProgress -> "正在去除口癖"
+                                    voiceCleanupStatus != null -> voiceCleanupStatus!!
+                                    voiceInput.isOnDevice -> "正在聆听 · 本机识别，不会自动发送"
+                                    else -> "正在聆听 · 系统识别，不会自动发送"
+                                }
+                                Text(L10n.tr(status), Modifier.semantics {
+                                    liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite
+                                }, style = MaterialTheme.typography.labelSmall,
+                                    color = if (voicePermissionError != null || voiceInput.errorKey != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (voiceCleanupInProgress) {
+                                    Text(L10n.tr("仅将本次识别文字发送到自定义 API"),
+                                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                } else if (voiceInput.phase != VoiceCapturePhase.Idle) {
+                                    Text(L10n.tr("请勿口述密码等敏感信息"), style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (voiceInput.phase == VoiceCapturePhase.Listening && voiceInput.transcript.isNotBlank()) {
+                                    Text(voiceInput.transcript, style = MaterialTheme.typography.bodySmall,
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                                if (voiceCleanupCleanedDraft == input && voiceCleanupRawDraft != null) {
+                                    TextButton(onClick = {
+                                        val original = voiceCleanupRawDraft ?: return@TextButton
+                                        input = original
+                                        model.saveDraft(runtimeId, original)
+                                        voiceCleanupStatus = null
+                                        voiceCleanupRawDraft = null
+                                        voiceCleanupCleanedDraft = null
+                                    }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                                        Text(L10n.tr("还原识别原文"), style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Row(
                         Modifier.fillMaxWidth().navigationBarsPadding()
                             .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp),
@@ -2313,18 +2520,41 @@ internal fun ChatScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                     if (canAttachFiles) {
-                        NeumorphIconButton(
-                            onClick = { filePicker.launch(arrayOf("*/*")) },
-                            icon = OrbisSymbols.AttachFile,
-                            contentDescription = L10n.tr("发送文件到电脑"),
-                            enabled = attachedTaskIds.size < MAX_ATTACHMENTS_PER_MESSAGE,
-                            modifier = Modifier.padding(bottom = 4.dp),
-                        )
+                        Box(Modifier.padding(bottom = 4.dp)) {
+                            NeumorphIconButton(
+                                onClick = { attachmentMenuExpanded = true },
+                                icon = OrbisSymbols.AttachFile,
+                                contentDescription = L10n.tr("添加附件"),
+                                enabled = attachedTaskIds.size < MAX_ATTACHMENTS_PER_MESSAGE,
+                            )
+                            DropdownMenu(
+                                expanded = attachmentMenuExpanded,
+                                onDismissRequest = { attachmentMenuExpanded = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(L10n.tr("照片")) },
+                                    onClick = {
+                                        attachmentMenuExpanded = false
+                                        photoPicker.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
+                                        )
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(L10n.tr("文件")) },
+                                    onClick = {
+                                        attachmentMenuExpanded = false
+                                        filePicker.launch(arrayOf("*/*"))
+                                    },
+                                )
+                            }
+                        }
                     }
                     OutlinedTextField(
                         value = input,
                         onValueChange = { value ->
                             showDeliveryChoices = false
+                            cancelVoiceCleanup()
                             input = value
                             model.saveDraft(runtimeId, value)
                             if (!matchesSelectedSlashCommand(value, selectedSlashCommandName)) {
@@ -2333,7 +2563,28 @@ internal fun ChatScreen(
                         },
                         modifier = Modifier.weight(1f).onGloballyPositioned { sendFlight.composer = it.boundsInWindow() },
                         placeholder = { Text(L10n.tr(if (openClawComposer) "发给 {0}" else "发给 {0}，/ 命令", LocalAgentBrand.current.title), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        enabled = runtime != null || launchOpen,
+                        trailingIcon = {
+                            NeumorphIconButton(
+                                onClick = {
+                                    when (voiceInput.phase) {
+                                        VoiceCapturePhase.Listening -> voiceInput.stop()
+                                        VoiceCapturePhase.Idle -> startVoiceInput()
+                                        VoiceCapturePhase.Finishing -> Unit
+                                    }
+                                },
+                                icon = if (voiceInput.phase == VoiceCapturePhase.Listening) Icons.Rounded.StopCircle else Icons.Rounded.Mic,
+                                contentDescription = L10n.tr(when (voiceInput.phase) {
+                                    VoiceCapturePhase.Listening -> "结束语音输入"
+                                    VoiceCapturePhase.Finishing -> "正在整理语音"
+                                    VoiceCapturePhase.Idle -> "开始语音输入"
+                                }),
+                                enabled = (runtime != null || launchOpen) && voiceInput.phase != VoiceCapturePhase.Finishing,
+                                tint = if (voiceInput.phase == VoiceCapturePhase.Listening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                compact = true,
+                                modifier = Modifier.testTag("chat-voice-input"),
+                            )
+                        },
+                        enabled = (runtime != null || launchOpen) && voiceInput.phase == VoiceCapturePhase.Idle,
                         minLines = 1,
                         maxLines = 5,
                     )
@@ -2344,6 +2595,7 @@ internal fun ChatScreen(
                             input,
                             state.capabilities[runtimeId]?.commands.orEmpty(),
                             selectedSlashCommandName,
+                            hasAttachments = hasComposerAttachments,
                         ) && pendingMessageCommandId == null &&
                             // ADR-0049 §6.2：附件还在上传也可以发送，消息先等上传完成；失败或取消的附件需要先处理。
                             attachedUploads.none { it.status == "failed" || it.status == "cancelled" }
@@ -2385,23 +2637,12 @@ internal fun ChatScreen(
                                             } else trackSubmission(
                                                 executeSlash(selectedCommand.name, slash.second),
                                             )
-                                        } else if (runtime?.status == "running" && runtime.agentKind == "claude") {
-                                            // Claude Code 只有「等当前回合结束后提交」，没有 Steer 可选。
-                                            showDeliveryChoices = false
-                                            submitMessage(model.sendMessage(input, "followUp"))
+                                        } else if (runtime?.status == "running" && runtime.agentKind == "claude" && runtime.steerSupported != true) {
+                                            submitComposerMessage("followUp")
                                         } else if (runtime?.status == "running") {
                                             showDeliveryChoices = true
                                         } else {
-                                            showDeliveryChoices = false
-                                            val commandId = model.sendMessage(input, attachments = attachablePaths,
-                                                uploadTaskIds = attachedTaskIds.toList())
-                                            // 附件已经交给消息，chip 就不该继续挂在输入框上；仍在上传的继续上传，
-                                            // 写入通道后再从上传列表移走（ADR-0049 §6.2）。
-                                            if (commandId != null) {
-                                                if (attachedUploads.all { it.status == "completed" }) model.detachUploads(attachedTaskIds)
-                                                updateAttachedTaskIds(emptySet())
-                                            }
-                                            submitMessage(commandId)
+                                            submitComposerMessage()
                                         }
                                     }
                                 }
@@ -2488,7 +2729,7 @@ internal fun ChatScreen(
                     Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
-                            if (displayReadPending || historyRead?.phase?.active == true)
+                            if (displayReadPending)
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         }
                         when {
@@ -2520,6 +2761,7 @@ internal fun ChatScreen(
                             runtimeId = runtimeId,
                             message = item.message,
                             pending = state.pendingSends[item.message.messageId]?.state,
+                            pendingSubmissionConfirmed = state.pendingSends[item.message.messageId]?.submissionConfirmed == true,
                             uploads = state.pendingSends[item.message.messageId]?.uploadIds.orEmpty().mapNotNull(state.uploads::get),
                             canResend = state.e2eReady && runtime != null,
                             onPendingAction = { action ->
@@ -2585,17 +2827,20 @@ internal fun ChatScreen(
             val noticesSupported = runtime?.agentKind in setOf("codex", "codexDesktop")
             val hasNotices = notices != null && (notices.items.isNotEmpty() || (noticesSupported && !notices.complete))
             val failedLaunch = launch?.takeIf { it.failure != null || it.unconfirmed }
-            val showHistoryRetry = (historyState?.hasOlder == true && historyFailure) || retryingHistory
-            // One top slot: no outgoing question animation remains when retry takes over.
+            // Keep the loading state through local admission and the visible prepend.
+            val historyLoading = historyAnchorPending || historyRead?.phase?.active == true
+            val showHistoryRetry = historyState?.hasOlder == true && historyFailure
+            // One top slot: no outgoing question animation remains when paging takes over.
             Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
                 if (failedLaunch != null) {
                     LaunchNotice(failedLaunch, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) },
                         onAbandon = if (model.canAbandonConfiguredLaunch(failedLaunch.requestId)) {
                             { model.abandonConfiguredLaunch()?.let(onAbandonLaunch); Unit }
                         } else null)
+                } else if (historyLoading) {
+                    ChatHistoryProgress(Modifier.align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 6.dp))
                 } else if (showHistoryRetry) {
-                    ChatHistoryRetry(loading = retryingHistory || historyRead?.phase?.active == true,
-                        enabled = canLoadHistory(retrying = true), onRetry = { loadHistoryPage(retrying = true) },
+                    ChatHistoryRetry(enabled = canLoadHistory(retrying = true), onRetry = { loadHistoryPage(retrying = true) },
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
                 } else if (!hasNotices) {
                     val readingRowId by remember(listState, projection) {
@@ -2666,6 +2911,21 @@ internal fun ChatScreen(
         },
         content = historyPage,
     )
+    if (showVoicePrivacyNotice) {
+        AlertDialog(
+            onDismissRequest = { showVoicePrivacyNotice = false },
+            title = { Text(L10n.tr("语音识别说明")) },
+            text = { Text(L10n.tr("此设备没有可用的本机语音识别服务。继续后，Android 系统语音服务可能通过网络处理音频。请勿口述密码等敏感信息。识别结果只写入当前草稿，不会自动发送。")) },
+            confirmButton = {
+                TextButton(onClick = {
+                    systemSpeechExplained = true
+                    showVoicePrivacyNotice = false
+                    requestVoicePermission()
+                }) { Text(L10n.tr("继续")) }
+            },
+            dismissButton = { TextButton(onClick = { showVoicePrivacyNotice = false }) { Text(L10n.tr("取消")) } },
+        )
+    }
 
 }
 
@@ -2784,9 +3044,10 @@ internal fun canSubmitInput(
     input: String,
     commands: List<RuntimeSlashCommand>,
     selectedSlashCommandName: String?,
+    hasAttachments: Boolean = false,
 ): Boolean {
     val trimmed = input.trim()
-    if (trimmed.isBlank()) return false
+    if (trimmed.isBlank()) return hasAttachments
     if (!trimmed.startsWith("/")) return true
     val (name, args) = parseSlashInvocation(trimmed) ?: return false
     if (name != selectedSlashCommandName) return false
@@ -3240,7 +3501,7 @@ internal fun StatusScreen(
     onBack: () -> Unit,
     root: Boolean = false,
 ) {
-    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode, model::setAgentEnabled, model::refreshAgentEnablement)
+    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode, model, model::setAgentEnabled, model::refreshAgentEnablement)
 }
 
 
@@ -3764,6 +4025,7 @@ internal fun UserMessageCard(
     rewindEnabled: Boolean = false,
     /** ADR-0049：本地待确认发送的状态；权威行为 null。 */
     pending: PendingSendState? = null,
+    pendingSubmissionConfirmed: Boolean = false,
     /** ADR-0049 §6.1：本地待发送消息带的附件（上传任务），气泡内显示缩略图 / 文件名与上传进度。 */
     uploads: List<UploadTask> = emptyList(),
     canResend: Boolean = false,
@@ -3792,8 +4054,8 @@ internal fun UserMessageCard(
                 }
             }
             }
-            if (pending != null) {
-                PendingSendStatus(pending, canResend, onPendingAction)
+            if (shouldShowPendingStatus(pending, pendingSubmissionConfirmed)) {
+                PendingSendStatus(requireNotNull(pending), canResend, onPendingAction)
             }
         }
     }
@@ -3807,9 +4069,13 @@ private fun PendingSendStatus(state: PendingSendState, canResend: Boolean, onAct
     Row(Modifier.testTag("pending-send-status"), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         val muted = MaterialTheme.colorScheme.onSurfaceVariant
         when (state) {
-            PendingSendState.Sending, PendingSendState.Accepted -> {
+            PendingSendState.Sending -> {
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
                 Text(L10n.tr("发送中"), style = MaterialTheme.typography.labelSmall, color = muted)
+            }
+            PendingSendState.Accepted -> {
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = muted)
+                Text(L10n.tr("电脑已接收，等待处理"), style = MaterialTheme.typography.labelSmall, color = muted)
             }
             is PendingSendState.Waiting -> {
                 // ADR-0049 §6.2：标明在等什么（上传中的附件名、等待前一条）。
@@ -4564,7 +4830,7 @@ internal fun InteractionPanel(
                     }
                     if (request.kind == "confirm") {
                         NeumorphTextButton(
-                            text = request.cancelLabel ?: L10n.tr("拒绝"),
+                            text = if (request.extensionId == "opencode.permission") L10n.tr("拒绝") else request.cancelLabel ?: L10n.tr("拒绝"),
                             danger = true,
                             enabled = responseEnabled,
                             modifier = Modifier.weight(1f),
@@ -4573,7 +4839,7 @@ internal fun InteractionPanel(
                     }
                     when (request.kind) {
                         "confirm" -> NeumorphTextButton(
-                            text = request.confirmLabel ?: L10n.tr("允许"),
+                            text = if (request.extensionId == "opencode.permission") L10n.tr("允许一次") else request.confirmLabel ?: L10n.tr("允许"),
                             modifier = Modifier.weight(1f),
                             filled = true,
                             enabled = responseEnabled,

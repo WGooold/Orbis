@@ -58,6 +58,12 @@ originator cleanup, idle writer release and the transparent Desktop wrapper
 remain in effect. The current decision, evidence and validation boundary are in
 [ADR-0021's shared-history revision](0021-codex-terminal-host-attachment.md#revision-2026-11-16-shared-native-history-and-installed-cli-startup-codex-shared-history-01).
 
+### CODEX-DESKTOP-DRAFT-01: Admission of passively discovered threads
+
+A loaded idle Desktop thread becomes an Orbis session when the native catalog lists it or a native read confirms a turn. An active thread can attach immediately; ephemeral title threads and subagents do not become sessions. The gate works whether Desktop starts a new thread on send or reuses the draft ID. A complete, metadata-only Desktop rollout does not qualify for disk-only history on either backend. Neither rule changes native threads, recorded ownership, or the explicit App activation path: Desktop and terminal pre-creates remain usable before the first turn and keep that ID on send and configured-launch retry.
+
+The upstream split was observed with Host stopped. Orbis implementation is covered by the [Desktop discovery tests](../../packages/host/src/codex-desktop.test.ts), [device protocol tests](../../packages/host/src/host-service.test.ts) and [isolated native app-server tests](../../packages/host/src/codex-session-source-native.test.ts). [Local verification evidence](../../.artifacts/codex-desktop-draft-20261120/); deployment and physical App acceptance are pending.
+
 Desktop integration requires a compatible installed Codex CLI and a running, reachable desktop daemon. If the desktop connection fails, desktop sessions are unavailable while terminal sessions continue independently. If the connection drops after startup, Host reports attached desktop Sessions offline and re-attaches on its next poll once the desktop side answers again; no Host restart is needed. Host owns no desktop process and cannot repair or restart it. The polling interval adds small metadata traffic even while no desktop thread is active. The same watch publishes one attach state — `unsupported`, `notInstalled`, `closed`, `attached` or `error` — with a user-facing reason on `device.ready`, so the Windows Host diagnostics page and the phone connection status page can say why desktop sessions are or are not available instead of only showing them missing. A failed attach is a reported state, not a silent one.
 
 ## Decision (replaced 2026-10-05): attach through the Orbis wrapper

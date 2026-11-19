@@ -24,7 +24,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { open, readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -63,6 +63,7 @@ import type {
   ToolContentLocator,
   SessionConfigurationCatalog,
   SessionConfigurationValues,
+  SpawnMode,
   TurnConfiguration,
 } from "@orbis/protocol";
 
@@ -85,7 +86,7 @@ import { codexPermissionManagement } from "./permission-management.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { CodexClientRefreshCoordinator, FileCodexRefreshJournal, type CodexRefreshResult } from "./codex-client-refresh.js";
 import { CodexDesktopRefreshDriver, desktopHistoryRevision, type CodexDesktopRefreshOptions } from "./codex-desktop-refresh.js";
-import { ActivationError } from "./spawner.js";
+import { ActivationError, hasDesktopSession } from "./spawner.js";
 import { CodexNotificationBuffer, type CodexBufferedNotification } from "./codex-notification-buffer.js";
 import { openMacCodexTerminal, listMacCodexTuisByEndpoint, closeMacCodexTuis } from "./codex-terminal-macos.js";
 import { codexTerminalEndpoints, codexTerminalRemotePattern, createCodexTerminalConnection, type CodexTerminalConnection, type CodexTerminalConnectionInput } from "./codex-terminal-connection.js";
@@ -139,6 +140,8 @@ export const CODEX_SOURCE_COALESCE_MS = 100;
 
 export type CodexRuntimeOptions = {
   server: CodexAppServer;
+  /** Run every phone-created Codex thread through app-server without opening a local TUI. */
+  headless?: boolean;
   /** Host-owned producer store shared by all this backend's sessions; explicit detail reads only. */
   toolContentStore?: ToolContentStore;
   /** ADR-0035 §15：完整 live patch 的发布窗口；0 保留同步发布。 */
@@ -424,6 +427,7 @@ export class CodexRuntime implements AgentBackend {
   onFileChangeEvidence: ((runtimeId: string, evidence: import("./codex-turn-file-changes.js").CodexFileChangeEvidence) => void) | undefined;
   fileChangeTurnUnconfirmed: ((runtimeId: string) => Promise<void>) | undefined;
   onMetadataChange: (() => void) | undefined;
+  onCatalogChange: (() => void) | undefined;
   onArchiveChange: ((sessionId: string, archived: boolean) => void) | undefined;
   onDesktopThread: ((threadId: string) => void) | undefined;
   /**
@@ -975,6 +979,9 @@ export class CodexRuntime implements AgentBackend {
     }
     this.#desktopRefreshing = true;
     try {
+      // An App activation can finish while loaded/list is in flight. Do not
+      // detach a thread that did not exist when this snapshot was requested.
+      const previouslyAttached = new Map([...this.#desktopThreads].map(id => [id, this.#threads.get(id)]));
       const result = object(await this.#server.request("thread/loaded/list", {}));
       if (!this.#started) return;
       if (!Array.isArray(result.data)) throw new Error("thread/loaded/list 响应缺少 data");
@@ -982,28 +989,52 @@ export class CodexRuntime implements AgentBackend {
       for (const id of this.#desktopSuppressed.keys()) {
         if (!loaded.has(id)) this.#desktopSuppressed.delete(id);
       }
-      for (const id of this.#desktopThreads) {
-        if (!loaded.has(id) && !this.#desktopClientProtected.has(id)) this.#deactivateThread(id, "Codex 桌面会话已卸载");
+      for (const [id, thread] of previouslyAttached) {
+        if (this.#threads.get(id) === thread && !loaded.has(id) && !this.#desktopClientProtected.has(id)) {
+          this.#deactivateThread(id, "Codex 桌面会话已卸载");
+        }
       }
       const children: Record<string, unknown>[] = [];
+      const idleCandidates: Array<[string, Record<string, unknown>]> = [];
       for (const id of loaded) {
         if (this.#desktopClientProtected.has(id)) continue;
         if (this.#threads.has(id) && !this.#threads.get(id)?.tuiAttachPending) continue;
-        const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: false }));
-        if (!this.#started || !loaded.has(id)) return;
-        const snapshot = object(result.thread);
+        let snapshot: Record<string, unknown>;
+        try {
+          const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: false }, 5_000));
+          snapshot = object(result.thread);
+        } catch { continue; } // A thread may close between loaded/list and read.
+        if (!this.#started) return;
+        if (snapshot.id !== id) continue;
         if (isCodexSubagentSource(snapshot.source, snapshot.parentThreadId)) { children.push(snapshot); continue; }
         if (snapshot.ephemeral === true || typeof snapshot.cwd !== "string"
           || (typeof snapshot.path === "string" && snapshot.path.split(/[\\/]/).includes("archived_sessions"))) continue;
         const status = object(snapshot.status);
         if (status.type !== "active" && status.type !== "idle") continue;
+        // The explicit launch/resume/fork path owns its in-flight native thread.
+        if (this.#activating > 0) continue;
         const suppressed = this.#desktopSuppressed.get(id);
         if (suppressed !== undefined) {
           if (status.type === "idle") this.#desktopSuppressed.set(id, "idle");
           if (status.type !== "active" || suppressed !== "idle") continue;
           this.#desktopSuppressed.delete(id);
         }
-        await this.#adoptDesktopThread(id, snapshot);
+        if (status.type === "idle" && !this.#threads.has(id)) idleCandidates.push([id, snapshot]);
+        else await this.#adoptDesktopThread(id, snapshot);
+      }
+      if (idleCandidates.length > 0) {
+        const listed = await this.#listedDesktopThreads();
+        for (const [id, snapshot] of idleCandidates) {
+          if (!this.#started) return;
+          if (this.#threads.has(id) || this.#desktopSuppressed.has(id) || this.#desktopClientProtected.has(id)) continue;
+          // A loaded desktop draft (even one with a rollout path) is not yet a
+          // conversation. A catalog hit or a real turn qualifies the same ID,
+          // regardless of whether Desktop reuses it or creates a second thread.
+          if (!listed.has(id) && !await this.#desktopThreadHasTurn(id)) continue;
+          if (!this.#started) return;
+          if (this.#activating === 0 && !this.#threads.has(id) && !this.#desktopSuppressed.has(id)
+            && !this.#desktopClientProtected.has(id)) await this.#adoptDesktopThread(id, snapshot);
+        }
       }
       // loaded/list can place a nested child before its root. Adopt roots first, then
       // resolve only proven ancestry; missing/unloaded children never clear tasks.
@@ -1026,6 +1057,38 @@ export class CodexRuntime implements AgentBackend {
     }
   }
 
+  async #listedDesktopThreads(): Promise<Set<string>> {
+    try {
+      const page = object(await this.#server.request("thread/list", { limit: 200, modelProviders: [] }, 5_000));
+      return new Set(Array.isArray(page.data) ? page.data.flatMap(value => {
+        const thread = object(value);
+        return typeof thread.id === "string" && thread.ephemeral !== true
+          && !isCodexSubagentSource(thread.source, thread.parentThreadId) ? [thread.id] : [];
+      }) : []);
+    } catch {
+      // A failed or partial catalog is not proof that the thread is empty.
+      return new Set();
+    }
+  }
+
+  async #desktopThreadHasTurn(id: string): Promise<boolean> {
+    try {
+      const page = object(await this.#server.request("thread/turns/list", {
+        threadId: id, itemsView: "summary", sortDirection: "asc", limit: 1,
+      }, 5_000));
+      return Array.isArray(page.data) && page.data.some(turn => typeof object(turn).id === "string");
+    } catch (error) {
+      if (!/code=-32601|method not found|unknown (?:rpc )?method/iu.test(describeError(error))) return false;
+      // Older app-servers may only support thread/read with embedded turns.
+      try {
+        const result = object(await this.#server.request("thread/read", { threadId: id, includeTurns: true }, 5_000,
+          { maxResponseBytes: 4 * 1024 * 1024 }));
+        const thread = object(result.thread);
+        return thread.id === id && Array.isArray(thread.turns) && thread.turns.some(turn => typeof object(turn).id === "string");
+      } catch { return false; }
+    }
+  }
+
   async #adoptDesktopThread(id: string, snapshot: Record<string, unknown>): Promise<void> {
     if (isCodexSubagentSource(snapshot.source, snapshot.parentThreadId)) {
       this.#options.log?.(`忽略 Codex 子代理线程：${id}`);
@@ -1043,6 +1106,7 @@ export class CodexRuntime implements AgentBackend {
     this.#desktopThreads.add(id);
     this.#rememberDesktopThread(id);
     await this.#initializeTuiThread(thread, snapshot);
+    if (this.#threads.get(id) === thread) this.onCatalogChange?.();
     this.#options.log?.(`Codex 桌面会话已接入：thread=${id}`);
   }
 
@@ -1367,7 +1431,7 @@ export class CodexRuntime implements AgentBackend {
         data?: Array<Record<string, unknown>>;
       };
       live = (result.data ?? []).flatMap((thread): AgentSessionSummary[] => {
-        if (isCodexSubagentSource(thread.source, thread.parentThreadId)) return [];
+        if (thread.ephemeral === true || isCodexSubagentSource(thread.source, thread.parentThreadId)) return [];
         const id = thread.id;
         const cwd = thread.cwd;
         const createdAt = toMillis(thread.createdAt);
@@ -1397,9 +1461,9 @@ export class CodexRuntime implements AgentBackend {
       // app-server 暂时没就绪（启动中/已退出）不拖垮整个目录：磁盘 rollout 还在。
       this.#options.log?.(`thread/list 失败，目录只含磁盘 rollout：${describeError(error)}`);
     }
-    const disk = await this.#diskCatalog(archived);
-    const diskById = new Map(disk.map((entry) => [entry.sessionId, entry]));
     const liveIds = new Set(live.map((entry) => entry.sessionId));
+    const disk = await this.#diskCatalog(archived, liveIds);
+    const diskById = new Map(disk.map((entry) => [entry.sessionId, entry]));
     return [
       ...live.map((entry) => {
         const modelProvider = entry.modelProvider ?? diskById.get(entry.sessionId)?.modelProvider;
@@ -1410,7 +1474,7 @@ export class CodexRuntime implements AgentBackend {
   }
 
   /** 扫磁盘 rollout 目录。同名会话（fork/重复）取 modifiedAt 最新的那份。 */
-  async #diskCatalog(archived = false): Promise<AgentSessionSummary[]> {
+  async #diskCatalog(archived: boolean, liveIds: ReadonlySet<string>): Promise<AgentSessionSummary[]> {
     const sessionsRoot = this.#options.rolloutRoot ?? join(homedir(), ".codex", "sessions");
     const root = archived ? join(dirname(sessionsRoot), "archived_sessions") : sessionsRoot;
     let names: string[];
@@ -1423,8 +1487,12 @@ export class CodexRuntime implements AgentBackend {
     }
     const byId = new Map<string, AgentSessionSummary>();
     await Promise.all(names.map(async (name) => {
-      const entry = await readRolloutSummary(join(root, name));
-      if (entry === undefined) return;
+      const rollout = await readRolloutSummary(join(root, name));
+      if (rollout === undefined) return;
+      const { entry, desktopMetadataOnly } = rollout;
+      // The terminal and desktop share rollouts. Do not reintroduce a desktop
+      // draft (including one in an old ownership ledger) via disk-only history.
+      if (desktopMetadataOnly && !liveIds.has(entry.sessionId) && !this.#threads.has(entry.sessionId)) return;
       const existing = byId.get(entry.sessionId);
       if (existing === undefined || existing.modifiedAt < entry.modifiedAt) byId.set(entry.sessionId, entry);
     }));
@@ -1481,18 +1549,19 @@ export class CodexRuntime implements AgentBackend {
     this.#activating += 1;
     try {
       return await this.#activateInner(target.type === "resume"
-        ? { type: "resume", sessionId: this.#nativeSessionId(target.sessionId) } : target, context);
+        ? { type: "resume", sessionId: this.#nativeSessionId(target.sessionId) } : target,
+      context, this.#activationSpawnMode(context?.spawnMode));
     } finally {
       this.#activating -= 1;
     }
   }
 
-  async #activateInner(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
+  async #activateInner(target: AgentActivateTarget, context: AgentActivateContext | undefined,
+    spawnMode: "tui" | "headless"): Promise<BackendActivation> {
     const existing = target.type === "resume" ? this.#threads.get(target.sessionId) : undefined;
     if (existing?.reconcilePromise !== undefined) await this.#waitForReconcile(existing);
     const existingGeneration = existing === undefined ? undefined : ++existing.reconcileGeneration;
-    const needsTerminalTrust = !isDesktopAppServer(this.#server) && this.#server.endpoint !== undefined
-      && orbisEnvironment(process.env, "CODEX_HEAD") !== "0";
+    const needsTerminalTrust = !isDesktopAppServer(this.#server) && spawnMode === "tui" && this.#server.endpoint !== undefined;
     // Prepare before creating a new thread: a rejected config write must not leave
     // an unpublished session behind. Resume discovers cwd from the native reply.
     context?.requireCurrent?.();
@@ -1514,15 +1583,20 @@ export class CodexRuntime implements AgentBackend {
     if (typeof id !== "string" || typeof cwd !== "string") {
       throw new Error(`app-server 的 ${method} 响应缺少 thread.id/cwd`);
     }
-    await context?.onCreated?.({ sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" });
-    if (selection !== undefined) result = await this.#configureLaunch(id, selection, object(result));
     if (isCodexSubagentSource(threadJson?.source, threadJson?.parentThreadId)) {
       throw new ActivationError("session_not_found", "不属于 Codex 的用户会话");
     }
+    const desktop = isDesktopAppServer(this.#server);
+    const actualSpawnMode = desktop ? "headless" : spawnMode;
+    // Record the exact App-created Desktop identity before configuring it. A
+    // failed configuration can then resume this ID without passive discovery.
+    if (desktop && target.type === "new") this.#rememberDesktopThread(id);
+    await context?.onCreated?.({ sessionId: this.#publicSessionId(id), spawnMode: actualSpawnMode });
+    if (selection !== undefined) result = await this.#configureLaunch(id, selection, object(result));
     if (existing !== undefined && !this.#isCurrentReconcile(existing, existingGeneration!)) {
       // A native turn/revert observed while resume was pending owns the newer projection.
       await this.#waitForReconcile(existing);
-      return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
+      return { sessionId: this.#publicSessionId(id), spawnMode: actualSpawnMode };
     }
     if (needsTerminalTrust && target.type === "resume") await prepareCodexWorkspace(this.#server, cwd);
     // Resuming an attached thread keeps its source sequence, pending interactions and queue.
@@ -1554,7 +1628,7 @@ export class CodexRuntime implements AgentBackend {
     this.#publishMetadataEvent(thread);
     if (existing !== undefined) this.#touchSource(thread);
     // 历史由设备的有界 session.sync 请求加载，metadata 不附带无人请求的整图。
-    try { await this.#openHeadWindow(id, cwd, context?.requireCurrent); }
+    try { await this.#openHeadWindow(id, cwd, actualSpawnMode, context?.requireCurrent); }
     catch (error) {
       // A failed local window must not leave a new idle subscription holding the writer lock.
       // Existing/running work keeps its native lifecycle and is never interrupted by this cleanup.
@@ -1564,7 +1638,27 @@ export class CodexRuntime implements AgentBackend {
       throw error;
     }
     this.#options.log?.(`Codex 会话已激活：${id}（cwd=${cwd}）`);
-    return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
+    return { sessionId: this.#publicSessionId(id), spawnMode: actualSpawnMode };
+  }
+
+  #activationSpawnMode(requested: SpawnMode | undefined): "tui" | "headless" {
+    if (isDesktopAppServer(this.#server)) return "headless";
+    const canOpenWindow = (process.platform === "win32" || process.platform === "darwin") && hasDesktopSession();
+    if (requested === "tui") {
+      if (this.#options.headless === true) {
+        throw new ActivationError("spawn_failed", "此 Linux CLI Host 仅支持无头 Codex 会话；请更新手机 App 使用自动启动模式");
+      }
+      if (orbisEnvironment(process.env, "CODEX_HEAD") === "0") {
+        throw new ActivationError("spawn_failed", "Codex TUI 已由 Host 配置关闭；请使用自动或无头启动模式");
+      }
+      if (!canOpenWindow) throw new ActivationError("spawn_failed", "此 Host 没有可用的 Codex 终端窗口；请使用自动或无头启动模式");
+      return "tui";
+    }
+    if (requested === "headless" || this.#options.headless === true
+      || orbisEnvironment(process.env, "CODEX_HEAD") === "0") return "headless";
+    if (requested === "auto") return canOpenWindow ? "tui" : "headless";
+    // Keep the legacy default for callers that do not send spawnMode.
+    return "tui";
   }
 
   /**
@@ -1573,11 +1667,12 @@ export class CodexRuntime implements AgentBackend {
    * 所以窗口先开、内嵌等待循环轮询 rollout，一落盘立即自动 attach。
    * endpoint 未知（测试桩 / app-server 未就绪）时静默跳过；`ORBIS_CODEX_HEAD=0` 关掉。
    */
-  async #openHeadWindow(sessionId: string, cwd: string, requireCurrent?: () => void): Promise<void> {
+  async #openHeadWindow(sessionId: string, cwd: string, spawnMode?: "tui" | "headless", requireCurrent?: () => void): Promise<void> {
     // 桌面版那条后端自己就是「有头」：Codex 桌面版 GUI 就是它的窗口。再开一个终端 TUI
     // 会在用户那里凭空多出一个客户端，而且存活检测靠轮询 `--remote <端点>` 的 TUI 进程
     // ——GUI 永远不会出现在那份名单里，窗口“消失”后还会把会话误标成离线。
     if (isDesktopAppServer(this.#server)) return;
+    if (this.#options.headless === true || spawnMode === "headless") return;
     if (orbisEnvironment(process.env, "CODEX_HEAD") === "0") return;
     const endpoint = this.#server.endpoint;
     if (endpoint === undefined) return;
@@ -2961,6 +3056,7 @@ export class CodexRuntime implements AgentBackend {
           thread.sourceReady = true;
           this.#touchSource(thread);
           this.#publishMetadataEvent(thread);
+          this.onCatalogChange?.();
         } else {
           // Activity can be stale even when the canonical history signature has not changed.
           this.#reconcileCompaction(thread, turns);
@@ -3029,6 +3125,7 @@ export class CodexRuntime implements AgentBackend {
         thread.sourceReady = true;
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
+        this.onCatalogChange?.();
       }, true);
       await this.#waitForReconcile(thread);
       if (isDesktopAppServer(this.#server)) await this.#refreshDesktopClient(thread);
@@ -3152,8 +3249,10 @@ export class CodexRuntime implements AgentBackend {
     forked.sourceReady = forked.historyError === undefined;
     this.#publishMetadataEvent(forked);
 
-    await this.#openHeadWindow(id, cwd);
-    return { sessionId: this.#publicSessionId(id), spawnMode: isDesktopAppServer(this.#server) ? "headless" : "tui" };
+    const spawnMode = this.#options.headless === true || isDesktopAppServer(this.#server)
+      || orbisEnvironment(process.env, "CODEX_HEAD") === "0" ? "headless" : "tui";
+    await this.#openHeadWindow(id, cwd, spawnMode);
+    return { sessionId: this.#publicSessionId(id), spawnMode };
   }
 
   #slashNoSession(threadId: string | undefined, commandId: string | undefined): boolean {
@@ -3356,7 +3455,7 @@ export class CodexRuntime implements AgentBackend {
       && object(record.status).type === "idle" && this.#desktopSuppressed.has(threadId)) {
       this.#desktopSuppressed.set(threadId, "idle");
     }
-    if (method === "thread/started" || method === "thread/status/changed") {
+    if (method === "thread/started" || method === "thread/status/changed" || method === "turn/started") {
       void this.#refreshDesktopThreads().catch(error => this.#options.log?.(`Codex 桌面会话发现失败：${describeError(error)}`));
     }
   }
@@ -3590,7 +3689,12 @@ export class CodexRuntime implements AgentBackend {
         return;
       }
       const archived = method === "thread/archived";
-      if (archived) this.#deactivateThread(threadId, "会话已归档");
+      if (archived) {
+        if (isDesktopAppServer(this.#server)) this.#desktopSuppressed.set(threadId, "active");
+        this.#deactivateThread(threadId, "会话已归档");
+      } else {
+        this.#desktopSuppressed.delete(threadId);
+      }
       this.onArchiveChange?.(this.#publicSessionId(threadId), archived);
       return;
     }
@@ -3678,16 +3782,22 @@ export class CodexRuntime implements AgentBackend {
         return;
       case "thread/name/updated": {
         if (record.threadName !== undefined && record.threadName !== null && typeof record.threadName !== "string") return;
-        thread.name = codexSessionName(record.threadName);
+        const nextName = codexSessionName(record.threadName);
+        const changed = nextName !== thread.name;
+        thread.name = nextName;
         this.#publishMetadataEvent(thread);
+        if (changed) this.onCatalogChange?.();
         return;
       }
       case "thread/settings/updated": {
+        const previousCwd = thread.cwd;
+        const previousProvider = thread.modelProvider;
         const settings = object(record.threadSettings ?? record);
         this.#applyNativeSettings(thread, settings);
         if (typeof settings.cwd === "string") thread.cwd = settings.cwd;
         thread.permissions = codexPermissions(settings) ?? thread.permissions;
         this.#publishMetadataEvent(thread);
+        if (thread.cwd !== previousCwd || thread.modelProvider !== previousProvider) this.onCatalogChange?.();
         return;
       }
       case "thread/status/changed": {
@@ -3854,7 +3964,10 @@ export class CodexRuntime implements AgentBackend {
         }
         // item 通知自带 turnId（`ItemCompletedNotification` 的 required 字段），条目归属由此确定。
         this.#completeItem(thread, data, typeof record.turnId === "string" ? record.turnId : undefined);
-        if (data.type === "userMessage") this.#confirmQueuedMessage(thread, data.clientId);
+        if (data.type === "userMessage") {
+          this.#confirmQueuedMessage(thread, data.clientId);
+          this.onCatalogChange?.();
+        }
         this.#pruneCanonicalLive(thread);
         const raw = toolCallMessage(data) ?? itemToMessage(data);
         if (raw !== undefined) {
@@ -4014,6 +4127,7 @@ export class CodexRuntime implements AgentBackend {
         this.#pruneCanonicalLive(thread);
         this.#touchSource(thread);
         this.#publishMetadataEvent(thread);
+        this.onCatalogChange?.();
         // turn 结束（含被 steer/interrupt 打断）：补跑排队的下一条消息。
         this.#drainQueue(thread);
         return;
@@ -5003,18 +5117,21 @@ function toMillis(value: unknown): number | undefined {
  * `{"type":"event_msg","payload":{"type":"user_message","message":"…"}}`。
  * 只读头部 128KB：前面是长篇 developer/permissions 指令，用户消息紧随其后。
  */
-async function readRolloutSummary(file: string): Promise<AgentSessionSummary | undefined> {
+async function readRolloutSummary(file: string): Promise<{ entry: AgentSessionSummary; desktopMetadataOnly: boolean } | undefined> {
   let head: string;
+  let complete: boolean;
   let modifiedAt: number;
   try {
-    const [statInfo, handle] = await Promise.all([stat(file), open(file, "r")]);
+    const handle = await open(file, "r");
     try {
       const { buffer, bytesRead } = await handle.read(Buffer.alloc(ROLLOUT_HEAD_BYTES), 0, ROLLOUT_HEAD_BYTES, 0);
+      const statInfo = await handle.stat();
       head = buffer.toString("utf8", 0, bytesRead);
+      complete = statInfo.size === bytesRead;
+      modifiedAt = Math.round(statInfo.mtimeMs); // 协议要求 int；mtimeMs 在 Windows 上常带小数。
     } finally {
       await handle.close();
     }
-    modifiedAt = Math.round(statInfo.mtimeMs); // 协议要求 int；mtimeMs 在 Windows 上常带小数。
   } catch {
     return undefined; // 并发删除/权限问题：跳过这份文件，不拖垮整个目录。
   }
@@ -5025,6 +5142,7 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
     timestamp?: unknown;
     model_provider?: unknown;
     source?: unknown;
+    originator?: unknown;
   } | undefined;
   let firstMessage: string | undefined;
   for (const line of lines) {
@@ -5037,6 +5155,7 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
             timestamp?: unknown;
             model_provider?: unknown;
             source?: unknown;
+            originator?: unknown;
           })
         : undefined;
       if (payload !== undefined) meta = payload;
@@ -5059,18 +5178,25 @@ async function readRolloutSummary(file: string): Promise<AgentSessionSummary | u
   const parsedCreatedAt = typeof meta?.timestamp === "string" ? Date.parse(meta.timestamp) : NaN;
   const createdAt = Number.isFinite(parsedCreatedAt) && parsedCreatedAt >= 0 ? parsedCreatedAt : modifiedAt;
   const modelProvider = codexProviderId(meta?.model_provider);
+  // A missing text preview alone says nothing about history (attachments, a
+  // long prefix, etc.). Only a complete, metadata-only Desktop file is a draft.
+  const desktopMetadataOnly = meta?.originator === "Codex Desktop" && complete && firstMessage === undefined
+    && lines.every(line => line.trim() === "" || parseJsonLine(line)?.type === "session_meta");
   return {
-    sessionId: id,
-    cwd,
-    hostname: localHostname(),
-    // 目录预览只当「这条会话是干嘛的」的提示：200 字符足够，整段 firstMessage
-    // 会把 session.list 响应撑大（见 #diskCatalog 的尺寸注释）。
-    ...(firstMessage === undefined ? {} : { firstMessage: firstMessage.slice(0, 200) }),
-    createdAt,
-    modifiedAt,
-    messageCount: 0,
-    agentKind: "codex",
-    ...(modelProvider === undefined ? {} : { modelProvider }),
+    desktopMetadataOnly,
+    entry: {
+      sessionId: id,
+      cwd,
+      hostname: localHostname(),
+      // 目录预览只当「这条会话是干嘛的」的提示：200 字符足够，整段 firstMessage
+      // 会把 session.list 响应撑大（见 #diskCatalog 的尺寸注释）。
+      ...(firstMessage === undefined ? {} : { firstMessage: firstMessage.slice(0, 200) }),
+      createdAt,
+      modifiedAt,
+      messageCount: 0,
+      agentKind: "codex",
+      ...(modelProvider === undefined ? {} : { modelProvider }),
+    },
   };
 }
 

@@ -30,10 +30,11 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   const failing = path.join(__dirname, "fail-" + method);
   if (method === "initialize") return out({ id, error: "fixture bridge stays uninitialized" });
   if (fs.existsSync(failing)) return out({ id, error: method + " failed in fixture" });
+  if (method === "start") fs.writeFileSync(path.join(__dirname, "start.json"), JSON.stringify(params));
   if (method === "start") { out({ event: "state", state: "connecting" }); out({ event: "state", state: "connected" }); }
   if (method === "stop") out({ event: "state", state: "stopped" });
   if (method === "agent.enablement.write") {
-    const snapshot = { revision: params.expectedRevision + 1, agents: [{ kind: params.kind, label: "OpenClaw", enabled: params.enabled }] };
+    const snapshot = { revision: params.expectedRevision + 1, agents: [{ kind: params.kind, label: params.kind, enabled: params.enabled }] };
     return out({ id, result: { status: "applied", snapshot } });
   }
   if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
@@ -211,6 +212,40 @@ private slots:
         settle(host);
         QCOMPARE(methods(root()), QStringList({"updateAgent", "rename"}));
         QCOMPARE(host.state(), QString("stopped")); QVERIFY(!host.desiredRunning());
+    }
+    // A legacy Kimi setting is not a second writer; toggling uses the common bridge.
+    void kimiEnablementIsAuthoritative() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        host.m_kimiCodeSupported = true;
+        host.m_settings.setValue("kimiCodeEnabled", false);
+        host.applyAgentEnablement({{"revision", 1}, {"agents", QJsonArray{QJsonObject{{"kind", "kimiCode"}, {"enabled", true}}}}});
+        settle(host);
+        QVERIFY(host.kimiCodeAvailable()); QVERIFY(host.kimiCodeEnabled());
+        host.receiveLine({{"event", "status"}, {"kimiCodeState", "connected"}});
+        QCOMPARE(host.kimiCodeState(), QString("connected"));
+        host.setAgentEnabled("kimiCode", false, 1, true);
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"agent.enablement.write"}));
+        QVERIFY(!host.kimiCodeEnabled()); QVERIFY(host.kimiCodeState().isEmpty());
+        QCOMPARE(host.state(), QString("connected"));
+    }
+    // KIMI-11: source changes apply through the same stop/start path and do not replace the inherited default.
+    void kimiSourceSwitchRestartsEnabledHost() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        host.m_kimiCodeSupported = true;
+        host.m_kimiDesktopSupported = true;
+        host.applyAgentEnablement({{"revision", 1}, {"agents", QJsonArray{QJsonObject{{"kind", "kimiCode"}, {"enabled", true}}}}});
+        settle(host);
+        QCOMPARE(host.kimiCodeSource(), QString("web"));
+        host.saveSettings(host.relayUrl(), host.autoStart(), host.codexEnabled(), host.hostName(), host.dshEnabled(), host.dshWebUrl(), true, true, "desktop");
+        settle(host);
+        QCOMPARE(host.kimiCodeSource(), QString("desktop"));
+        QCOMPARE(methods(root()), QStringList({"stop", "start"}));
+        QFile start(root() + "/packages/host/dist/start.json");
+        QVERIFY(start.open(QIODevice::ReadOnly));
+        QCOMPARE(QJsonDocument::fromJson(start.readAll()).object().value("kimiCodeSource"), QJsonValue("desktop"));
     }
     void settingsReconnectOnlyForConnectionFields() {
         auto &host = *m_host;
