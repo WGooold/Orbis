@@ -5,16 +5,17 @@ import { isAbsolute } from "node:path";
 import {
   RecoverableSessionSource,
   SessionSyncPreparer,
-  projectToolEntry,
-  type ToolAgentKey,
+  type SessionConfigurationCatalog,
+  type ToolSummary,
+  type AgentKey,
   type AgentSessionSummary,
   type ChatMessage,
   type RemoteContent,
   type RemoteSessionEntry,
+  type RuntimeCapabilities,
   type RuntimeCommand,
   type RuntimeEvent,
   type RuntimeMetadata,
-  type SessionSyncRequest,
 } from "@orbis/protocol";
 import { HermesGatewayRpcError, type HermesGatewayEvent, type HermesGatewayRpcClient } from "./hermes-gateway-rpc.js";
 import type { HermesGatewayEndpoint, HermesGatewayRuntimeDescriptor } from "./hermes-gateway-bootstrap.js";
@@ -22,10 +23,13 @@ import type { AgentActivateContext, AgentActivateTarget, AgentBackend, BackendAc
 import { ActivationError } from "./spawner.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { localHostname } from "./sessions.js";
+import { HermesInteractions } from "./hermes-interactions.js";
+import { hermesModelCatalog, hermesModelValue, requireHermesModel, type HermesModelSelection } from "./hermes-session-configuration.js";
+import { hermesToolIdentity, hermesToolSummary } from "./hermes-tool-projection.js";
+import { SessionConfigurationError } from "./session-configuration-store.js";
 
 type HermesGatewayClient = Pick<HermesGatewayRpcClient, "request" | "closed" | "readyState">;
-// The wire enum/feature gate lands in HERMES-05. Until then this backend is not registered or published.
-const HERMES_KIND = "hermes" as AgentBackend["kind"];
+const HERMES_KIND = "hermes" as const;
 type JsonRecord = Record<string, unknown>;
 type HermesTranscriptMessage = JsonRecord;
 type HermesPendingInput = {
@@ -45,6 +49,7 @@ type HermesLiveTurn = {
   text: string;
   reasoning: string;
 };
+type UnconfirmedModel = { selection: HermesModelSelection; minRevision: number; minGeneration: number };
 type HermesSession = {
   readonly runtimeId: string;
   readonly sessionId: string;
@@ -54,12 +59,22 @@ type HermesSession = {
   readonly inputsByCommand: Map<string, HermesPendingInput>;
   readonly inputsByMessage: Map<string, HermesPendingInput>;
   readonly inputsByAdmission: Map<string, HermesPendingInput>;
-  readonly entries: RemoteSessionEntry[];
+  entries: RemoteSessionEntry[];
+  readonly interactions: HermesInteractions;
+  readonly tools: Map<string, ToolSummary>;
+  readonly clientMessages: Map<number, string>;
+  needsSnapshot: boolean;
   subscriptionId: string;
   cwd: string;
   title: string;
   provider?: string;
   model?: string;
+  thinkingLevel?: string;
+  configurationChanging?: boolean;
+  modelUnconfirmed?: UnconfirmedModel;
+  modelOptions?: { at: number; commands: RuntimeCapabilities["commands"] };
+  modelOptionsLoading?: boolean;
+  canSwitchModel: boolean;
   running: boolean;
   executionGeneration: number;
   lastSequence: number;
@@ -82,6 +97,7 @@ export type HermesGatewayBackendOptions = {
 const RPC_REQUEST_ID_LIMIT = 256;
 const MAX_TEXT_CHARS = 100_000;
 const MAX_PENDING_INPUTS = 256;
+const MAX_LIVE_TOOLS = 4096;
 const READY_STATE_OPEN = 1;
 
 /**
@@ -89,7 +105,7 @@ const READY_STATE_OPEN = 1;
  * sync cursor; it never opens Hermes' state database or retries an uncertain prompt admission.
  */
 export class HermesAgentBackend implements AgentBackend {
-  readonly kind: AgentBackend["kind"] = HERMES_KIND;
+  readonly kind = HERMES_KIND;
   /** Hermes' canonical session list currently does not enumerate archived sessions. */
   readonly archivedCatalogSupported = false;
   readonly #options: HermesGatewayBackendOptions;
@@ -116,7 +132,31 @@ export class HermesAgentBackend implements AgentBackend {
   }
 
   async currentProvider(): Promise<string | undefined> {
-    return [...this.#byRuntime.values()].find(session => session.provider)?.provider;
+    if (!this.isReady()) return undefined;
+    try { return firstString(asRecord(await this.#request("model.options", {})).provider); }
+    catch { return undefined; }
+  }
+
+  async sessionConfiguration(cwd: string): Promise<SessionConfigurationCatalog> {
+    return (await this.#modelCatalog(cwd)).catalog;
+  }
+
+  async #modelCatalog(cwd: string): Promise<ReturnType<typeof hermesModelCatalog>> {
+    this.#assertReady();
+    if (!this.#supportsModelCreate()) throw new SessionConfigurationError("configuration_unavailable", "当前 Hermes Gateway 未提供会话模型设置");
+    if (!isAbsolute(cwd) || !await stat(cwd).then(info => info.isDirectory(), () => false))
+      throw new ActivationError("cwd_missing", "请选择存在的绝对目录");
+    return hermesModelCatalog(await this.#request("model.options", {}), this.#options.endpoint.profile_id, cwd);
+  }
+
+  #supportsModelCreate(): boolean {
+    return this.#options.runtime.session_create.sources.includes("tui") &&
+      ["cwd", "model", "provider"].every(field => this.#options.runtime.session_create.parameters.includes(field));
+  }
+
+  #confirmModel(info: JsonRecord, selection: HermesModelSelection | undefined): void {
+    if (selection && (info.model !== selection.model || info.provider !== selection.provider))
+      throw new SessionConfigurationError("configuration_unconfirmed", "Hermes 未确认所选模型，未发送首句");
   }
 
   /**
@@ -138,8 +178,9 @@ export class HermesAgentBackend implements AgentBackend {
       if (!Array.isArray(result.sessions)) throw new Error("Hermes Gateway returned an invalid session list");
       for (const value of result.sessions) {
         const row = asRecord(value);
-        const sessionId = firstString(scope === "live" ? row.session_id : row.resolved_id, row.session_id, row.id);
-        if (!sessionId) continue;
+        const sessionId = hermesToolIdentity(firstString(scope === "live" ? row.session_id : row.resolved_id, row.session_id, row.id));
+        if (!sessionId) { this.#catalogComplete = false; continue; }
+        const attached = this.#bySessionId.get(sessionId);
         const startedAt = epochMillis(row.started_at);
         const title = boundedString(row.title, 256);
         const preview = boundedString(row.preview, 4_000);
@@ -147,14 +188,14 @@ export class HermesAgentBackend implements AgentBackend {
           sessionId,
           agentKind: HERMES_KIND,
           hostname: this.#options.hostname ?? localHostname(),
-          cwd: "",
+          cwd: attached?.cwd ?? "",
           ...(title ? { name: title } : {}),
           ...(preview ? { firstMessage: preview } : {}),
           createdAt: startedAt,
           modifiedAt: startedAt,
           messageCount: boundedCount(row.message_count),
           archived: false,
-          ...(typeof row.model === "string" && row.model.trim() ? { modelProvider: providerFromModel(row.model) } : {}),
+          ...(attached?.provider ? { modelProvider: attached.provider } : {}),
         });
       }
     }
@@ -171,19 +212,36 @@ export class HermesAgentBackend implements AgentBackend {
     this.#assertReady();
     if (target.type === "resume") {
       const existing = this.#bySessionId.get(target.sessionId);
-      if (existing) return { sessionId: existing.sessionId, spawnMode: "headless" };
+      const values = context?.configuration;
+      if (values?.thinking !== undefined || Object.keys(values?.permissions ?? {}).length)
+        requireHermesModel(values, new Map());
+      if (existing) {
+        if (values?.model !== undefined) {
+          const selection = requireHermesModel(values, (await this.#modelCatalog(existing.cwd)).selections);
+          const info = asRecord(await this.#request("session.info", { session_id: existing.gatewaySessionId }));
+          this.#assertSnapshotOwner({}, info);
+          this.#confirmModel(info, selection);
+          this.#applyInfo(existing, info);
+          this.#publishMetadata(existing);
+        }
+        return { sessionId: existing.sessionId, spawnMode: "headless" };
+      }
       let raw: unknown;
       try {
         raw = await this.#request<unknown>("session.resume", {
           session_id: target.sessionId,
           source: "tui",
-          display_projection: true,
         });
       } catch (error) {
         if (error instanceof HermesGatewayRpcError &&
             ["not_found", "session_not_found"].includes(String(error.data?.reason ?? error.message)))
           throw new ActivationError("session_not_found", "Hermes Gateway 中找不到这个会话");
         throw error;
+      }
+      if (values?.model !== undefined) {
+        const info = asRecord(asRecord(raw).info);
+        const selection = requireHermesModel(values, (await this.#modelCatalog(boundedString(info.cwd, 4096))).selections);
+        this.#confirmModel(info, selection);
       }
       const session = this.#attachSnapshot(raw, target.sessionId);
       return { sessionId: session.sessionId, spawnMode: "headless" };
@@ -195,24 +253,40 @@ export class HermesAgentBackend implements AgentBackend {
         !this.#options.runtime.session_create.parameters.includes("cwd")) {
       throw new ActivationError("agent_unsupported", "当前 Hermes Gateway 不支持 Orbis 所需的 TUI session 创建参数");
     }
-    const params: JsonRecord = { source: "tui", cwd: target.cwd };
+    const selection = requireHermesModel(context?.configuration, context?.configuration?.model === undefined
+      ? new Map() : (await this.#modelCatalog(target.cwd)).selections);
+    const params: JsonRecord = { source: "tui", cwd: target.cwd, ...selection };
     // request_id is an idempotency key only when the negotiated contract advertises it.
-    if (this.#options.runtime.session_create.parameters.includes("request_id"))
-      params.request_id = safeRequestId(context?.launchId) ?? randomUUID();
-    const raw = await this.#request<unknown>("session.create", params);
+    if (context?.launchId !== undefined && (!safeRequestId(context.launchId) || !this.#options.runtime.session_create.parameters.includes("request_id")))
+      throw new ActivationError("agent_unsupported", "Hermes Gateway 未提供可核验的启动请求身份");
+    if (this.#options.runtime.session_create.parameters.includes("request_id")) params.request_id = context?.launchId ?? randomUUID();
+    const raw = asRecord(await this.#request("session.create", params));
+    this.#assertSnapshotOwner(raw, asRecord(raw.info));
+    const nativeId = hermesToolIdentity(raw.stored_session_id ?? raw.session_id);
+    if (!nativeId) throw new Error("Hermes Gateway returned an invalid session identity");
+    // The native session already exists even if its effective configuration could not be confirmed.
+    await context?.onCreated?.({ sessionId: nativeId, spawnMode: "headless" });
+    if (selection) {
+      const nativeSession = hermesToolIdentity(raw.session_id);
+      if (!nativeSession) throw new Error("Hermes Gateway returned an invalid session identity");
+      const info = asRecord(await this.#request("session.info", { session_id: nativeSession }));
+      this.#assertSnapshotOwner({}, info);
+      this.#confirmModel(info, selection);
+      raw.info = { ...asRecord(raw.info), ...info };
+    }
     const session = this.#attachSnapshot(raw);
-    await context?.onCreated?.({ sessionId: session.sessionId, spawnMode: "headless" });
     return { sessionId: session.sessionId, spawnMode: "headless" };
   }
 
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
     const session = this.#byRuntime.get(runtimeId);
     if (!session || !this.isReady()) return "offline";
+    if (command.type === "slash.execute" && (command.name !== "model" || !session.canSwitchModel)) return "unsupported";
     if (command.type === "user_message" && !this.#hasCapability("durable-admission-v1")) return "unsupported";
-    if (command.type === "user_message" && (command.attachments?.length ?? 0) > 0) return "unsupported";
-    if (!["user_message", "user_message.cancel", "stop", "session.sync"].includes(command.type)) return "unsupported";
+    if (command.type === "user_message" && ((command.attachments?.length ?? 0) > 0 || command.delivery === "steer")) return "unsupported";
+    if (!["user_message", "user_message.cancel", "stop", "session.sync", "interaction.respond", "slash.execute"].includes(command.type)) return "unsupported";
     void this.#dispatch(session, commandId, command).catch(error => {
-      this.#reportCommand(session, commandId, false, isUncertainRpcFailure(error) ? "unconfirmed" : "failure", errorText(error));
+      this.#reportCommand(session, commandId, false, isUncertainRpcFailure(error) ? "unconfirmed" : "failure", "Hermes 未确认此操作");
     });
     return "handled";
   }
@@ -229,10 +303,14 @@ export class HermesAgentBackend implements AgentBackend {
     const gatewaySessionId = typeof event.session_id === "string" ? event.session_id : undefined;
     const session = gatewaySessionId ? this.#byGatewayId.get(gatewaySessionId) : undefined;
     if (!session) return Promise.resolve();
-    const work = session.eventChain.then(() => this.#acceptEvent(session, event));
+    const work = session.eventChain.then(async () => {
+      if (!this.isReady() || session.gatewaySessionId !== gatewaySessionId) return;
+      await this.#acceptEvent(session, event);
+      if (session.needsSnapshot) await this.#refreshSnapshot(session);
+    });
     session.eventChain = work.catch(error => {
-      this.#options.log?.(`Hermes Gateway event failed (${event.type}): ${errorText(error)}`);
-      this.#emit({ type: "runtime.error", message: "Hermes 会话事件暂时无法同步", recoverable: true }, session.runtimeId);
+      this.#markHistoryUnknown(session, "Hermes 会话事件暂时无法同步");
+      this.#options.log?.(`Hermes Gateway event projection failed (${error instanceof Error ? error.name : "unknown"})`);
     });
     return session.eventChain;
   }
@@ -253,9 +331,23 @@ export class HermesAgentBackend implements AgentBackend {
     if (command.type === "stop") {
       await this.#stop(session, commandId);
     }
+    if (command.type === "slash.execute") {
+      await this.#switchModel(session, commandId, command.args);
+    }
+    if (command.type === "interaction.respond") {
+      let status: "success" | "failure" | "unconfirmed";
+      try { status = await session.interactions.respond(session.gatewaySessionId, command, (method, params) => this.#request(method, params)); }
+      catch (error) { status = isUncertainRpcFailure(error) ? "unconfirmed" : "failure"; }
+      this.#reportCommand(session, commandId, status === "success", status,
+        status === "failure" ? "Hermes 未接受此交互回复" : status === "unconfirmed" ? "Hermes 尚未确认此交互回复，未重发" : undefined);
+    }
   }
 
   async #submit(session: HermesSession, commandId: string, command: Extract<RuntimeCommand, { type: "user_message" }>): Promise<void> {
+    if (session.configurationChanging || session.modelUnconfirmed) {
+      this.#reportCommand(session, commandId, false, "failure", "Hermes 会话模型尚未核对，消息未发送");
+      return;
+    }
     if (commandId.length > RPC_REQUEST_ID_LIMIT || command.text.length > MAX_TEXT_CHARS)
       throw new Error("Hermes prompt exceeds the supported limit");
     const input: HermesPendingInput = {
@@ -384,80 +476,243 @@ export class HermesAgentBackend implements AgentBackend {
     request: Extract<RuntimeCommand, { type: "session.sync" }>): Promise<void> {
     try {
       if (request.sessionId !== session.sessionId) throw new Error("session_mismatch");
-      if (!session.source.published().version.ready) await this.#refreshSnapshot(session);
-      session.source.flushPending();
+      if (session.needsSnapshot || (request.range === "preview" && session.modelUnconfirmed)) {
+        await this.#queueSessionRead(session, async () => {
+          if (session.needsSnapshot) await this.#refreshSnapshot(session);
+          else if (session.modelUnconfirmed) {
+            // A failed configuration read must not make otherwise available history unreadable.
+            await this.#refreshSnapshot(session).catch(() => undefined);
+          }
+        });
+      }
+      session.source.replayToolInventory();
       const snapshot = session.preparer.select({
         entries: session.entries,
         sessionId: session.sessionId,
         leafId: session.entries.at(-1)?.entryId ?? null,
-        request: request as SessionSyncRequest,
+        request,
         source: session.source.published(),
       });
       this.#emit(snapshot, session.runtimeId);
+      if (request.range === "preview") {
+        session.interactions.snapshot();
+        void this.#announceModelOptions(session);
+      }
     } catch (error) {
       this.#reportCommand(session, commandId, false, "failure", errorText(error));
     }
   }
 
-  async #acceptEvent(session: HermesSession, event: HermesGatewayEvent): Promise<void> {
-    const sequence = finiteInteger(event.seq);
-    const epoch = firstString(event.replay_epoch, event.epoch);
-    if (epoch && session.replayEpoch && epoch !== session.replayEpoch) {
-      this.#markHistoryUnknown(session, "Hermes Gateway event epoch changed");
-      session.replayEpoch = epoch;
-      session.lastSequence = 0;
+  async #announceModelOptions(session: HermesSession): Promise<void> {
+    if (!session.canSwitchModel || session.modelOptionsLoading || session.modelUnconfirmed) return;
+    if (session.modelOptions && Date.now() - session.modelOptions.at < 30_000) {
+      this.#emit({ type: "runtime.capabilities", capabilities: { commands: session.modelOptions.commands } }, session.runtimeId);
+      return;
     }
-    if (sequence !== undefined && sequence <= session.lastSequence) return;
-    if (sequence !== undefined && sequence > session.lastSequence + 1) {
-      if (this.#hasCapability("event-replay-v1")) await this.#replayEvents(session);
-      if (sequence <= session.lastSequence) return;
-      if (sequence > session.lastSequence + 1) {
-        this.#markHistoryUnknown(session, "Hermes event replay has a gap");
-        session.lastSequence = sequence - 1;
+    session.modelOptionsLoading = true;
+    const generation = session.executionGeneration;
+    const gatewaySessionId = session.gatewaySessionId;
+    try {
+      // Read only after the caller specifically previews this Hermes session. Failures cannot stall history.
+      const result = asRecord(await this.#request("model.options", { session_id: gatewaySessionId }));
+      if (!this.isReady() || session.gatewaySessionId !== gatewaySessionId || session.executionGeneration !== generation || session.modelUnconfirmed) return;
+      const models = hermesModelCatalog(result, this.#options.endpoint.profile_id, session.cwd).catalog.models;
+      const commands: RuntimeCapabilities["commands"] = models.length ? [{ name: "model", source: "builtin",
+        argument: { kind: "select", required: true, options: models.map(({ value, label }) => ({ value, label })) } }] : [];
+      session.modelOptions = { at: Date.now(), commands };
+      this.#emit({ type: "runtime.capabilities", capabilities: { commands } }, session.runtimeId);
+    } catch {
+      delete session.modelOptions;
+      this.#emit({ type: "runtime.capabilities", capabilities: { commands: [] } }, session.runtimeId);
+    } finally { delete session.modelOptionsLoading; }
+  }
+
+  async #switchModel(session: HermesSession, commandId: string, value: string): Promise<void> {
+    if (session.running || session.needsSnapshot || session.configurationChanging || session.modelUnconfirmed) {
+      this.#reportCommand(session, commandId, false, "failure", "请先结束当前轮次并核对会话，再切换模型");
+      return;
+    }
+    // Lock sends immediately, but line up the write/readback behind replay and snapshot recovery.
+    session.configurationChanging = true;
+    try {
+      const status = await this.#queueSessionRead(session, () => this.#mutateModel(session, value));
+      this.#reportCommand(session, commandId, status === "success", status, status === "success" ? undefined :
+        status === "unconfirmed" ? "Hermes 未确认模型切换，未重发" : "Hermes 未接受此模型切换，请在电脑端核对");
+    } catch {
+      this.#reportCommand(session, commandId, false, "failure", "Hermes 模型选项或会话版本不可核对，未发起切换");
+    } finally { delete session.configurationChanging; }
+  }
+
+  async #mutateModel(session: HermesSession, value: string): Promise<"success" | "failure" | "unconfirmed"> {
+    if (!this.isReady() || session.running || session.needsSnapshot) return "failure";
+    const sessionId = session.gatewaySessionId;
+    const options = hermesModelCatalog(await this.#request("model.options", { session_id: sessionId }),
+      this.#options.endpoint.profile_id, session.cwd);
+    const selection = requireHermesModel({ model: value }, options.selections)!;
+    const snapshot = asRecord(await this.#request("session.resume", { session_id: sessionId }));
+    this.#assertSnapshotOwner(snapshot, asRecord(snapshot.info));
+    const revision = finiteInteger(snapshot.revision);
+    const generation = finiteInteger(snapshot.execution_generation);
+    if (snapshot.session_id !== sessionId || snapshot.running !== false || revision === undefined || generation === undefined ||
+        generation < session.executionGeneration || (Array.isArray(snapshot.pending) && snapshot.pending.length > 0)) return "failure";
+
+    const fence: UnconfirmedModel = { selection, minRevision: revision + 1, minGeneration: generation + 1 };
+    let receivedReply = false;
+    try {
+      const result = asRecord(await this.#request("session.mutate", { session_id: sessionId, operation: "model", request_id: randomUUID(),
+        expected_revision: revision, expected_generation: generation, payload: selection }));
+      receivedReply = true;
+      if (result.session_id === sessionId && result.operation === "model") {
+        if (result.status === "confirmation_required" || result.status === "refused") return "failure";
+        const committedRevision = finiteInteger(result.revision), committedGeneration = finiteInteger(result.execution_generation);
+        // The checked contract's commit receipt has the effective model/provider, not a status field.
+        if (result.status === undefined && committedRevision !== undefined && committedRevision >= fence.minRevision &&
+            committedGeneration !== undefined && committedGeneration >= fence.minGeneration && sameModel(result, selection)) {
+          fence.minRevision = committedRevision;
+          fence.minGeneration = committedGeneration;
+          const info = asRecord(await this.#request("session.info", { session_id: sessionId }));
+          this.#assertSnapshotOwner({}, info);
+          if (sameModel(info, selection)) {
+            session.executionGeneration = committedGeneration;
+            session.interactions.advance(committedGeneration);
+            this.#applyInfo(session, info);
+            this.#publishMetadata(session);
+            return "success";
+          }
+        }
+      }
+    } catch (error) {
+      // A refusal of the write is different from an error reading back an already committed write.
+      if (!receivedReply && error instanceof HermesGatewayRpcError && (error.code === 4001 || error.code === -32601)) {
+        if (error.code === -32601) {
+          session.canSwitchModel = false;
+          this.#emit({ type: "runtime.capabilities", capabilities: { commands: [] } }, session.runtimeId);
+        }
+        return "failure";
       }
     }
-    this.#applyEvent(session, event);
-    if (sequence !== undefined) session.lastSequence = sequence;
-    if (epoch) session.replayEpoch = epoch;
+    session.modelUnconfirmed = fence;
+    delete session.modelOptions;
+    this.#publishMetadata(session);
+    this.#emit({ type: "runtime.capabilities", capabilities: { commands: [] } }, session.runtimeId);
+    return "unconfirmed";
+  }
+
+  #queueSessionRead<T>(session: HermesSession, work: () => Promise<T>): Promise<T> {
+    const result = session.eventChain.then(work);
+    session.eventChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  async #acceptEvent(session: HermesSession, event: HermesGatewayEvent): Promise<void> {
+    if (event.authority_epoch !== undefined && event.authority_epoch !== this.#options.endpoint.authority_epoch) {
+      this.#markHistoryUnknown(session, "Hermes Gateway owner 已变化");
+      return;
+    }
+    const sequence = finiteInteger(event.seq);
+    const epoch = firstString(event.replay_epoch);
+    if (sequence === undefined || epoch !== session.replayEpoch) {
+      this.#markHistoryUnknown(session, "Hermes Gateway event epoch changed");
+      return;
+    }
+    if (sequence <= session.lastSequence) return;
+    if (sequence > session.lastSequence + 1) {
+      await this.#replayEvents(session);
+      if (sequence <= session.lastSequence) return;
+      if (sequence !== session.lastSequence + 1) {
+        this.#markHistoryUnknown(session, "Hermes event replay has a gap");
+        return;
+      }
+    }
+    if (!session.needsSnapshot) this.#applyEvent(session, event);
+    session.lastSequence = sequence;
   }
 
   async #replayEvents(session: HermesSession): Promise<void> {
     if (!this.#hasCapability("event-replay-v1")) return;
-    const result = asRecord(await this.#request<unknown>("session.events.since", {
-      session_id: session.gatewaySessionId,
-      last_sequence: session.lastSequence,
-      replay_epoch: session.replayEpoch,
-    }));
-    if (result.snapshot_required === true || result.truncated === true) {
-      this.#markHistoryUnknown(session, "Hermes event replay window expired");
+    const events = await this.#readReplay(session, session.lastSequence);
+    if (!events) {
+      this.#markHistoryUnknown(session, "Hermes event replay was incomplete");
       return;
     }
-    if (Array.isArray(result.events)) {
-      for (const value of result.events) {
-        const replay = asRecord(value);
-        if (typeof replay.type !== "string") continue;
-        const seq = finiteInteger(replay.seq);
-        if (seq !== undefined && seq <= session.lastSequence) continue;
-        this.#applyEvent(session, replay as HermesGatewayEvent);
-        if (seq !== undefined) session.lastSequence = seq;
-      }
-    }
-    const latest = finiteInteger(result.latest_seq);
-    if (latest !== undefined && latest > session.lastSequence) this.#markHistoryUnknown(session, "Hermes event replay was incomplete");
-    const replayEpoch = firstString(result.replay_epoch, result.epoch);
-    if (replayEpoch) session.replayEpoch = replayEpoch;
+    this.#applyReplay(session, events);
   }
 
-  #applyEvent(session: HermesSession, event: HermesGatewayEvent): void {
+  async #readReplay(session: HermesSession, since: number): Promise<HermesGatewayEvent[] | undefined> {
+    const result = asRecord(await this.#request("session.events.since", {
+      session_id: session.gatewaySessionId, last_sequence: since, replay_epoch: session.replayEpoch,
+    }));
+    const events = Array.isArray(result.events) ? result.events.map(asRecord) : undefined;
+    const latest = finiteInteger(result.latest_seq);
+    const epoch = firstString(result.replay_epoch, result.epoch);
+    // Validate the whole replay suffix before opening any possibly stale approval card.
+    if (!events || result.snapshot_required === true || result.truncated === true || epoch !== session.replayEpoch ||
+      latest !== since + events.length || !events.every((event, i) => typeof event.type === "string" &&
+        event.session_id === session.gatewaySessionId && event.seq === since + i + 1 && event.replay_epoch === epoch &&
+        (event.authority_epoch === undefined || event.authority_epoch === this.#options.endpoint.authority_epoch))) return undefined;
+    return events as HermesGatewayEvent[];
+  }
+
+  #applyReplay(session: HermesSession, events: readonly HermesGatewayEvent[]): void {
+    for (const event of events) {
+      if (!session.needsSnapshot) this.#applyEvent(session, event, true);
+      session.lastSequence++;
+    }
+    if (events.length) session.interactions.snapshot();
+  }
+
+  async #restoreActiveTools(session: HermesSession): Promise<boolean> {
+    if (!session.running || !session.lastSequence || !this.#hasCapability("event-replay-v1")) return false;
+    const cut = session.lastSequence;
+    const events = await this.#readReplay(session, 0).catch(() => undefined);
+    // The owner has no live tool inventory in resume; retain only verified same-turn summaries.
+    // Earlier prompts/messages are superseded by the native snapshot, not replayed as live state.
+    if (!events || events.length < cut) return false;
+    const persistedTools = new Set(session.entries.flatMap(entry => {
+      const message = asRecord(entry.data.message);
+      return message.role === "toolResult" ? [message.toolCallId] : [];
+    }));
+    session.source.transaction(() => {
+      for (const event of events.slice(0, cut)) {
+        if (event.execution_generation !== session.executionGeneration ||
+            (event.type !== "tool.start" && event.type !== "tool.progress" && event.type !== "tool.complete")) continue;
+        const payload = asRecord(event.payload);
+        if (!persistedTools.has(payload.tool_id)) this.#toolEvent(session, event.type, payload);
+      }
+    });
+    this.#applyReplay(session, events.slice(cut));
+    return true;
+  }
+
+  #applyEvent(session: HermesSession, event: HermesGatewayEvent, replay = false): void {
     const payload = asRecord(event.payload);
     const generation = finiteInteger(event.execution_generation);
-    if (generation !== undefined) session.executionGeneration = generation;
+    if (generation !== undefined && generation < session.executionGeneration) return;
+    if (generation !== undefined && generation > session.executionGeneration) {
+      session.executionGeneration = generation;
+      session.interactions.advance(generation);
+    }
     switch (event.type) {
       case "session.info":
+        this.#assertSnapshotOwner(payload, payload);
         this.#applyInfo(session, payload);
         this.#publishMetadata(session);
         return;
+      case "approval.request":
+      case "clarify.request":
+        if (session.running && payload.kind === event.type.split(".")[0]) session.interactions.open(payload, !replay);
+        return;
+      case "approval.settled":
+      case "clarify.settled":
+        session.interactions.settled(event.type === "approval.settled" ? "approval" : "clarify", payload);
+        return;
+      case "tool.start":
+      case "tool.progress":
+      case "tool.complete":
+        if (session.running && generation === session.executionGeneration) this.#toolEvent(session, event.type, payload);
+        return;
       case "message.start": {
+        if (generation === undefined || generation === 0) return;
         const startedAt = Date.now();
         const turnId = turnIdentity(event);
         const messageId = `hermes-live:${digest(turnId).slice(0, 32)}`;
@@ -473,28 +728,56 @@ export class HermesAgentBackend implements AgentBackend {
         return;
       }
       case "message.delta":
-        this.#applyDelta(session, payload, "text", event);
+        if (generation !== undefined && session.running) this.#applyDelta(session, payload, "text", event);
         return;
       case "reasoning.delta":
       case "thinking.delta":
-        this.#applyDelta(session, payload, "thinking", event);
+        if (generation !== undefined && session.running) this.#applyDelta(session, payload, "thinking", event);
         return;
       case "message.complete":
+        // Cancelling a queued admission emits its own completion without an execution generation.
+        if (generation === undefined || !session.running ||
+            (session.turn && typeof event.admission_id === "string" && event.admission_id !== session.turn.turnId)) return;
         this.#finishTurn(session, payload, event);
         return;
       case "error": {
-        const message = boundedString(payload.message, 512) || "Hermes Gateway session error";
-        this.#emit({ type: "runtime.error", message, recoverable: payload.recoverable === true }, session.runtimeId);
+        this.#emit({ type: "runtime.error", message: "Hermes Gateway 会话出错", recoverable: payload.recoverable === true }, session.runtimeId);
         return;
       }
       case "session.reclaimed":
+        session.interactions.clear("owner_closed");
+        this.#markHistoryUnknown(session, "Hermes 会话所有权已变化");
         session.running = false;
         this.#publishMetadata(session);
-        this.#emit({ type: "runtime.error", message: "Hermes Gateway 已将此会话交由其他 owner 管理", recoverable: true }, session.runtimeId);
         return;
       default:
         return;
     }
+  }
+
+  #toolEvent(session: HermesSession, type: "tool.start" | "tool.progress" | "tool.complete", payload: JsonRecord): void {
+    const id = hermesToolIdentity(payload.tool_id);
+    if (!id) return;
+    const previous = session.tools.get(id);
+    if (previous?.phase === "finished" || (type === "tool.start" && previous)) return;
+    if (!previous && session.tools.size >= MAX_LIVE_TOOLS) {
+      session.source.setAvailability(true, false);
+      return;
+    }
+    const toolName = previous?.toolName ?? hermesToolIdentity(payload.name);
+    if (!toolName) return;
+    const duration = finiteNumber(payload.duration_s);
+    const durationMs = duration !== undefined && duration >= 0 ? finiteInteger(Math.round(duration * 1000)) : undefined;
+    const summary = hermesToolSummary(hermesAgentKey(this.#options.hostId, session.sessionId), {
+      toolCallId: id, toolName, order: previous?.order ?? session.tools.size,
+      phase: type === "tool.complete" ? "finished" : type === "tool.progress" ? "running" : "started",
+      ...(typeof payload.is_error === "boolean" && type === "tool.complete" ? { isError: payload.is_error } : {}),
+      ...(durationMs === undefined ? {} : { durationMs }),
+      ...(session.turn ? { turnId: session.turn.turnId } : {}), args: payload.args, result: payload.result,
+    });
+    if (previous) for (const part of previous.contents) if (!summary.contents.some(item => item.part === part.part)) summary.contents.push(part);
+    session.tools.set(id, summary);
+    this.#observe(session, { type: "tool.activity", summary });
   }
 
   #applyDelta(session: HermesSession, payload: JsonRecord, contentType: "text" | "thinking", event: HermesGatewayEvent): void {
@@ -510,10 +793,11 @@ export class HermesAgentBackend implements AgentBackend {
       this.#observe(session, { type: "message.started", message: { messageId, role: "assistant", content: [], timestamp: startedAt } });
       this.#publishMetadata(session);
     }
-    const delta = typeof payload.rendered === "string" ? payload.rendered : payload.text;
-    if (typeof delta !== "string" || delta.length === 0) return;
-    if (contentType === "text") session.turn.text += delta;
-    else session.turn.reasoning += delta;
+    const field = contentType === "text" ? "text" : "reasoning";
+    const value = typeof payload.rendered === "string" ? payload.rendered : payload.text;
+    const delta = typeof value === "string" ? value.slice(0, MAX_TEXT_CHARS - session.turn[field].length) : "";
+    if (!delta) return;
+    session.turn[field] += delta;
     this.#observe(session, { type: "message.delta", messageId: session.turn.messageId, contentType, delta });
   }
 
@@ -534,7 +818,8 @@ export class HermesAgentBackend implements AgentBackend {
     }
     const finalText = typeof payload.text === "string" ? payload.text.slice(0, MAX_TEXT_CHARS) : turn.text;
     const content: RemoteContent[] = finalText ? [{ type: "text", text: finalText }] : [];
-    if (turn.reasoning) content.unshift({ type: "thinking", text: turn.reasoning.slice(0, MAX_TEXT_CHARS) });
+    const reasoning = boundedString(payload.reasoning, MAX_TEXT_CHARS) || turn.reasoning;
+    if (reasoning) content.unshift({ type: "thinking", text: reasoning });
     const message: ChatMessage = { messageId: turn.messageId, role: "assistant", content, timestamp: Date.now(),
       ...(payload.status === "error" ? { isError: true } : {}) };
     this.#observe(session, { type: "message.finished", message });
@@ -542,12 +827,22 @@ export class HermesAgentBackend implements AgentBackend {
     const outcome = status === "error" ? "failed" : status === "interrupted" ? "cancelled" : status === "complete" ? "completed" : "unknown";
     const durationMs = Math.max(0, Date.now() - turn.startedAt);
     const persisted = asRecord(payload.persisted_turn);
-    const persistedMessages = this.#commitPersistedTurn(session, turn, message, persisted);
-    const projectionComplete = persistedTurnProjectionComplete(persisted, turn.input);
-    if (projectionComplete) session.source.setAvailability(true, true);
-    else session.source.setAvailability(true, false);
-    if (!projectionComplete && turn.input)
-      this.#forgetInput(session, turn.input);
+    const submissionId = typeof persisted.submission_id === "string" ? persisted.submission_id : undefined;
+    const input = submissionId ? session.inputsByCommand.get(submissionId) : turn.input;
+    const userRowId = finiteInteger(persisted.user_row_id);
+    if (persisted.complete === true && userRowId !== undefined && input?.messageId &&
+        Array.isArray(persisted.row_ids) && persisted.row_ids.includes(userRowId)) {
+      session.clientMessages.set(userRowId, input.messageId);
+      if (session.clientMessages.size > 1024) session.clientMessages.delete(session.clientMessages.keys().next().value!);
+    }
+    const projectionComplete = session.source.published().live.complete && session.tools.size === 0 && persistedTurnProjectionComplete(persisted, input);
+    const persistedMessages = projectionComplete ? this.#commitPersistedTurn(session, message, input, persisted) : [];
+    if (!projectionComplete) {
+      session.needsSnapshot = true;
+      // Do not publish a partial canonical append while the native rows are being recovered.
+    }
+    session.interactions.clear("cancelled");
+    if (input) this.#forgetInput(session, input);
     this.#observe(session, { type: "turn.finished", turnId: turn.turnId, startedAt: turn.startedAt,
       durationMs, outcome, messageId: turn.messageId, ...(persistedMessages.length ? { persistedMessages } : {}) });
     session.running = false;
@@ -555,12 +850,10 @@ export class HermesAgentBackend implements AgentBackend {
     this.#publishMetadata(session);
   }
 
-  #commitPersistedTurn(session: HermesSession, turn: HermesLiveTurn, assistant: ChatMessage,
+  #commitPersistedTurn(session: HermesSession, assistant: ChatMessage, input: HermesPendingInput | undefined,
     persisted: JsonRecord): Array<{ messageId: string; entryId: string }> {
     const assistantRowId = finiteInteger(persisted.final_assistant_row_id);
     if (assistantRowId === undefined) return [];
-    const submissionId = typeof persisted.submission_id === "string" ? persisted.submission_id : undefined;
-    const input = (submissionId ? session.inputsByCommand.get(submissionId) : undefined) ?? turn.input;
     const rows: RemoteSessionEntry[] = [];
     let parentId = session.entries.at(-1)?.entryId ?? null;
     const userRowId = finiteInteger(persisted.user_row_id);
@@ -583,7 +876,6 @@ export class HermesAgentBackend implements AgentBackend {
     }
     session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null, mappings);
     const assistantMapping = { messageId: assistant.messageId, entryId: assistantEntry.entryId };
-    if (input) this.#forgetInput(session, input);
     return [assistantMapping];
   }
 
@@ -605,12 +897,13 @@ export class HermesAgentBackend implements AgentBackend {
 
   #attachSnapshot(raw: unknown, fallbackSessionId?: string): HermesSession {
     const snapshot = asRecord(raw);
-    const gatewaySessionId = firstString(snapshot.session_id, fallbackSessionId);
-    const sessionId = firstString(snapshot.stored_session_id, fallbackSessionId, snapshot.session_id);
+    const gatewaySessionId = hermesToolIdentity(snapshot.session_id);
+    const sessionId = hermesToolIdentity(snapshot.stored_session_id ?? snapshot.session_id);
     const info = asRecord(snapshot.info);
+    this.#assertSnapshotOwner(snapshot, info);
     if (!gatewaySessionId || !sessionId) throw new Error("Hermes Gateway returned an invalid session identity");
-    const cwd = boundedString(info.cwd, 4096);
-    if (!cwd) throw new Error("Hermes Gateway did not return the session workspace");
+    const cwd = firstString(info.cwd);
+    if (!cwd || cwd.length > 4096 || !isAbsolute(cwd)) throw new Error("Hermes Gateway did not return a local session workspace");
     const runtimeId = runtimeIdFor(this.#options.endpoint.profile_id, sessionId);
     if (!Array.isArray(snapshot.messages)) throw new Error("Hermes Gateway returned no transcript snapshot");
     const messages = snapshot.messages.map(asRecord) as HermesTranscriptMessage[];
@@ -619,9 +912,13 @@ export class HermesAgentBackend implements AgentBackend {
       runtimeId,
       sessionId,
       gatewaySessionId,
-      source: new RecoverableSessionSource(runtimeId,
-        (event: Extract<RuntimeEvent, { type: "session.patch" }>) => this.#emit({ ...event, sessionId }, runtimeId),
-        { coalesceMs: 24 }),
+      source: new RecoverableSessionSource(sessionId, event => this.#emit(event, runtimeId),
+        { coalesceMs: 24, runtimeId: () => runtimeId, publishTools: event => this.#emit(event, runtimeId) }),
+      interactions: new HermesInteractions(runtimeId, event => this.#emit(event, runtimeId)),
+      tools: new Map<string, ToolSummary>(),
+      clientMessages: new Map<number, string>(),
+      needsSnapshot: false,
+      canSwitchModel: this.#supportsModelCreate() && finiteInteger(snapshot.revision) !== undefined,
       preparer: new SessionSyncPreparer(),
       inputsByCommand: new Map<string, HermesPendingInput>(),
       inputsByMessage: new Map<string, HermesPendingInput>(),
@@ -646,12 +943,19 @@ export class HermesAgentBackend implements AgentBackend {
     this.#byRuntime.set(runtimeId, session);
     this.#byGatewayId.set(gatewaySessionId, session);
     this.#bySessionId.set(sessionId, session);
+    if (fallbackSessionId) this.#bySessionId.set(fallbackSessionId, session);
     if (gatewaySessionId !== sessionId) this.#bySessionId.set(gatewaySessionId, session);
+    this.#applyInfo(session, info);
     this.#publishMetadata(session);
+    session.interactions.adopt(snapshot.prompts, session.running ? session.executionGeneration : 0);
+    session.source.flushPending();
     // Catch notifications that arrived after the snapshot's native sequence but before map registration.
     if (this.#hasCapability("event-replay-v1")) {
-      session.eventChain = session.eventChain.then(() => this.#replayEvents(session)).catch(error => {
-        this.#options.log?.(`Hermes initial event catch-up failed: ${errorText(error)}`);
+      session.eventChain = session.eventChain.then(async () => {
+        if (!await this.#restoreActiveTools(session)) await this.#replayEvents(session);
+        if (session.needsSnapshot) await this.#refreshSnapshot(session);
+      }).catch(error => {
+        this.#options.log?.(`Hermes initial event catch-up failed (${error instanceof Error ? error.name : "unknown"})`);
         this.#markHistoryUnknown(session, "Hermes session events could not be caught up");
       });
     }
@@ -664,22 +968,31 @@ export class HermesAgentBackend implements AgentBackend {
     const snapshot = asRecord(await this.#request<unknown>("session.resume", {
       session_id: session.sessionId,
       source: "tui",
-      display_projection: true,
     }));
-    const gatewaySessionId = firstString(snapshot.session_id);
-    const storedSessionId = firstString(snapshot.stored_session_id, session.sessionId);
+    const gatewaySessionId = hermesToolIdentity(snapshot.session_id);
+    const storedSessionId = hermesToolIdentity(snapshot.stored_session_id ?? snapshot.session_id);
     const info = asRecord(snapshot.info);
-    const cwd = boundedString(info.cwd, 4096);
-    if (!gatewaySessionId || storedSessionId !== session.sessionId || !cwd || !Array.isArray(snapshot.messages))
+    this.#assertSnapshotOwner(snapshot, info);
+    const cwd = firstString(info.cwd);
+    if (!gatewaySessionId || storedSessionId !== session.sessionId || !cwd || cwd.length > 4096 || !isAbsolute(cwd) || !Array.isArray(snapshot.messages))
       throw new Error("Hermes Gateway returned an incomplete recovery snapshot");
-    session.entries.splice(0, session.entries.length, ...transcriptEntries(session.sessionId, snapshot.messages.map(asRecord), this.#options.hostId));
+    const finalTurn = session.running ? null : session.source.snapshot().live.turn;
+    session.entries = transcriptEntries(session.sessionId, snapshot.messages.map(asRecord), this.#options.hostId, session.clientMessages);
+    session.needsSnapshot = false;
+    session.tools.clear();
+    delete session.turn;
     session.preparer.invalidate();
     session.source.transaction(() => {
-      session.source.replaceLive({ complete: snapshot.running !== true, turn: null, messages: [], tools: [] });
+      session.source.replaceLive({ complete: snapshot.running !== true, turn: snapshot.running === true ? null : finalTurn, messages: [], tools: [] });
       session.source.reconcile(session.entries, session.entries.at(-1)?.entryId ?? null);
       session.source.setAvailability(true, snapshot.running !== true);
     });
     this.#applyInfo(session, info);
+    const fence = session.modelUnconfirmed;
+    if (fence && snapshot.running === false && (finiteInteger(snapshot.revision) ?? -1) >= fence.minRevision &&
+        (finiteInteger(snapshot.execution_generation) ?? -1) >= fence.minGeneration && sameModel(info, fence.selection)) {
+      delete session.modelUnconfirmed;
+    }
     session.gatewaySessionId = gatewaySessionId;
     session.cwd = cwd;
     session.running = snapshot.running === true;
@@ -692,18 +1005,30 @@ export class HermesAgentBackend implements AgentBackend {
     if (oldSubscription && session.subscriptionId && oldSubscription !== session.subscriptionId) {
       void this.#request("session.detach", { session_id: oldGatewaySessionId, subscription_id: oldSubscription }).catch(() => undefined);
     }
+    session.interactions.adopt(snapshot.prompts ?? [], session.running ? session.executionGeneration : 0);
     this.#publishMetadata(session);
+    await this.#restoreActiveTools(session);
+  }
+
+  #assertSnapshotOwner(snapshot: JsonRecord, info: JsonRecord): void {
+    if ((snapshot.authority_epoch !== undefined && snapshot.authority_epoch !== this.#options.endpoint.authority_epoch) ||
+      (info.profile_id !== undefined && info.profile_id !== this.#options.endpoint.profile_id)) throw new Error("Hermes Gateway snapshot identity mismatch");
   }
 
   #applyInfo(session: HermesSession, info: JsonRecord): void {
     const cwd = boundedString(info.cwd, 4096);
-    if (cwd) session.cwd = cwd;
+    if (cwd && cwd === info.cwd && isAbsolute(cwd)) session.cwd = cwd;
     const title = boundedString(info.title, 256);
     if (title) session.title = title;
     const provider = boundedString(info.provider, 128);
     const model = boundedString(info.model, 256);
-    if (provider) session.provider = provider;
-    if (model) session.model = model;
+    if (Object.hasOwn(info, "provider")) { if (provider) session.provider = provider; else delete session.provider; }
+    if (Object.hasOwn(info, "model")) { if (model) session.model = model; else delete session.model; }
+    if (Object.hasOwn(info, "reasoning_effort")) {
+      const thinking = boundedString(info.reasoning_effort, 64);
+      if (thinking) session.thinkingLevel = thinking;
+      else delete session.thinkingLevel;
+    }
   }
 
   #metadata(session: HermesSession): RuntimeMetadata {
@@ -716,7 +1041,9 @@ export class HermesAgentBackend implements AgentBackend {
       sessionGraphSync: true,
       sessionLeafId: session.entries.at(-1)?.entryId ?? null,
       ...(session.title ? { sessionName: session.title } : {}),
-      ...(session.provider && session.model ? { model: { provider: session.provider, id: session.model } } : {}),
+      ...(!session.modelUnconfirmed && session.provider && session.model ? { model: { provider: session.provider, id: session.model },
+        modelSelection: { model: hermesModelValue({ provider: session.provider, model: session.model }) } } : {}),
+      ...(!session.modelUnconfirmed && session.thinkingLevel ? { thinkingLevel: session.thinkingLevel } : {}),
     };
   }
 
@@ -732,6 +1059,8 @@ export class HermesAgentBackend implements AgentBackend {
   }
 
   #markHistoryUnknown(session: HermesSession, reason: string): void {
+    session.needsSnapshot = true;
+    session.interactions.invalidate();
     session.source.setAvailability(false, false);
     this.#emit({ type: "runtime.error", message: reason, recoverable: true }, session.runtimeId);
   }
@@ -761,40 +1090,59 @@ export class HermesAgentBackend implements AgentBackend {
   }
 }
 
-function transcriptEntries(sessionId: string, messages: HermesTranscriptMessage[], hostId: string): RemoteSessionEntry[] {
+function transcriptEntries(sessionId: string, messages: HermesTranscriptMessage[], hostId: string,
+  clientMessages?: ReadonlyMap<number, string>): RemoteSessionEntry[] {
   const entries: RemoteSessionEntry[] = [];
-  messages.forEach((raw, index) => {
+  const agent = hermesAgentKey(hostId, sessionId);
+  const called = new Map<string, string>();
+  for (const [index, raw] of messages.entries()) {
+    // A display-only row without a durable identity is not a row-id addressed history entry.
     const rowId = finiteInteger(raw.row_id);
-    const entryId = entryIdFor(sessionId, rowId ?? index + 1);
-    const message = transcriptMessage(raw, entryId);
-    const entry = toRemoteEntry(sessionId, rowId ?? index + 1, message, entries.at(-1)?.entryId ?? null);
-    entries.push(projectToolEntry({ agent: hermesAgentKey(hostId, sessionId), order: index, entryId,
-      readCapability: "none" }, entry));
-  });
+    if (rowId === undefined) throw new Error("Hermes Gateway transcript row identity unavailable");
+    if (raw.display_kind === "hidden" || asRecord(raw.display_metadata).model_only === true) continue;
+    const entryId = entryIdFor(sessionId, rowId);
+    const timestamp = epochMillis(raw.timestamp);
+    const context = { entryId, order: index };
+    const role: ChatMessage["role"] = raw.role === "user" || raw.role === "assistant" || raw.role === "system" ? raw.role
+      : raw.role === "tool" || raw.role === "toolResult" ? "tool" : "custom";
+    let message: ChatMessage;
+    if (role === "tool") {
+      const id = hermesToolIdentity(raw.tool_call_id) ?? entryId;
+      const name = hermesToolIdentity(raw.tool_name) ?? hermesToolIdentity(raw.name) ?? called.get(id) ?? "tool";
+      const isError = typeof raw.is_error === "boolean" ? raw.is_error : undefined;
+      message = { messageId: entryId, role, timestamp, content: [], toolCallId: id, toolName: name,
+        ...(isError !== undefined ? { isError } : {}), toolSummary: hermesToolSummary(agent, {
+          ...context, toolCallId: id, toolName: name, phase: "finished", isError, result: raw.content ?? raw.text,
+        }) };
+    } else {
+      const content = transcriptContent(raw.content, raw.text, raw.reasoning ?? raw.reasoning_content);
+      if (role === "assistant") {
+        const calls = Array.isArray(raw.tool_calls) ? raw.tool_calls : [];
+        const blocks = Array.isArray(raw.content) ? raw.content.map(asRecord).filter(part => part.type === "tool_call" || part.type === "toolCall") : [];
+        const seen = new Set<string>();
+        for (const value of [...calls, ...blocks]) {
+          const call = asRecord(value), fn = asRecord(call.function);
+          const id = hermesToolIdentity(call.id), name = hermesToolIdentity(fn.name ?? call.name);
+          if (!id || !name || seen.has(id)) continue;
+          seen.add(id); called.set(id, name);
+          content.push({ type: "tool_call", toolCallId: id, toolName: name, summary: hermesToolSummary(agent, {
+            ...context, toolCallId: id, toolName: name, phase: "started", args: fn.arguments ?? call.arguments,
+          }) });
+        }
+      }
+      const clientMessageId = role === "user" ? clientMessages?.get(rowId) : undefined;
+      message = { messageId: entryId, role, timestamp, content, ...(raw.is_error === true ? { isError: true } : {}),
+        ...(clientMessageId ? { clientMessageId } : {}) };
+    }
+    const entry = toRemoteEntry(sessionId, rowId, message, entries.at(-1)?.entryId ?? null);
+    if (role === "tool") entry.data.message = { ...message, role: "toolResult" };
+    entries.push(entry);
+  }
   return entries;
 }
 
-function hermesAgentKey(hostId: string, sessionId: string): ToolAgentKey {
+function hermesAgentKey(hostId: string, sessionId: string): AgentKey {
   return { hostId, agentKind: "hermes", sessionId };
-}
-
-function transcriptMessage(raw: HermesTranscriptMessage, fallbackId: string): ChatMessage {
-  const roleValue = typeof raw.role === "string" ? raw.role : "custom";
-  const role: ChatMessage["role"] = roleValue === "user" ? "user" : roleValue === "assistant" ? "assistant"
-    : roleValue === "tool" || roleValue === "toolResult" ? "tool" : roleValue === "system" ? "system" : "custom";
-  const timestamp = epochMillis(raw.timestamp);
-  const content = transcriptContent(raw.content, raw.text, raw.reasoning);
-  const toolCallId = typeof raw.tool_call_id === "string" ? raw.tool_call_id : undefined;
-  const toolName = typeof raw.name === "string" ? raw.name : undefined;
-  return {
-    messageId: fallbackId,
-    role,
-    content,
-    timestamp,
-    ...(toolCallId ? { toolCallId } : {}),
-    ...(toolName ? { toolName } : {}),
-    ...(raw.is_error === true ? { isError: true } : {}),
-  };
 }
 
 function transcriptContent(raw: unknown, textValue: unknown, reasoningValue?: unknown): RemoteContent[] {
@@ -806,9 +1154,7 @@ function transcriptContent(raw: unknown, textValue: unknown, reasoningValue?: un
       const part = asRecord(value);
       if (part.type === "text" && typeof part.text === "string") content.push({ type: "text", text: part.text.slice(0, MAX_TEXT_CHARS) });
       else if ((part.type === "thinking" || part.type === "reasoning") && typeof part.text === "string") content.push({ type: "thinking", text: part.text.slice(0, MAX_TEXT_CHARS) });
-      else if (part.type === "tool_call" && typeof part.id === "string" && typeof part.name === "string")
-        content.push({ type: "tool_call", toolCallId: part.id, toolName: part.name, ...(part.arguments === undefined ? {} : { arguments: part.arguments }) });
-      else if (part.type === "image") content.push({ type: "text", text: "[Hermes image content]" });
+      else if (part.type === "image" || part.type === "image_url") content.push({ type: "text", text: "[图片]" });
     }
   }
   if (content.length === 0 && typeof textValue === "string" && textValue.length) content.push({ type: "text", text: textValue.slice(0, MAX_TEXT_CHARS) });
@@ -838,7 +1184,8 @@ function persistedTurnProjectionComplete(persisted: JsonRecord, input: HermesPen
   if (userRowId !== undefined && !input) return false;
   const represented = new Set([finalAssistantRowId, ...(input && userRowId !== undefined ? [userRowId] : [])]);
   const rowIds = persisted.row_ids.map(finiteInteger);
-  return rowIds.length === represented.size && rowIds.every(value => value !== undefined && represented.has(value));
+  return rowIds.length === represented.size && new Set(rowIds).size === represented.size &&
+    rowIds.at(-1) === finalAssistantRowId && rowIds.every(value => value !== undefined && represented.has(value));
 }
 
 function toRemoteEntry(sessionId: string, rowId: number, message: ChatMessage, parentId: string | null): RemoteSessionEntry {
@@ -859,15 +1206,11 @@ function turnIdentity(event: HermesGatewayEvent): string {
 function safeRequestId(value: string | undefined): string | undefined {
   return value && value.length > 0 && value.length <= RPC_REQUEST_ID_LIMIT ? value : undefined;
 }
-function providerFromModel(model: string): string {
-  const separator = model.indexOf("/");
-  return separator > 0 ? model.slice(0, separator).slice(0, 128) : "hermes";
-}
 function epochMillis(value: unknown): number {
   const number = finiteNumber(value);
   if (number === undefined || number < 0) return 0;
   const millis = number < 1_000_000_000_000 ? number * 1000 : number;
-  return Math.min(Number.MAX_SAFE_INTEGER, Math.floor(millis));
+  return Math.min(8_640_000_000_000_000, Math.floor(millis));
 }
 function boundedCount(value: unknown): number { return Math.max(0, Math.min(100_000, Math.trunc(finiteNumber(value) ?? 0))); }
 function finiteNumber(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
@@ -875,6 +1218,7 @@ function finiteInteger(value: unknown): number | undefined { return typeof value
 function firstString(...values: unknown[]): string | undefined { return values.find((value): value is string => typeof value === "string" && value.length > 0); }
 function boundedString(value: unknown, max: number): string { return typeof value === "string" ? value.slice(0, max) : ""; }
 function asRecord(value: unknown): JsonRecord { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {}; }
+function sameModel(info: JsonRecord, selection: HermesModelSelection): boolean { return info.model === selection.model && info.provider === selection.provider; }
 function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function isUncertainRpcFailure(error: unknown): boolean {
   if (!(error instanceof HermesGatewayRpcError)) return true;

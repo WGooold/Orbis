@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { agentKeyId, type AgentKey } from "./agent-state.js";
+import { agentKeyId } from "./agent-state.js";
 import { toolJsonBytes, ToolInventoryPageSchema, TOOL_PAGE_BODY_MAX_BYTES, type ToolSummary,
   type ToolInventoryReference, type ToolInventoryProduced } from "./tool-activity.js";
 
@@ -11,11 +11,8 @@ export class ToolInventorySource {
   readonly #publish: (event: ToolInventoryProduced) => void;
   constructor(publish: (event: ToolInventoryProduced) => void) { this.#publish = publish; }
   prepare(runtimeId: string, source: { epoch: string; seq: number }, tools: readonly ToolSummary[], replay = false): ToolInventoryReference | undefined {
-    const toolAgent = tools[0]?.tool.agent ?? this.#reference?.agent;
-    if (!toolAgent) return undefined;
-    // Hermes history can carry summaries, but this inventory channel is not enabled for it yet.
-    if (toolAgent.agentKind === "hermes") throw new Error("unsupported_tool_inventory_agent");
-    const agent: AgentKey = { hostId: toolAgent.hostId, agentKind: toolAgent.agentKind, sessionId: toolAgent.sessionId };
+    const agent = tools[0]?.tool.agent ?? this.#reference?.agent;
+    if (!agent) return undefined;
     if (tools.length > 4096 || tools.some(tool => agentKeyId(tool.tool.agent) !== agentKeyId(agent))) throw new Error("invalid_tool_inventory");
     const sorted = [...tools].sort((a, b) => a.order - b.order || (a.tool.toolCallId < b.tool.toolCallId ? -1 : 1));
     const fingerprint = JSON.stringify(sorted), bytes = toolJsonBytes(sorted) - 2 - Math.max(0, tools.length - 1);

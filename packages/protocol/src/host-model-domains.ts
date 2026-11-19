@@ -1,7 +1,7 @@
 import { z } from "zod";
+import { AgentKindSchema } from "./agent-kind.js";
 
 // Public Host projections only: credentials, native configuration and private receipts never enter these values.
-const kind = z.enum(["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop"]);
 const id = z.string().min(1).max(1_024);
 const count = z.number().int().nonnegative();
 const availability = z.enum(["ready", "unknown", "unavailable"]);
@@ -24,11 +24,11 @@ export type DshDesktopAttach = z.infer<typeof DshDesktopAttachSchema>;
 
 export const HostBackendsStateSchema = z.strictObject({
   backends: z.array(z.strictObject({
-    kind, ready: z.boolean(), launchable: z.boolean().nullable(), runtimeCount: count,
+    kind: AgentKindSchema, ready: z.boolean(), launchable: z.boolean().nullable(), runtimeCount: count,
     reason: z.string().max(500).nullable(),
   })).max(16),
-  agents: z.array(kind).max(16).optional(),
-  launchableAgents: z.array(kind).max(16).optional(),
+  agents: z.array(AgentKindSchema).max(16).optional(),
+  launchableAgents: z.array(AgentKindSchema).max(16).optional(),
   codexDesktop: z.strictObject({
     state: z.enum(["unsupported", "notInstalled", "closed", "attached", "error"]), reason: z.string().min(1).max(256),
   }).nullable().optional(),
@@ -60,7 +60,7 @@ export type HostFilesState = z.infer<typeof HostFilesStateSchema>;
 export const HostSharedOperationSchema = z.strictObject({
   operationId: id, kind: z.enum(["session.activate", "session.archive", "provider.change"]),
   state: z.enum(["accepted", "running", "succeeded", "failed", "cancelled", "unknown"]),
-  agentKind: kind.nullable(), sessionId: id.nullable(), startedAt: count, updatedAt: count,
+  agentKind: AgentKindSchema.nullable(), sessionId: id.nullable(), startedAt: count, updatedAt: count,
 });
 export type HostSharedOperation = z.infer<typeof HostSharedOperationSchema>;
 
@@ -86,7 +86,7 @@ export type HostConnectionsState = z.infer<typeof HostConnectionsStateSchema>;
 export const HostManagementStateSchema = z.strictObject({
   lifecycle: z.enum(["starting", "running", "stopping", "stopped"]),
   platform: z.string().min(1).max(64), nodeVersion: z.string().min(1).max(64),
-  backends: z.array(z.strictObject({ kind, installed: z.boolean().nullable(), version: z.string().max(128).nullable() })).max(16),
+  backends: z.array(z.strictObject({ kind: AgentKindSchema, installed: z.boolean().nullable(), version: z.string().max(128).nullable() })).max(16),
 });
 export type HostManagementState = z.infer<typeof HostManagementStateSchema>;
 

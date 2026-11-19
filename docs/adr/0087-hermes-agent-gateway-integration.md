@@ -1,14 +1,14 @@
-# ADR-0084：Hermes Agent Gateway 接入
+# ADR-0087：Hermes Agent Gateway 接入
 
 日期：2026-11-19
 
-Status: proposed（采用 Hermes 官方 TUI Gateway 作为自定义 Host 的原型路线；backend、会话映射与跨端兼容尚未实现或验证，不代表已支持、已发布）
+Status: proposed（采用 Hermes 官方 TUI Gateway 作为自定义 Host 的原型路线；transport、bootstrap 与隔离 backend 已实现；Host 发布、跨端接入和兼容验证分开推进，不代表已发布）
 
 关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0056](0056-agent-startup-readiness-and-consent.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0072](0072-session-configuration-and-recoverable-launch.md)、[ADR-0077](0077-cli-host-and-headless-validation.md)。
 
 ## 问题与结论
 
-Orbis 目前没有 Hermes Agent 执行后端；现有 Hermes 图标和宣传素材不表示产品已接入。Hermes 的官方集成指南区分 ACP、TUI Gateway JSON-RPC 与 HTTP API：IDE 编辑器集成用 ACP；自定义 Desktop / Web / TUI host 若需要原生 session、stream、审批与控制面，推荐 TUI Gateway。Orbis 是自定义 Host，因此原型应使用 TUI Gateway，而非把 ACP 当成唯一或首选接入面。[H01–H04]
+现有 Hermes 图标和宣传素材不表示产品已接入。Hermes 的官方集成指南区分 ACP、TUI Gateway JSON-RPC 与 HTTP API：IDE 编辑器集成用 ACP；自定义 Desktop / Web / TUI host 若需要原生 session、stream、审批与控制面，推荐 TUI Gateway。Orbis 是自定义 Host，因此原型应使用 TUI Gateway，而非把 ACP 当成唯一或首选接入面。[H01–H04]
 
 Hermes 的 session、历史和 turn 由所选 Gateway profile 持有；CLI、桌面、ACP、Messaging 与自定义 Host 都是接入面，不应各自另造一份执行与历史。新增独立 `AgentKind` `hermes`，Host 作为本机 Gateway 的客户端，复用用户已有 profile 与原生 session。会话是否由 Orbis 创建不改变它仍是 Hermes 的同一个原生会话；若 Gateway 授权的本机目录 API 返回其他 Hermes surface 的会话，Orbis 可将其作为 Hermes 历史呈现与恢复，不将来源标签当权限或所有权证明。[H02–H06]
 
@@ -23,7 +23,7 @@ Hermes 的 session、历史和 turn 由所选 Gateway profile 持有；CLI、桌
 - [Gateway Local Sessions 文档（固定提交）](https://github.com/NousResearch/hermes-agent/blob/ae2a81ccc00e9b7c06301523e5bb09608397149c/website/docs/developer-guide/gateway-local-sessions.md)
 - [ACP Host Integration 文档（固定提交）](https://github.com/NousResearch/hermes-agent/blob/ae2a81ccc00e9b7c06301523e5bb09608397149c/website/docs/user-guide/features/acp.md)
 - 上游实现：[TUI Gateway](https://github.com/NousResearch/hermes-agent/tree/ae2a81ccc00e9b7c06301523e5bb09608397149c/tui_gateway)、[Gateway client](https://github.com/NousResearch/hermes-agent/blob/ae2a81ccc00e9b7c06301523e5bb09608397149c/hermes_cli/gateway_client.py)、[共享 session store](https://github.com/NousResearch/hermes-agent/blob/ae2a81ccc00e9b7c06301523e5bb09608397149c/hermes_cli/gateway_session_store.py)、[ACP server](https://github.com/NousResearch/hermes-agent/blob/ae2a81ccc00e9b7c06301523e5bb09608397149c/acp_adapter/gateway_server.py)。
-- Orbis 参考边界：[AgentBackend](../../packages/host/src/agent-backend.ts)、[旧 DSH ACP transport](../../packages/host/src/dsh-client.ts)、[旧 DSH ACP runtime](../../packages/host/src/dsh-runtime.ts)、[AgentKind schema](../../packages/protocol/src/agent-state.ts)。
+- Orbis 参考边界：[AgentBackend](../../packages/host/src/agent-backend.ts)、[旧 DSH ACP transport](../../packages/host/src/dsh-client.ts)、[旧 DSH ACP runtime](../../packages/host/src/dsh-runtime.ts)、[AgentKind schema](../../packages/protocol/src/agent-kind.ts)。
 
 ### 已确认事实
 
@@ -124,6 +124,7 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 
 本 ADR 采用 TUI Gateway 为自定义 Host 的主路线，并以 Orbis 已有 AgentBackend / RuntimeCommand / RuntimeEvent 能力为首阶段边界。当前开发机只执行了 `hermes --version` 与 `hermes gateway ensure --help`（观察到 Hermes Agent v0.22.5；安装源码 commit `bf0203a794`）；没有执行 ensure、没有启动/连接 Gateway、没有读取或修改 profile/session。
 
-HERMES-01 JSON-RPC transport、HERMES-02 CLI/bootstrap 与 HERMES-03 隔离 AgentBackend 现有本地 fixture 测试。HERMES-03 按运行时契约映射 live/stored 目录、create/resume、文本 prompt、interrupt/cancel、历史快照和带序号事件回放；历史 tool-call 按 ADR-0045 投影为带 Hermes 身份的摘要，原始 arguments 与 tool-result 正文不进入共享历史或 wire。为此仅 `ToolSummary` 的工具身份暂时识别 `hermes`，不将其加入可选择 `AgentKind` 或客户端能力；完整 AgentKind / feature gate 留在 HERMES-05。v0.22.5 canonical session-list 行不含 cwd，冷会话先以空 cwd 表示，恢复后以原生 snapshot 的 `info.cwd` 更新；列表每个 scope 最多 200 行且无游标，因此满页标为不完整。该契约没有可核验的 archived-list 投影，故归档目录能力显式不完整，不能把“未返回”说成“没有归档会话”。
-
-AgentBackend 尚未挂入 Host 生命周期，`AgentKind`、设备 feature 协商、旧客户端隔离与跨端 UI 留在 HERMES-05；因此当前实现没有向 Relay/App 广播 `hermes`。上游 v0.23.2 文档基线不证明其他安装版本的配置或 wire contract 一致；Host 对未知 Gateway protocol / capability fail closed。未进行真实 Gateway/session 联动、打包或用户验收。
+- HERMES-01–03：transport、CLI/bootstrap、live/stored 目录、create/resume、文本 prompt、interrupt/cancel、历史快照与回放。v0.22.5 canonical 目录无 cwd 与游标：冷记录 cwd 为空，恢复后取 `info.cwd`，单 scope 满 200 条时保留覆盖不完整，且不推断归档为空。
+- HERMES-04：统一 `AgentKind`、工具摘要库存、允许本次／拒绝、澄清选项及模型配置。历史以 `row_id` 和 `tool_call_id` 对账，运行中快照从同代次的可验证回放恢复工具摘要；截断时不宣称完整，工具原始输入、输出与进度正文不发布。会话内模型修改带原生 revision/generation，回读一致才成功；延期或结果未知时不重发，也不依据旧模型快照解锁发送。思考深度仅回显，不公开未验证的权限、深度或永久授权操作。
+- 自动验证：[后端 fixture](../../packages/host/src/hermes-agent-backend.test.ts)，[HERMES-04 定向测试证据](../../.artifacts/hermes/h04-tests.txt)（6 文件、60 项通过），TypeScript 类型、定向 ESLint 与 `git diff --check` 通过。源码对照本机 v0.22.5 `bf0203a794` 的 `gateway/session_controls.py`、`gateway/session_mutations.py`、`gateway/session_deferred_pick.py`，不是实际 Gateway 联动。
+- HERMES-05 待完成 Host 生命周期、设备能力协商、旧端隔离及跨端 UI；目前未向 Relay/App 公告 Hermes。实际 Gateway 联动、打包、部署与用户验收未执行。
