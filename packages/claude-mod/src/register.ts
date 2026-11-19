@@ -244,7 +244,7 @@ export const register: Register = on => {
     await noteBackgroundWork($, event, result).catch(() => undefined);
     const resultRecord = result as { deny?: unknown; result?: unknown; text?: unknown; isError?: unknown };
     await emit($, { type: "tool.finished", toolCallId, toolName,
-      result: boundedValue(resultRecord.result ?? resultRecord.text ?? resultRecord.deny ?? null, 24_000),
+      result: boundedValue(withoutToolMedia(resultRecord.result ?? resultRecord.text ?? resultRecord.deny ?? null), 24_000),
       isError: resultRecord.isError === true || typeof resultRecord.deny === "string" });
     return result;
   }).catch(($, event, next) => next(event));
@@ -675,6 +675,19 @@ function showStatus($: Api, text: string | undefined): void {
   if (text === status) return;
   status = text;
   $.ui.status(text);
+}
+
+// Run before bounding: once JSON becomes a clipped string the Host cannot recover its typed blocks.
+function withoutToolMedia(value: unknown, depth = 0): unknown {
+  if (depth >= 32) return { truncated: true };
+  if (Array.isArray(value)) return value.map(item => withoutToolMedia(item, depth + 1));
+  if (!isRecord(value)) return value;
+  if (["image", "audio", "document", "attachment", "pdf"].includes(String(value.type))) {
+    const nested = isRecord(value.source) && value.source.type === "base64" && typeof value.source.data === "string"
+      || isRecord(value.file) && typeof value.file.base64 === "string";
+    if (nested || typeof value.data === "string") return { type: value.type, unavailable: true };
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, withoutToolMedia(child, depth + 1)]));
 }
 
 function boundedValue(value: unknown, maximum: number): unknown {

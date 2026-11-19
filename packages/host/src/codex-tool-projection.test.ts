@@ -93,6 +93,14 @@ describe("Codex producer tool projection (ADR-0045)", () => {
     expect(JSON.stringify(app)).not.toContain("ui://private");
   });
 
+  it("strips known nested document and audio bytes from tool detail JSON", () => {
+    const value = [{ type: "document", file: { base64: "c2VjcmV0" } },
+      { type: "audio", source: { type: "base64", media_type: "audio/wav", data: "c2VjcmV0" } }, { type: "ordinary", data: "literal" }];
+    expect(JSON.parse(codexToolContentText({ part: "result", format: "json", value }))).toEqual([
+      { type: "document", byteLength: 6 }, { type: "audio", mimeType: "audio/wav", byteLength: 6 }, { type: "ordinary", data: "literal" },
+    ]);
+  });
+
   it("fails unrepresentable detail content instead of reporting truncation as complete JSON", () => {
     const circular: Record<string, unknown> = {}; circular.self = circular;
     expect(() => codexToolContentText({ part: "result", format: "json", value: circular })).toThrow("invalid_codex_tool_content");

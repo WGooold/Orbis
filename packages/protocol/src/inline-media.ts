@@ -17,6 +17,20 @@ export function stripInlineMedia(value: unknown, depth = 0, ancestors = new Set<
   if (Array.isArray(value)) return value.map((item) => stripInlineMedia(item, depth + 1, nextAncestors));
   const record = value as Record<string, unknown>;
   const type = record.type;
+  // Claude transcript/MCP media wrappers. Only recognized binary shapes are reduced;
+  // an ordinary tool argument named data or base64 keeps its existing meaning.
+  const source = mediaRecord(record.source);
+  const file = mediaRecord(record.file);
+  const mediaType = type === "pdf" ? "document" : type;
+  if (mediaType === "image" || mediaType === "document" || mediaType === "audio" || mediaType === "attachment") {
+    const inline = source?.type === "base64" && typeof source.data === "string" ? source.data
+      : typeof file?.base64 === "string" ? file.base64
+      : mediaType === "audio" && typeof record.data === "string" && typeof record.mimeType === "string" ? record.data : undefined;
+    if (inline !== undefined) {
+      const mimeType = source?.media_type ?? file?.mimeType ?? record.mimeType;
+      return { type: mediaType, ...(typeof mimeType === "string" ? { mimeType } : {}), byteLength: base64Length(inline) };
+    }
+  }
   if (type === "image" || type === "input_image") {
     const inline = typeof record.data === "string"
       ? record.data
@@ -27,11 +41,10 @@ export function stripInlineMedia(value: unknown, depth = 0, ancestors = new Set<
       const mimeType = typeof record.mimeType === "string"
         ? record.mimeType
         : typeof record.image_url === "string" && /^data:([^;,]+)/.exec(record.image_url)?.[1];
-      const padding = inline.endsWith("==") ? 2 : inline.endsWith("=") ? 1 : 0;
       return {
         type: "image",
         ...(mimeType === undefined ? {} : { mimeType }),
-        byteLength: Math.max(0, Math.floor((inline.length * 3) / 4) - padding),
+        byteLength: base64Length(inline),
       };
     }
   }
@@ -40,4 +53,12 @@ export function stripInlineMedia(value: unknown, depth = 0, ancestors = new Set<
     projected[key] = stripInlineMedia(child, depth + 1, nextAncestors);
   }
   return projected;
+}
+
+function mediaRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+function base64Length(inline: string): number {
+  const padding = inline.endsWith("==") ? 2 : inline.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor(inline.length * 3 / 4) - padding);
 }
