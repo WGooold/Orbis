@@ -4074,6 +4074,21 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       expect(offer).toMatchObject({ event: { type: "artifact.started", artifact: { fileName, path: referenceId, size: 8 } } });
       expect(JSON.stringify(offer)).not.toContain(stateDir);
     }
+    const imagePath = join(stateDir, "生成图.png");
+    await writeFile(imagePath, "fixture image");
+    notify("item/completed", { ...route, item: { id: "generated", type: "imageGeneration", status: "completed", savedPath: imagePath, fileId: "private-native-id" } });
+    const image = await next(message => (message.event as RuntimeEvent | undefined)?.type === "message.finished");
+    const imageBlock = (image.event as Extract<RuntimeEvent, { type: "message.finished" }>).message.content[0];
+    expect(imageBlock).toMatchObject(rich ? { type: "render", renderKind: "file_reference", text: "生成图.png" } : { type: "text", text: "生成图片暂不可显示" });
+    expect(JSON.stringify(image)).not.toMatch(/private-native-id/);
+    expect(JSON.stringify(image)).not.toContain(imagePath);
+    if (imageBlock?.type === "render") {
+      const referenceId = imageBlock.file?.referenceId;
+      expect(referenceId).toMatch(/^orbis-message-file:[a-f0-9]{64}$/);
+      device.sendCommand(runtime.runtimeIdFor(thread.id), "download-image", { type: "file.download", path: referenceId });
+      const offer = await next(message => (message.event as RuntimeEvent | undefined)?.type === "artifact.started");
+      expect(offer).toMatchObject({ event: { artifact: { fileName: "生成图.png", path: referenceId, size: 13 } } });
+    }
   });
 
   it("rejects malformed and future inputs with their original command identity", async () => {
