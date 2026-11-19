@@ -1,15 +1,18 @@
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { randomBytes, createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { DeviceHandshake, E2eChannel, buildHandshakeEnvelope, loadOrCreateHostIdentity, saveDeviceStore, readHandshakeEnvelope } from "@orbis/e2e";
-import { EnvelopeReassembler, fragmentEnvelope, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
-import type { RelayServer } from "@orbis/relay";
+import { AgentKindSchema, EnvelopeReassembler, fragmentEnvelope, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
+import { createRelayServer as createLocalRelay, type RelayServer } from "@orbis/relay";
+import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 import { createBusinessRelayServer as createRelayServer, relayBusinessDeviceURL, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 import { HostService as SourceHostService } from "./host-service.js";
 import { agentEnablementCatalog, AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
@@ -103,6 +106,121 @@ class OldPhone {
     return this.messages.splice(this.messages.findIndex(m => m.type === type && (!requestId || m.requestId === requestId)), 1)[0]!;
   }
 }
+
+describe("Host Agent settings through the desktop JSON bridge", () => {
+  // HOST-AGENT-04/06: start the compiled bridge used by Qt, not another instance of the writer.
+  it("converges desktop writes and two encrypted clients on one persisted revision", async () => {
+    const root = await testDirectory(join(tmpdir(), "orbis-agent-desktop-wire-"));
+    const directory = join(root, "state");
+    const home = join(root, "home"); await mkdir(home);
+    const identity = await loadOrCreateHostIdentity({ dir: directory });
+    const makeDevice = (deviceId: string) => ({ deviceId, label: deviceId, createdAt: 1, revoked: false,
+      pskRoot: randomBytes(32).toString("base64url"), devicePub: randomBytes(32).toString("base64url") });
+    const devices = [makeDevice("phone-one"), makeDevice("phone-two")] as const;
+    const [firstDevice, secondDevice] = devices;
+    await saveDeviceStore(directory, { version: 1, devices: [...devices] });
+    const activation = join(root, "qa.json");
+    const credential = randomBytes(32).toString("hex");
+    const relay = await createLocalRelay({ runtimeCredentials: [credential], deviceCredentials: devices.map(({ deviceId }) => ({
+      deviceId, name: deviceId, credential: deviceId, hostId: identity.hostId,
+    })) });
+    const sockets: WebSocket[] = [];
+    try {
+      await writeFile(activation, JSON.stringify({ version: 1, environmentId: "agent-policy-fixture", relayUrl: relay.url, credential }));
+      const child = spawn(process.execPath, [fileURLToPath(new URL("../dist/desktop-bridge.js", import.meta.url))], {
+        stdio: ["pipe", "pipe", "pipe"], cwd: root, windowsHide: true,
+        env: { ...Object.fromEntries(["SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"].flatMap(key => process.env[key] ? [[key, process.env[key]]] : [])),
+          HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home, TMPDIR: root, TEMP: root, TMP: root, PATH: home,
+          ORBIS_QA_HOME: home, ORBIS_QA_ACTIVATION_FILE: activation, ORBIS_HOST_STATE_DIR: directory,
+          ORBIS_AGENT_INSTALL_ROOT: join(home, "agents"), ORBIS_NO_KEYCHAIN: "1" },
+      });
+      const exited = new Promise<number | null>(resolve => child.once("close", resolve));
+      let failures = "";
+      child.stderr.on("data", chunk => { failures = (failures + String(chunk)).slice(-4096); });
+      child.on("error", error => { failures += error.message; });
+      child.stdin.on("error", error => { failures += error.message; });
+      const lines = createInterface({ input: child.stdout });
+      const events: Record<string, unknown>[] = [];
+      lines.on("line", line => {
+        try { events.push(JSON.parse(line)); }
+        catch { failures += "invalid bridge JSON\n"; }
+      });
+      let id = 0;
+      const take = async (predicate: (message: Record<string, unknown>) => boolean) => {
+        const index = await vi.waitFor(() => {
+          const found = events.findIndex(predicate);
+          expect(found, failures).toBeGreaterThanOrEqual(0);
+          return found;
+        }, { timeout: 5000 });
+        return events.splice(index, 1)[0]!;
+      };
+      const command = async (method: string, params: Record<string, unknown> = {}) => {
+        const requestId = ++id;
+        child.stdin.write(`${JSON.stringify({ id: requestId, method, params })}\n`);
+        const reply = await take(row => row.id === requestId);
+        expect(reply, failures).not.toHaveProperty("error");
+        return reply.result;
+      };
+      const desktopEvent = (revision: number) => take(row => row.event === "agentEnablement" &&
+        (row.snapshot as { revision?: number } | undefined)?.revision === revision);
+      const connect = async ({ deviceId, pskRoot }: typeof devices[number], agents: string[] = []): Promise<OldPhone> => {
+        const socket = new WebSocket(`${relay.url}/v1/device`, { handshakeTimeout: 5000 });
+        sockets.push(socket);
+        await once(socket, "open");
+        const ready = new AbortController();
+        const timeout = setTimeout(() => ready.abort(), 5000);
+        try {
+          const accepted = once(socket, "message", { signal: ready.signal });
+          socket.send(JSON.stringify({ type: "device.authenticate", protocolVersion: PROTOCOL_VERSION, credential: deviceId }));
+          expect(JSON.parse((await accepted)[0].toString())).toMatchObject({ type: "device.ready" });
+        } finally { clearTimeout(timeout); }
+        const phone = new OldPhone(socket, 19, 19, identity.hostId, deviceId);
+        await phone.handshake(Buffer.from(pskRoot, "base64url"));
+        phone.request({ type: "host.lan.request" });
+        expect(await phone.take("device.ready")).toMatchObject({ agents, hostFeatures: expect.arrayContaining(["agent.enablement.v1"]) });
+        phone.request({ type: "device.features", features: ["agent.enablement.v1"] });
+        expect(await phone.take("device.ready")).toMatchObject({ deviceFeatures: ["agent.enablement.v1"] });
+        return phone;
+      };
+      try {
+        const allOff = { revision: 0, agents: AgentKindSchema.options.map(kind => ({ kind, label: agentEnablementCatalog[kind].label, enabled: false })) };
+        expect(await command("initialize")).toMatchObject({ agentEnablement: allOff });
+        await command("start");
+        const [first, second] = await Promise.all([connect(firstDevice), connect(secondDevice)]);
+        first.request({ type: "agent.enablement.read", requestId: "read-fresh" });
+        expect(await first.take("agent.enablement.snapshot", "read-fresh")).toMatchObject({ snapshot: allOff });
+        const enabled = { revision: 1, agents: allOff.agents.map(row => ({ ...row, enabled: row.kind === "pi" })) };
+        expect(await command("agent.enablement.write", { kind: "pi", enabled: true, expectedRevision: 0 })).toMatchObject({ status: "applied", snapshot: enabled });
+        for (const phone of [first, second]) expect(await phone.take("agent.enablement.snapshot")).toMatchObject({ snapshot: enabled });
+        expect(await desktopEvent(1)).toMatchObject({ snapshot: enabled });
+        first.request({ type: "agent.enablement.write", requestId: "phone-off", kind: "pi", enabled: false, expectedRevision: 1 });
+        const retired = { ...allOff, revision: 2 };
+        expect(await first.take("agent.enablement.result", "phone-off")).toMatchObject({ status: "applied", snapshot: retired });
+        expect(await second.take("agent.enablement.snapshot")).toMatchObject({ snapshot: retired });
+        expect(await desktopEvent(2)).toMatchObject({ snapshot: retired });
+        expect(await command("agent.enablement.write", { kind: "pi", enabled: true, expectedRevision: 1 })).toMatchObject({ status: "conflict", snapshot: retired });
+        expect(await command("agent.enablement.read")).toMatchObject(retired);
+        expect(await new AgentEnablementStore(directory).read()).toMatchObject(retired);
+        expect(events.filter(row => row.event === "state" && row.state === "connected")).toHaveLength(1);
+        await command("stop");
+        const pausedEdit = { ...enabled, revision: 3 };
+        expect(await command("agent.enablement.write", { kind: "pi", enabled: true, expectedRevision: 2 })).toMatchObject({ status: "applied", snapshot: pausedEdit });
+        expect(await desktopEvent(3)).toMatchObject({ snapshot: pausedEdit });
+        first.socket.terminate(); second.socket.terminate();
+        await command("start");
+        const reconnected = await connect(firstDevice, ["pi"]);
+        reconnected.request({ type: "agent.enablement.read", requestId: "after-pause" });
+        expect(await reconnected.take("agent.enablement.snapshot", "after-pause")).toMatchObject({ snapshot: pausedEdit });
+      } finally {
+        for (const socket of sockets) socket.terminate();
+        child.stdin.end();
+        const deadline = setTimeout(() => child.kill("SIGKILL"), 5000);
+        try { expect(await exited, failures).toBe(0); }
+        finally { clearTimeout(deadline); lines.close(); }
+      }
+    } finally { await relay.close(); }
+  }, 30_000);
+});
 
 // Optional source build of the released reference (own dependencies, not current aliases).
 const importReferenceRoot = process.env.ORBIS_IMPORT_REFERENCE_RUNTIME;

@@ -102,3 +102,5 @@ OpenCode 只在当前启用租约内创建连接监视器和会话适配器。�
 验证：[Node 类型检查及 64 项定向回归](../../.artifacts/agent-enablement-all/node-policy-delivery.log)、[Swift 14 项](../../.artifacts/agent-enablement-all/swift-policy-delivery/run.log)、[Android 23 项](../../.artifacts/agent-enablement-all/android-policy-delivery-final/build.log)、[iOS 无签名模拟器构建](../../.artifacts/agent-enablement-all/ios-policy-delivery/run.log)。未操作测试设备，仍待候选包安装与双向同步验收。
 
 扩展回归：旧安装、更新与终端用例在隔离状态中显式启用被测来源，原业务断言不变；另验证新装状态不会发现或安装停用来源。本机 Codex 环境变量不再进入合成 launcher。保留[首次扩大回归](../../.artifacts/agent-enablement-all/candidate-98a7c544-regression.log)及[本地主线对照](../../.artifacts/agent-enablement-all/expanded-main-sync-baseline.log)，同步远端主线已有的会话基线、溢出用例和 lint 修复后，[Lint、类型检查、构建与 2543 项回归通过](../../.artifacts/agent-enablement-all/expanded-core-clean.log)。22 项由现有平台条件跳过。此轮未改移动端源码，安装与交互仍由 QA 验收。
+
+[桌面桥端到端回归](../../.artifacts/agent-enablement-all/desktop-bridge-wire-candidate.log)运行 Qt 使用的实际 Node JSON 桥与隔离 Relay：两个合成配对客户端验证电脑启用后广播到两端、手机停用后回推电脑与另一端、旧修订不能覆盖，以及电脑暂停时保存、恢复后手机读回。此证据覆盖协议和实际进程接线，不代替平台 UI 安装验收。
