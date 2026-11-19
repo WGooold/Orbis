@@ -62,6 +62,7 @@ import type { ActivePathChange } from "./device-link.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { KimiRuntime } from "./kimi-runtime.js";
+import { KimiWebClient } from "./kimi-web-client.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DSH_DESKTOP_FLAVOR } from "./dsh-web-runtime.js";
 import type { DshConnection } from "./dsh-client.js";
@@ -339,6 +340,13 @@ class TestDevice {
 
   private constructor(deviceId: string, private readonly relayURL: string, private readonly credential: string) {
     this.deviceId = deviceId;
+  }
+
+  async reopenRelay(pskRoot: Buffer, hostId: string): Promise<TestDevice> {
+    this.close();
+    const next = new TestDevice(this.deviceId, this.relayURL, this.credential);
+    try { await next.reconnectRelay(pskRoot, hostId); return next; }
+    catch (error) { next.close(); throw error; }
   }
 
   /** 扫二维码 → 用 code 换管道凭据 → 连上 Relay。 */
@@ -3591,6 +3599,155 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(await wait(message => message.requestId === "diagnostics-no", true)).toMatchObject({ page: { records: [] } });
     expect(activate).toHaveBeenCalledTimes(1);
   });
+
+  // KIMI-09: opt-in real Kimi Web and released Orbis runtime probes. The fixture owns the isolated native server.
+  it.skipIf(!process.env.ORBIS_TEST_KIMI_FIXTURE)("drives real Kimi Web through the encrypted Relay channel", async () => {
+    const fixture = JSON.parse(await readFile(process.env.ORBIS_TEST_KIMI_FIXTURE!, "utf8")) as {
+      homeDir: string; endpoint: string; cwd: string; oldRelay?: string; oldHost?: string; result: string;
+    };
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-kimi-chain-"));
+    const options = { port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(stateDir, "relay.json") };
+    const releasedRelay = fixture.oldRelay ? await import(/* @vite-ignore */ fixture.oldRelay) as { createRelayServer: typeof createRelayServer } : undefined;
+    relay = await (releasedRelay?.createRelayServer ?? createRelayServer)(options);
+    const kimi = new KimiRuntime({ stateDir, homeDir: fixture.homeDir, endpoint: fixture.endpoint });
+    const hostOptions = { relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false };
+    host = await HostService.create({ ...hostOptions, kimiCodeRuntime: kimi });
+    await host.start();
+    await vi.waitFor(() => expect(kimi.isReady()).toBe(true), { timeout: 12_000 });
+    const opened = await host.openPairingWindow();
+    const connected = await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Isolated Kimi wire client" });
+    device = connected.device;
+    const psk = await device.pair(opened.payload);
+    const handshake = () => device!.openChannel("relay", psk, opened.payload.hostId, opened.payload.hostId);
+    const wait = async (label: string, predicate: (message: Record<string, unknown>, event?: Partial<RuntimeEvent>) => boolean,
+      legacy = false) => {
+      const deadline = Date.now() + 10_000;
+      const seen = new Set<string>();
+      while (Date.now() < deadline) {
+        const message = await device!.receiveMessage().catch(() => { throw new Error(`Missing ${label}; saw ${[...seen].join(", ")}`); });
+        const e = message.event as Partial<RuntimeEvent> | undefined;
+        seen.add(e?.type === "command.result" ? `${e.commandId}:${e.status}:${e.error ?? ""}` : String(e?.type ?? message.type));
+        if (legacy) expect(JSON.stringify({ ...message, hostFeatures: undefined })).not.toMatch(/"kimiCode"|kimi-code:/u);
+        if (predicate(message, message.event as Partial<RuntimeEvent> | undefined)) return message;
+        if (message.type === "protocol.error") throw new Error(`${label}: ${JSON.stringify(message)}`);
+      }
+      throw new Error(`Missing ${label}; saw ${[...seen].join(", ")}`);
+    };
+    const send = (type: string, fields: object) => sendRequest(device!, { type, protocolVersion: PROTOCOL_VERSION, ...fields });
+    const ready = (negotiated: boolean) => wait("device ready", m => m.type === "device.ready"
+      && (m.launchableAgents as string[]).includes("kimiCode") === negotiated, !negotiated);
+    const reply = (id: string, phase?: string) => wait(id, m => m.requestId === id && (phase === undefined || m.phase === phase));
+    const event = async <T extends RuntimeEvent["type"]>(type: T, match: (value: Extract<RuntimeEvent, { type: T }>) => boolean) =>
+      (await wait(type, (m, e) => m.runtimeId === id && e?.type === type && match(e as Extract<RuntimeEvent, { type: T }>))).event as Extract<RuntimeEvent, { type: T }>;
+    const receipt = (commandId: string) => event("command.result", e => e.commandId === commandId && e.status !== "pending");
+    const snapshot = async (syncId: string) => {
+      device!.sendCommand(id, syncId, { type: "session.sync", sessionId: id, syncId, range: "preview", maxEntries: 100 });
+      const response = await event("session.snapshot", e => e.syncId === syncId);
+      device!.sendCommand(id, `${syncId}-ack`, { type: "session.snapshot.ack", syncId, result: "applied" });
+      return response;
+    };
+    let id: string;
+    await handshake();
+    expect((await ready(false)).hostFeatures).toContain("agent.kimiCode");
+    send("device.features", { features: ["agent.kimiCode"] });
+    await ready(true);
+    send("session.configuration.read", { requestId: "config", agentKind: "kimiCode", cwd: fixture.cwd });
+    const config = await reply("config");
+    expect(config).toMatchObject({ type: "session.configuration.result", agentKind: "kimiCode" });
+    send("session.launch", { requestId: "launch", launchId: "kimi-wire", agentKind: "kimiCode", cwd: fixture.cwd,
+      binding: config.binding, revision: config.revision, values: config.values, spawnMode: "headless" });
+    const launched = await reply("launch", "ready");
+    expect(launched.sessionId).toMatch(/^kimi-code:/u);
+    id = launched.sessionId as string;
+    send("session.launch.read", { requestId: "recover", launchId: "kimi-wire" });
+    expect(await reply("recover", "ready")).toMatchObject({ sessionId: id });
+    await snapshot("initial");
+    device.sendCommand(id, "send-1", { type: "user_message", messageId: "client-kimi-wire", text: "native-approval-fixture" });
+    // Receipts and the native interaction are independently ordered on the channel.
+    const observed: Record<string, unknown>[] = [];
+    await wait("prompt receipt and native approval", (m, e) => {
+      if (m.runtimeId === id && (e?.type === "interaction.requested" || e?.type === "command.result" && e.commandId === "send-1" && e.status !== "pending")) observed.push(m);
+      return observed.some(row => (row.event as RuntimeEvent).type === "interaction.requested")
+        && observed.some(row => (row.event as RuntimeEvent).type === "command.result");
+    });
+    expect(observed).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "command.result", status: "success" }) }));
+    const card = (observed.find(row => (row.event as RuntimeEvent).type === "interaction.requested")!.event as Extract<RuntimeEvent, { type: "interaction.requested" }>).request;
+    expect(card.kind).toBe("confirm");
+    device.sendCommand(id, "answer", { type: "interaction.respond", extensionId: card.extensionId, requestId: card.requestId, response: { kind: "confirm", value: false } });
+    const terminal: RuntimeEvent[] = [];
+    await wait("approval acknowledgement and native terminal transcript", (m, e) => {
+      if (m.runtimeId === id && (e?.type === "session.patch" && e.live?.turn?.outcome === "completed"
+        || e?.type === "command.result" && e.commandId === "answer" && e.status !== "pending")) terminal.push(e as RuntimeEvent);
+      return terminal.some(row => row.type === "command.result") && terminal.some(row => row.type === "session.patch");
+    });
+    expect(terminal).toContainEqual(expect.objectContaining({ type: "command.result", status: "success" }));
+    const before = await snapshot("before");
+    expect(JSON.stringify(before)).toContain("client-kimi-wire");
+    expect(JSON.stringify(before)).toContain("fixture reply");
+    await handshake();
+    await ready(false);
+    send("session.launch.read", { requestId: "legacy-recovery", launchId: "kimi-wire" });
+    expect(await wait("legacy isolation", m => m.requestId === "legacy-recovery", true)).toMatchObject({ phase: "absent" });
+    send("device.features", { features: ["agent.kimiCode"] });
+    await ready(true);
+    const after = await snapshot("after");
+    expect(after.display?.entries.map(row => row.entryId)).toEqual(before.display?.entries.map(row => row.entryId));
+    device.sendCommand(id, "idle-stop", { type: "stop" });
+    expect(await receipt("idle-stop")).toMatchObject({ status: "not_cancelable" });
+    // Keep the current turn at an actual approval; a second native client queues its successor.
+    device.sendCommand(id, "running", { type: "user_message", messageId: "running", text: "native-approval-stop-fixture" });
+    await event("interaction.requested", e => e.request.kind === "confirm" && e.request.requestId !== card.requestId);
+    const native = await KimiWebClient.connect({ homeDir: fixture.homeDir, endpoint: fixture.endpoint });
+    try {
+      const path = `/api/v1/sessions/${id.split(":").at(-1)}/prompts`;
+      const queued = await native.requestJson(path, { method: "POST", body: { prompt_id: "native-queued", agent_id: "main",
+        content: [{ type: "text", text: "native-next-fixture" }] } });
+      expect(queued).toMatchObject({ prompt_id: "native-queued", status: "queued" });
+      await event("delivery.snapshot", e => e.complete === true && e.items.some(item => item.text === "native-next-fixture"));
+      device.sendCommand(id, "busy-send", { type: "user_message", messageId: "busy-send", text: "must not enqueue" });
+      expect(await receipt("busy-send")).toMatchObject({ status: "failure", error: "runtime_busy" });
+      device.sendCommand(id, "running-stop", { type: "stop" });
+      const stopEvidence = new Set<string>();
+      await wait("exact stop and queued successor", (m, e) => {
+        if (m.runtimeId !== id) return false;
+        if (e?.type === "command.result" && e.commandId === "running-stop" && e.status !== "pending") {
+          expect(e.status).toBe("success"); stopEvidence.add("receipt");
+        }
+        if (e?.type === "session.patch" && e.live?.turn?.outcome === "cancelled") stopEvidence.add("cancelled");
+        if (e?.type === "session.patch" && e.live?.turn?.outcome === "completed") stopEvidence.add("successor");
+        return stopEvidence.size === 3;
+      });
+      const final = JSON.stringify(await snapshot("after-stop"));
+      expect(final).toContain("native-next-fixture");
+      expect(final).not.toContain("must not enqueue");
+    } finally { native.close(); }
+    const report = { relay: fixture.oldRelay ? "released" : "current", checks: ["configuration", "launch and exact recovery", "prompt identity",
+      "native approval rejection", "history and reconnect", "unnegotiated isolation", "idle stop rejected", "exact running stop and queued successor"], releasedHost: false };
+    if (fixture.oldHost) {
+      const ledgerPath = join(stateDir, "kimi-session-configuration.json");
+      const ledger = await readFile(ledgerPath);
+      device.close();
+      await host.stop();
+      const released = await import(/* @vite-ignore */ fixture.oldHost) as { HostService: typeof HostService };
+      host = await released.HostService.create(hostOptions);
+      await host.start();
+      // Discard the reference phone's queue along with its old socket, like an App process restart.
+      device = await device.reopenRelay(psk, opened.payload.hostId);
+      const oldReady = await ready(false);
+      expect(oldReady.hostFeatures).toEqual(expect.arrayContaining(["device.features"]));
+      expect(oldReady.hostFeatures).not.toContain("agent.kimiCode");
+      expect(oldReady.agents).toContain("pi");
+      send("session.launch.read", { requestId: "rolled-back", launchId: "kimi-wire" });
+      expect(await wait("old Host launch ledger", m => m.requestId === "rolled-back", true)).toMatchObject({ phase: "absent" });
+      send("session.list", { requestId: "legacy-list" });
+      expect(await wait("old Host catalog", m => m.requestId === "legacy-list", true)).toMatchObject({ type: "session.list.result" });
+      expect(await readFile(ledgerPath)).toEqual(ledger);
+      report.releasedHost = true;
+    }
+    await writeFile(fixture.result, JSON.stringify(report, null, 2) + "\n");
+  }, 90_000);
 
   // ADR-0076 DSH-DESKTOP-03 / 06: Web and Desktop expose the same native id as two routes, and a device sees
   // `dshDesktop` only after declaring it on its current handshake. Released Apps keep the pre-Desktop view.
