@@ -57,6 +57,56 @@ describe("Host conversation projection", () => {
       .toMatchObject({ syncId: "fresh", source: { epoch: "new-source", seq: 1 }, selection: "snapshot", entries: [entry] });
   });
 
+  // CODEX-SOURCE-02：现场 1076 条 `handshake_base_mismatch` 的成因。把 `ready` 改成 false 不足以
+  // 修好一条不可信的基线：旧的 epoch/seq 留着，之后每一块补丁都因 baseSeq 落后或 epoch 不符被拒，
+  // 整条会话永久停更。作废必须连 epoch/seq 一起丢。
+  const patch = (epoch: string, seq: number, ready = true): Extract<RuntimeEvent, { type: "session.patch" }> => ({
+    type: "session.patch", sessionId: "s", source: { epoch, seq, ready }, baseSeq: seq - 1, seq, checkpointId: `${epoch}:${seq}`,
+    head: { leafId: "a" }, headCompleteness: "complete", live: { complete: ready, turn: null, messages: [], tools: [] },
+  });
+
+  it("recovers a rejected patch stream after the source epoch changes", () => {
+    const model = new AgentConversationState(new AgentStateRegistry());
+    const reasons: string[] = [];
+    expect(model.accept(scope, snapshot("E1", 8))).toBe(true);
+    // 运行时换了 epoch：旧基线不可能再用这块补丁衔接上。
+    expect(model.accept(scope, patch("E2", 1), undefined, reason => reasons.push(reason))).toBe(false);
+    expect(reasons.at(-1)).toBe("patch_baseline_mismatch");
+
+    model.invalidateBaseline(scope);
+    // 作废之后，下一块补丁作为握手被接收，流不再卡死。
+    expect(model.accept(scope, patch("E2", 2), undefined, reason => reasons.push(reason))).toBe(true);
+    expect(model.accept(scope, patch("E2", 3))).toBe(true);
+    // 握手不是恢复基线：只有快照能重建它（ADR-0032 §5）。
+    expect(model.hasBaseline(scope)).toBe(false);
+    expect(model.accept(scope, snapshot("E2", 4))).toBe(true);
+    expect(model.hasBaseline(scope)).toBe(true);
+  });
+
+  it("recovers a patch stream whose base sequence fell behind after a gap", () => {
+    const model = new AgentConversationState(new AgentStateRegistry());
+    const reasons: string[] = [];
+    expect(model.accept(scope, snapshot("E1", 8))).toBe(true);
+    // 丢了一块补丁：seq 10 的 baseSeq 是 9，而基线还停在 8。
+    expect(model.accept(scope, patch("E1", 10), undefined, reason => reasons.push(reason))).toBe(false);
+    expect(reasons.at(-1)).toBe("patch_baseline_mismatch");
+    model.invalidateBaseline(scope);
+    expect(model.accept(scope, patch("E1", 11), undefined, reason => reasons.push(reason))).toBe(true);
+  });
+
+  it("still rejects a delayed patch from an epoch retired before invalidation", () => {
+    const model = new AgentConversationState(new AgentStateRegistry());
+    const reasons: string[] = [];
+    expect(model.accept(scope, snapshot("E1", 8))).toBe(true);
+    // 正常的换 epoch 边界（未就绪补丁）退掉 E1。
+    expect(model.accept(scope, patch("E2", 1, false))).toBe(true);
+    expect(model.accept(scope, patch("E2", 2))).toBe(true);
+    model.invalidateBaseline(scope);
+    expect(model.accept(scope, patch("E1", 9), undefined, reason => reasons.push(reason))).toBe(false);
+    expect(reasons.at(-1)).toMatch(/retired_source_epoch/u);
+    expect(model.accept(scope, patch("E2", 3), undefined, reason => reasons.push(reason))).toBe(true);
+  });
+
   it("supports 256 current sessions with the default registry and rejects the 257th atomically", () => {
     const registry = new AgentStateRegistry();
     const model = new AgentConversationState(registry);

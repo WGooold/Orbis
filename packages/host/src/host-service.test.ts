@@ -1322,6 +1322,44 @@ describe("host end-to-end over relay", () => {
     expect(delivered.event).toMatchObject({ type: "session.patch", source: { epoch: "E2", seq: 2 } });
   });
 
+  // CODEX-SOURCE-02：一块补丁被拒之后，被改回 ready=false 的旧基线会永久拒收后续补丁
+  // （现场 1076 条 handshake_base_mismatch，同一 epoch、seq 一路递增全被拒）。
+  // 作废时必须连 epoch/seq 一起丢掉，下一块补丁才能重新进入会话流。
+  it("resumes a session after a rejected patch by retiring the stale baseline", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-sync-stuck-baseline-")); relay = await startRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, reconnect: false, lan: false }); await host.start();
+    const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, message => message.type === "device.path");
+    const descriptor = host.loopback!.descriptor!;
+    runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+      metadata: { runtimeId: "pi-stuck-baseline", name: "stuck baseline", cwd: "/work", status: "idle", sessionId: "session" } });
+    await runtime.next(); await readMatching(device, message => message.type === "runtime.online");
+
+    device.sendCommand("pi-stuck-baseline", "preview-command", { type: "session.sync", sessionId: "session", syncId: "preview", range: "preview" });
+    const request = await runtime.next();
+    runtime.publish(1, { type: "session.snapshot", sessionId: "session", syncId: (request.command as { syncId: string }).syncId,
+      range: "preview", mode: "replace", cursor: { leafId: null }, targetLeafId: null, entries: [], complete: true, hasOlder: false,
+      rangeStatus: "complete", source: { epoch: "E1", seq: 8, ready: true },
+      checkpoint: { checkpointId: "E1:8", head: { leafId: null }, headCompleteness: "complete", inventoryComplete: true },
+      live: { complete: true, turn: null, messages: [], tools: [] } });
+    await readMatching(device, message => (message.event as { syncId?: string } | undefined)?.syncId === "preview");
+    device.sendCommand("pi-stuck-baseline", "preview-applied", { type: "session.snapshot.ack", syncId: "preview", result: "applied" });
+
+    const patch = (epoch: string, seq: number): Extract<RuntimeEvent, { type: "session.patch" }> => ({
+      type: "session.patch", sessionId: "session", source: { epoch, seq, ready: true }, baseSeq: seq - 1, seq,
+      checkpointId: `${epoch}:${seq}`, head: { leafId: null }, headCompleteness: "complete",
+      live: { complete: true, turn: null, messages: [], tools: [] } });
+    // 换了 epoch 的补丁接不上旧基线：被拒，并作废那条基线。
+    runtime.publish(2, patch("E2", 1));
+    // 下一块补丁必须重新出现在设备的会话流里，而不是继续撞同一个拒绝。
+    runtime.publish(3, patch("E2", 2));
+    const delivered = await readMatching(device, message =>
+      (message.event as { source?: { epoch?: string } } | undefined)?.source?.epoch === "E2");
+    expect(delivered.event).toMatchObject({ type: "session.patch", source: { epoch: "E2", seq: 2 } });
+  });
+
   it("targets sync snapshots and acknowledgements to their requesting device over real encrypted relay sockets", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-sync-"));
     relay = await startRelay(stateDir);
