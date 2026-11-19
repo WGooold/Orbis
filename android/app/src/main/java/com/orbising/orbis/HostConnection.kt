@@ -140,7 +140,7 @@ internal class HostConnection(
 
     fun loadSessionConfiguration(kind: String, cwd: String) {
         val current = mutableState.value
-        if (!current.sessionConfigurationSupported || cwd.isBlank()) return
+        if (!current.sessionConfigurationSupported || cwd.isBlank() || kind == KIMI_CODE_KIND && !current.kimiCodeSupported) return
         val request = UUID.randomUUID().toString()
         configurationTimeout(request)
         updateState { it.copy(sessionConfiguration = SessionConfigurationState(kind, cwd, requestId = request)) }
@@ -173,9 +173,12 @@ internal class HostConnection(
 
     private fun recoverConfiguredLaunch(show: Boolean = false) { scope.launch(Dispatchers.IO) { recoverConfiguredLaunchInBackground(show) } }
 
+    private fun configuredLaunchAvailable(saved: JsonObject): Boolean =
+        saved["agentKind"]?.jsonPrimitive?.contentOrNull != KIMI_CODE_KIND || mutableState.value.kimiCodeSupported
+
     private suspend fun recoverConfiguredLaunchInBackground(show: Boolean = false) {
         configuredLaunchJournal.awaitLoaded()
-        if (!mutableState.value.sessionConfigurationSupported) return
+        if (!mutableState.value.sessionConfigurationSupported || !mutableState.value.e2eReady) return
         val id = configuredLaunchId ?: return
         // Retry the same durable identity even if its first disk write failed. No native request
         // is allowed to overtake the journal, including recovery after an immediate disconnect.
@@ -185,6 +188,7 @@ internal class HostConnection(
         }
         if (configuredLaunchId != id || !shouldConnect) return
         val saved = configuredLaunchJournal.snapshot?.takeIf { it["launchId"]?.jsonPrimitive?.contentOrNull == id } ?: return
+        if (!configuredLaunchAvailable(saved)) return
         val rejected = saved["rejected"]?.jsonPrimitive?.booleanOrNull == true
         if (mutableState.value.launching == null && (saved["sessionId"]?.jsonPrimitive?.contentOrNull == null ||
             mutableState.value.pendingSends[saved["firstMessageId"]?.jsonPrimitive?.contentOrNull] == null)) {
@@ -215,6 +219,7 @@ internal class HostConnection(
 
     private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String, firstMessage: String = ""): Boolean {
         val state = mutableState.value; val config = state.sessionConfiguration; val snapshot = config.snapshot
+        if (kind == KIMI_CODE_KIND && (!state.kimiCodeSupported || !state.sessionConfigurationSupported)) return false
         val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded, configuredLaunchJournal.snapshot != null)
         if (!admission.allowed) {
             if (admission.block == ConfiguredLaunchBlock.PREVIOUS_LAUNCH) recoverConfiguredLaunch(show = true)
@@ -229,7 +234,7 @@ internal class HostConnection(
         val payload = buildJsonObject {
             put("type", "session.launch"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id); put("launchId", id)
             put("agentKind", kind); put("cwd", cwd); put("binding", confirmed.binding); put("revision", confirmed.revision)
-            put("values", config.values.payload()); put("spawnMode", spawnMode)
+            put("values", config.values.payload()); put("spawnMode", kimiSpawnMode(kind, spawnMode))
         }
         // Reserve in memory immediately, then persist off UI before writing to the transport.
         val journal = JsonObject(payload + mapOf("firstMessage" to JsonPrimitive(firstMessage), "firstMessageId" to JsonPrimitive(firstId), "firstCommandId" to JsonPrimitive(firstCommand)))
@@ -245,7 +250,7 @@ internal class HostConnection(
         }
         scope.launch(Dispatchers.IO) {
             if (!persisted.await()) { configuredLaunchPersistenceFailed(id); return@launch }
-            if (configuredLaunchId != id || !shouldConnect) return@launch
+            if (configuredLaunchId != id || !shouldConnect || kind == KIMI_CODE_KIND && !mutableState.value.kimiCodeSupported) return@launch
             if (relay.sendDeviceMessage(payload)) updateState { it.ledgerWritten(id, System.currentTimeMillis()) }
             else updateState { current -> current.copy(launching = current.launching?.let {
                 if (it.requestId == id) it.copy(unconfirmed = true) else it
@@ -403,6 +408,7 @@ internal class HostConnection(
                 state.agentModelEpoch != window.epoch || state.runtimes[window.runtimeId]?.sessionId != window.sessionId ||
                 state.connection != RelayConnection.ONLINE || !state.e2eReady) return@collect
             val runtime = state.runtimes[window.runtimeId] ?: return@collect
+            if (isKimiCode(runtime.agentKind, runtime.runtimeId)) return@collect
             val old = state.turnChanges[window.runtimeId] ?: TurnChangesState()
             if (old.error != null && attempted == window) return@collect
             val agent = ToolAgent(state.hostId ?: return@collect, runtime.agentKind ?: return@collect, window.sessionId)
@@ -855,6 +861,7 @@ internal class HostConnection(
         val state = mutableState.value
         val entry = state.sessions[sessionId] ?: return
         val agentKind = entry.agentKind ?: return
+        if (isKimiCode(agentKind, sessionId) && !state.kimiCodeSupported) return
         if (state.connection != RelayConnection.ONLINE || state.hostId.isNullOrBlank()) {
             updateState { it.sessionFailure(sessionId, L10n.tr("尚未连接到电脑，连接建立后才能操作会话")) }
             return
@@ -936,6 +943,9 @@ internal class HostConnection(
 
     /** L1：继续已有会话——cwd 与 agentKind 都来自会话记录，手机只需要 sessionId。 */
     fun activateSession(sessionId: String) {
+        val state = mutableState.value
+        val kimi = isKimiCode(state.sessions[sessionId]?.agentKind, sessionId)
+        if (kimi && !state.kimiCodeSupported) return
         mutableState.value.codexProviderMismatch(sessionId)?.let { reason ->
             updateState { it.sessionFailure(sessionId, reason) }
             return
@@ -947,8 +957,8 @@ internal class HostConnection(
         activateTarget(buildJsonObject {
             put("type", "resume")
             put("sessionId", sessionId)
-            mutableState.value.sessions[sessionId]?.agentKind?.let { put("agentKind", it) }
-        })
+            (if (kimi) KIMI_CODE_KIND else state.sessions[sessionId]?.agentKind)?.let { put("agentKind", it) }
+        }, kimiSpawnMode(if (kimi) KIMI_CODE_KIND else null, "tui"))
     }
 
     private fun validateNewSessionTarget(expectedHostId: String?): Boolean {
@@ -965,6 +975,7 @@ internal class HostConnection(
                 launchError = L10n.tr("请先核对上一次启动及首句结果"), waitingForLaunchJournal = true)) }; return false
         }
         if (!validateNewSessionTarget(expectedHostId)) return false
+        if (agentKind == KIMI_CODE_KIND) return createConfiguredSession(agentKind, cwd, "headless")
         if (mutableState.value.sessionConfigurationSupported && spawnMode != "headless") return createConfiguredSession(agentKind, cwd, spawnMode)
         return activateTarget(buildJsonObject {
             put("type", "new")
@@ -1045,7 +1056,9 @@ internal class HostConnection(
         }
         if (launch.requestId == configuredLaunchId) { recoverConfiguredLaunch(); return }
         updateState { it.copy(launching = null, sessionActivateRequests = it.sessionActivateRequests - launch.requestId) }
-        activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } })
+        val kind = launch.target["agentKind"] ?: launch.target["sessionId"]?.takeIf { isKimiCode(null, it) }?.let { KIMI_CODE_KIND }
+        if (kind == KIMI_CODE_KIND && (!mutableState.value.kimiCodeSupported || launch.target["type"] == "new")) return
+        activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } }, kimiSpawnMode(kind, "tui"))
     }
 
     fun loadAgentProviders(kind: String) {
@@ -1703,7 +1716,10 @@ internal class HostConnection(
         }
 
     fun sendMessage(text: String, delivery: String? = null, attachments: List<String> = emptyList(), uploadTaskIds: List<String> = emptyList()): String? {
-        val runtimeId = mutableState.value.selectedRuntimeId ?: return null
+        val current = mutableState.value
+        val runtimeId = current.selectedRuntimeId ?: return null
+        if (isKimiCode(current.runtimes[runtimeId]?.agentKind ?: current.launchPage?.target?.get("agentKind"), runtimeId) &&
+            (!current.kimiCodeSupported || delivery != null || attachments.isNotEmpty() || uploadTaskIds.isNotEmpty() || current.runtimes[runtimeId]?.status == "running")) return null
         // 只剩附件没正文时也得发出：协议要求 text 非空，而用户确实想把这个文件交给 Pi。
         val attachmentCount = maxOf(attachments.size, uploadTaskIds.size)
         val trimmed = text.trim().ifBlank { if (attachmentCount == 0) "" else L10n.tr("已发送 {0} 个附件", attachmentCount) }
@@ -2091,7 +2107,7 @@ internal class HostConnection(
     fun cancelQueuedMessage(queueId: String): String? {
         val state = mutableState.value
         val runtimeId = state.selectedRuntimeId ?: return null
-        if (state.conversations[runtimeId]?.queuedMessages?.get(queueId)?.state != "accepted") return null
+        if (isKimiCode(state.runtimes[runtimeId]?.agentKind, runtimeId) || state.conversations[runtimeId]?.queuedMessages?.get(queueId)?.state != "accepted") return null
         val commandId = UUID.randomUUID().toString()
         var created = false
         updateState { current ->
@@ -2342,6 +2358,7 @@ internal class HostConnection(
 
     /** Returns whether a download was queued (the caller's download feedback depends on it). */
     fun downloadArtifact(artifact: RemoteArtifact): Boolean {
+        if (isKimiCode(null, mutableState.value.selectedRuntimeId)) return false;
         val hostId = mutableState.value.hostId ?: run {
             updateState { it.connectionFailure(FeedbackLevel.F4, L10n.tr("请先配对电脑"), FeedbackCondition.PAIRING) }
             return false
@@ -2367,7 +2384,7 @@ internal class HostConnection(
      * 未配对 Host 时直接报错，而不是把请求丢给某个 runtime。
      */
     fun downloadFile(path: String): Boolean {
-        if (path.isBlank()) return false
+        if (path.isBlank() || isKimiCode(null, mutableState.value.selectedRuntimeId)) return false
         val hostId = mutableState.value.hostId
         if (hostId == null) {
             updateState { it.connectionFailure(FeedbackLevel.F4, L10n.tr("请先配对电脑"), FeedbackCondition.PAIRING) }
@@ -2654,12 +2671,13 @@ internal class HostConnection(
                 // (no `dshDesktop` key). Declare the feature and apply the full device.ready it sends next, so a
                 // selected Desktop session is not dropped; the filtered view is applied only if none arrives.
                 if (interactiveChannel != null && incomingMessage != null && incomingMessage.get("type")?.jsonPrimitive?.contentOrNull == "device.ready") {
-                    val filtered = incomingMessage["hostFeatures"]?.let { it as? JsonArray }?.any { it.jsonPrimitive.contentOrNull == "device.features" } == true &&
+                    val features = deviceAgentFeatures(incomingMessage)
+                    val filtered = features.isNotEmpty() &&
                         !incomingMessage.containsKey("dshDesktop") && !incomingMessage.containsKey("_orbisFilteredFallback")
                     if (filtered && relay.sendDeviceMessage(buildJsonObject {
                             put("type", "device.features")
                             put("protocolVersion", PROTOCOL_VERSION)
-                            put("features", JsonArray(listOf(JsonPrimitive("agent.dshDesktop"))))
+                            put("features", JsonArray(features.map(::JsonPrimitive)))
                         })) {
                         val fallback = JsonObject(incomingMessage + ("_orbisFilteredFallback" to JsonPrimitive(true))).toString()
                         pendingFilteredReady = fallback
@@ -2879,10 +2897,10 @@ internal class HostConnection(
                                 if (interactiveChannel != null && messageType == "session.launch.result" && message != null) {
                                     val id = message["launchId"]?.jsonPrimitive?.contentOrNull
                                     val saved = configuredLaunchJournal.snapshot
-                                    if (id == configuredLaunchId && saved != null) {
+                                    if (id == configuredLaunchId && saved != null && configuredLaunchAvailable(saved)) {
                                         if (message["phase"]?.jsonPrimitive?.contentOrNull == "absent") {
                                             // Authoritative absence permits retrying the identical operation; native creation stays deduplicated.
-                                            if (configuredLaunchJournal.update(id) { it }?.await() == true && configuredLaunchId == id)
+                                            if (configuredLaunchJournal.update(id) { it }?.await() == true && configuredLaunchId == id && configuredLaunchAvailable(saved))
                                                 relay.sendDeviceMessage(JsonObject(saved.filterKeys { it !in setOf("firstMessage", "firstMessageId", "firstCommandId", "sessionId", "following") }))
                                             else if (id != null) configuredLaunchPersistenceFailed(id)
                                         } else if (message["phase"]?.jsonPrimitive?.contentOrNull == "failed") {
@@ -3946,6 +3964,7 @@ internal class HostConnection(
      * 附件 chip 上，否则用户看不到「正在上传」这件事。
      */
     fun queueUpload(uri: Uri, runtimeId: String, onQueued: (String) -> Unit = {}) {
+        if (isKimiCode(mutableState.value.runtimes[runtimeId]?.agentKind, runtimeId)) return
         val runtime = mutableState.value.runtimes[runtimeId]
         if (runtime == null) {
             updateState { it.composerFailure(runtimeId, L10n.tr("会话已离线，无法发送文件")) }

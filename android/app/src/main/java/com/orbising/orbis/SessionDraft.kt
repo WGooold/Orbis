@@ -84,14 +84,15 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     var permissionCategory by remember { mutableStateOf<String?>(null) }
     var proposedPermissions by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     val config = state.sessionConfiguration.takeIf { it.agentKind == kind && it.cwd == cwd }
-    LaunchedEffect(open, kind, cwd, state.e2eReady, state.sessionConfigurationSupported) {
+    LaunchedEffect(open, kind, cwd, state.e2eReady, state.sessionConfigurationSupported, state.kimiCodeSupported) {
         if (open && state.e2eReady && state.sessionConfigurationSupported && cwd.isNotBlank()) onLoadConfiguration(kind, cwd)
     }
     fun submit() {
+        if (kind == KIMI_CODE_KIND && (!state.kimiCodeSupported || config?.snapshot == null)) return
         if (cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
     }
     val supported = state.launchableAgents ?: state.supportedAgents
-    val kinds = listOf("codex", "claude", "dsh", "pi")
+    val kinds = listOf("codex", "claude", "dsh", "pi") + listOfNotNull(KIMI_CODE_KIND.takeIf { state.kimiCodeSupported && supported?.contains(it) == true })
     val family = agentFamily(kind)
     /** Both native entries of a family can start here, so its version is a real choice (Codex terminal / desktop, DeepSeek Web / Desktop). */
     fun versionsAvailable(of: String) = agentVariants(of).size > 1 && agentVariants(of).all { supported?.contains(it) == true }
@@ -117,8 +118,8 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         }
     }
     LaunchedEffect(state.sessionBrowse?.path) { if (cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
-    LaunchedEffect(supported) { if (supported != null && kind !in supported)
-        kind = (listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi")).firstOrNull { it in supported } ?: "pi"
+    LaunchedEffect(supported, state.kimiCodeSupported) { if (supported != null && kind !in supported || kind == KIMI_CODE_KIND && !state.kimiCodeSupported)
+        kind = (listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi") + kinds.filter { it == KIMI_CODE_KIND }).firstOrNull { supported?.contains(it) == true } ?: "pi"
     }
     AgentTheme(agentBrand(kind)) {
         NeumorphSurface(Modifier.fillMaxWidth().testTag("session-draft").onGloballyPositioned { bounds = it.boundsInWindow() },
@@ -189,23 +190,25 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (state.sessionConfigurationSupported) {
-                    val permissionSummary = config?.snapshot?.catalog?.permissions?.mapNotNull { setting ->
-                        setting.options.firstOrNull { it.value == config.values.permissions[setting.id] }?.label
-                    }?.takeIf { it.isNotEmpty() }?.joinToString(" · ") { L10n.hostText(it) } ?: L10n.tr("电脑端默认")
-                    val thinking = config?.model?.thinking?.firstOrNull { it.value == config.values.thinking }?.label
-                        ?.let(L10n::hostText) ?: config?.values?.thinking ?: L10n.tr("默认深度")
-                    // S55 / SC79: permissions never claim width from the model or thinking value.
-                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        DraftConfigurationButton(L10n.tr("模型"), config?.model?.label ?: L10n.tr(if (config?.snapshot == null) "模型" else "电脑端默认"),
-                            panel = "model", enabled = config?.snapshot?.catalog?.models?.isNotEmpty() == true && config.requestId == null,
-                            modifier = Modifier.fillMaxWidth(), onClick = { configurationPanel = "model" })
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            DraftConfigurationButton(L10n.tr("思考深度"), thinking, panel = "thinking",
-                                enabled = config?.model?.thinking?.isNotEmpty() == true && config.requestId == null,
-                                modifier = Modifier.weight(1f), onClick = { configurationPanel = "thinking" })
-                            DraftConfigurationButton(L10n.tr("权限"), null, panel = "permissions", accessibilityValue = permissionSummary,
-                                enabled = config?.snapshot != null && config.requestId == null, modifier = Modifier.weight(1f),
-                                onClick = { proposedPermissions = config?.values?.permissions.orEmpty(); configurationPanel = "permissions" })
+                    if (kind != KIMI_CODE_KIND) {
+                        val permissionSummary = config?.snapshot?.catalog?.permissions?.mapNotNull { setting ->
+                            setting.options.firstOrNull { it.value == config.values.permissions[setting.id] }?.label
+                        }?.takeIf { it.isNotEmpty() }?.joinToString(" · ") { L10n.hostText(it) } ?: L10n.tr("电脑端默认")
+                        val thinking = config?.model?.thinking?.firstOrNull { it.value == config.values.thinking }?.label
+                            ?.let(L10n::hostText) ?: config?.values?.thinking ?: L10n.tr("默认深度")
+                        // S55 / SC79: permissions never claim width from the model or thinking value.
+                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            DraftConfigurationButton(L10n.tr("模型"), config?.model?.label ?: L10n.tr(if (config?.snapshot == null) "模型" else "电脑端默认"),
+                                panel = "model", enabled = config?.snapshot?.catalog?.models?.isNotEmpty() == true && config.requestId == null,
+                                modifier = Modifier.fillMaxWidth(), onClick = { configurationPanel = "model" })
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                DraftConfigurationButton(L10n.tr("思考深度"), thinking, panel = "thinking",
+                                    enabled = config?.model?.thinking?.isNotEmpty() == true && config.requestId == null,
+                                    modifier = Modifier.weight(1f), onClick = { configurationPanel = "thinking" })
+                                DraftConfigurationButton(L10n.tr("权限"), null, panel = "permissions", accessibilityValue = permissionSummary,
+                                    enabled = config?.snapshot != null && config.requestId == null, modifier = Modifier.weight(1f),
+                                    onClick = { proposedPermissions = config?.values?.permissions.orEmpty(); configurationPanel = "permissions" })
+                            }
                         }
                     }
                     config?.error?.let { StatusWithInfo(L10n.tr("设置未确认"), L10n.hostText(it), error = true) }
@@ -230,7 +233,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     NeumorphIconButton(onClick = ::submit,
                         icon = if (text.isBlank()) Icons.Rounded.PlayArrow else OrbisSymbols.ArrowUpward,
                         contentDescription = L10n.tr(if (text.isBlank()) "启动" else "发出第一句话并创建会话"),
-                        enabled = cwd.isNotBlank() && state.canCreateSessionOn(state.hostId),
+                        enabled = cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) && (kind != KIMI_CODE_KIND || state.kimiCodeSupported && config?.snapshot != null),
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("draft-send"))
                 }
 

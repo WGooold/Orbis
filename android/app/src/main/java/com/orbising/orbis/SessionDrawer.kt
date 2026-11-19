@@ -97,7 +97,8 @@ internal enum class DrawerAgentFilter(
     CodexDesktop("codexDesktop", "Codex 桌面版", "codexDesktop"),
     DeepSeek("dsh", "DeepSeek", "dsh"),
     DeepSeekDesktop("dshDesktop", "DeepSeek 桌面版", "dshDesktop"),
-    Claude("claude", "Claude Code", "claude");
+    Claude("claude", "Claude Code", "claude"),
+    Kimi(KIMI_CODE_KIND, "Kimi Code", KIMI_CODE_KIND);
 
     fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
     val label: String get() = L10n.tr(labelKey)
@@ -116,6 +117,7 @@ private fun DrawerAgentFilterMenu(
     onSelectProvider: (String) -> Unit,
     onRequestProviders: () -> Unit,
     desktopDeepSeek: Boolean = false,
+    kimiCode: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
@@ -153,7 +155,7 @@ private fun DrawerAgentFilterMenu(
                 }
             } else {
             // The Desktop entry is listed only where this Host offers it (ADR-0076).
-            DrawerAgentFilter.values().filter { it != DrawerAgentFilter.DeepSeekDesktop || desktopDeepSeek || it == selected }.forEach { filter ->
+            DrawerAgentFilter.values().filter { (it != DrawerAgentFilter.DeepSeekDesktop || desktopDeepSeek || it == selected) && (it != DrawerAgentFilter.Kimi || kimiCode) }.forEach { filter ->
                 NeumorphMenuItem(
                     text = { Text(filter.label) },
                     onClick = {
@@ -221,7 +223,8 @@ internal fun SessionDrawer(
     }
     // 只列当前电脑的目录：多台电脑不合并成一棵树，切换在页脚的电脑行（ADR-0030 修订）。
     val activeHostState = hosts.firstOrNull { it.hostId == activeHostId }?.state
-    var agentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
+    var savedAgentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
+    val agentFilterKey = savedAgentFilterKey.takeUnless { it == KIMI_CODE_KIND && !state.kimiCodeSupported } ?: DrawerAgentFilter.All.key
     val agentFilter = drawerAgentFilter(agentFilterKey)
     val currentProvider = state.currentProviders[agentFilter.key]
     val hostProvider = activeHostState?.currentProviders?.get(agentFilter.key)
@@ -391,12 +394,13 @@ internal fun SessionDrawer(
                     )
                     DrawerAgentFilterMenu(
                         selected = agentFilter,
-                        onSelect = { agentFilterKey = it.key },
+                        onSelect = { savedAgentFilterKey = it.key },
                         providerOptions = providerOptions,
                         providerFilterKey = providerKey,
                         onSelectProvider = { requestedProviderKey = it },
                         onRequestProviders = onRequestProviders,
                         // Same rule as iOS: the Host offers DeepSeek Desktop, or this computer already has its sessions.
+                        kimiCode = state.kimiCodeSupported,
                         desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it } ||
                             state.sessions.values.any { it.agentKind == "dshDesktop" },
                     )
