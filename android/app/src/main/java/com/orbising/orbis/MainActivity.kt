@@ -1680,7 +1680,7 @@ internal fun ChatScreen(
     val historyState = state.sessionHistory[runtimeId]
     val historyRead = state.historyReadForWindow(runtimeId)
     val rangeError = state.sessionRangeFailures[sessionRangeFailureKey(runtimeId, "catchup")]
-    // One reserved status slot: sync, paging and error updates never insert transcript rows.
+    // One reserved status slot: display sync and error updates never insert transcript rows.
     val chatHeaderCount = 1
     val viewportMotion = remember(runtimeId, sessionId) { ChatViewportMotion() }
     // A catch-up can connect a large cached prefix in one projection. LazyColumn's nearby-key
@@ -1703,7 +1703,6 @@ internal fun ChatScreen(
     var historyAnchorOffset by remember(presentationIdentity) { mutableStateOf(0) }
     var historyAnchorGeneration by remember(presentationIdentity) { mutableStateOf(0L) }
     var historyPagingFeedback by remember(presentationIdentity) { mutableStateOf<String?>(null) }
-    var retryingHistory by remember(presentationIdentity) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val sendFlight = remember(state.hostId, runtimeId, sessionId) { MessageSendFlightState(scope) }
     LaunchedEffect(firstDraftSend?.send?.messageId, runtimeId, sessionId) {
@@ -2064,7 +2063,6 @@ internal fun ChatScreen(
         // Lock before crossing to the worker. Do not let a short, non-scrollable window
         // reacquire tail following while that worker is prepending rows.
         historyAnchorPending = true
-        if (retrying) retryingHistory = true
         val wasFollowing = following
         val viewportGeneration = viewportMotion.generation
         following = false
@@ -2076,7 +2074,6 @@ internal fun ChatScreen(
             } else {
                 if (accepted.rejection != null) historyPagingFeedback = accepted.rejection
                 historyAnchorPending = false
-                retryingHistory = false
                 if (viewportMotion.generation == viewportGeneration) following = wasFollowing
             }
         }
@@ -2103,7 +2100,6 @@ internal fun ChatScreen(
             historyAnchorIndex = null
             historyAnchorPending = false
             historyAnchorOperationId = null
-            retryingHistory = false
         }
     }
 
@@ -2733,7 +2729,7 @@ internal fun ChatScreen(
                     Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
-                            if (displayReadPending || historyRead?.phase?.active == true)
+                            if (displayReadPending)
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         }
                         when {
@@ -2831,17 +2827,20 @@ internal fun ChatScreen(
             val noticesSupported = runtime?.agentKind in setOf("codex", "codexDesktop")
             val hasNotices = notices != null && (notices.items.isNotEmpty() || (noticesSupported && !notices.complete))
             val failedLaunch = launch?.takeIf { it.failure != null || it.unconfirmed }
-            val showHistoryRetry = (historyState?.hasOlder == true && historyFailure) || retryingHistory
-            // One top slot: no outgoing question animation remains when retry takes over.
+            // Keep the loading state through local admission and the visible prepend.
+            val historyLoading = historyAnchorPending || historyRead?.phase?.active == true
+            val showHistoryRetry = historyState?.hasOlder == true && historyFailure
+            // One top slot: no outgoing question animation remains when paging takes over.
             Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
                 if (failedLaunch != null) {
                     LaunchNotice(failedLaunch, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) },
                         onAbandon = if (model.canAbandonConfiguredLaunch(failedLaunch.requestId)) {
                             { model.abandonConfiguredLaunch()?.let(onAbandonLaunch); Unit }
                         } else null)
+                } else if (historyLoading) {
+                    ChatHistoryProgress(Modifier.align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 6.dp))
                 } else if (showHistoryRetry) {
-                    ChatHistoryRetry(loading = retryingHistory || historyRead?.phase?.active == true,
-                        enabled = canLoadHistory(retrying = true), onRetry = { loadHistoryPage(retrying = true) },
+                    ChatHistoryRetry(enabled = canLoadHistory(retrying = true), onRetry = { loadHistoryPage(retrying = true) },
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
                 } else if (!hasNotices) {
                     val readingRowId by remember(listState, projection) {

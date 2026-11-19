@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.NorthWest
@@ -30,6 +31,10 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -104,19 +109,31 @@ internal fun AnimatedChatQuestionReminder(
 }
 
 @Composable
-internal fun ChatHistoryRetry(loading: Boolean, enabled: Boolean, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+internal fun ChatHistoryProgress(modifier: Modifier = Modifier) {
+    NeumorphSurface(
+        modifier.testTag("chat-history-loading").semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+        shape = RemoteUi.ControlShape, shadowScale = 0.6f,
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(Modifier.size(16.dp).clearAndSetSemantics {}, strokeWidth = 2.dp)
+            Text(L10n.tr("正在加载更早的历史…"), style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+internal fun ChatHistoryRetry(enabled: Boolean, onRetry: () -> Unit, modifier: Modifier = Modifier) {
     NeumorphSurface(
         modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("chat-history-retry"),
         shape = RemoteUi.ControlShape, shadowScale = 0.6f, contentPadding = 12.dp,
-        onClick = onRetry.takeIf { !loading && enabled },
+        onClick = onRetry.takeIf { enabled },
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(L10n.tr(if (loading) "正在加载更早的历史…" else "历史加载失败"),
-                modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
-                color = if (loading) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Text(L10n.tr("重试"), color = MaterialTheme.colorScheme.primary, maxLines = 1)
+            Text(L10n.tr("历史加载失败"), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(L10n.tr("重试"), color = MaterialTheme.colorScheme.primary, maxLines = 1)
         }
     }
 }

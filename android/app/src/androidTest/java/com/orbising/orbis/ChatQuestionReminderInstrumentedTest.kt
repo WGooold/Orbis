@@ -140,6 +140,35 @@ class ChatQuestionReminderInstrumentedTest {
         assertEquals(before, scroll.firstVisibleItemScrollOffset)
     }
 
+    // CHAT-PAGING-02: only foreground paging owns the top slot; changing phases never moves the transcript.
+    @Test fun foregroundHistoryLoadingShowsOneNonInteractiveStatusWithoutMovingTheReader() = withChat { state, scroll, _ ->
+        val transcript = compose.onNodeWithTag("chat-transcript")
+        val progress = compose.onNodeWithTag("chat-history-loading")
+        val position = scroll.firstVisibleItemIndex to scroll.firstVisibleItemScrollOffset
+        val viewport = transcript.fetchSemanticsNode().boundsInRoot
+        val original = state.value.copy(sessionHistory = mapOf("r" to SessionHistoryState("s", "leaf", "oldest", true)))
+        val pending = SessionReadOperation("paging", "r", original.deviceId, original.hostId, "s", "leaf", "oldest", 0,
+            null, phase = SessionReadPhase.WAITING)
+        fun show(operation: SessionReadOperation) {
+            compose.runOnIdle { state.value = original.copy(sessionReads = mapOf(operation.operationId to operation)) }
+            compose.waitForIdle()
+        }
+        progress.assertDoesNotExist()
+        show(pending.copy(kind = SessionReadKind.PREFETCH))
+        progress.assertDoesNotExist()
+        show(pending)
+        progress.assertIsDisplayed().assertTextEquals(L10n.tr("正在加载更早的历史…")).assertHasNoClickAction()
+        assertEquals(viewport.center.x, progress.fetchSemanticsNode().boundsInRoot.center.x, 1f)
+        compose.onNodeWithTag("chat-question-reminder").assertDoesNotExist()
+        compose.onNodeWithTag("chat-history-retry").assertDoesNotExist()
+        assertEquals(viewport, transcript.fetchSemanticsNode().boundsInRoot)
+        assertEquals(position, scroll.firstVisibleItemIndex to scroll.firstVisibleItemScrollOffset)
+        show(pending.copy(phase = SessionReadPhase.SUCCEEDED))
+        progress.assertDoesNotExist()
+        compose.onNodeWithTag("chat-question-reminder").assertIsDisplayed()
+        assertEquals(position, scroll.firstVisibleItemIndex to scroll.firstVisibleItemScrollOffset)
+    }
+
     @Test fun notificationsTakePriorityAndHostChangesClearTheReminder() = withChat { state, scroll, _ ->
         val before = scroll.firstVisibleItemScrollOffset
         compose.runOnIdle {

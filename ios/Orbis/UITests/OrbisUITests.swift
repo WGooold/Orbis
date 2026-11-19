@@ -3731,6 +3731,8 @@ final class OrbisUITests: XCTestCase {
         let transcript = chatTranscript(app)
         let delivery = app.buttons["preview-history-deliver"]
         XCTAssertTrue(delivery.waitForExistence(timeout: 3))
+        // CHAT-PAGING-02: hold the response and observe the foreground paging indicator.
+        let historyProgress = app.descendants(matching: .any)["chat-history-loading"].firstMatch
         func protocolFields() -> [String: String] {
             Dictionary(uniqueKeysWithValues: ((delivery.value as? String) ?? "").split(separator: ";").compactMap { field in
                 let pair = field.split(separator: "=", maxSplits: 1)
@@ -3743,12 +3745,15 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(protocolFields()["requests"], "0", "Paging starts only after the reader scrolls toward older content")
         XCTAssertEqual(protocolFields()["publishedMessages"], "12")
         XCTAssertEqual(protocolFields()["publishedHistory20"], "false")
+        XCTAssertFalse(historyProgress.exists)
         for _ in 0..<12 where !delivery.isEnabled {
             transcript.swipeDown()
             settle()
         }
         XCTAssertTrue(waitUntilEnabled(delivery, timeout: 3), (delivery.value as? String) ?? "Missing history request")
         guard delivery.isEnabled else { return }
+        XCTAssertTrue(historyProgress.waitForExistence(timeout: 3))
+        XCTAssertEqual(historyProgress.label, "正在加载更早的历史…")
         let pending = protocolFields()
         XCTAssertEqual(pending["requests"], "1")
         XCTAssertEqual(pending["responses"], "0")
@@ -3810,6 +3815,7 @@ final class OrbisUITests: XCTestCase {
         XCTAssertEqual(completed["publishedMessages"], "32")
         XCTAssertEqual(completed["publishedHistory20"], "true")
         XCTAssertEqual(completed["error"], "none")
+        XCTAssertTrue(historyProgress.waitForNonExistence(timeout: 3))
         capture("history-prepend-reading-anchor", app: app)
         let jump = app.buttons["跳到最新消息"]
         XCTAssertTrue(jump.waitForExistence(timeout: 3))

@@ -56,3 +56,9 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 在线及缓存聊天页移除可见的「更早的消息」按钮，保留读屏动作。主动上翻到顶部区域并松手最多读取一页；已在顶部（包括不足一屏）须达到下拉阈值再松手。手势开始和结束均校验准入，读取中的手势不排队；停留、回弹、布局变化、定位与回包不触发前台续页。游标不推进时进入失败而非续页。预取与传输重发仍由各自的预算和操作归属控制。Android 独立离线历史列表维持原有 §1–§5 行为。
 
 失败时「重试」与最近提问互斥；重试在原位显示加载状态。分页状态不增减可见列表行。验证见 [分页锚点和请求计数](../../.artifacts/chat-history-20261118/ios-ui-r4/command.log)、[Android 读操作单测](../../.artifacts/chat-history-20261118/android-build-r3/)及 [Android 提示互斥](../../.artifacts/chat-history-20261118/android-ui-r3/instrumentation.log)。未部署，未做真机验收。
+
+## CHAT-PAGING-02：聊天区顶部分页状态（V04）
+
+前台历史分页及重试期间，在聊天区顶部居中显示小进度圈和「正在加载更早的历史…」。提示沿用顶部覆盖槽，不新增列表行、不拦截滚动；成功或结束后收起，失败保留既有重试。首屏同步、后台预取及 Android 独立离线历史列表保持原有呈现。
+
+实现见 [iOS 聊天顶部](../../ios/Orbis/Orbis/ChatHeaderView.swift)及 [Android 聊天顶部组件](../../android/app/src/main/java/com/orbising/orbis/ChatQuestionReminder.kt)。自动验证：[iOS 分页等待与阅读锚点](../../.artifacts/chat-history-loading.aIPaMH/ios-device/command.log)、[Android 加载状态、提示互斥及锚点](../../.artifacts/chat-history-loading.aIPaMH/android-ui/instrumentation.log)。未部署，未做真机验收。
