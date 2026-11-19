@@ -107,6 +107,8 @@ const assets = {
   "/assets/promo/qr-orbising.svg": ["promo/qr-orbising.svg", "image/svg+xml"],
 } as const;
 export const downloadNames = [
+  "OrbisHost-0.1.24-windows-x64-setup.exe", "OrbisHost-0.1.24-windows-x64.zip",
+  "OrbisHost-0.1.24-macos-arm64.dmg", "OrbisHost-0.1.24-macos-x64.dmg",
   "OrbisHost-0.1.23-windows-x64-setup.exe", "OrbisHost-0.1.23-windows-x64.zip",
   "OrbisHost-0.1.23-macos-arm64.dmg", "OrbisHost-0.1.23-macos-x64.dmg",
   "OrbisHost-0.1.22-windows-x64-setup.exe", "OrbisHost-0.1.22-windows-x64.zip",
