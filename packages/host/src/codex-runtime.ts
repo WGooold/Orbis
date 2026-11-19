@@ -2830,16 +2830,21 @@ export class CodexRuntime implements AgentBackend {
     if (thread.reconcileNotifications.length > 0) await this.#drainReconcileNotifications(thread);
   }
 
-  /** Re-read the source after a revert performed by another Codex client. */
-  #reconcileExternalRevert(thread: ThreadState): void {
+  /** Re-read native history when the current read is invalidated. Only a revert or an
+   * interrupted initial attach requires a boundary before the replacement history is known. */
+  #reconcileNativeHistory(thread: ThreadState, cause: "revert" | "notification_overflow" | "new_turn" | "completion_conflict" | "attach_invalidated"): void {
     const generation = thread.reconcileGeneration + 1;
     const compactionOwner = thread.compactionOwner;
     void this.#queueReconcile(thread, async (generation) => {
       if (thread.reconcileNotifications.overflowed) thread.reconcileNotifications.reset();
-      this.#beginSourceReconcile(thread);
+      const epochStarted = cause === "revert" || cause === "attach_invalidated";
+      if (epochStarted) this.#beginSourceReconcile(thread);
       const turns = await this.#listAllTurns(thread.id);
       if (!this.#isCurrentReconcile(thread, generation)) return;
-      const replayed = this.#replayTurns(thread, { turns }, true);
+      // Lost notifications invalidate the read, not the committed graph. Compare the
+      // fresh projection with that graph so a pure append keeps its epoch.
+      thread.sourceReady = false;
+      const replayed = this.#replayTurns(thread, { turns }, epochStarted);
       if (!this.#isCurrentReconcile(thread, generation)) return;
       if (!replayed) {
         this.#setCompaction(thread, "unavailable");
@@ -2855,10 +2860,14 @@ export class CodexRuntime implements AgentBackend {
       this.#touchSource(thread);
       this.#publishMetadataEvent(thread);
     }).catch((error: unknown) => {
-      this.#options.log?.(`Codex 外部回退协调失败（thread=${thread.id}）：${describeError(error)}`);
+      this.#options.log?.(`Codex 原生历史协调失败（thread=${thread.id} cause=${cause}）：${describeError(error)}`);
       if (this.#isCurrentReconcile(thread, generation)) {
         if (thread.compactionOwner === compactionOwner) this.#setCompaction(thread, "unavailable");
         thread.historyError = "codex_reconcile_failed";
+        if (thread.sourceReady) {
+          thread.sourceReady = false;
+          this.#touchSource(thread);
+        }
         this.#publishMetadataEvent(thread);
       }
     });
@@ -3427,7 +3436,7 @@ export class CodexRuntime implements AgentBackend {
           if (!this.#isCurrentReconcile(thread, generation)) {
             for (const notification of notifications) this.#bufferNotification(thread, thread.reconcileNotifications, notification);
             thread.tuiAttachPending = false;
-            this.#reconcileExternalRevert(thread);
+            this.#reconcileNativeHistory(thread, "attach_invalidated");
           } else {
             // Notifications may arrive ahead of the resume response. Apply them after replay
             // so a newer item, permission or turn state cannot be erased by that snapshot.
@@ -3508,7 +3517,7 @@ export class CodexRuntime implements AgentBackend {
     // Freeze and discard the incomplete prefix. Further notifications cannot queue more
     // reads or invalidate this repair until its fresh native read actually starts.
     if (attaching) ++thread.reconcileGeneration;
-    else this.#reconcileExternalRevert(thread);
+    else this.#reconcileNativeHistory(thread, "notification_overflow");
   }
 
   /** Route native child observations to their root without making children active sessions. */
@@ -3592,7 +3601,7 @@ export class CodexRuntime implements AgentBackend {
       if (thread.reconcilePromise !== undefined) {
         const overflowed = thread.reconcileNotifications.overflowed;
         this.#bufferNotification(thread, thread.reconcileNotifications, { method, params });
-        if (!overflowed && !thread.reconcileNotifications.overflowed) this.#reconcileExternalRevert(thread);
+        if (!overflowed && !thread.reconcileNotifications.overflowed) this.#reconcileNativeHistory(thread, "new_turn");
         return;
       }
       ++thread.reconcileGeneration;
@@ -3647,7 +3656,7 @@ export class CodexRuntime implements AgentBackend {
         // The notification is evidence that the native source changed. It is not a
         // request to issue another revert; one authoritative turns/list reconciliation
         // is enough and duplicate notifications collapse through the generation queue.
-        this.#reconcileExternalRevert(thread);
+        this.#reconcileNativeHistory(thread, "revert");
         return;
       case "thread/name/updated": {
         if (record.threadName !== undefined && record.threadName !== null && typeof record.threadName !== "string") return;
@@ -4335,7 +4344,7 @@ export class CodexRuntime implements AgentBackend {
             // A buffered completion may be newer than the read it overlaps. Invalidate that
             // read and serialize another authoritative reconciliation instead of publishing
             // ready with a guessed update or a permanent cache-conflict error.
-            this.#reconcileExternalRevert(thread);
+            this.#reconcileNativeHistory(thread, "completion_conflict");
           }
           return;
         }

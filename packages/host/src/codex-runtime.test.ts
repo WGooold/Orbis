@@ -1053,6 +1053,32 @@ describe("Codex recoverable source checkpoints", () => {
     expect(syncHistory(h)?.source?.epoch).toBe(before?.source?.epoch);
   });
 
+  // CODEX-SOURCE-01: a busy Desktop turn can overflow the buffer during the periodic
+  // native read. Rereading an append must not spend a history epoch on the lost hints.
+  it("keeps the Desktop source epoch when an overflowing native read resolves to an append", async () => {
+    const first = { id: "t1", status: "completed", items: [agent("a")] };
+    const h = makeHarness({ desktop: true, initialTurns: [first] });
+    await activate(h);
+    const preview = () => {
+      const start = h.events.length;
+      h.runtime.handleCommand({ type: "session.sync", range: "preview", syncId: "probe", sessionId: "codex-desktop:th-1" }, undefined, "th-1");
+      return h.events.slice(start).find(event => event.type === "session.snapshot");
+    };
+    try {
+      const baseline = preview();
+      expect(baseline).toMatchObject({ source: { ready: true }, cursor: { leafId: "a" } });
+      h.runtime.announce("th-1");
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+      h.notify("item/commandExecution/outputDelta", { threadId: "th-1", turnId: "t2", itemId: "cmd", delta: "x".repeat(512 * 1024) });
+      h.resolveNext({ data: [first] });
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(2));
+      h.resolveNext({ data: [first, { id: "t2", status: "completed", items: [agent("b")] }] });
+      await vi.waitFor(() => expect(preview()).toMatchObject({ source: { epoch: baseline?.source?.epoch, ready: true }, cursor: { leafId: "b" } }));
+      expect(h.events.filter(event => event.type === "session.patch").map(event => event.source.epoch))
+        .toEqual([baseline?.source?.epoch]);
+    } finally { h.server.onExit?.(0); }
+  });
+
   it("rereads a buffered completed item that differs from the overlapping native read", async () => {
     const h = makeHarness();
     await resume(h, [{ id: "t", status: "completed", items: [agent("a", "original")] }]);
