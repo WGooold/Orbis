@@ -40,7 +40,9 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed' }
         cmake --build $buildDir --parallel 2
         if ($LASTEXITCODE -ne 0) { throw 'Qt build failed' }
-        ctest --test-dir $buildDir --output-on-failure
+        # Keep the failing test's own output: the default 1024-byte cap truncated the report to
+        # nothing for installer-update, which hid the Windows-only failure twice.
+        ctest --test-dir $buildDir --output-on-failure --test-output-size-failed 200000
         $nativeTestExit = $LASTEXITCODE
         $diagnosticLog = Join-Path $buildDir 'diagnostic-log.txt'
         if (Test-Path -LiteralPath $diagnosticLog) { Get-Content -LiteralPath $diagnosticLog }
