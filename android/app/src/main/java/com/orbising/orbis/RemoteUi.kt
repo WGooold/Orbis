@@ -135,24 +135,22 @@ internal fun NeumorphDialog(
     } }, properties = properties, modifier = Modifier.padding(vertical = 12.dp).heightIn(max = maxDialogHeight).graphicsLayer {
         alpha = entrance.value; scaleX = 0.96f + 0.04f * entrance.value; scaleY = scaleX
     }) {
-        CompositionLocalProvider(LocalOrbisSurface provides null) {
-            NeumorphSurface(shape = shape, shadowScale = 1.1f, contentPadding = 16.dp) {
-                Column(Modifier.heightIn(max = maxDialogHeight), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                    ProvideTextStyle(MaterialTheme.typography.titleLarge, title)
-                    Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-                        ProvideTextStyle(MaterialTheme.typography.bodyMedium, text)
-                    }
-                    FlowRow(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        CompositionLocalProvider(LocalModalCommit provides { action -> scope.launch {
-                            entrance.animateTo(0f, tween(InteractionMotion.duration(InteractionMotion.Exit))); action()
-                        } }) {
-                            dismissButton?.invoke()
-                            confirmButton()
-                        }
+        OrbisModalSurface(shape = shape, contentPadding = 16.dp) {
+            Column(Modifier.heightIn(max = maxDialogHeight), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                ProvideTextStyle(MaterialTheme.typography.titleLarge, title)
+                Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                    ProvideTextStyle(MaterialTheme.typography.bodyMedium, text)
+                }
+                FlowRow(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CompositionLocalProvider(LocalModalCommit provides { action -> scope.launch {
+                        entrance.animateTo(0f, tween(InteractionMotion.duration(InteractionMotion.Exit))); action()
+                    } }) {
+                        dismissButton?.invoke()
+                        confirmButton()
                     }
                 }
             }

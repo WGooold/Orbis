@@ -4,12 +4,17 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import android.view.WindowInsets
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
@@ -23,6 +28,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
+import kotlin.math.roundToInt
 
 /** S43 / SC64 / M29: compare full controls with the physical safe viewport, not clipped semantics. */
 class BottomSheetInstrumentedTest {
@@ -35,6 +41,59 @@ class BottomSheetInstrumentedTest {
         capture("protocol")
         assertFullyVisible(compose.onNodeWithTag("relay-mode-WS"))
         assertFullyVisible(compose.onNodeWithTag("protocol-apply"))
+    }
+
+    /** S67: the child dialog uses its own shell without closing or changing the parent selection. */
+    @Test fun quicInfoDialogKeepsTheProtocolSheetAndSelection() {
+        compose.setContent { OrbisTheme {
+            ProtocolChoiceSheet(RelayTransportMode.AUTO, true, {}, {})
+        } }
+        compose.onNodeWithTag("relay-mode-WS").performClick()
+        compose.onNodeWithTag("inline-info").performClick()
+        compose.onNodeWithText(L10n.tr("当前网络不支持 QUIC 时无法连接")).assertIsDisplayed()
+        capture("modal-lighting-quic-dialog").recycle()
+        compose.onNodeWithText(L10n.tr("知道了")).performClick()
+        compose.onNodeWithText(L10n.tr("当前网络不支持 QUIC 时无法连接")).assertDoesNotExist()
+        compose.onNodeWithTag("relay-mode-WS").assertIsSelected()
+        compose.onNodeWithTag("protocol-apply").assertIsEnabled()
+    }
+
+    /** S67: the scrim must never catch a white outer edge; the actual face drives recessed controls. */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Test fun modalSheetUsesItsGroundAndCannotBrightenTheScrim() {
+        val ground = Color(0xFFB5C9DF)
+        compose.setContent { OrbisTheme(darkTheme = false) {
+            val page = rememberNeumorphColors().base
+            Box(Modifier.fillMaxSize().background(page))
+            OrbisBottomSheet(onDismissRequest = {}, containerColor = ground, dragHandle = null) {
+                Spacer(Modifier.fillMaxWidth().height(48.dp).testTag("modal-face-sample"))
+                NeumorphSurface(Modifier.fillMaxWidth().height(64.dp).testTag("modal-recess-sample"),
+                    shape = RoundedCornerShape(12.dp), style = NeumorphStyle.Pressed) {}
+                Spacer(Modifier.height(60.dp))
+            }
+        } }
+        fun midpoint(tag: String): Offset {
+            val node = compose.onNodeWithTag(tag).fetchSemanticsNode()
+            return node.positionOnScreen + Offset(node.size.width / 2f, node.size.height / 2f)
+        }
+        val top = compose.onNodeWithTag("orbis-sheet-surface").fetchSemanticsNode().positionOnScreen.y.roundToInt()
+        val face = midpoint("modal-face-sample")
+        val recess = midpoint("modal-recess-sample")
+        val x = face.x.roundToInt()
+        val frame = capture("modal-lighting-ground")
+        try {
+            assertEquals(ground.toArgb(), frame.getPixel(x, face.y.roundToInt()))
+            assertEquals(ground.toArgb(), frame.getPixel(x, recess.y.roundToInt()))
+            val backdrop = frame.getPixel(x, top - with(compose.density) { 24.dp.roundToPx() })
+            val near = with(compose.density) { 10.dp.roundToPx() }
+            for (y in top - near until top) {
+                val pixel = frame.getPixel(x, y)
+                val lightLeak = listOf(16, 8, 0).any { shift ->
+                    ((pixel shr shift) and 255) > ((backdrop shr shift) and 255) + 2
+                }
+                assertTrue("Modal edge brightened the scrim at row $y", !lightLeak)
+            }
+        } finally { frame.recycle() }
     }
 
     @Test fun languageLastChoiceFitsThePhysicalWindow() {
@@ -303,15 +362,17 @@ class BottomSheetInstrumentedTest {
         assertTrue("Control is clipped: $full vs $clipped", with(compose.density) { (full.bottom - full.top).toPx() } <= clipped.height + 1)
     }
 
-    private fun capture(name: String) {
+    private fun capture(name: String): Bitmap {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         instrumentation.waitForIdleSync()
         // Window composition can be idle before SurfaceFlinger presents the dialog's buffer.
         SystemClock.sleep(250)
         val context = instrumentation.targetContext
+        val frame = instrumentation.uiAutomation.takeScreenshot()
         File(context.getExternalFilesDir(null), "bottom-sheet-$name.png").outputStream().use {
-            instrumentation.uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG, 100, it)
+            frame.compress(Bitmap.CompressFormat.PNG, 100, it)
         }
+        return frame
     }
 }

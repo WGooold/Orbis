@@ -314,7 +314,7 @@ private struct NavigationRoot: View, Equatable {
                     VStack(spacing: 14) {
                         ProgressView()
                         Text(L10n.tr("正在安全配对…")).font(.orbisBody(.medium))
-                    }.neuSurface(radius: OrbisRadius.dialog, padding: 30)
+                    }.orbisModalSurface(radius: OrbisRadius.dialog, padding: 30)
                 }.accessibilityAddTraits(.updatesFrequently)
             }
         }
@@ -673,7 +673,7 @@ private struct SessionDrawerModifier<Drawer: View>: ViewModifier {
                         // The panel owns the material; its contents use flat tonal layers.
                         // Extend only the shell into safe areas, keeping controls in place.
                         Color.clear
-                            .neuSurface(radius: OrbisRadius.card, intensity: 1, concentric: false)
+                            .orbisModalSurface(radius: OrbisRadius.card)
                             .ignoresSafeArea()
                             .allowsHitTesting(false)
                             .accessibilityHidden(true)

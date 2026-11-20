@@ -40,6 +40,27 @@ private slots:
         QVERIFY(image.pixelColor(17, 48).lightness() < surface.surface().lightness());
         QVERIFY(image.pixelColor(142, 48).lightness() > surface.surface().lightness());
     }
+    // S67: a modal suppresses only the outer light, including after a raised frame was cached.
+    void modalKeepsCastShadowAndInsetReliefWithoutOuterHighlight() {
+        NeuSurface surface;
+        surface.setSize(QSizeF(160, 96));
+        surface.setMargin(16);
+        const auto raised = render(surface);
+        surface.setOuterHighlightEnabled(false);
+        const auto modal = render(surface);
+        QCOMPARE(modal.pixelColor(80, 48), surface.surface());
+        QVERIFY(qAlpha(raised.pixel(80, 10)) > 0);
+        // The dark Gaussian has a faint tail here; the upper sample must be cast shadow only.
+        QVERIFY(qAlpha(modal.pixel(80, 10)) <= 2);
+        QVERIFY(qAlpha(modal.pixel(148, 48)) > 0);
+        surface.setInset(true);
+        const auto inset = render(surface);
+        QVERIFY(inset.pixelColor(142, 48).lightness() > surface.surface().lightness());
+        surface.setOuterHighlightEnabled(true);
+        QCOMPARE(render(surface), inset);
+        surface.setInset(false);
+        QCOMPARE(render(surface), raised);
+    }
     void geometryAndModeChangesRefreshShadowCache() {
         NeuSurface surface;
         surface.setSize(QSizeF(160, 96));

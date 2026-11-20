@@ -20,6 +20,7 @@ class NeuSurface : public QQuickPaintedItem {
     Q_PROPERTY(qreal relief READ relief WRITE setRelief NOTIFY reliefChanged)
     Q_PROPERTY(bool flat READ flat WRITE setFlat NOTIFY appearanceChanged)
     Q_PROPERTY(bool outerShadowEnabled READ outerShadowEnabled WRITE setOuterShadowEnabled NOTIFY appearanceChanged)
+    Q_PROPERTY(bool outerHighlightEnabled READ outerHighlightEnabled WRITE setOuterHighlightEnabled NOTIFY appearanceChanged)
     Q_PROPERTY(bool outlined READ outlined WRITE setOutlined NOTIFY appearanceChanged)
     Q_PROPERTY(QColor highlightColor READ highlightColor WRITE setHighlightColor NOTIFY appearanceChanged)
     Q_PROPERTY(QColor shadeColor READ shadeColor WRITE setShadeColor NOTIFY appearanceChanged)
@@ -40,6 +41,7 @@ public:
     qreal relief() const { return m_relief; }
     bool flat() const { return m_flat; }
     bool outerShadowEnabled() const { return m_outerShadowEnabled; }
+    bool outerHighlightEnabled() const { return m_outerHighlightEnabled; }
     bool outlined() const { return m_outlined; }
     QColor highlightColor() const { return m_highlightColor; }
     QColor shadeColor() const { return m_shadeColor; }
@@ -58,6 +60,7 @@ public:
     void setRelief(qreal value) { if (m_relief != value) { m_relief = value; refresh(); emit reliefChanged(); } }
     void setFlat(bool value) { if (m_flat != value) { m_flat = value; refresh(); } }
     void setOuterShadowEnabled(bool value) { if (m_outerShadowEnabled != value) { m_outerShadowEnabled = value; refresh(); } }
+    void setOuterHighlightEnabled(bool value) { if (m_outerHighlightEnabled != value) { m_outerHighlightEnabled = value; refresh(); } }
     void setOutlined(bool value) { if (m_outlined != value) { m_outlined = value; refresh(); } }
     void setHighlightColor(QColor value) { if (m_highlightColor != value) { m_highlightColor = value; refresh(); } }
     void setShadeColor(QColor value) { if (m_shadeColor != value) { m_shadeColor = value; refresh(); } }
@@ -78,6 +81,7 @@ private:
     // NaN keeps direct C++ users on the inset API; QML supplies continuous relief.
     qreal m_relief = qQNaN(), m_shadowScale = 1;
     bool m_flat = false, m_outlined = false, m_outerShadowEnabled = true;
+    bool m_outerHighlightEnabled = true;
     QColor m_surface{"#E6EBF4"};
     QColor m_highlightColor{"#ffffff"}, m_shadeColor{"#a6b2c6"};
     QColor m_focusColor{"#2f5287"}, m_outlineColor{"#c9d1de"};

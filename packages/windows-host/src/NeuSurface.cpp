@@ -114,11 +114,13 @@ void NeuSurface::paint(QPainter *painter) {
     }
     const qreal offset = std::max(qreal(0.1), 4 * m_shadowScale * m_blur);
     const qreal sigma = offset;
-    if (!m_flat && m_outerShadowEnabled && relief > 0 && m_lightShadow.isNull()) {
-        m_lightShadow = gaussianShadow(imageSize, base, -offset, sigma, m_highlightColor,
-                                       m_highlightOpacity, false);
-        m_darkShadow = gaussianShadow(imageSize, base, offset, sigma, m_shadeColor,
-                                      m_shadeOpacity * m_depth, false);
+    if (!m_flat && m_outerShadowEnabled && relief > 0) {
+        if (m_outerHighlightEnabled && m_lightShadow.isNull())
+            m_lightShadow = gaussianShadow(imageSize, base, -offset, sigma, m_highlightColor,
+                                           m_highlightOpacity, false);
+        if (m_darkShadow.isNull())
+            m_darkShadow = gaussianShadow(imageSize, base, offset, sigma, m_shadeColor,
+                                          m_shadeOpacity * m_depth, false);
     }
     if (!m_flat && relief < 0 && m_innerLightShadow.isNull()) {
         m_innerLightShadow = gaussianShadow(imageSize, base, -offset, sigma, m_highlightColor,
@@ -128,7 +130,7 @@ void NeuSurface::paint(QPainter *painter) {
     }
     if (!m_flat && m_outerShadowEnabled && relief > 0) {
         painter->setOpacity(relief);
-        painter->drawImage(QPointF(0, 0), m_lightShadow);
+        if (m_outerHighlightEnabled) painter->drawImage(QPointF(0, 0), m_lightShadow);
         painter->drawImage(QPointF(0, 0), m_darkShadow);
         painter->setOpacity(1);
     }

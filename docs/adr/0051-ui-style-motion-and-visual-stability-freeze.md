@@ -73,6 +73,7 @@
 | S59 | Android 子代理区为输入区上方的平置展开行，展开后在凹陷面内按父子层级列出任务（SC107；r59 候选；ADR-0068） |
 | S60 | Claude 后台命令与监听进入任务区，与子代理分组计数；只剩命令运行时会话为静止点“空闲 · N 个后台命令”，运行中仍阻止远程关闭（SC108；ADR-0062） |
 | S61 | iOS 静态灵动岛与实时活动：单会话约分钟、多会话数量、待处理优先，后台摘要推送与过期／结束生命周期（SC109；ADR-0071；已实施，未部署，待用户验证） |
+| S67 | 遮罩上方的自绘浮层改为暗投影，深色用细内描边；内部控件继承前景底色，不改非模态菜单、原生 Sheet 和关闭语义。实现见 [Host](../../packages/windows-host/src/qml/Main.qml)、[Android](../../android/app/src/main/java/com/orbising/orbis/OrbisSheet.kt)、[iOS](../../ios/Orbis/Orbis/OrbisDesign.swift)。[自动验证及截图](../../.artifacts/modal-lighting-fix-20261120/)；未部署，待用户验证。 |
 | M01 | 自定义拖拽回位 |
 | M02 | 勾选小反馈 |
 | M03 | 自然高度折叠，首次展开也播放高度过渡 |

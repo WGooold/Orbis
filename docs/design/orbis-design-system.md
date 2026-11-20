@@ -986,7 +986,7 @@ Agent 回复里一个可见的步骤——思考、正文或工具——放在�
 居中的确认：给重要或不可撤销的决定。
 
 - 属性：`title`（写明对象的问句：「取消配对 workstation？」）、`children`（后果，`ink-muted`）、`actions`（按钮：安全的在前，提交的在后）。
-- `raised-lg`、`radius-xl`、内边距 `space-16`、间距 `space-20`；里面的按钮是平的明度台阶，`radius-md`。背后是 `opacity-scrim` 的 `scrim`。
+- `radius-xl`、内边距 `space-16`、间距 `space-20`；里面的按钮是平的明度台阶，`radius-md`。背后是 `opacity-scrim` 的 `scrim`。遮罩上方的自绘外壳只投暗影，深色加细内描边；输入和选中态的内阴影仍基于弹层底板。非模态菜单继续用原有拟物外光（S67）。
 - 进入：`scale-enter` → 1 + 淡入（`dur-panel`）；离开 `dur-exit`。
 - 不承载列表或超过一个字段的表单——用底部面板或推入页面。
 - 原生：`NeumorphDialog`（保留原生模态语义）。
@@ -996,7 +996,7 @@ Agent 回复里一个可见的步骤——思考、正文或工具——放在�
 底部面板：不离开当前页，从一组里做选择——模型、思考强度、权限、目录。
 
 - 属性：`title`、`children`（`ChoiceList`、ListGroup、Segmented、整宽按钮）。会改变运行状态的选择配一个写清后果的主按钮，点选本身不生效。
-- 上方两角 `radius-xl`、`raised-lg`、内边距 `space-16`，顶部 36×6 的凹陷把手。里面的内容按嵌套处理。
+- 上方两角 `radius-xl`、内边距 `space-16`，顶部 36×6 的凹陷把手。自绘外壳沿用 Dialog 的遮罩投影，内容按面板实际底色嵌套；系统绘制的外框沿用平台表现（S67）。
 - 上升 24px + 淡入 `dur-panel`；可跟手拖动，松手 spring-drag 回位；向下关闭 `dur-dismiss`。
 - 替代 Material `ModalBottomSheet` 的默认外观（把手、表面着色、时长）。
 

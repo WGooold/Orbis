@@ -97,6 +97,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.colorspace.ColorSpaces
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathOperation
@@ -164,6 +165,23 @@ internal val LocalNeumorphColors = staticCompositionLocalOf<NeumorphColors?> { n
 @Composable
 fun rememberNeumorphColors(): NeumorphColors =
     LocalNeumorphColors.current ?: orbisMaterialColors(LocalOrbisDarkTheme.current)
+
+/** S67: an explicitly tinted floating surface owns the tonal steps of its controls. */
+private fun NeumorphColors.withModalGround(ground: Color): NeumorphColors {
+    if (ground == base) return this
+    val from = base.convert(ColorSpaces.Srgb)
+    val to = ground.convert(ColorSpaces.Srgb)
+    fun step(color: Color): Color {
+        val tone = color.convert(ColorSpaces.Srgb)
+        return Color(
+            (to.red + tone.red - from.red).coerceIn(0f, 1f),
+            (to.green + tone.green - from.green).coerceIn(0f, 1f),
+            (to.blue + tone.blue - from.blue).coerceIn(0f, 1f),
+            to.alpha,
+        )
+    }
+    return copy(base = ground, insetBase = ground, lift = step(lift), top = step(top))
+}
 
 /** 凸起 = Raised（按钮/卡片），凹下 = Pressed（输入框/内嵌面板）。 */
 enum class NeumorphStyle { Raised, Pressed }
@@ -433,10 +451,10 @@ private fun Modifier.neumorphShadows(
                 // 暗影先画，白光压在其上（对侧重叠仅高斯尾，可忽略）。
                 if (useGaussian) {
                     drawOuterBlur(paints.dark, bodySize, 0f, 1f, offsetPx, corner)
-                    drawOuterBlur(paints.light, bodySize, 0f, -1f, offsetPx, corner)
+                    if (lightAlpha != 0) drawOuterBlur(paints.light, bodySize, 0f, -1f, offsetPx, corner)
                 } else {
                     drawSoftShadow(shape, bodySize, 0f, 1f, colors.darkShadow, offsetPx, reachPx, paints.outerDarkAlphas.map { it * alpha }.toFloatArray())
-                    drawSoftShadow(shape, bodySize, 0f, -1f, colors.lightShadow, offsetPx, reachPx, paints.outerLightAlphas.map { it * alpha }.toFloatArray())
+                    if (lightAlpha != 0) drawSoftShadow(shape, bodySize, 0f, -1f, colors.lightShadow, offsetPx, reachPx, paints.outerLightAlphas.map { it * alpha }.toFloatArray())
                 }
             } else if (innerPaths != null) {
                 drawInnerBlur(innerPaths, paints)
@@ -571,10 +589,12 @@ private object ShadowPatchCache {
             canvas.translate(offsetPx, offsetPx)
             canvas.drawRoundRect(rect, corner, corner, paints.dark)
             canvas.restore()
-            canvas.save()
-            canvas.translate(-offsetPx, -offsetPx)
-            canvas.drawRoundRect(rect, corner, corner, paints.light)
-            canvas.restore()
+            if (paints.light.alpha != 0) {
+                canvas.save()
+                canvas.translate(-offsetPx, -offsetPx)
+                canvas.drawRoundRect(rect, corner, corner, paints.light)
+                canvas.restore()
+            }
         } else {
             val paths = InnerBlurPaths(Size(body.toFloat(), body.toFloat()), offsetPx, corner, paints.maxBlurPx)
             canvas.clipPath(paths.body.asAndroidPath())
@@ -610,6 +630,8 @@ fun NeumorphSurface(
     pressedColor: Color? = null,
     /** Navigation surfaces are flat at rest, but a physical press still indents them. */
     flat: Boolean = false,
+    /** The outer edge is over a dimmed backdrop, not part of the same raised material. */
+    floatsOverModal: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val active = enabled && LocalMotionActionsEnabled.current
@@ -621,6 +643,12 @@ fun NeumorphSurface(
     val resolvedShape = concentricShape(shape)
     val effectiveShadowScale = orbisShadowScale(shadowScale)
     val paints = rememberShadowPaints(colors, effectiveShadowScale)
+    val dark = LocalOrbisDarkTheme.current
+    val exterior = if (floatsOverModal) remember(colors, dark) {
+        colors.copy(darkShadow = colors.scrim, darkShadowOpacity = if (dark) 0.48f else 0.24f,
+            lightShadowOpacity = 0f, lightShadowBlurScale = 1f)
+    } else colors
+    val exteriorPaints = if (floatsOverModal) rememberShadowPaints(exterior, effectiveShadowScale) else paints
     val pressed by interactionSource.collectIsPressedAsState()
     val focused by interactionSource.collectIsFocusedAsState()
     val keyboardFocus = active && focused && LocalInputModeManager.current.inputMode == InputMode.Keyboard
@@ -658,7 +686,7 @@ fun NeumorphSurface(
     Box(
         modifier.then(focusRing).then(
             if (parent == null && active) {
-                Modifier.neumorphShadows(resolvedShape, NeumorphStyle.Raised, colors, effectiveShadowScale, paints) { depth.coerceAtLeast(0f) }
+                Modifier.neumorphShadows(resolvedShape, NeumorphStyle.Raised, exterior, effectiveShadowScale, exteriorPaints) { depth.coerceAtLeast(0f) }
             } else Modifier,
         ).then(
             if (onClick != null) Modifier.combinedClickable(
@@ -675,7 +703,11 @@ fun NeumorphSurface(
         Box(
             Modifier.orbisTouchOrigin(selectionSelected != null && active) { touchOrigin = it }
                 .clip(resolvedShape).background(bodyColor).then(selectionDecoration)
-                .then(if (!active) Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, resolvedShape) else Modifier).then(
+                .then(when {
+                    !active -> Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant, resolvedShape)
+                    floatsOverModal && dark -> Modifier.border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f), resolvedShape)
+                    else -> Modifier
+                }).then(
                 if (active) {
                     Modifier.neumorphShadows(resolvedShape, NeumorphStyle.Pressed, colors, effectiveShadowScale, paints) { (-depth).coerceAtLeast(0f) }
                 } else Modifier,
@@ -693,6 +725,24 @@ fun NeumorphSurface(
                 Box(Modifier.padding(contentPadding), propagateMinConstraints = true) { content() }
             }
         }
+    }
+}
+
+@Composable
+internal fun OrbisModalSurface(
+    modifier: Modifier = Modifier,
+    shape: Shape,
+    containerColor: Color = rememberNeumorphColors().base,
+    shadowScale: Float = 1f,
+    contentPadding: Dp = 0.dp,
+    contentInset: Dp = contentPadding,
+    content: @Composable () -> Unit,
+) {
+    val colors = rememberNeumorphColors()
+    val ground = remember(colors, containerColor) { colors.withModalGround(containerColor) }
+    CompositionLocalProvider(LocalOrbisSurface provides null, LocalNeumorphColors provides ground) {
+        NeumorphSurface(modifier = modifier, shape = shape, shadowScale = shadowScale,
+            contentPadding = contentPadding, contentInset = contentInset, floatsOverModal = true, content = content)
     }
 }
 

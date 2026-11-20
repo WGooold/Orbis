@@ -3101,8 +3101,12 @@ final class OrbisUITests: XCTestCase {
         for _ in 0..<4 where !row.isHittable && page.exists { page.swipeUp() }
         row.tap()
         let info = status.buttons["查看QUIC说明"]
-        XCTAssertTrue(info.waitForExistence(timeout: 3)); info.tap()
+        XCTAssertTrue(info.waitForExistence(timeout: 3))
+        // S67: the same native sheet is the before/after backdrop for the nested dialog.
+        capture("modal-lighting-protocol-sheet", app: status)
+        info.tap()
         XCTAssertTrue(status.staticTexts["当前网络不支持 QUIC 时无法连接"].waitForExistence(timeout: 3))
+        capture("modal-lighting-quic-dialog", app: status)
         status.buttons["知道了"].tap()
         XCTAssertTrue(status.staticTexts["当前网络不支持 QUIC 时无法连接"].waitForNonExistence(timeout: 3))
         XCTAssertTrue(status.buttons["relay-mode-apply"].exists)

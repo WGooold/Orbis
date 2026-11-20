@@ -90,6 +90,9 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-exit", "Verify exit and update confirmation cancellation in the isolated smoke window"});
     parser.addOption({"smoke-exit-entry", "Quit entry used by the isolated exit regression (native or tray)", "entry", "native"});
     parser.addOption({"smoke-kimi", "Check Kimi settings with an isolated fixture bridge"});
+#ifdef ORBIS_SMOKE_INTERACTION
+    parser.addOption({"smoke-modal-lighting", "Check a provider menu and stacked confirmation using a fixture bridge"});
+#endif
     parser.addOption({"smoke-guide", "Walk the overview through activation, connection, pairing and open steps with synthetic bridge events"});
     parser.process(app);
     QString runtimeRoot = parser.value("runtime-root");
@@ -778,7 +781,42 @@ int main(int argc, char *argv[]) {
                 });
             }
 #ifdef ORBIS_SMOKE_INTERACTION
-            else if (parser.isSet("smoke-guide")) {
+            else if (parser.isSet("smoke-modal-lighting")) {
+                // S67: supplier dropdowns and nested dialogs use cast shadows, and Esc cancels
+                // only the active layer without undoing edits or changing the parent surface.
+                QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "codex"));
+                controller.editProvider("");
+                QTimer::singleShot(500, &app, [&] {
+                    auto *combo = window->findChild<QObject *>("codexReasoning");
+                    auto *name = window->findChild<QObject *>("providerName");
+                    if (!combo || !name || !name->property("visible").toBool()) { app.exit(93); return; }
+                    auto *popup = combo->property("popup").value<QObject *>();
+                    auto *bg = popup ? popup->property("background").value<QObject *>() : nullptr;
+                    auto *visual = qobject_cast<QQuickItem *>(combo);
+                    if (!visual || !popup) { app.exit(93); return; }
+                    visual->forceActiveFocus(Qt::TabFocusReason);
+                    QMetaObject::invokeMethod(popup, "open");
+                    QTest::qWait(250);
+                    if (!bg || !popup->property("visible").toBool() || bg->property("outerHighlightEnabled").toBool()) { app.exit(94); return; }
+                    const auto shot = [&](const QString &suffix) {
+                        return !parser.isSet("screenshot") || window->grabWindow().save(parser.value("screenshot") + suffix + ".png");
+                    };
+                    if (!shot(".provider-combo")) { app.exit(7); return; }
+                    QTest::keyClick(window, Qt::Key_Escape);
+                    if (popup->property("visible").toBool() || !name->property("visible").toBool()) { app.exit(95); return; }
+                    window->setProperty("providerFormDirty", true);
+                    QMetaObject::invokeMethod(window, "changePreset", Q_ARG(QVariant, "different-fixture-preset"));
+                    auto *confirm = window->findChild<QObject *>("providerChangePresetDialog");
+                    QTest::qWait(250);
+                    bg = confirm ? confirm->property("background").value<QObject *>() : nullptr;
+                    if (!bg || !confirm->property("visible").toBool() || bg->property("outerHighlightEnabled").toBool()) { app.exit(96); return; }
+                    if (!shot(".provider-confirm")) { app.exit(7); return; }
+                    QTest::keyClick(window, Qt::Key_Escape);
+                    QTest::qWait(200);
+                    app.exit(!confirm->property("visible").toBool() && name->property("visible").toBool()
+                            && window->property("providerFormDirty").toBool() ? 0 : 97);
+                });
+            } else if (parser.isSet("smoke-guide")) {
                 // HOST-GUIDE-01: in every overview step only that step's controls carry the accent.
                 // Bridge events are synthetic and pass through the real reducer; nothing is activated or paired.
                 static const QStringList kinds{"pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop"};

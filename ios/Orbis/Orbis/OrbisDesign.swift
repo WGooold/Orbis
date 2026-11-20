@@ -356,9 +356,11 @@ private struct NeuSurface: ViewModifier {
     let padding: CGFloat
     let concentric: Bool
     let press: Bool?
+    var floatsOverModal = false
     func body(content: Content) -> some View {
         content.modifier(NeuDepthSurface(depth: (inset ? -1 : 1) * surfaceIntensity(intensity),
-                                        radius: radius, padding: padding, concentric: concentric))
+                                        radius: radius, padding: padding, concentric: concentric,
+                                        floatsOverModal: floatsOverModal))
             .animation(reduced || !visualActive ? nil : press.map { $0 ? InteractionMotion.glyphPress : InteractionMotion.glyphRelease } ?? InteractionMotion.selection, value: inset)
     }
 }
@@ -372,6 +374,7 @@ private struct NeuDepthSurface: AnimatableModifier {
     let radius: CGFloat
     let padding: CGFloat
     let concentric: Bool
+    let floatsOverModal: Bool
     var animatableData: CGFloat { get { depth } set { depth = newValue } }
     func body(content: Content) -> some View {
         let p = OrbisPalette(scheme)
@@ -386,14 +389,21 @@ private struct NeuDepthSurface: AnimatableModifier {
             .environment(\.orbisSurface, OrbisSurfaceContext(layer: layer, depth: (parent?.depth ?? 0) + 1,
                 innerRadius: padding > 0 ? max(r - padding, 0) : nil))
             .background {
-                Group {
-                    if inner > 0 {
-                        shape.fill(fill
-                            .shadow(.inner(color: p.shadow.opacity(p.shadeOpacity * inner), radius: 4 * inner, x: 4 * inner, y: 4 * inner))
-                            .shadow(.inner(color: p.light.opacity(p.highlightOpacity * inner), radius: 4 * inner, x: -4 * inner, y: -4 * inner)))
-                    } else { shape.fill(fill) }
-                }.shadow(color: p.shadow.opacity(p.shadeOpacity * outer), radius: 4 * outer, x: 4 * outer, y: 4 * outer)
-                    .shadow(color: p.light.opacity(p.highlightOpacity * outer), radius: 4 * outer, x: -4 * outer, y: -4 * outer)
+                if floatsOverModal {
+                    // S67: the lit edge stays inside the shape; only a cast shadow reaches the backdrop.
+                    shape.fill(fill)
+                        .overlay { if p.dark { shape.strokeBorder(p.outline.opacity(0.55), lineWidth: 1) } }
+                        .shadow(color: p.scrim.opacity((p.dark ? 0.48 : 0.24) * outer), radius: 4 * outer, x: 4 * outer, y: 4 * outer)
+                } else {
+                    Group {
+                        if inner > 0 {
+                            shape.fill(fill
+                                .shadow(.inner(color: p.shadow.opacity(p.shadeOpacity * inner), radius: 4 * inner, x: 4 * inner, y: 4 * inner))
+                                .shadow(.inner(color: p.light.opacity(p.highlightOpacity * inner), radius: 4 * inner, x: -4 * inner, y: -4 * inner)))
+                        } else { shape.fill(fill) }
+                    }.shadow(color: p.shadow.opacity(p.shadeOpacity * outer), radius: 4 * outer, x: 4 * outer, y: 4 * outer)
+                        .shadow(color: p.light.opacity(p.highlightOpacity * outer), radius: 4 * outer, x: -4 * outer, y: -4 * outer)
+                }
             }
     }
 }
@@ -404,6 +414,13 @@ extension View {
     func neuSurface(inset: Bool = false, radius: CGFloat = 20, intensity: CGFloat = 0.65,
                     padding: CGFloat = 0, concentric: Bool = true, press: Bool? = nil) -> some View {
         modifier(NeuSurface(inset: inset, radius: radius, intensity: intensity, padding: padding, concentric: concentric, press: press))
+    }
+
+    /// A new material root above a dimmed page or an already-presented sheet.
+    func orbisModalSurface(radius: CGFloat, padding: CGFloat = 0) -> some View {
+        modifier(NeuSurface(inset: false, radius: radius, intensity: 1, padding: padding,
+                            concentric: false, press: nil, floatsOverModal: true))
+            .environment(\.orbisSurface, nil)
     }
 
     /// For views layered over a surface from outside its content (overlays, panels drawn by hand).
@@ -2114,7 +2131,7 @@ private struct OrbisDialogPanel: View {
         }
         .foregroundStyle(p.text)
         .frame(maxWidth: 360 - OrbisRadius.dialogPadding * 2, alignment: .leading)
-        .modifier(OrbisPanel(radius: OrbisRadius.dialog, padding: OrbisRadius.dialogPadding))
+        .orbisModalSurface(radius: OrbisRadius.dialog, padding: OrbisRadius.dialogPadding)
         .padding(.horizontal, 28)
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(.isModal)

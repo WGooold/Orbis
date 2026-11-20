@@ -118,12 +118,13 @@ internal fun OrbisBottomSheet(
             BoxWithConstraints(Modifier.fillMaxSize()
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal))
                 .imePadding().padding(top = 16.dp)) {
-                CompositionLocalProvider(LocalOrbisSurface provides null, LocalSheetDragModifier provides dragModifier) {
-                    NeumorphSurface(modifier = Modifier.align(Alignment.BottomCenter).widthIn(max = 720.dp).fillMaxWidth()
+                CompositionLocalProvider(LocalSheetDragModifier provides dragModifier) {
+                    OrbisModalSurface(modifier = Modifier.align(Alignment.BottomCenter).widthIn(max = 720.dp).fillMaxWidth()
                         .heightIn(max = maxHeight * maxHeightFraction).then(modifier).graphicsLayer {
                             alpha = appearance.value
                             translationY = with(density) { 24.dp.toPx() } * (1 - appearance.value) + drag.value
-                        }.testTag("orbis-sheet-surface"), shape = RoundedCornerShape(32.dp), shadowScale = 1f, contentInset = 16.dp) {
+                        }.testTag("orbis-sheet-surface"), shape = RoundedCornerShape(32.dp),
+                        containerColor = containerColor, contentInset = 16.dp) {
                         // Own the bottom inset once, inside the measured surface. Every caller's
                         // footer and scroll viewport now share the same safe available height.
                         Column(Modifier.fillMaxWidth().navigationBarsPadding()) {

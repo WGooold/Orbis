@@ -522,6 +522,7 @@ ApplicationWindow {
     component DialogSurface: Surface {
         anchors.fill: parent; anchors.margins: -16; margin: 16
         cornerRadius: Theme.radiusXl; shadowScale: 1
+        surface: Theme.surfaceBase
     }
     component SoftDialog: Dialog {
         id: dialog
@@ -529,7 +530,7 @@ ApplicationWindow {
         padding: 16
         palette.window: Theme.surfaceBase
         palette.windowText: Theme.ink
-        background: DialogSurface {}
+        background: DialogSurface { floatsOverModal: dialog.modal }
         header: Label {
             text: dialog.title; visible: text.length > 0
             padding: 16; bottomPadding: 16
@@ -590,6 +591,7 @@ ApplicationWindow {
     }
     component SoftComboBox: ComboBox {
         id: softCombo
+        property bool inModal: false
         onActivated: if (providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
         implicitHeight: Theme.fieldHeight
         implicitWidth: 180
@@ -643,9 +645,11 @@ ApplicationWindow {
             background: Surface {
                 anchors.fill: parent; anchors.margins: -12; margin: 12
                 cornerRadius: Theme.radiusLg; surface: Theme.surfaceBase; shadowScale: 1
+                floatsOverModal: softCombo.inModal
             }
         }
     }
+    component ProviderComboBox: SoftComboBox { inModal: true }
     component SoftCheckBox: CheckBox {
         id: softCheck
         property bool marksProviderDirty: true
@@ -1629,7 +1633,7 @@ ApplicationWindow {
                 Field { id: providerKey; visible: window.providerDraft.kind === "pi" || providerDetails.checked; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: window.providerDraft.kind !== "pi" || !!window.providerDraft.create }
                 Hint { visible: window.providerDraft.kind === "pi"; text: window.providerDraft.create ? "标识对应 models.json 的节点；保存后不可修改。" : "标识固定；修改名称不会更改模型引用。"; Layout.fillWidth: true }
                 Label { text: "ChatGPT 登录来源"; visible: window.officialProvider && window.providerDraft.kind === "codex"; color: Theme.inkMuted }
-                SoftComboBox { id: providerAccount; visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
+                ProviderComboBox { id: providerAccount; visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
                 RowLayout { visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true
                     ActionButton { text: "管理账号"; enabled: !host.busy; onClicked: { host.oauthAccount("list"); oauthDialog.open() } }
                 }
@@ -1672,7 +1676,7 @@ ApplicationWindow {
                     Field { id: providerApiKey; objectName: "providerApiKey"; visible: !window.officialProvider; Layout.fillWidth: true; placeholderText: "API Key；已有环境变量认证会保留"; echoMode: TextInput.PasswordEchoOnEdit }
                     ColumnLayout { visible: window.providerDraft.kind === "claude"; Layout.fillWidth: true; spacing: 8
                         Label { text: "认证字段"; visible: !window.officialProvider; color: Theme.inkMuted }
-                        SoftComboBox { id: claudeCredential; visible: !window.officialProvider; Layout.fillWidth: true; model: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] }
+                        ProviderComboBox { id: claudeCredential; visible: !window.officialProvider; Layout.fillWidth: true; model: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] }
                         Field { id: claudeHaiku; Layout.fillWidth: true; placeholderText: "Haiku 模型 ID（留空使用原生默认）" }
                         Field { id: claudeSonnet; Layout.fillWidth: true; placeholderText: "Sonnet 模型 ID（留空使用原生默认）" }
                         Field { id: claudeOpus; Layout.fillWidth: true; placeholderText: "Opus 模型 ID（留空使用原生默认）" }
@@ -1684,28 +1688,28 @@ ApplicationWindow {
                     }
                     RowLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true
                         Label { text: "思考档位"; color: Theme.inkMuted }
-                        SoftComboBox { id: codexReasoning; objectName: "codexReasoning"; Layout.fillWidth: true; model: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }
+                        ProviderComboBox { id: codexReasoning; objectName: "codexReasoning"; Layout.fillWidth: true; model: ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] }
                     }
                     Label { text: "接口格式"; visible: !window.officialProvider; color: Theme.inkMuted }
-                    SoftComboBox { id: providerApi; visible: !window.officialProvider; Layout.fillWidth: true; model: [] }
+                    ProviderComboBox { id: providerApi; visible: !window.officialProvider; Layout.fillWidth: true; model: [] }
                     Hint { visible: window.providerDraft.kind === "codex" && !window.officialProvider && providerApi.currentText !== "openai-responses"; text: "需要已有的 Codex 本地 API 转换配置"; Layout.fillWidth: true }
                     SoftSwitch { id: providerProxyDetails; marksProviderDirty: false; text: "接口兼容与推理参数"; visible: window.providerDraft.kind === "codex" && !window.officialProvider }
                     ColumnLayout { visible: window.providerDraft.kind === "codex" && providerProxyDetails.checked; Layout.fillWidth: true; spacing: 8
                         SoftSwitch { id: providerFullUrl; text: "使用完整 API 端点地址" }
                         RowLayout { Layout.fillWidth: true
                             Label { text: "会话缓存路由"; color: Theme.inkMuted }
-                            SoftComboBox { id: providerCache; Layout.fillWidth: true; textRole: "label"; valueRole: "value"; model: [{label:"自动",value:"auto"},{label:"启用",value:"enabled"},{label:"禁用",value:"disabled"}] }
+                            ProviderComboBox { id: providerCache; Layout.fillWidth: true; textRole: "label"; valueRole: "value"; model: [{label:"自动",value:"auto"},{label:"启用",value:"enabled"},{label:"禁用",value:"disabled"}] }
                         }
                         SoftSwitch { id: providerReasoningAuto; text: "自动识别推理参数" }
                         GridLayout { visible: !providerReasoningAuto.checked; columns: 2; Layout.fillWidth: true
                             SoftCheckBox { id: providerThinking; text: "支持思考开关" }
                             SoftCheckBox { id: providerEffort; text: "支持思考档位" }
                             Label { text: "思考开关参数"; color: Theme.inkMuted }
-                            SoftComboBox { id: providerThinkingParam; Layout.fillWidth: true; model: ["thinking", "enable_thinking", "reasoning_split", "none"] }
+                            ProviderComboBox { id: providerThinkingParam; Layout.fillWidth: true; model: ["thinking", "enable_thinking", "reasoning_split", "none"] }
                             Label { text: "档位参数"; color: Theme.inkMuted }
-                            SoftComboBox { id: providerEffortParam; Layout.fillWidth: true; model: ["reasoning_effort", "reasoning.effort", "none"] }
+                            ProviderComboBox { id: providerEffortParam; Layout.fillWidth: true; model: ["reasoning_effort", "reasoning.effort", "none"] }
                             Label { text: "档位映射"; color: Theme.inkMuted }
-                            SoftComboBox { id: providerEffortMode; Layout.fillWidth: true; model: ["passthrough", "deepseek", "low_high", "openrouter", "zen"] }
+                            ProviderComboBox { id: providerEffortMode; Layout.fillWidth: true; model: ["passthrough", "deepseek", "low_high", "openrouter", "zen"] }
                         }
                         Label { text: "Chat 兼容参数（JSON）"; color: Theme.inkMuted }
                         SoftTextArea { id: providerChatOptions; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
@@ -1754,7 +1758,7 @@ ApplicationWindow {
                                 ColumnLayout { visible: window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 6
                                     RowLayout { Layout.fillWidth: true
                                         Label { text: "思考深度映射"; color: Theme.inkMuted }
-                                        SoftComboBox {
+                                        ProviderComboBox {
                                             objectName: "dshReasoningMode-" + modelEditor.index
                                             Layout.fillWidth: true; textRole: "label"; valueRole: "value"
                                             model: [{label:"自定义映射",value:"custom"},{label:"继承原生能力",value:"inherit"},{label:"不支持推理",value:"disabled"}]
@@ -1834,6 +1838,7 @@ ApplicationWindow {
     }
     SoftDialog {
         id: changePresetDialog; title: "更换预设？"; anchors.centerIn: parent; modal: true; width: 430
+        objectName: "providerChangePresetDialog"
         Label { width: parent.width; text: "更换预设会丢弃当前表单未保存的修改。"; wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.presetProvider(window.pendingPresetId)
