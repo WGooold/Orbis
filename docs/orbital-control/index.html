@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#090d16">
+<title>Orbis · 轨道控制台</title>
+<style>
+:root{color-scheme:dark;--bg:#080b12;--ink:#f1f4fb;--muted:#a1adc3;--dim:#8190ac;--line:#222c3e;--blue:#93b4ff;--mint:#76e7c7;--panel:#101725;--mono:ui-monospace,SFMono-Regular,Consolas,monospace;--sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%}body{background:var(--bg);color:var(--ink);font-family:var(--sans)}button,input{font:inherit}button{color:inherit;cursor:pointer;border:0;background:none;-webkit-tap-highlight-color:transparent}button:disabled{cursor:default}button:focus-visible,input:focus-visible{outline:2px solid #aac7ff;outline-offset:3px}svg{display:block}button, a{touch-action:manipulation}.icon{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round;flex:none}.symbols{position:absolute;width:0;height:0;overflow:hidden}.sr{position:absolute;width:1px;height:1px;clip-path:inset(50%);overflow:hidden;white-space:nowrap}
+.exhibit{position:relative;isolation:isolate;min-height:100svh;display:flex;flex-direction:column;padding:29px clamp(28px,4.5vw,76px) 21px;overflow:hidden;background:radial-gradient(ellipse at 72% 46%,#182039 0, #0c1220 31%,transparent 66%),radial-gradient(ellipse at 14% 96%,#121522,transparent 49%),#080b12}.backdrop{position:absolute;z-index:-1;inset:0;width:100%;height:100%;pointer-events:none}.masthead,.exhibit-foot{display:flex;align-items:center;justify-content:space-between;gap:14px}.wordmark{display:flex;align-items:center;gap:10px;font-size:18px;font-weight:700;letter-spacing:-.045em}.wordmark svg{width:28px;height:28px;color:#b6c9ff}.edition,.exhibit-foot,.kicker,.legend-id,.stage-index,.hud,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}.edition,.exhibit-foot{color:var(--dim);font-size:10px;letter-spacing:.15em}.edition{border:1px solid #2c364d;border-radius:50px;padding:8px 12px}.exhibit-foot{border-top:1px solid #263046;padding-top:15px}.exhibit-foot span:last-child{text-align:right}
+.showcase{width:min(100%,1100px);margin:auto;display:grid;grid-template-columns:minmax(275px,1fr) minmax(400px,1fr);gap:clamp(25px,5vw,90px);align-items:center;padding:25px 0 28px}.intro{padding:20px 0;max-width:480px}.kicker{display:flex;align-items:center;gap:10px;color:#b6c9f9;font-size:11px;letter-spacing:.16em;margin:0 0 28px}.kicker::before{content:"";width:19px;height:1px;background:#9ab4f5;box-shadow:0 0 9px #8dafff}.intro h1{margin:0;font-size:clamp(46px,6.2vw,87px);font-weight:720;line-height:1.075;letter-spacing:-.082em}.intro h1 span{display:block;padding:0 .09em .1em 0;color:#a8bffb;background:linear-gradient(103deg,#e2eaff 2%,#99b2fa 73%,#aa9cee);background-clip:text;-webkit-text-fill-color:transparent}.intro p{margin:19px 0 34px;color:#acbad2;line-height:1.85;font-size:15px;max-width:26em}.legend{margin:0;padding:0;list-style:none;border-top:1px solid #2b3547;max-width:358px}.legend li{display:grid;grid-template-columns:27px 1fr auto;align-items:center;gap:12px;min-height:54px;border-bottom:1px solid #242e41;font-size:13px;color:#c6d1e6}.legend-id{font-size:10px;letter-spacing:.11em;color:#8593ae}.legend-art{height:26px;width:26px;display:grid;place-items:center;position:relative}.legend-art.star:before{content:"";width:11px;height:11px;border-radius:100%;background:#ffd095;box-shadow:0 0 12px #ff803e}.legend-art.planet::before{content:"";width:13px;height:13px;border-radius:100%;background:linear-gradient(135deg,#c2d7ff,#6278fc 75%,#1d2358)}.legend-art.planet::after{content:"";position:absolute;width:24px;height:7px;border:1px solid #a8bdff;border-radius:50%;transform:rotate(-33deg)}.legend-art.moons::before{content:"";width:19px;height:19px;border:1px dashed #8798be;border-radius:50%}.legend-art.moons::after{content:"";position:absolute;width:5px;height:5px;border-radius:100%;background:#dde6fd;transform:translate(7px,-7px);box-shadow:-14px 13px 0 -1px #aabcf4}
+.device-wrap{width:min(100%,418px);justify-self:center;position:relative}.stage-index{position:absolute;left:calc(100% + 20px);top:44%;font-size:9px;letter-spacing:.17em;color:#8895b5;writing-mode:vertical-rl;white-space:nowrap}.stage-index::before{content:"";display:inline-block;width:1px;height:27px;background:#637499;margin-bottom:10px;vertical-align:middle}.device{position:relative;isolation:isolate;border:1px solid #53617c;border-radius:47px;padding:7px;background:linear-gradient(145deg,#343d51,#10141e 28%,#303951 75%,#252c3d);box-shadow:0 0 0 1px #0b0f19,0 31px 85px #02040acc,0 0 58px #536bea21,inset 0 0 0 1px #919bb326}.device:after,.device:before{content:"";position:absolute;width:3px;background:#4b566d;border-radius:2px;z-index:-1}.device:before{left:-3px;top:132px;height:58px}.device:after{right:-3px;top:153px;height:70px}.device-screen{background:linear-gradient(180deg,#0c111e,#090f1b 77%);border-radius:39px;overflow:hidden;border:1px solid #090d16;position:relative}.os{height:32px;display:flex;justify-content:space-between;align-items:center;padding:0 22px;font-size:11px;font-weight:670;position:relative}.os:after{content:"";position:absolute;top:8px;left:50%;transform:translateX(-50%);width:100px;height:18px;background:#03050a;border-radius:14px}.os .icon{width:42px;height:14px;stroke-width:1.4}.device-home{height:13px;display:grid;place-items:center;background:#0c111d}.device-home:after{content:"";height:4px;width:107px;border-radius:9px;background:#b5bfd4a0}
+.app-header{display:flex;align-items:center;justify-content:space-between;min-height:67px;padding:6px 19px 9px}.app-brand{display:flex;gap:11px;align-items:center}.app-logo{display:grid;place-items:center;width:40px;height:40px;border:1px solid #384665;border-radius:14px;background:radial-gradient(at 35% 20%,#2e3e67,#121a2d 72%);color:#ccdbff;box-shadow:inset 0 1px 0 #c5d2ff22}.app-logo .icon{width:25px;height:25px}.app-brand strong{font-size:21px;line-height:1.1;display:block;letter-spacing:-.055em}.app-brand small{display:block;color:#a1aec9;font-size:9px;letter-spacing:.15em;margin-top:4px;font-family:var(--mono)}.connected{display:flex;align-items:center;gap:6px;padding:0 10px;min-height:44px;font-size:12px;color:#c2f6e6;white-space:nowrap}.connected .icon{width:12px;height:12px;color:#9ab2bd}.online-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--mint);box-shadow:0 0 9px #62eacb80;flex:none}.connected .connection-label{border:1px solid #34554f;background:#142825b8;border-radius:50px;padding:6px 8px;display:flex;align-items:center;gap:6px}
+.star-map{position:relative;isolation:isolate;container-type:inline-size;width:100%;aspect-ratio:390/374;background:#080e1c;overflow:hidden;border-top:1px solid #26344e;border-bottom:1px solid #26344e}.star-map canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.hud{position:absolute;line-height:1.45;font-size:9px;letter-spacing:.12em;color:#a5b7db;pointer-events:none}.hud strong{font-weight:600;color:#d7e4ff}.hud.tl{top:14px;left:17px}.hud.bl{bottom:11px;left:17px;color:#9eb0d3}.hud.br{bottom:11px;right:17px;color:#9eb0d3;text-align:right}.hud .signal-dot{display:inline-block;color:#8ceccd;margin-right:5px}.map-pause{display:grid;place-items:center;position:absolute;z-index:4;right:10px;top:6px;width:44px;height:44px;color:#c8d6f1;border-radius:12px}.map-pause .icon{width:14px;height:14px}.map-pause::before{content:"";position:absolute;width:28px;height:28px;border-radius:9px;z-index:-1;background:#121d32;border:1px solid #354565}.map-pause:hover::before{background:#203158}.body-target{position:absolute;left:var(--x);top:var(--y);width:var(--size,44px);height:var(--size,44px);transform:translate(-50%,-50%);z-index:1;border-radius:100%;padding:0}.body-target[data-kind=moon]{z-index:2}.body-target[data-kind=moon]:hover,.body-target[data-kind=moon]:focus-visible{box-shadow:inset 0 0 0 1px #b8c9ff77;background:#b9d0ff18}.body-target:hover{background:#b9d0ff12}.body-target[data-kind=agent],.body-target[data-kind=host]{overflow:visible;background:transparent}.mascot{position:absolute;top:50%;left:50%;width:var(--art-width,100%);height:auto;transform:translate(-50%,-50%) scale(1);overflow:visible;pointer-events:none;filter:drop-shadow(0 4px 4px #050815b0);transition:transform .22s cubic-bezier(.2,.85,.3,1.2)}.body-target:is(:hover,:focus-visible) .mascot{transform:translate(-50%,-53%) scale(1.075)}.mascot-twinkle{transform-box:fill-box;transform-origin:center;animation:sparkle 4s ease-in-out infinite}.body-target[aria-pressed=true] .mascot-twinkle{animation-delay:-.65s}.mascot-blink{transform-box:fill-box;transform-origin:center;animation:blink 8s ease-in-out infinite}.body-target[data-mascot=claude] .mascot-blink{animation-delay:-2.2s}.body-target[data-mascot=pi] .mascot-blink{animation-delay:-5.3s}.star-map[data-motion=off] .mascot *{animation:none}.map-label{position:absolute;left:var(--x);top:var(--y);transform:translate(-50%,-50%);font-size:11px;letter-spacing:.025em;white-space:nowrap;color:#e2eaff;pointer-events:none;text-shadow:0 1px 5px #030712,0 0 8px #030712;line-height:1.15;padding:4px 7px;border-radius:8px}.map-label.selected{border:1px solid color-mix(in srgb,var(--tone) 40%,transparent);background:#101b32e6;color:var(--tone)}.map-label.host-label{font-size:10px;background:#130e17c9;color:#ffdbb3;font-weight:600;letter-spacing:.08em}.map-label small{color:#fdce9c;opacity:.9;font-family:var(--mono);font-size:8px;font-weight:400;margin-left:4px}
+.workspace{padding:10px 15px 11px}.agent-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.agent-tab{min-height:44px;display:flex;justify-content:center;align-items:center;gap:7px;border:1px solid #263148;border-radius:11px;background:#111929;color:#aab9d4;font-weight:580;font-size:12px;padding:3px 5px;white-space:nowrap}.agent-tab:hover{background:#1a2540}.agent-tab[aria-pressed=true]{color:#f3f6ff;background:color-mix(in srgb,var(--tone) 14%,#111929);border-color:color-mix(in srgb,var(--tone) 58%,#263148);box-shadow:inset 0 1px 0 #ced8ff13}.agent-tab .counter{font-family:var(--mono);color:#b1c1dc;font-size:10px}.agent-dot{width:8px;height:8px;flex:none;border-radius:100%;background:var(--tone);box-shadow:0 0 7px color-mix(in srgb,var(--tone) 55%,transparent)}
+.list-header{display:flex;justify-content:space-between;align-items:center;margin:12px 2px 6px;min-height:23px}.list-header h2{font-size:14px;margin:0;letter-spacing:.01em}.list-header span{font-size:10px;color:#a1b0ce;display:flex;align-items:center;gap:6px}.list-header span .icon{width:12px;height:12px}.sessions{border:1px solid #253148;border-radius:13px;background:#111827;overflow:hidden;min-height:139px}.session{width:100%;min-height:46px;display:grid;grid-template-columns:29px minmax(0,1fr) auto 13px;align-items:center;text-align:left;gap:9px;padding:5px 10px;border-bottom:1px solid #253148}.session:last-child{border-bottom:0}.session:hover,.session:focus-visible{background:#1c2840}.session:focus-visible{outline-offset:-3px}.moon-icon{display:grid;place-items:center;width:27px;height:27px;color:var(--tone);border:1px solid color-mix(in srgb,var(--tone) 27%,#263148);background:color-mix(in srgb,var(--tone) 9%,#101828);border-radius:9px}.moon-icon .icon{width:15px;height:15px}.session-text{min-width:0}.session-text b{font-size:12px;display:block;font-weight:630;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-text small{display:block;font-size:10px;color:#a0afca;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-status{display:flex;align-items:center;gap:5px;font-size:10px;color:#a0afca;white-space:nowrap}.session-status.run{color:#9debd7}.session-status .online-dot{width:5px;height:5px}.session>.icon{width:13px;height:13px;color:#92a3c3}
+.app-nav{display:grid;grid-template-columns:repeat(3,1fr);align-items:center;min-height:53px;padding:2px 12px;border-top:1px solid #253149;background:#0c111d}.app-nav button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:46px;font-size:10px;color:#a2b0cc;border-radius:8px}.app-nav button[aria-current=page]{color:#c4d4ff;font-weight:650}.app-nav button[aria-current=page] .icon{filter:drop-shadow(0 0 5px #86a8ff74)}.app-nav button:hover{background:#1a2438}.app-nav .icon{width:18px;height:18px}
+.list-view[hidden],.orbit-view[hidden]{display:none}.list-view{padding:10px 15px 17px;min-height:590px;border-top:1px solid #26344e}.list-view>h2{font-size:21px;margin:11px 2px 4px}.list-view>p{font-size:12px;color:var(--muted);margin:0 2px 18px}.list-view .list-header{margin-top:14px}.list-view .sessions{min-height:0}
+/* Native dialog combines modal focus handling with a sheet aligned to the mock phone. */
+.sheet{inset:auto auto var(--sheet-bottom,0px) var(--sheet-left,0px);width:var(--sheet-width,100%);max-width:none;max-height:var(--sheet-max,85dvh);margin:0;border:1px solid #455477;border-bottom:0;border-radius:24px 24px var(--sheet-radius,34px) var(--sheet-radius,34px);color:var(--ink);background:linear-gradient(155deg,#1b263c,#111827 45%);box-shadow:0 -14px 55px #03050b88;padding:16px 17px max(16px,env(safe-area-inset-bottom));overflow:auto;overscroll-behavior:contain}.sheet[open]{animation:arrive .27s cubic-bezier(.2,.75,.21,1) both}.sheet::backdrop{background:#03060abc}.sheet:focus{outline:0}@keyframes arrive{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}.sheet-handle{height:4px;width:35px;border-radius:6px;background:#67789a;margin:-6px auto 5px}.sheet-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.sheet-head h2{font-size:20px;margin:0;line-height:1.2}.sheet-head small{display:block;font-size:11px;color:#acbad4;margin-bottom:4px}.close-sheet{width:44px;height:44px;display:grid;place-items:center;border-radius:10px;color:#c4d2ed;flex:none}.close-sheet:hover{background:#273550}.sheet-body{margin-top:11px}.link-info{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin:14px 0}.stat{padding:10px 8px;border:1px solid #354360;border-radius:10px;background:#121b2d;min-width:0}.stat small{display:block;font-size:10px;color:#acbbd6;margin-bottom:4px}.stat b{display:block;font-size:15px;font-family:var(--mono);white-space:nowrap}.sheet-note{color:#b4c0d6;font-size:12px;line-height:1.6;margin:8px 0 13px}.primary{height:44px;display:flex;justify-content:center;align-items:center;gap:7px;width:100%;border-radius:11px;background:#b3c9ff;color:#0d1830;font-size:13px;font-weight:700}.primary:hover{background:#d0deff}.primary .icon{width:16px;height:16px}.messages{display:flex;flex-direction:column;gap:8px;max-height:min(232px,36dvh);min-height:88px;overflow:auto;padding:3px 3px 8px;overscroll-behavior:contain}.message{align-self:flex-start;max-width:91%;padding:9px 11px;border:1px solid #3b4966;border-radius:12px 12px 12px 4px;background:#202c43;font-size:12px;line-height:1.55;overflow-wrap:anywhere;white-space:pre-wrap}.message.sent{align-self:flex-end;background:#2a3c67;border-color:#496197;border-radius:12px 12px 4px 12px;color:#eef4ff}.compose{display:flex;gap:7px;margin-top:4px}.compose input{min-width:0;flex:1;height:44px;border:1px solid #415174;border-radius:11px;background:#101726;color:#f3f6ff;padding:0 10px;font-size:16px}.compose input::placeholder{color:#a4b2cf}.compose button{width:44px;flex:none}.compose button:disabled{opacity:.45}.toast{position:fixed;z-index:5;left:50%;bottom:17px;transform:translateX(-50%);width:max-content;max-width:calc(100% - 26px);padding:10px 14px;border:1px solid #5d78a8;background:#172940;color:#e4efff;box-shadow:0 6px 28px #0009;border-radius:50px;font-size:12px;pointer-events:none}.toast:empty{display:none}
+@keyframes sparkle{0%,100%{opacity:.62;transform:scale(.84)}50%{opacity:1;transform:scale(1.14)}}@keyframes blink{0%,6%,100%{transform:scaleY(1)}3%{transform:scaleY(.13)}}
+.legend-art.packet::before{content:"";width:7px;height:7px;transform:rotate(45deg);border-radius:2px;background:#c2ffe9;box-shadow:0 0 11px #81efcd}.legend-art.packet::after{content:"";position:absolute;left:2px;width:10px;height:1px;background:linear-gradient(90deg,transparent,#8ee9d6);transform:rotate(-33deg) translateY(3px)}
+@media(max-width:1000px){.showcase{gap:35px}.stage-index{display:none}}
+@media(max-width:799px){.exhibit{min-height:100svh;display:block;padding:0;overflow:visible;background:#090f1b}.masthead,.intro,.exhibit-foot,.backdrop,.stage-index,.os,.device-home{display:none}.showcase{display:block;margin:0;width:100%;padding:0}.device-wrap,.device,.device-screen{width:100%;max-width:none;border:0;border-radius:0;padding:0;box-shadow:none;background:none}.device::before,.device::after{display:none}.device-screen{min-height:100svh;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top);background:#090f1b}.app-header,.orbit-view,.list-view,.app-nav{width:100%;max-width:520px;margin-inline:auto}.app-header{min-height:68px}.app-nav{position:sticky;bottom:0;z-index:6;margin-top:auto;padding-bottom:max(2px,env(safe-area-inset-bottom))}.list-view{min-height:0;flex:1}.sheet{--sheet-radius:0px!important}.toast{bottom:calc(64px + env(safe-area-inset-bottom))}}
+@media(max-width:360px){.workspace{padding-inline:10px}.hud{font-size:8px}.body-target{width:min(var(--size),19vw);height:min(var(--size),19vw)}.map-label{font-size:10px}.map-label.host-label{font-size:9px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <defs>
+    <linearGradient id="art-sun" x1=".18" x2=".8" y2="1"><stop stop-color="#fff294"/><stop offset=".62" stop-color="#ffb642"/><stop offset="1" stop-color="#f36d51"/></linearGradient>
+    <linearGradient id="art-solar-case" x2=".72" y2="1"><stop stop-color="#ffefd2"/><stop offset="1" stop-color="#fbb24f"/></linearGradient>
+    <linearGradient id="art-blue" x1=".25" x2=".8" y2="1"><stop stop-color="#e6eeff"/><stop offset=".36" stop-color="#95afff"/><stop offset="1" stop-color="#6369dc"/></linearGradient>
+    <linearGradient id="art-glass" x1=".15" x2=".84" y2="1"><stop stop-color="#344481"/><stop offset="1" stop-color="#172143"/></linearGradient>
+    <linearGradient id="art-peach" x1=".2" x2=".73" y2="1"><stop stop-color="#ffe5ae"/><stop offset=".42" stop-color="#f9b47e"/><stop offset="1" stop-color="#e97763"/></linearGradient>
+    <linearGradient id="art-pages" x1="0" x2=".9" y2="1"><stop stop-color="#fff9d8"/><stop offset="1" stop-color="#ffc89d"/></linearGradient>
+    <linearGradient id="art-mint" x1=".15" x2=".8" y2="1"><stop stop-color="#d3fbe1"/><stop offset=".52" stop-color="#8aebc5"/><stop offset="1" stop-color="#3caeae"/></linearGradient>
+    <linearGradient id="art-mint-side" x1=".13" x2=".87" y2="1"><stop stop-color="#78dcbc"/><stop offset="1" stop-color="#267989"/></linearGradient>
+  </defs>
+  <symbol id="art-host" viewBox="0 0 112 112">
+    <g fill="none" stroke-linecap="round"><path d="M56 5v6m0 90v6M5 56h6m90 0h6M20 20l4 4m64 64 4 4m0-72-4 4M24 88l-4 4" stroke="#ffcb83" stroke-opacity=".64" stroke-width="1.5"/><path d="M27 14a49 49 0 0 1 14-6m35 94a49 49 0 0 0 12-7M7 42a49 49 0 0 1 6-15" stroke="#fca76b" stroke-opacity=".34" stroke-width="1.1"/></g>
+    <path d="M53 12q3-5 6 0l8 9q2 3 6 2l12-2q5-1 5 5l-1 12q0 4 3 6l10 8q5 4 0 8l-10 8q-3 2-3 6l1 12q0 6-5 5l-12-2q-4-1-6 2l-8 9q-3 5-6 0l-8-9q-2-3-6-2l-12 2q-5 1-5-5l1-12q0-4-3-6l-10-8q-5-4 0-8l10-8q3-2 3-6l-1-12q0-6 5-5l12 2q4 1 6-2Z" fill="#6d3f53" stroke="#9e534a" stroke-width="3" transform="translate(0 2.5)"/>
+    <path d="M53 12q3-5 6 0l8 9q2 3 6 2l12-2q5-1 5 5l-1 12q0 4 3 6l10 8q5 4 0 8l-10 8q-3 2-3 6l1 12q0 6-5 5l-12-2q-4-1-6 2l-8 9q-3 5-6 0l-8-9q-2-3-6-2l-12 2q-5 1-5-5l1-12q0-4-3-6l-10-8q-5-4 0-8l10-8q3-2 3-6l-1-12q0-6 5-5l12 2q4 1 6-2Z" fill="url(#art-sun)" stroke="#ffdf89" stroke-width="1.6"/>
+    <circle cx="56" cy="56" r="32" fill="#ffeaa5" fill-opacity=".37" stroke="#fff1b3" stroke-opacity=".62" stroke-dasharray="2 3"/>
+    <path d="m33 56 8-11q2-3 5-3h22q4 0 6 3l6 11v13q0 6-6 6H40q-7 0-7-6Z" fill="url(#art-solar-case)" stroke="#8d4b48" stroke-width="2.75" stroke-linejoin="round"/>
+    <path d="M34 57h45v11q0 5-5 5H40q-6 0-6-5Z" fill="#a95d4d"/><path d="M34 57h44" fill="none" stroke="#fff2c8" stroke-width="1.6"/>
+    <path d="M42 64h10m4 0h3" stroke="#442c42" stroke-linecap="round" stroke-width="2.5"/><circle cx="72" cy="64.2" r="1.8" fill="#f4ffb2"/>
+    <g class="mascot-twinkle" fill="#fff9d9"><path d="M34 31q1 5 5 6-4 1-5 6-1-5-5-6 4-1 5-6Z"/><path d="M78 29q.5 3 3.5 3.5-3 .5-3.5 3.5-.5-3-3.5-3.5 3-.5 3.5-3.5Z"/></g>
+  </symbol>
+  <symbol id="art-codex" viewBox="0 0 88 88">
+    <path d="m46 23-2-9-9-4m-8 47-6 11m39-11 5 10" fill="none" stroke="#b7c9ff" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="35" cy="10" r="4.1" fill="#dce6ff" stroke="#646ddd" stroke-width="1.3"/>
+    <path d="M17 36h-3c-6 0-8 5-8 10v3c0 5 3 9 9 9h4m52-22h3c6 0 8 5 8 10v3c0 5-3 9-9 9h-4" fill="#757ed9" stroke="#3a417d" stroke-width="2.3" stroke-linecap="round"/>
+    <path d="M18 35q3-14 22-15h8q19 1 22 15l2 17q1 15-15 19l-16 1q-23-1-24-17Z" fill="url(#art-blue)" stroke="#4a4d9e" stroke-width="2.5"/>
+    <path d="M25 34q5-9 16-9m-27 14v4m60-4v4" fill="none" stroke="#edf3ff" stroke-opacity=".87" stroke-width="1.7" stroke-linecap="round"/>
+    <path d="M25 40q0-6 7-7h23q8 1 8 8l.8 10q.2 9-8.8 9H33q-9-1-9-9Z" fill="url(#art-glass)" stroke="#5964b8" stroke-width="1.7"/>
+    <path d="M32 37h20" stroke="#dae5ff" stroke-opacity=".32" stroke-width="1.15" stroke-linecap="round"/>
+    <g fill="none" stroke="#c0f8fe" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.65"><path d="m34 43 5 4.5-5 4.5m11 1h8"/></g>
+    <path d="M37 65h13" stroke="#e0e6ff" stroke-opacity=".7" stroke-width="1.7" stroke-linecap="round"/>
+    <g fill="#a1b0ff" stroke="#414a9a" stroke-width="1.6"><rect x="16" y="66" width="15" height="7" rx="3.5" transform="rotate(-20 23.5 69.5)"/><rect x="57" y="66" width="16" height="7" rx="3.5" transform="rotate(18 65 69.5)"/></g>
+    <path class="mascot-twinkle" d="M73 12q1.3 5.7 7 7-5.7 1.3-7 7-1.3-5.7-7-7 5.7-1.3 7-7Z" fill="#e0e9ff"/>
+  </symbol>
+  <symbol id="art-claude" viewBox="0 0 88 88">
+    <path d="M43 11q5 1 7 9 9-6 13-2 4 2 2 11 10-2 12 3 2 4-5 10 10 3 9 8-1 5-10 7 4 8 0 11-5 4-12 0-1 9-6 10-6 0-9-8-5 8-10 6-5-2-5-11-9 4-12-1-3-4 2-11-10-2-10-7 0-5 10-8-6-7-3-11 4-4 13-1 0-8 5-10 5-1 10 5 0-12 5-11Z" fill="url(#art-peach)" stroke="#9b4d59" stroke-width="2.3" stroke-linejoin="round"/>
+    <path d="M23 33q4 0 4-5 7 0 10-6m-9 17 3-2" stroke="#fff4cb" stroke-opacity=".84" stroke-linecap="round" stroke-width="1.7" fill="none"/>
+    <ellipse cx="44" cy="46" rx="23" ry="17" fill="#fff2d2" opacity=".57"/>
+    <g class="mascot-blink" fill="#603c52"><ellipse cx="35.6" cy="43.5" rx="2.3" ry="3"/><ellipse cx="52.6" cy="43.5" rx="2.3" ry="3"/></g>
+    <path d="M41 48q3 4 6 0" fill="none" stroke="#804254" stroke-width="1.65" stroke-linecap="round"/>
+    <g fill="#eb8a82" opacity=".75"><ellipse cx="28.2" cy="49" rx="3" ry="1.4"/><ellipse cx="60" cy="49" rx="3" ry="1.4"/></g>
+    <path d="M24 56q10-4 20 4 10-8 20-4l-2 15q-8-1-18 4-9-5-18-4Z" fill="#a95061" stroke="#744151" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M25 54q10-2 19 5 9-7 19-5l-1.6 13q-8.5-.4-17.4 5-9-5.5-17.4-5Z" fill="url(#art-pages)" stroke="#ad655d" stroke-width="1.15" stroke-linejoin="round"/>
+    <path d="M44 60v11m-14-13 8 2.5m-7.5.8 7 2.3m13-3.1 8-2.5m-7.5 6.3 7-2.3" fill="none" stroke="#b67972" stroke-width="1.2" stroke-linecap="round"/>
+    <g fill="#ffc591" stroke="#ab655d" stroke-width="1.2"><circle cx="25.4" cy="61.5" r="3.3"/><circle cx="62.7" cy="61.5" r="3.3"/></g>
+    <path class="mascot-twinkle" d="M74 11q1 4 5 5-4 1-5 5-1-4-5-5 4-1 5-5Z" fill="#ffdda1"/>
+  </symbol>
+  <symbol id="art-pi" viewBox="0 0 88 88">
+    <ellipse cx="44" cy="51" rx="39" ry="14" transform="rotate(-28 44 51)" fill="none" stroke="#9ceaca" stroke-opacity=".43" stroke-width="1.5"/>
+    <path d="M22 33 40 23q4-2 9 0l17 9q7 4 7 9l-2 16q-.5 6-5 8L50 75q-5 3-11 0l-16-9q-5-3-5-8V42q0-6 4-9Z" fill="url(#art-mint)" stroke="#386a7e" stroke-width="2.45" stroke-linejoin="round"/>
+    <path d="m47 50 25-14q1 2 1 5l-2 16q-.5 6-5 8L50 75q-2 1-4 1Z" fill="url(#art-mint-side)"/>
+    <path d="m22 35 18-10q5-2 9 0l18 9q2 1 3 3L49 49q-3 1.5-6.5 0L20 38Z" fill="#ccf8db"/>
+    <path d="m24 41 19 10m5 1-1 21m6-25 15-8" stroke="#edfff0" stroke-opacity=".54" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+    <path d="M34 32v-4c0-3 4-5 10-5s10 2 10 5v4c0 3-4 5-10 5s-10-2-10-5Z" fill="#64bdaa" stroke="#4f9d9a" stroke-width="1"/><ellipse cx="44" cy="27.7" rx="10" ry="4.6" fill="#ecffe4" stroke="#87cbb5" stroke-width="1.1"/>
+    <path d="m24 48 17 8-.25 9q0 2.7-2.5 1.6l-12.6-6q-2.1-1-2.1-3.3Z" fill="#5abda7" opacity=".55"/>
+    <g class="mascot-blink" fill="#215969"><ellipse cx="28.4" cy="53.5" rx="1.65" ry="2.2"/><ellipse cx="36.4" cy="57.5" rx="1.65" ry="2.2"/></g>
+    <path d="M30 58q1.5 3 3.8 2.5" fill="none" stroke="#215969" stroke-width="1.3" stroke-linecap="round"/>
+    <path d="m57 54 8-4m-8 9 8-4" stroke="#cdf8d9" stroke-opacity=".73" stroke-width="1.45" stroke-linecap="round" fill="none"/>
+    <path d="M76 29c6.5 1.3 7.6 5.4 4 11.2M12 64c-4 5.5-4 10.3 2.8 11.5 8.9 1.7 22.1-2 36-9.6 7.6-4.1 16.2-9.7 22.7-16.7" fill="none" stroke="#a9f9cf" stroke-opacity=".73" stroke-linecap="round" stroke-width="1.4"/>
+    <g transform="translate(67 11) rotate(13)"><path d="m-7 4 7-4 8 4v8l-8 4-7-4Z" fill="#4ea9a4" stroke="#366a7d" stroke-width="1.4" stroke-linejoin="round"/><path d="m-7 4 7-4 8 4-8 4Z" fill="#c2f8da"/><path d="M0 8v7" stroke="#defce5" stroke-opacity=".56" stroke-width="1"/></g>
+    <path class="mascot-twinkle" d="M13 21q.9 3.6 4.5 4.5-3.6.9-4.5 4.5-.9-3.6-4.5-4.5 3.6-.9 4.5-4.5Z" fill="#b8ffdf"/>
+  </symbol>
+  <symbol id="i-logo" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.6"/><ellipse cx="12" cy="12" rx="11" ry="3.65" transform="rotate(-34 12 12)"/><circle cx="12" cy="12" r="1.65" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-orbit" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="4.6" transform="rotate(-36 12 12)"/><circle cx="12" cy="12" r="2.4"/><path d="M4.6 15.7h.1M19.8 8.3h.1"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3.5"/><path d="M8 9h8m-8 6h6"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 12h4l2-5 4 10 2-5h6"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/><path d="M9 10h.1m5 4h.1m-3 2h.1"/><path d="M17 8.3 20 6m-13.2 9.5L4 18" opacity=".65"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14m6-14v14" stroke-width="2.9"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="m3 10 17-6-6 17-3.3-7.7L3 10Zm7.7 3.3L20 4"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 58 18"><path d="M2 15v-2m4 2v-5m4 5V8m4 7V5M20 7q6-6 12 0m-10 3q4-4 8 0m-6 3q2-2 4 0m-2 2h.1"/><rect x="38" y="4" width="17" height="11" rx="2.2"/><path d="M57 8v3"/><rect x="40" y="6" width="13" height="7" rx="1" fill="currentColor" stroke="none"/></symbol>
+</svg>
+<div class="exhibit">
+  <svg class="backdrop" viewBox="0 0 1520 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <defs><pattern id="grid" width="54" height="54" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".75" fill="#526589" opacity=".26"/></pattern><radialGradient id="ring-fade"><stop stop-color="#87a1e0"/><stop offset="1" stop-color="#3a4b78"/></radialGradient></defs>
+    <path d="M0 0h1520v1000H0z" fill="url(#grid)"/>
+    <g stroke="url(#ring-fade)" fill="none" transform="rotate(-27 1080 516)">
+      <ellipse cx="1080" cy="516" rx="449" ry="215" opacity=".38"/>
+      <ellipse cx="1080" cy="516" rx="525" ry="288" opacity=".42" stroke-dasharray="2 8"/>
+      <ellipse cx="1080" cy="516" rx="595" ry="350" opacity=".36"/>
+      <ellipse cx="1080" cy="516" rx="676" ry="405" opacity=".24"/>
+      <circle cx="1519" cy="470" r="3" fill="#8fa7e5"/><circle cx="661" cy="342" r="3" fill="#7b90bc"/>
+    </g>
+  </svg>
+  <header class="masthead"><div class="wordmark"><svg class="icon"><use href="#i-logo"/></svg>Orbis</div><div class="edition">DESIGN CONCEPT&nbsp; / &nbsp;01</div></header>
+  <main class="showcase">
+    <article class="intro">
+      <div class="kicker">ORBIS / ORBITAL CONTROL</div>
+      <h1>把工作，<span>放进轨道。</span></h1>
+      <p>电脑是恒星，Agent 各有轨道。<br>点开一颗卫星，继续你的会话。</p>
+      <ul class="legend" aria-label="星图图例">
+        <li><span class="legend-art star"></span><span>恒星 · 电脑</span><span class="legend-id">01 / HOST</span></li>
+        <li><span class="legend-art planet"></span><span>行星 · Agent</span><span class="legend-id">02 / AGENT</span></li>
+        <li><span class="legend-art moons"></span><span>卫星 · 会话</span><span class="legend-id">03 / SESSION</span></li>
+        <li><span class="legend-art packet"></span><span>信使 · 远控数据</span><span class="legend-id">04 / SIGNAL</span></li>
+      </ul>
+    </article>
+    <div class="device-wrap">
+      <div class="stage-index" aria-hidden="true">FIG. 01 — MOBILE CONTROL SURFACE</div>
+      <div class="device"><section class="device-screen" aria-label="Orbis 手机原型" id="screen">
+        <div class="os" aria-hidden="true"><span>9:41</span><svg class="icon"><use href="#i-phone"/></svg></div>
+        <header class="app-header">
+          <div class="app-brand"><div class="app-logo"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg></div><div><strong>轨道</strong><small>ORBIS CONTROL</small></div></div>
+          <button class="connected" id="connection" aria-label="查看 Mac Studio 模拟链路"><span class="connection-label"><span class="online-dot"></span>模拟已连接</span><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+        </header>
+        <div class="orbit-view" id="orbit-view">
+          <section class="star-map" id="star-map" aria-label="电脑、Agent 和会话星图">
+            <canvas id="sky" aria-hidden="true"></canvas><canvas id="system" aria-hidden="true"></canvas><canvas id="signals" aria-hidden="true"></canvas>
+            <div class="hud tl"><strong>SYSTEM 01</strong><br>LOCAL ORBIT</div>
+            <button class="map-pause" id="pause" aria-label="数据动效" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#i-pause"/></svg></button>
+            <div id="map-controls"></div>
+            <div class="hud bl" aria-hidden="true"><span class="signal-dot">◈</span><span id="signal-status">链路就绪</span></div>
+            <div class="hud br" aria-hidden="true">UP <strong id="tx">00</strong> / DN <strong id="rx">00</strong></div>
+          </section>
+          <section class="workspace" aria-label="Agent 会话">
+            <div class="agent-tabs" id="agent-tabs" role="group" aria-label="选择 Agent"></div>
+            <div class="list-header"><h2 id="orbit-list-title">会话</h2><span><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg><span id="session-count">3 颗卫星</span></span></div>
+            <div class="sessions" id="session-list" aria-labelledby="orbit-list-title"></div>
+          </section>
+        </div>
+        <section class="list-view" id="list-view" hidden aria-labelledby="all-title">
+          <h2 id="all-title">全部会话</h2><p>Mac Studio · 3 个 Agent</p><div id="all-sessions"></div>
+        </section>
+        <nav class="app-nav" aria-label="主导航">
+          <button data-view="orbit" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-orbit"/></svg>星图</button>
+          <button data-view="list"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>会话</button>
+          <button data-view="link" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="#i-wave"/></svg>链路</button>
+        </nav>
+        <div class="device-home" aria-hidden="true"></div>
+      </section></div>
+    </div>
+  </main>
+  <footer class="exhibit-foot"><span>ORBIS STUDIO / INTERACTION STUDY</span><span>自绘星图 · 交互原型</span></footer>
+</div>
+<dialog class="sheet" id="sheet" aria-labelledby="sheet-title"><div class="sheet-handle" aria-hidden="true"></div><div class="sheet-head"><div><small id="sheet-subtitle"></small><h2 id="sheet-title"></h2></div><button class="close-sheet" id="close-sheet" aria-label="关闭" autofocus><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div><div class="sheet-body" id="sheet-body"></div></dialog>
+<div class="toast" id="toast" role="status"></div><div class="sr" id="announcement" role="status"></div>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const svg = (id) => `<svg class="icon" aria-hidden="true"><use href="#i-${id}"/></svg>`;
+const W = 390, H = 374, TAU = Math.PI * 2;
+const host = { x: 183, y: 178, r: 43, id:'host', art:108 };
+const agents = [
+  {id:'codex',name:'Codex',tone:'#a4bcff',rgb:[153,180,255],x:287,y:101,r:29,art:85,label:[287,144],control:[208,102],moons:[
+    {x:242,y:69,title:'修复会话同步',meta:'orbis / transport',run:true,reply:'收到。我会继续检查重连后的会话状态同步。'},
+    {x:285,y:53,title:'检查 iOS 构建',meta:'orbis / ios',reply:'收到。我会继续查看 iOS 构建日志。'},
+    {x:330,y:77,title:'整理发布清单',meta:'orbis / release',reply:'收到。我会继续核对发布清单。'}]},
+  {id:'claude',name:'Claude',tone:'#f3bd99',rgb:[243,189,153],x:85,y:264,r:25,art:75,label:[89,307],control:[146,287],moons:[
+    {x:42,y:232,title:'审阅交互方案',meta:'orbis / design',run:true,reply:'收到。我会从交互流程开始继续审阅。'},
+    {x:43,y:295,title:'归纳反馈',meta:'orbis / feedback',reply:'收到。我会继续归纳这组反馈。'}]},
+  {id:'pi',name:'Pi',tone:'#8de9cf',rgb:[118,229,201],x:279,y:279,r:23,art:77,label:[270,318],control:[266,194],moons:[
+    {x:326,y:311,title:'查看任务日志',meta:'orbis / logs',reply:'收到。我会继续整理任务日志。'}]}
+];
+let selected = 0, currentView = 'orbit', openMoon = null, sheetMode = '', sheetOpener = null;
+let trafficUp = 0, trafficDown = 0, signals = [], beacon = null, lastDemo = 0;
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+let motion = !reduceMotion.matches, motionOverride = false, frame = 0, toastTimer;
+const number = (n) => String(n).padStart(2,'0');
+const xy = (x,y) => `--x:${100*x/W}%;--y:${100*y/H}%`;
+const atlas = $('map-controls');
+function makeTarget(x,y,size,kind,action,label){
+  const b = document.createElement('button'); b.className='body-target'; b.dataset.kind=kind;
+  b.setAttribute('style',`${xy(x,y)};--size:${size}px`); b.setAttribute('aria-label',label);
+  b.addEventListener('click',()=>action(b)); atlas.append(b); return b;
+}
+function attachMascot(target,body){
+  target.dataset.mascot=body.id;
+  target.style.setProperty('--art-width',`${100*body.art/W}cqw`);
+  target.innerHTML=`<svg class="mascot" aria-hidden="true" viewBox="0 0 ${body.id==='host'?'112 112':'88 88'}"><use href="#art-${body.id}"/></svg>`;
+}
+function makeLabel(x,y,text,tone){
+  const el = document.createElement('span'); el.className = 'map-label'; el.style.cssText=xy(x,y)+(tone?`;--tone:${tone}`:'');
+  el.textContent=text; el.setAttribute('aria-hidden','true'); atlas.append(el); return el;
+}
+const hostTarget=makeTarget(host.x,host.y,88,'host',(b)=>showLink(b),'Mac Studio，查看模拟链路');
+hostTarget.setAttribute('aria-haspopup','dialog');attachMascot(hostTarget,host);
+const hostLabel = makeLabel(host.x,233,'Mac Studio'); hostLabel.classList.add('host-label');
+const hostRole = document.createElement('small'); hostRole.textContent='HOST'; hostLabel.append(hostRole);
+agents.forEach((a,i)=>{
+  a.target=makeTarget(a.x,a.y,Math.max(44,2*a.r+8),'agent',()=>select(i),`选择 ${a.name}`);
+  attachMascot(a.target,a);a.labelElement=makeLabel(...a.label,a.name,a.tone);
+  a.moons.forEach((m,j)=>{
+    m.history=[]; m.pending=false;
+    m.target=makeTarget(m.x,m.y,44,'moon',(b)=>showSession(i,j,b),`${a.name} 会话：${m.title}`);
+    m.target.setAttribute('aria-haspopup','dialog');
+  });
+});
+$('agent-tabs').innerHTML=agents.map((a,i)=>`<button class="agent-tab" data-agent="${i}" aria-controls="session-list" style="--tone:${a.tone}"><span class="agent-dot"></span>${a.name}<span class="counter" aria-label="${a.moons.length} 个会话">${a.moons.length}</span></button>`).join('');
+$('agent-tabs').addEventListener('click',e=>{const b=e.target.closest('[data-agent]'); if(b) select(Number(b.dataset.agent));});
+function rows(a,i){return a.moons.map((m,j)=>`<button class="session" data-id="${i}:${j}" aria-haspopup="dialog" style="--tone:${a.tone}"><span class="moon-icon">${svg('moon')}</span><span class="session-text"><b>${m.title}</b><small>${m.meta}</small></span><span class="session-status ${m.run?'run':''}">${m.run?'<span class="online-dot"></span>运行中':'待命'}</span>${svg('chevron')}</button>`).join('');}
+$('all-sessions').innerHTML=agents.map((a,i)=>`<div class="list-header"><h2 id="agent-list-${i}">${a.name}</h2><span>${a.moons.length} 个会话</span></div><div class="sessions" aria-labelledby="agent-list-${i}">${rows(a,i)}</div>`).join('');
+for(const root of [$('session-list'),$('all-sessions')]) root.addEventListener('click',e=>{const row=e.target.closest('[data-id]'); if(row){const [i,j]=row.dataset.id.split(':').map(Number);showSession(i,j,row);}});
+function select(i,ping=true){
+  const changed = selected !== i;
+  selected=i;
+  agents.forEach((a,k)=>{a.target.setAttribute('aria-pressed',String(k===i));a.labelElement.classList.toggle('selected',k===i);});
+  for(const b of $('agent-tabs').children) b.setAttribute('aria-pressed',String(Number(b.dataset.agent)===i));
+  if(changed || !$('session-list').children.length){$('session-list').innerHTML=rows(agents[i],i);$('session-count').textContent=`${agents[i].moons.length} 颗卫星`;}
+  paintSystem();
+  if(changed && ping) addSignal(i,null,false);
+}
+function navigate(view){
+  if(view==='link'){showLink(document.querySelector('[data-view=link]'));return;}
+  currentView=view;$('orbit-view').hidden=view!=='orbit';$('list-view').hidden=view!=='list';
+  document.querySelectorAll('[data-view]').forEach(b=>{if(b.dataset.view===view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
+  if(view==='orbit') resize();else stopFrame();
+}
+document.querySelector('.app-nav').addEventListener('click',e=>{const b=e.target.closest('[data-view]');if(b)navigate(b.dataset.view);});
+const sheet=$('sheet');
+const openSheet=(mode,label,title,opener)=>{
+  sheetMode=mode;sheetOpener=opener; $('sheet-subtitle').textContent=label;$('sheet-title').textContent=title;
+  positionSheet(); if(!sheet.open)sheet.showModal();
+};
+function positionSheet(){
+  const rect=$('screen').getBoundingClientRect(), mobile=matchMedia('(max-width:799px)').matches;
+  const viewport=window.visualViewport;
+  const visibleBottom=viewport?viewport.height+viewport.offsetTop:window.innerHeight;
+  const y=Math.min(mobile?visibleBottom:rect.bottom,visibleBottom);
+  const bottom=Math.max(0,window.innerHeight-y);
+  sheet.style.setProperty('--sheet-left',`${mobile?0:Math.max(0,rect.left)}px`);
+  sheet.style.setProperty('--sheet-width',`${mobile?document.documentElement.clientWidth:rect.width}px`);
+  sheet.style.setProperty('--sheet-bottom',`${bottom}px`);
+  sheet.style.setProperty('--sheet-max',`${Math.max(155,y-Math.max(16,rect.top+48))}px`);
+}
+$('close-sheet').addEventListener('click',()=>sheet.close());
+sheet.addEventListener('click',e=>{if(e.target!==sheet)return;const r=sheet.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)sheet.close();});
+sheet.addEventListener('close',()=>{sheetMode=''; openMoon=null;paintSystem();if(sheetOpener?.isConnected)sheetOpener.focus({preventScroll:true});sheetOpener=null;});
+function showLink(opener){
+  $('sheet-body').innerHTML=`<p class="sheet-note">Mac Studio ↔ ${agents[selected].name} · 本地模拟，不连接真实设备。</p><div class="link-info"><div class="stat"><small>模拟往返</small><b>24 ms</b></div><div class="stat"><small>上行包</small><b id="stat-up">${number(trafficUp)}</b></div><div class="stat"><small>回执包</small><b id="stat-down">${number(trafficDown)}</b></div></div><button class="primary" id="ping">${svg('wave')}测试链路</button>`;
+  openSheet('link','远控链路','Mac Studio',opener);
+  $('ping').addEventListener('click',()=>{sheet.close();navigate('orbit');addSignal(selected,null,true); notify('测试信号已发出');});
+}
+$('connection').addEventListener('click',e=>showLink(e.currentTarget));
+function showSession(i,j,opener){
+  select(i,false);const a=agents[i],m=a.moons[j];openMoon={i,j};paintSystem();
+  $('sheet-body').innerHTML=`<div class="messages" id="messages" role="log" aria-label="模拟会话消息"></div><form class="compose" id="compose"><label for="message-input" class="sr">模拟消息</label><input id="message-input" placeholder="输入模拟消息" maxlength="300" autocomplete="off" enterkeyhint="send"><button class="primary" type="submit" id="send" aria-label="发送模拟消息" disabled>${svg('send')}</button></form>`;
+  openSheet('chat',`${a.name} / ${m.meta} · 模拟会话`,m.title,opener);
+  drawMessages(m);
+  const input=$('message-input');
+  const syncSend=()=>{$('send').disabled=!input.value.trim()||m.pending;};
+  input.addEventListener('input',syncSend);
+  $('compose').addEventListener('submit',e=>{
+    e.preventDefault();const value=input.value.trim();if(!value||m.pending)return;
+    m.history.push({sent:true,text:value});m.pending=true;input.value='';syncSend();drawMessages(m);
+    addSignal(i,j,true);
+    setTimeout(()=>{
+      m.pending=false;m.history.push({sent:false,text:m.reply});
+      if(sheet.open&&sheetMode==='chat'&&openMoon?.i===i&&openMoon?.j===j){drawMessages(m);$('send').disabled=!$('message-input').value.trim();}
+      else notify(`${a.name} 已回执`);
+    },800);
+  });
+}
+function drawMessages(m){
+  const node=$('messages'); if(!node)return;
+  const items=[{sent:false,text:m.run?'会话仍在电脑上运行。':'会话已就绪，可以继续。'},...m.history];
+  if(m.pending)items.push({sent:false,text:'正在等待回执…'});
+  const rendered=items.map(msg=>{const el=document.createElement('div');el.className=`message${msg.sent?' sent':''}`;el.textContent=msg.text;return el;});
+  node.replaceChildren(...rendered);node.scrollTop=node.scrollHeight;
+}
+function notify(message){clearTimeout(toastTimer);$('toast').textContent=message;toastTimer=setTimeout(()=>$('toast').textContent='',2300);}
+window.addEventListener('resize',()=>{if(sheet.open)positionSheet();});
+window.visualViewport?.addEventListener('resize',()=>{if(sheet.open)positionSheet();});
+
+// The three original drawing layers are cached independently: nebula, atlas, and live signals.
+const sky=$('sky'), system=$('system'), live=$('signals');
+const sc=sky.getContext('2d'), ac=system.getContext('2d'), lc=live.getContext('2d');
+let ready=false,lastPaint=0,scale=1;
+const C=(r,g,b,a=1)=>`rgba(${r},${g},${b},${a})`;
+const clamp=(x,l=0,h=1)=>Math.max(l,Math.min(h,x));
+const mix=(x,y,t)=>x+(y-x)*t;
+function rng(seed){return()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296;};}
+const hashBank = Float32Array.from({length:4096},rng(342012));
+const cell=(x,y)=>hashBank[((x&63)+((y&63)<<6))&4095];
+function noise(x,y){
+  const i=Math.floor(x),j=Math.floor(y);let u=x-i,v=y-j;u=u*u*(3-2*u);v=v*v*(3-2*v);
+  return mix(mix(cell(i,j),cell(i+1,j),u),mix(cell(i,j+1),cell(i+1,j+1),u),v);
+}
+const fbm=(x,y)=>.53*noise(x,y)+.27*noise(x*2.04+13,y*2.04+7)+.13*noise(x*4.15-33,y*4.15+16)+.07*noise(x*8.3+5,y*8.3+3);
+function gradient(c,x,y,r,stops){const g=c.createRadialGradient(x,y,0,x,y,r);stops.forEach(s=>g.addColorStop(...s));c.fillStyle=g;c.fillRect(x-r,y-r,2*r,2*r);}
+function ring(c,x,y,rx,ry,tilt,color,width=1,start=0,end=TAU){c.beginPath();c.ellipse(x,y,rx,ry,tilt,start,end);c.lineWidth=width;c.strokeStyle=color;c.stroke();}
+function point(c,x,y,r,color){c.beginPath();c.arc(x,y,r,0,TAU);c.fillStyle=color;c.fill();}
+function line(c,x,y,x2,y2,color,width=1){c.beginPath();c.moveTo(x,y);c.lineTo(x2,y2);c.strokeStyle=color;c.lineWidth=width;c.stroke();}
+function diamond(c,x,y,r,color,angle=0){c.save();c.translate(x,y);c.rotate(angle);c.beginPath();c.moveTo(r,0);c.lineTo(0,r*.68);c.lineTo(-r,0);c.lineTo(0,-r*.68);c.closePath();c.fillStyle=color;c.fill();c.restore();}
+const nebula=(()=>{
+  const out=document.createElement('canvas');out.width=W;out.height=H;const c=out.getContext('2d'),im=c.createImageData(W,H);
+  const random=rng(12);
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    const idx=4*(y*W+x), u=x/W,v=y/H;
+    const n=fbm(u*5.4+9,v*6.2+4), n2=fbm(u*8.4+4+n*2,v*9-11+n*1.5);
+    const core=Math.exp(-Math.pow((v+.67*u-.826+(n-.5)*.19)*6.7,2));
+    const dust=Math.pow(clamp((n*.73+n2*.27-.22)*1.8),2)*core;
+    const violet=Math.exp(-((u-.71)**2*8+(v-.36)**2*5));
+    const gas=Math.pow(clamp((n2-.32)*1.6),1.5)*violet;
+    const grain=(random()-.5)*3;
+    im.data[idx]=6+24*dust+28*gas+grain;im.data[idx+1]=10+39*dust+18*gas+grain;im.data[idx+2]=23+82*dust+54*gas+grain;im.data[idx+3]=255;
+  }
+  c.putImageData(im,0,0);return out;
+})();
+const stars=(()=>{
+  const random=rng(40761);return Array.from({length:376},()=>{
+    const x=random()*W,y=random()*H;
+    const bright=random()>.96;
+    return {x,y,r:bright?.75+random()*.65:.22+random()*.53,a:bright?.72+random()*.25:.19+random()*.43,bright};
+  });
+})();
+function paintSky(){
+  sc.clearRect(0,0,W,H);sc.drawImage(nebula,0,0);
+  gradient(sc,host.x,host.y,168,[[0,'#df77484f'],[.27,'#c6663c34'],[.68,'#603b5a19'],[1,'#40326800']]);
+  gradient(sc,290,93,117,[[0,'#576bd037'],[.49,'#4a53bf18'],[1,'#40326800']]);
+  for(const s of stars){
+    if(s.bright)gradient(sc,s.x,s.y,5,[[0,C(151,186,255,.41)],[1,C(125,164,255,0)]]);
+    point(sc,s.x,s.y,s.r,C(197,216,252,s.a));
+  }
+  for(const [x,y,l] of [[37,116,4],[346,168,5],[105,69,3],[350,267,3],[159,331,3]]){
+    line(sc,x-l,y,x+l,y,'#99c4ff82',.66);line(sc,x,y-l,x,y+l,'#99c4ff82',.66);point(sc,x,y,1,'#f3f6ff');
+  }
+  const vignette=sc.createRadialGradient(198,183,110,198,183,265);vignette.addColorStop(0,'#070c1500');vignette.addColorStop(1,'#060b16bd');sc.fillStyle=vignette;sc.fillRect(0,0,W,H);
+  const top=sc.createLinearGradient(0,0,0,H);top.addColorStop(0,'#080d1a82');top.addColorStop(.19,'#080d1a00');top.addColorStop(.86,'#080d1a00');top.addColorStop(1,'#080d1ab0');sc.fillStyle=top;sc.fillRect(0,0,W,H);
+}
+const flares=(()=>{
+  const random=rng(3772);return Array.from({length:131},()=>({angle:random()*TAU, len:random()**2*18+3,bend:(random()-.5)*10,alpha:random()*.26+.035}));
+})();
+function drawHost(c){
+  const {x,y,r}=host;
+  c.save();c.globalCompositeOperation='screen';
+  gradient(c,x,y,106,[[0,'#ffbd6522'],[.35,'#ff934c38'],[.44,'#ff874c69'],[.57,'#e85b3724'],[.78,'#ec613410'],[1,'#f0683500']]);
+  gradient(c,x-13,y-17,81,[[0,'#ffe0a02b'],[.53,'#ff843a18'],[1,'#f0683500']]);
+  for(const f of flares){
+    const t=f.angle, cs=Math.cos(t),sn=Math.sin(t),x0=x+cs*(r-4),y0=y+sn*(r-4),x1=x+cs*(r+f.len)-sn*f.bend,y1=y+sn*(r+f.len)+cs*f.bend;
+    const g=c.createLinearGradient(x0,y0,x1,y1);g.addColorStop(0,C(255,208,143,f.alpha));g.addColorStop(.48,C(249,153,99,f.alpha*.8));g.addColorStop(1,'#f68b4500');
+    c.beginPath();c.moveTo(x0,y0);c.quadraticCurveTo(x+cs*(r+f.len*.56),y+sn*(r+f.len*.56),x1,y1);c.strokeStyle=g;c.lineWidth=.75;c.stroke();
+  }
+  c.restore();
+  ring(c,x,y,56,56,0,'#eeb28c83',.75,-2.33,-1.89);ring(c,x,y,56,56,0,'#eeb28c83',.75,.82,1.26);
+}
+const satelliteLines=[
+  [[243,69],[229,110],[260,150],[310,144],[337,115],[330,77],[285,53],[260,55]],
+  [[42,232],[30,258],[43,295],[76,312],[113,300],[132,269],[104,225],[67,219]],
+  [[326,311],[299,324],[259,320],[235,297],[237,269],[269,245],[307,251],[331,275]]
+];
+function moonContour(c,a,i){
+  const pts=satelliteLines[i];
+  c.beginPath();c.moveTo((pts[0][0]+pts[pts.length-1][0])/2,(pts[0][1]+pts[pts.length-1][1])/2);
+  for(let k=0;k<pts.length;k++){const p=pts[k],q=pts[(k+1)%pts.length];c.quadraticCurveTo(p[0],p[1],(p[0]+q[0])/2,(p[1]+q[1])/2);}
+  c.closePath();c.setLineDash([2,4]);c.strokeStyle=C(...a.rgb,selected===i?.44:.29);c.lineWidth=.75;c.stroke();c.setLineDash([]);
+}
+function drawPlanet(c,a,i){
+  const {x,y,r,rgb}=a,active=i===selected;
+  gradient(c,x,y,r*2.25,[[0,C(...rgb,0)],[.4,C(...rgb,.16)],[.52,C(...rgb,active?.22:.13)],[.71,C(...rgb,.055)],[1,C(...rgb,0)]]);
+  if(active){
+    const r2=r+7.5;
+    for(const t of [-2.7,-1.13,.45,2.02])ring(c,x,y,r2,r2,0,C(...rgb,.83),1,t,t+.62);
+    for(const t of [-2.96,-1.39,.18,1.75])line(c,x+Math.cos(t)*(r2-1),y+Math.sin(t)*(r2-1),x+Math.cos(t)*(r2+2),y+Math.sin(t)*(r2+2),C(...rgb,.65),.85);
+  }
+}
+function curve(c,p0,p1,p2,color,width){c.beginPath();c.moveTo(p0.x,p0.y);c.quadraticCurveTo(p1[0],p1[1],p2.x,p2.y);c.strokeStyle=color;c.lineWidth=width;c.stroke();}
+function paintSystem(){
+  if(!ready)return;
+  ac.clearRect(0,0,W,H);
+  // The large, faint ellipses are chart guides; the dotted colored curves route data.
+  for(const [rx,ry,alpha] of [[72,46,.19],[126,72,.23],[169,103,.22],[223,146,.13]])ring(ac,host.x,host.y,rx,ry,-.62,C(132,159,224,alpha),.74);
+  ac.setLineDash([1,6]);ring(ac,host.x,host.y,155,89,-.62,'#a4b9f143',.9);ac.setLineDash([]);
+  line(ac,16,host.y,W-16,host.y,'#759ad219',.6);line(ac,host.x,54,host.x,325,'#759ad21d',.6);
+  for(const x of [21,46,71,96,121,246,271,296,321,346,371])line(ac,x,host.y-2,x,host.y+2,'#a2b6ec35',.6);
+  agents.forEach((a,i)=>{
+    curve(ac,host,a.control,a,C(...a.rgb,i===selected?.28:.14),1.1);
+    ac.setLineDash([1.6,4]);curve(ac,host,a.control,a,C(...a.rgb,i===selected?.86:.40),1);ac.setLineDash([]);
+    moonContour(ac,a,i);
+  });
+  drawHost(ac);
+  agents.forEach((a,i)=>{
+    drawPlanet(ac,a,i);
+    a.moons.forEach((m,j)=>{
+      const r=i===selected?4.5:3.6;
+      gradient(ac,m.x,m.y,r*3,[[0,C(...a.rgb,.49)],[.55,C(...a.rgb,.12)],[1,C(...a.rgb,0)]]);
+      const g=ac.createLinearGradient(m.x-r,m.y-r,m.x+r,m.y+r);g.addColorStop(0,'#f4f7ff');g.addColorStop(.39,a.tone);g.addColorStop(1,'#354568');point(ac,m.x,m.y,r,g);
+      point(ac,m.x+1,m.y-1,.6,C(56,75,106,.57));
+      if(m.run)ring(ac,m.x,m.y,r+3,r+3,0,'#9cf3d5bc',.8,-1.52,1.33);
+      if(openMoon?.i===i&&openMoon?.j===j)ring(ac,m.x,m.y,r+5,r+5,0,'#f0f8ff',.9);
+    });
+  });
+  for(const [x,y] of [[16,54],[374,54],[16,338],[374,338]]){
+    const dx=x>W/2?-6:6,dy=y>H/2?-6:6;line(ac,x,y,x+dx,y,'#6c86be76',.8);line(ac,x,y,x,y+dy,'#6c86be76',.8);
+  }
+}
+function updateTraffic(){
+  $('tx').textContent=number(trafficUp);$('rx').textContent=number(trafficDown);
+  if(sheetMode==='link'){$('stat-up').textContent=number(trafficUp);$('stat-down').textContent=number(trafficDown);}
+}
+let transit=0;
+function addSignal(i,j,real){
+  const start=performance.now();
+  if(motion) signals.push({i,j,start,real});
+  if(real){
+    transit++;trafficUp++;updateTraffic();
+    $('signal-status').textContent='正在上行';$('announcement').textContent='模拟数据已上行';
+    setTimeout(()=>{
+      transit--;trafficDown++;updateTraffic();$('signal-status').textContent=transit?'正在传输':'收到回执';
+      $('announcement').textContent='模拟链路已收到回执';
+    },800);
+  }
+  startFrame();
+}
+function bez(a,t){const s=1-t;return [s*s*host.x+2*s*t*a.control[0]+t*t*a.x,s*s*host.y+2*s*t*a.control[1]+t*t*a.y];}
+function beam(c,path,p,direction,rgb,weight){
+  const [x,y]=path(p),tail=direction*.21,parts=19;
+  const [nx,ny]=path(clamp(p+direction*.006)),[px,py]=path(clamp(p-direction*.006));
+  const angle=Math.atan2(ny-py,nx-px);
+  c.save();c.globalCompositeOperation='screen';
+  for(let j=0;j<parts;j++){
+    const t1=clamp(p-tail*(j+1)/parts),t2=clamp(p-tail*j/parts);if(t1===t2)continue;
+    const v1=path(t1),v2=path(t2),k=1-j/parts;
+    line(c,...v1,...v2,C(...rgb,k*k*.78*weight),1+4*k);
+    line(c,...v1,...v2,C(224,239,255,k*k*.92*weight),.9);
+  }
+  gradient(c,x,y,17,[[0,C(...rgb,.67*weight)],[.37,C(...rgb,.26*weight)],[1,C(...rgb,0)]]);
+  diamond(c,x,y,4.3*weight,C(227,248,255,.98),angle);
+  diamond(c,x,y,2.35*weight,'#fff',angle);
+  c.restore();
+}
+function pulse(c,x,y,p,rgb){if(p<0||p>1)return;ring(c,x,y,4+p*18,4+p*18,0,C(...rgb,(1-p)*.68),1.1);}
+function animate(now){
+  frame=0;
+  if(!motion||document.hidden||currentView!=='orbit'||!ready)return;
+  if(now-lastPaint<31){frame=requestAnimationFrame(animate);return;}
+  lastPaint=now;
+  lc.clearRect(0,0,W,H);
+  if(now-lastDemo>3800 && !signals.length && !sheet.open){
+    lastDemo=now;signals.push({i:selected,j:null,start:now,real:false});
+  }
+  signals=signals.filter(s=>now-s.start<1680);
+  for(const s of signals){
+    const a=agents[s.i],m=s.j===null?null:a.moons[s.j], dt=now-s.start;
+    const up=a.rgb,down=[142,242,211], weight=s.real?1:.76;
+    const path=t=>bez(a,t);
+    if(dt<660){const t=mix(.25,.83,clamp(dt/660));beam(lc,path,t,1,up,weight);}
+    if(dt>460&&dt<1140)pulse(lc,a.x,a.y,(dt-460)/680,up);
+    if(m && dt>490 && dt<920){
+      const route=t=>[mix(a.x,m.x,t),mix(a.y,m.y,t)-7*Math.sin(t*Math.PI)];
+      beam(lc,route,mix(.4,1,clamp((dt-490)/430)),1,up,1);
+    }
+    if(m)pulse(lc,m.x,m.y,(dt-840)/590,up);
+    if(dt>810&&dt<1510){const t=mix(.82,.25,clamp((dt-810)/700));beam(lc,path,t,-1,down,weight);}
+    if(dt>1400)pulse(lc,host.x,host.y,(dt-1400)/500,down);
+  }
+  if(beacon&&now-beacon.start<1240){
+    const dt=now-beacon.start;
+    ring(lc,host.x,host.y,host.r+dt*.023,host.r+dt*.023,0,C(255,183,121,.36*(1-dt/1240)),1);
+  }
+  frame=requestAnimationFrame(animate);
+}
+function startFrame(){if(!frame&&motion&&!document.hidden&&currentView==='orbit'&&ready)frame=requestAnimationFrame(animate);}
+function stopFrame(){if(frame)cancelAnimationFrame(frame);frame=0;lc.clearRect(0,0,W,H);}
+function syncMotion(){
+  const b=$('pause');b.setAttribute('aria-pressed',String(motion));
+  b.title=motion?'暂停数据动效':'播放数据动效';b.innerHTML=svg(motion?'pause':'play');
+  $('star-map').dataset.motion=motion?'on':'off';
+  if(motion){lastDemo=performance.now()-3350;startFrame();}else{signals=[];stopFrame();}
+}
+$('pause').addEventListener('click',()=>{motionOverride=true;motion=!motion;syncMotion();});
+reduceMotion.addEventListener('change',()=>{if(!motionOverride){motion=!reduceMotion.matches;syncMotion();}});
+document.addEventListener('visibilitychange',()=>document.hidden?stopFrame():startFrame());
+function resize(){
+  const rect=$('star-map').getBoundingClientRect();if(!rect.width||!rect.height)return;
+  scale=Math.min(2,devicePixelRatio||1);
+  for(const ctx of [sc,ac,lc]){
+    const c=ctx.canvas;
+    const w=Math.max(1,Math.round(rect.width*scale)),h=Math.max(1,Math.round($('star-map').clientHeight*scale));
+    if(c.width!==w||c.height!==h){c.width=w;c.height=h;}
+    ctx.setTransform(c.width/W,0,0,c.height/H,0,0);
+  }
+  ready=true;paintSky();paintSystem();startFrame();
+}
+new ResizeObserver(resize).observe($('star-map'));
+select(0,false);resize();syncMotion();
+if(motion){lastDemo=performance.now();signals.push({i:0,j:null,start:performance.now()-194,real:false});beacon={start:performance.now()};}
+</script>
+</body>
+</html>

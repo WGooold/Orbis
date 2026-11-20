@@ -1,0 +1,8 @@
+{
+  "name": "orbis-promo2-artwork",
+  "private": true,
+  "type": "module",
+  "scripts": {"render": "node render.mjs"},
+  "engines": {"node": ">=20"},
+  "devDependencies": {"playwright": "1.65.1"}
+}

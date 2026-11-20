@@ -1,0 +1,4352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>Orbis — Cartoon Celestial Concept</title>
+<style>
+  :root {
+    --void-0: #060916;
+    --void-1: #0c1228;
+    --glass-bg: rgba(14, 20, 40, 0.78);
+    --glass-border: rgba(255, 255, 255, 0.13);
+    --glass-border-hi: rgba(255, 255, 255, 0.26);
+    --ink-0: #f8faff;
+    --ink-1: rgba(235, 241, 255, 0.84);
+    --ink-2: rgba(188, 202, 236, 0.60);
+    --ink-3: rgba(154, 171, 212, 0.38);
+    --accent-gold: #ffd466;
+    --accent-amber: #fbbf24;
+    --accent-emerald: #34d399;
+    --accent-danger: #fb7185;
+    --accent-cyan: #38bdf8;
+    --radius-lg: 22px;
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Rounded", "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  }
+
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 100vh;
+    overflow: hidden;
+    background-color: #040610;
+    background-image: radial-gradient(circle at 50% 34%, #151e3d 0%, #080d1d 54%, #03050c 100%);
+    color: var(--ink-0);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .stage {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    overflow: hidden;
+  }
+
+  .stage::before {
+    content: "";
+    position: absolute;
+    inset: -20%;
+    background:
+      radial-gradient(660px 540px at 50% 38%, rgba(255, 206, 102, 0.11), transparent 64%),
+      radial-gradient(560px 480px at 24% 68%, rgba(91, 124, 255, 0.12), transparent 64%),
+      radial-gradient(520px 440px at 78% 26%, rgba(56, 217, 181, 0.10), transparent 64%);
+    pointer-events: none;
+  }
+
+  body.host-linux .stage::before {
+    background:
+      radial-gradient(660px 540px at 50% 38%, rgba(110, 204, 255, 0.14), transparent 64%),
+      radial-gradient(560px 480px at 24% 68%, rgba(139, 92, 246, 0.12), transparent 64%),
+      radial-gradient(520px 440px at 78% 26%, rgba(56, 217, 181, 0.10), transparent 64%);
+  }
+
+  .stage-controls {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    z-index: 40;
+    display: flex;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 999px;
+    background: rgba(14, 20, 40, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+  }
+
+  .stage-btn {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--ink-1);
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 7px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.2s ease, color 0.2s ease, transform 0.15s ease;
+  }
+  .stage-btn:hover { background: rgba(255, 255, 255, 0.09); color: var(--ink-0); }
+  .stage-btn:active { transform: scale(0.95); }
+  .stage-btn.active { background: rgba(255, 212, 102, 0.2); color: var(--accent-gold); }
+
+  /* Titanium Smartphone Shell */
+  .phone-shell {
+    position: relative;
+    width: 393px;
+    height: min(852px, calc(100vh - 40px));
+    max-height: 852px;
+    border-radius: 54px;
+    padding: 11px;
+    background: linear-gradient(145deg, #474e66 0%, #202536 24%, #111522 52%, #2c3246 84%, #4f566e 100%);
+    box-shadow:
+      0 42px 104px rgba(0, 0, 0, 0.8),
+      0 14px 36px rgba(0, 0, 0, 0.56),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.24),
+      inset 0 0 0 2.5px rgba(9, 11, 19, 0.92);
+    transition: width 0.45s var(--ease-out), height 0.45s var(--ease-out), border-radius 0.45s var(--ease-out), padding 0.45s var(--ease-out);
+    flex-shrink: 0;
+  }
+
+  .phone-shell::before {
+    content: "";
+    position: absolute;
+    left: -3px;
+    top: 158px;
+    width: 3px;
+    height: 52px;
+    border-radius: 2px 0 0 2px;
+    background: linear-gradient(180deg, #525972, #242838);
+    box-shadow: 0 68px 0 #2e3447, 0 -46px 0 -0.5px #3c4359;
+    pointer-events: none;
+  }
+
+  .phone-shell::after {
+    content: "";
+    position: absolute;
+    right: -3px;
+    top: 196px;
+    width: 3px;
+    height: 76px;
+    border-radius: 0 2px 2px 0;
+    background: linear-gradient(180deg, #525972, #242838);
+    pointer-events: none;
+  }
+
+  .phone-screen {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: 44px;
+    overflow: hidden;
+    background: var(--void-0);
+    isolation: isolate;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  }
+
+  body.full-bleed .stage { padding: 0; }
+  body.full-bleed .phone-shell {
+    width: 100vw;
+    height: 100vh;
+    max-height: none;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body.full-bleed .phone-shell::before,
+  body.full-bleed .phone-shell::after,
+  body.full-bleed .dynamic-island { display: none; }
+  body.full-bleed .phone-screen { border-radius: 0; }
+
+  @media (max-width: 520px) {
+    .stage { padding: 0; }
+    .phone-shell {
+      width: 100vw;
+      height: 100dvh;
+      max-height: none;
+      border-radius: 0;
+      padding: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+    .phone-shell::before,
+    .phone-shell::after,
+    .dynamic-island,
+    .stage-controls { display: none; }
+    .phone-screen { border-radius: 0; }
+  }
+
+  #cosmos {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+    cursor: grab;
+  }
+  #cosmos:active { cursor: grabbing; }
+
+  .cosmos-vignette {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg, rgba(6, 9, 22, 0.5) 0%, rgba(6, 9, 22, 0) 16%, rgba(6, 9, 22, 0) 70%, rgba(6, 9, 22, 0.84) 100%);
+    z-index: 2;
+  }
+
+  /* Status Bar + Dynamic Island */
+  .status-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 50px;
+    padding: 14px 26px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(248, 250, 255, 0.92);
+    pointer-events: none;
+    z-index: 30;
+  }
+
+  .dynamic-island {
+    position: absolute;
+    top: 11px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 116px;
+    height: 32px;
+    border-radius: 20px;
+    background: #03050c;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 11px;
+    z-index: 31;
+    pointer-events: none;
+  }
+
+  .island-lens {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #2a3e72 0%, #090e1f 55%, #020308 100%);
+  }
+
+  .status-icons { display: flex; align-items: center; gap: 6px; }
+  .battery {
+    width: 23px;
+    height: 11px;
+    border-radius: 3.5px;
+    border: 1.2px solid rgba(255, 255, 255, 0.72);
+    padding: 1.5px;
+    position: relative;
+  }
+  .battery::after {
+    content: "";
+    position: absolute;
+    right: -3px;
+    top: 2.5px;
+    width: 1.8px;
+    height: 4px;
+    border-radius: 0 1px 1px 0;
+    background: rgba(255, 255, 255, 0.65);
+  }
+  .battery-fill { width: 82%; height: 100%; border-radius: 1.5px; background: #f8fafc; }
+
+  /* Top Floating HUD */
+  .top-hud {
+    position: absolute;
+    top: 52px;
+    left: 14px;
+    right: 14px;
+    z-index: 22;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    pointer-events: none;
+  }
+  .top-hud > * { pointer-events: auto; }
+  .hud-group { display: flex; align-items: center; gap: 7px; min-width: 0; }
+
+  .glass-pill {
+    appearance: none;
+    border: 1.2px solid var(--glass-border);
+    background: var(--glass-bg);
+    color: var(--ink-0);
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
+    border-radius: 999px;
+    height: 36px;
+    padding: 0 12px;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    transition: transform 0.18s var(--ease-out), background 0.2s ease, border-color 0.2s ease;
+    white-space: nowrap;
+  }
+  .glass-pill:hover { border-color: var(--glass-border-hi); background: rgba(22, 31, 58, 0.86); }
+  .glass-pill:active { transform: scale(0.94); }
+  .glass-pill.icon-only { width: 36px; padding: 0; justify-content: center; }
+
+  .star-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #fff9dc 0%, #ffd059 60%, #ff8a3d 100%);
+    box-shadow: 0 0 10px rgba(255, 208, 89, 0.95);
+    flex-shrink: 0;
+  }
+  body.host-linux .star-dot {
+    background: radial-gradient(circle at 35% 35%, #f4fbff 0%, #7dd3fc 60%, #3b82f6 100%);
+    box-shadow: 0 0 10px rgba(125, 211, 252, 0.95);
+  }
+
+  .latency-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent-emerald);
+    background: rgba(52, 211, 153, 0.15);
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-weight: 700;
+  }
+
+  .flux-pill {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-1);
+    gap: 5px;
+    padding: 0 10px;
+  }
+  .flux-arrow { font-size: 10px; }
+  .flux-arrow.up { color: var(--accent-gold); }
+  .flux-arrow.down { color: var(--accent-cyan); }
+
+  /* Floating Moon Labels Layer (Planet Focus) */
+  .canvas-labels {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 8;
+    overflow: hidden;
+  }
+
+  .moon-float-tag {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px 5px 8px;
+    border-radius: 999px;
+    background: rgba(12, 18, 36, 0.86);
+    border: 1.2px solid rgba(255, 255, 255, 0.16);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    color: var(--ink-0);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+    transition: border-color 0.2s ease, background 0.2s ease, opacity 0.25s ease;
+    max-width: 158px;
+  }
+  .moon-float-tag:hover,
+  .moon-float-tag.highlighted {
+    background: rgba(24, 34, 64, 0.95);
+    border-color: rgba(255, 255, 255, 0.42);
+  }
+  .moon-float-tag.approval {
+    border-color: rgba(251, 191, 36, 0.65);
+    background: rgba(42, 28, 10, 0.90);
+  }
+  .moon-float-tag span.label-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* M28-inspired Status Orbit Indicator */
+  .orb-status {
+    position: relative;
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .orb-status .core { width: 5px; height: 5px; border-radius: 50%; background: var(--status-color, #94a3b8); }
+  .orb-status.idle .core {
+    background: transparent;
+    border: 1.6px solid rgba(206, 218, 246, 0.6);
+    width: 6.5px;
+    height: 6.5px;
+  }
+  .orb-status.running .arc {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1.6px solid transparent;
+    border-top-color: var(--status-color, #38bdf8);
+    border-right-color: var(--status-color, #38bdf8);
+    animation: spin-arc 1.1s linear infinite;
+  }
+  .orb-status.approval .core { background: var(--accent-amber); box-shadow: 0 0 8px rgba(251, 191, 36, 0.95); }
+  .orb-status.approval .arc {
+    position: absolute;
+    inset: -2px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(251, 191, 36, 0.82);
+    animation: sonar-ring 1.45s ease-out infinite;
+  }
+  .orb-status.unread .core { background: #eef4ff; box-shadow: 0 0 8px rgba(224, 242, 254, 0.95); }
+
+  @keyframes spin-arc { to { transform: rotate(360deg); } }
+  @keyframes sonar-ring {
+    0% { transform: scale(0.7); opacity: 0.95; }
+    100% { transform: scale(1.7); opacity: 0; }
+  }
+
+  /* LEVEL 1: SYSTEM OVERVIEW BOTTOM DOCK */
+  .overview-bottom {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 20px;
+    z-index: 15;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: transform 0.28s var(--ease-out), opacity 0.2s ease;
+  }
+  .overview-bottom.hidden {
+    transform: translateY(28px);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  body.booting .overview-bottom,
+  body.booting .planet-sheet,
+  body.booting .session-sheet { transition: none !important; }
+  body.booting .msg { animation: none !important; }
+
+  .approval-card {
+    background: linear-gradient(135deg, rgba(46, 31, 12, 0.88) 0%, rgba(18, 21, 38, 0.90) 100%);
+    border: 1.2px solid rgba(251, 191, 36, 0.42);
+    border-radius: var(--radius-lg);
+    padding: 11px 12px;
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 226, 154, 0.18);
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .approval-card.dismissed { display: none; }
+  .approval-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; }
+  .approval-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .approval-badge {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--accent-amber);
+    background: rgba(251, 191, 36, 0.16);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+    padding: 2px 8px;
+    border-radius: 999px;
+    flex-shrink: 0;
+  }
+  .approval-title { font-size: 13px; font-weight: 600; color: var(--ink-0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .approval-cmd {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: rgba(255, 240, 204, 0.92);
+    background: rgba(0, 0, 0, 0.34);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+    padding: 6.5px 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .approval-actions { display: grid; grid-template-columns: 1fr 1.25fr; gap: 8px; }
+
+  .btn-tactile {
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--ink-0);
+    height: 35px;
+    border-radius: 13px;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: transform 0.15s ease, background 0.2s ease;
+  }
+  .btn-tactile:active { transform: scale(0.95); }
+  .btn-tactile.deny { color: #fda4af; border-color: rgba(251, 113, 133, 0.26); background: rgba(251, 113, 133, 0.10); }
+  .btn-tactile.allow {
+    color: #161004;
+    border-color: transparent;
+    background: linear-gradient(135deg, #fef08a 0%, #fbbf24 55%, #f59e0b 100%);
+    box-shadow: 0 6px 20px rgba(245, 158, 11, 0.38);
+  }
+
+  /* Cartoon Planet Dock */
+  .planet-dock {
+    background: var(--glass-bg);
+    border: 1.2px solid var(--glass-border);
+    border-radius: 26px;
+    padding: 7px 6px;
+    backdrop-filter: blur(26px) saturate(155%);
+    -webkit-backdrop-filter: blur(26px) saturate(155%);
+    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.56), inset 0 1px 0 rgba(255, 255, 255, 0.13);
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 2px;
+  }
+
+  .dock-planet {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--ink-1);
+    font-family: var(--font-sans);
+    padding: 5px 2px 4px;
+    border-radius: 18px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    position: relative;
+    transition: background 0.2s ease, transform 0.18s var(--ease-out), color 0.2s ease;
+  }
+  .dock-planet:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink-0); }
+  .dock-planet:active { transform: scale(0.92); }
+
+  .dock-orb-wrap {
+    position: relative;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .dock-orb-wrap svg {
+    width: 32px;
+    height: 32px;
+    overflow: visible;
+    display: block;
+    filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.45));
+  }
+
+  .dock-badge {
+    position: absolute;
+    top: -1px;
+    right: -3px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 3.5px;
+    border-radius: 999px;
+    font-size: 9.5px;
+    font-weight: 800;
+    font-family: var(--font-mono);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.96);
+    border: 1.2px solid rgba(255, 255, 255, 0.22);
+    color: var(--ink-0);
+  }
+  .dock-badge.alert {
+    background: var(--accent-amber);
+    border-color: #fef08a;
+    color: #161004;
+    box-shadow: 0 0 10px rgba(251, 191, 36, 0.9);
+  }
+  .dock-badge.live {
+    background: rgba(16, 28, 48, 0.96);
+    border-color: var(--planet-color);
+    color: var(--planet-color);
+  }
+
+  .dock-name {
+    font-size: 10.5px;
+    font-weight: 600;
+    max-width: 66px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* LEVEL 2: PLANET FOCUS SHEET */
+  .planet-sheet {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 50%;
+    z-index: 19;
+    background: linear-gradient(180deg, rgba(13, 19, 38, 0.88) 0%, rgba(8, 12, 26, 0.97) 100%);
+    border-top: 1.2px solid rgba(255, 255, 255, 0.15);
+    border-radius: 30px 30px 0 0;
+    backdrop-filter: blur(28px) saturate(150%);
+    -webkit-backdrop-filter: blur(28px) saturate(150%);
+    box-shadow: 0 -22px 60px rgba(0, 0, 0, 0.65);
+    display: flex;
+    flex-direction: column;
+    transform: translateY(105%);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.5s var(--ease-out), opacity 0.32s ease;
+  }
+  .planet-sheet.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+
+  .sheet-grabber {
+    width: 38px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.22);
+    margin: 9px auto 6px;
+    flex-shrink: 0;
+  }
+
+  .planet-sheet-header {
+    padding: 4px 18px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  .planet-identity { display: flex; align-items: center; gap: 11px; min-width: 0; }
+  .agent-mark-box {
+    width: 38px;
+    height: 38px;
+    border-radius: 13px;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .agent-mark-box svg { width: 22px; height: 22px; display: block; }
+  .planet-title-col { min-width: 0; }
+  .planet-title-row { display: flex; align-items: center; gap: 8px; }
+  .planet-title { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink-0); }
+
+  .model-chip {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--ink-1);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    padding: 2px 7px;
+    border-radius: 999px;
+    max-width: 124px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .planet-stats {
+    margin-top: 3px;
+    font-size: 11.5px;
+    color: var(--ink-2);
+    font-family: var(--font-mono);
+  }
+
+  .planet-header-actions { display: flex; align-items: center; gap: 6px; }
+  .btn-circle {
+    appearance: none;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--ink-0);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 17px;
+    transition: transform 0.15s ease, background 0.2s ease;
+  }
+  .btn-circle:hover { background: rgba(255, 255, 255, 0.16); }
+  .btn-circle:active { transform: scale(0.92); }
+  .btn-circle.primary { background: #ffffff; color: #090e1f; border-color: transparent; font-weight: 700; }
+
+  .session-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 14px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    scrollbar-width: none;
+  }
+  .session-list::-webkit-scrollbar { display: none; }
+
+  .session-row {
+    width: 100%;
+    text-align: left;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgba(255, 255, 255, 0.045);
+    border-radius: 18px;
+    padding: 12px 13px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    color: var(--ink-0);
+    font-family: var(--font-sans);
+    transition: background 0.2s ease, border-color 0.2s ease, transform 0.16s ease;
+  }
+  .session-row:hover { background: rgba(255, 255, 255, 0.09); border-color: rgba(255, 255, 255, 0.22); }
+  .session-row:active { transform: scale(0.985); }
+  .session-row.approval {
+    background: linear-gradient(135deg, rgba(48, 32, 11, 0.6), rgba(255, 255, 255, 0.04));
+    border-color: rgba(251, 191, 36, 0.42);
+  }
+  .session-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .session-row-title { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-row-state { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--ink-1); flex-shrink: 0; }
+  .session-row-path { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-row-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--ink-1); }
+  .session-row-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.80; }
+  .session-rate { font-family: var(--font-mono); font-size: 10.5px; color: var(--accent-cyan); flex-shrink: 0; }
+
+  .draft-panel {
+    display: none;
+    margin: 10px 14px 0;
+    padding: 12px;
+    border-radius: 18px;
+    background: rgba(22, 32, 60, 0.84);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    flex-direction: column;
+    gap: 9px;
+    animation: fade-slide-in 0.26s var(--ease-out);
+  }
+  .draft-panel.open { display: flex; }
+  @keyframes fade-slide-in {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .draft-dirs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .draft-dirs::-webkit-scrollbar { display: none; }
+
+  .dir-chip {
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--ink-1);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .dir-chip.active { background: rgba(255, 255, 255, 0.18); border-color: rgba(255, 255, 255, 0.36); color: var(--ink-0); }
+  .draft-input-row { display: flex; gap: 7px; }
+
+  .text-input {
+    flex: 1;
+    min-width: 0;
+    height: 38px;
+    border-radius: 13px;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    background: rgba(6, 10, 22, 0.78);
+    color: var(--ink-0);
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    padding: 0 12px;
+    outline: none;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .text-input:focus { border-color: rgba(255, 255, 255, 0.36); }
+  .text-input::placeholder { color: var(--ink-3); }
+
+  /* LEVEL 3: SESSION COCKPIT */
+  .session-sheet {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 70%;
+    z-index: 21;
+    background: linear-gradient(180deg, rgba(11, 16, 33, 0.90) 0%, rgba(6, 10, 22, 0.98) 100%);
+    border-top: 1.2px solid rgba(255, 255, 255, 0.15);
+    border-radius: 28px 28px 0 0;
+    backdrop-filter: blur(30px) saturate(155%);
+    -webkit-backdrop-filter: blur(30px) saturate(155%);
+    box-shadow: 0 -24px 64px rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    transform: translateY(105%);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.5s var(--ease-out), opacity 0.32s ease;
+  }
+  .session-sheet.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+
+  .chat-header {
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .chat-head-left { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .chat-session-name { font-size: 15px; font-weight: 700; color: var(--ink-0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-session-sub {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--ink-2);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .chat-session-sub span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #chatAgentLabel { flex-shrink: 0; color: var(--ink-1); }
+
+  .diff-btn {
+    appearance: none;
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(52, 211, 153, 0.34);
+    background: rgba(52, 211, 153, 0.12);
+    color: #6ee7b7;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 13px 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+    scrollbar-width: none;
+  }
+  .chat-messages::-webkit-scrollbar { display: none; }
+
+  .msg {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 92%;
+    animation: msg-rise 0.3s var(--ease-out);
+  }
+  @keyframes msg-rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .msg.user { align-self: flex-end; max-width: 82%; }
+  .msg.assistant { align-self: flex-start; }
+
+  .msg-bubble {
+    padding: 10px 13px;
+    border-radius: 18px;
+    font-size: 13.5px;
+    line-height: 1.52;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .msg.user .msg-bubble {
+    background: linear-gradient(135deg, rgba(255, 214, 118, 0.24), rgba(255, 179, 82, 0.13));
+    border: 1px solid rgba(255, 212, 112, 0.36);
+    border-bottom-right-radius: 6px;
+    color: #fff9ec;
+  }
+  .msg.assistant .msg-bubble {
+    background: rgba(255, 255, 255, 0.065);
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    border-bottom-left-radius: 6px;
+    color: rgba(246, 249, 255, 0.95);
+  }
+  .msg-bubble code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.42);
+    color: #93c5fd;
+  }
+
+  .tool-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 12px;
+    background: rgba(16, 24, 46, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-1);
+    max-width: 100%;
+    text-align: left;
+    cursor: pointer;
+  }
+  .tool-chip > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool-diff-stat { color: var(--accent-emerald); flex-shrink: 0; white-space: nowrap; }
+
+  .stream-caret {
+    display: inline-block;
+    width: 6px;
+    height: 13px;
+    margin-left: 3px;
+    vertical-align: -2px;
+    border-radius: 2px;
+    background: var(--accent-gold);
+    animation: blink-caret 0.85s ease-in-out infinite;
+  }
+  @keyframes blink-caret { 0%, 100% { opacity: 1; } 50% { opacity: 0.15; } }
+
+  .composer-area {
+    padding: 8px 12px 22px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(7, 11, 24, 0.9);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .quick-chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .quick-chips::-webkit-scrollbar { display: none; }
+  .quick-chip {
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.11);
+    background: rgba(255, 255, 255, 0.055);
+    color: var(--ink-1);
+    font-family: var(--font-sans);
+    font-size: 11.5px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .quick-chip:hover { background: rgba(255, 255, 255, 0.13); color: var(--ink-0); }
+  .composer-row { display: flex; align-items: center; gap: 8px; }
+
+  .send-btn {
+    appearance: none;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    border: 0;
+    background: linear-gradient(135deg, #fef08a 0%, #f59e0b 100%);
+    color: #0b0f19;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    box-shadow: 0 6px 18px rgba(245, 158, 11, 0.38);
+    transition: transform 0.16s ease;
+  }
+  .send-btn:active { transform: scale(0.9); }
+
+  /* Modals */
+  .modal-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 35;
+    background: rgba(3, 5, 13, 0.6);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.24s ease;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 14px;
+  }
+  .modal-backdrop.open { opacity: 1; pointer-events: auto; }
+
+  .modal-card {
+    width: 100%;
+    background: rgba(14, 21, 42, 0.96);
+    border: 1.2px solid rgba(255, 255, 255, 0.16);
+    border-radius: 24px;
+    padding: 16px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.68);
+    transform: translateY(20px);
+    transition: transform 0.32s var(--ease-out);
+  }
+  .modal-backdrop.open .modal-card { transform: translateY(0); }
+  .modal-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+
+  .host-option {
+    width: 100%;
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    background: rgba(255, 255, 255, 0.045);
+    border-radius: 16px;
+    padding: 12px;
+    margin-bottom: 8px;
+    color: var(--ink-0);
+    font-family: var(--font-sans);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+  }
+  .host-option:last-child { margin-bottom: 0; }
+  .host-option.active { border-color: rgba(255, 212, 102, 0.48); background: rgba(255, 212, 102, 0.10); }
+  .host-opt-left { display: flex; align-items: center; gap: 11px; text-align: left; }
+  .host-star-preview { width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0; }
+  .host-opt-name { font-size: 14px; font-weight: 600; }
+  .host-opt-sub { font-size: 11.5px; color: var(--ink-2); font-family: var(--font-mono); margin-top: 2px; }
+
+  .diff-viewer {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.55;
+    background: rgba(5, 8, 18, 0.94);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 14px;
+    overflow: hidden;
+    max-height: 310px;
+    overflow-y: auto;
+  }
+  .diff-line { padding: 2px 10px; white-space: pre; overflow-x: auto; }
+  .diff-line.hunk { color: #93c5fd; background: rgba(59, 130, 246, 0.14); }
+  .diff-line.add { color: #86efac; background: rgba(34, 197, 94, 0.15); }
+  .diff-line.del { color: #fda4af; background: rgba(244, 63, 94, 0.15); }
+  .diff-line.ctx { color: rgba(210, 220, 245, 0.68); }
+
+  .legend-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .legend-item {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 14px;
+    padding: 10px 11px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .legend-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+  .legend-k { font-size: 12.5px; font-weight: 600; }
+  .legend-v { font-size: 11px; color: var(--ink-2); margin-top: 1px; }
+
+  .home-bar {
+    position: absolute;
+    bottom: 7px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 126px;
+    height: 4.5px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.30);
+    z-index: 36;
+    pointer-events: none;
+  }
+
+  .toast {
+    position: absolute;
+    top: 98px;
+    left: 50%;
+    transform: translate(-50%, -10px);
+    z-index: 34;
+    padding: 7px 14px;
+    border-radius: 999px;
+    background: rgba(16, 24, 46, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(16px);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink-0);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.24s ease, transform 0.28s var(--ease-out);
+    white-space: nowrap;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="phone-shell">
+    <div class="phone-screen" id="phoneScreen">
+      <canvas id="cosmos"></canvas>
+      <div class="cosmos-vignette"></div>
+      <div class="canvas-labels" id="canvasLabels"></div>
+
+      <!-- Status Bar + Dynamic Island -->
+      <div class="status-bar">
+        <span id="clockText">23:20</span>
+        <div class="status-icons">
+          <svg width="15" height="11" viewBox="0 0 15 11" fill="none">
+            <rect x="0.5" y="7" width="2.5" height="3.5" rx="0.8" fill="currentColor" opacity="0.9"/>
+            <rect x="4.3" y="5" width="2.5" height="5.5" rx="0.8" fill="currentColor" opacity="0.9"/>
+            <rect x="8.1" y="2.8" width="2.5" height="7.7" rx="0.8" fill="currentColor" opacity="0.9"/>
+            <rect x="11.9" y="0.5" width="2.5" height="10" rx="0.8" fill="currentColor" opacity="0.9"/>
+          </svg>
+          <svg width="14" height="11" viewBox="0 0 16 12" fill="none">
+            <path d="M8 9.6a1.3 1.3 0 1 1 0 2.6 1.3 1.3 0 0 1 0-2.6Zm-3.6-2a5.4 5.4 0 0 1 7.2 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M1.8 4.8a8.9 8.9 0 0 1 12.4 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.85"/>
+          </svg>
+          <div class="battery"><div class="battery-fill"></div></div>
+        </div>
+      </div>
+      <div class="dynamic-island"><div class="island-lens"></div></div>
+
+      <!-- Top Floating HUD -->
+      <div class="top-hud">
+        <div class="hud-group">
+          <button class="glass-pill" id="backBtn" style="display:none" aria-label="返回">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M10 3.2 5.2 8 10 12.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span id="backBtnLabel">星系</span>
+          </button>
+          <button class="glass-pill" id="hostSwitcherBtn">
+            <span class="star-dot"></span>
+            <span id="hostNameText">MacBook Pro</span>
+            <span class="latency-tag" id="hostLatencyText">4ms</span>
+          </button>
+        </div>
+
+        <div class="hud-group">
+          <button class="glass-pill flux-pill" id="fluxPulseBtn" title="触发数据脉冲">
+            <span class="flux-arrow up">↑</span><span id="txRate">2.4</span>
+            <span class="flux-arrow down">↓</span><span id="rxRate">18.6</span>
+          </button>
+          <button class="glass-pill icon-only" id="infoBtn" aria-label="星图图例">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.5" opacity="0.85"/>
+              <circle cx="8" cy="5.1" r="0.95" fill="currentColor"/>
+              <path d="M8 7.5v3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="toast" id="toast"></div>
+
+      <!-- LEVEL 1: SYSTEM OVERVIEW BOTTOM DOCK -->
+      <div class="overview-bottom" id="overviewBottom">
+        <div class="approval-card" id="approvalBanner">
+          <div class="approval-head" id="approvalBannerHead">
+            <div class="approval-meta">
+              <span class="orb-status approval"><span class="core"></span><span class="arc"></span></span>
+              <span class="approval-title" id="approvalTitle">Claude Code 重构 WebSocket 断线重连</span>
+            </div>
+            <span class="approval-badge">待确认</span>
+          </div>
+          <div class="approval-cmd" id="approvalCmd">npx vitest run packages/relay/src/reconnect.test.ts</div>
+          <div class="approval-actions">
+            <button class="btn-tactile deny" id="bannerDenyBtn">拒绝</button>
+            <button class="btn-tactile allow" id="bannerAllowBtn">允许执行</button>
+          </div>
+        </div>
+
+        <div class="planet-dock" id="planetDock"></div>
+      </div>
+
+      <!-- LEVEL 2: PLANET FOCUS — SATELLITE CLUSTER SHEET -->
+      <div class="planet-sheet" id="planetSheet">
+        <div class="sheet-grabber"></div>
+        <div class="planet-sheet-header">
+          <div class="planet-identity">
+            <div class="agent-mark-box" id="planetMarkBox"></div>
+            <div class="planet-title-col">
+              <div class="planet-title-row">
+                <span class="planet-title" id="planetSheetTitle">Claude Code</span>
+                <span class="model-chip" id="planetSheetModel">Opus 4.6</span>
+              </div>
+              <div class="planet-stats" id="planetSheetStats">3 颗卫星会话 1 运行中</div>
+            </div>
+          </div>
+          <div class="planet-header-actions">
+            <button class="btn-circle" id="prevPlanetBtn" aria-label="上一行星">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M10 3.5 5.5 8 10 12.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="btn-circle" id="nextPlanetBtn" aria-label="下一行星">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M6 3.5 10.5 8 6 12.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="btn-circle primary" id="toggleDraftBtn" aria-label="新建会话">+</button>
+          </div>
+        </div>
+
+        <div class="draft-panel" id="draftPanel">
+          <div class="draft-dirs" id="draftDirs"></div>
+          <div class="draft-input-row">
+            <input class="text-input" id="draftInput" type="text" placeholder="输入首句或直接发射新卫星会话" />
+            <button class="send-btn" id="launchSessionBtn" aria-label="启动会话">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 12.8V3.2M4.2 6.8 8 3l3.8 3.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="session-list" id="sessionList"></div>
+      </div>
+
+      <!-- LEVEL 3: SESSION COCKPIT — LIVE CHAT -->
+      <div class="session-sheet" id="sessionSheet">
+        <div class="sheet-grabber"></div>
+        <div class="chat-header">
+          <div class="chat-head-left">
+            <div class="chat-session-name" id="chatTitle">重构 WebSocket 断线重连</div>
+            <div class="chat-session-sub">
+              <span id="chatAgentLabel">Claude Code</span>
+              <span id="chatDirLabel">~/orbis/packages/relay</span>
+            </div>
+          </div>
+          <button class="diff-btn" id="openDiffBtn">+42 -11</button>
+        </div>
+
+        <div class="chat-messages" id="chatMessages"></div>
+
+        <div class="composer-area">
+          <div class="quick-chips" id="quickChips">
+            <button class="quick-chip" data-prompt="跑一遍相关单元测试">跑一遍单测</button>
+            <button class="quick-chip" data-prompt="总结刚刚修改的核心逻辑">总结改动</button>
+            <button class="quick-chip" data-prompt="检查边界条件和内存释放">查边界风险</button>
+          </div>
+          <div class="composer-row">
+            <input class="text-input" id="chatInput" type="text" placeholder="发送指令到当前卫星会话…" />
+            <button class="send-btn" id="chatSendBtn" aria-label="发送">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M8 12.8V3.2M4.2 6.8 8 3l3.8 3.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- MODAL: HOST STAR SWITCHER -->
+      <div class="modal-backdrop" id="hostModal">
+        <div class="modal-card">
+          <div class="modal-title">
+            <span>已配对电脑</span>
+            <button class="btn-circle" data-close-modal style="width:28px;height:28px;font-size:14px">×</button>
+          </div>
+          <div id="hostList"></div>
+        </div>
+      </div>
+
+      <!-- MODAL: CODE DIFF PREVIEW -->
+      <div class="modal-backdrop" id="diffModal">
+        <div class="modal-card">
+          <div class="modal-title">
+            <span id="diffFileName">packages/relay/src/reconnect.ts</span>
+            <button class="btn-circle" data-close-modal style="width:28px;height:28px;font-size:14px">×</button>
+          </div>
+          <div class="diff-viewer" id="diffContent"></div>
+        </div>
+      </div>
+
+      <!-- MODAL: MINIMAL LEGEND (ONLY ON INFO TAP) -->
+      <div class="modal-backdrop" id="infoModal">
+        <div class="modal-card">
+          <div class="modal-title">
+            <span>星系映射</span>
+            <button class="btn-circle" data-close-modal style="width:28px;height:28px;font-size:14px">×</button>
+          </div>
+          <div class="legend-grid">
+            <div class="legend-item">
+              <div class="legend-dot" style="background:radial-gradient(circle,#fff9dc,#ffb74d);box-shadow:0 0 12px #fbbf24"></div>
+              <div><div class="legend-k">恒星电脑</div><div class="legend-v">你的 Host 主机</div></div>
+            </div>
+            <div class="legend-item">
+              <div class="legend-dot" style="background:radial-gradient(circle,#5eead4,#0d9488);box-shadow:0 0 10px #38d9b5"></div>
+              <div><div class="legend-k">卡通星球</div><div class="legend-v">各原生 Agent</div></div>
+            </div>
+            <div class="legend-item">
+              <div class="legend-dot" style="background:#e2e8f0;box-shadow:0 0 8px #93c5fd;width:10px;height:10px;margin:2px"></div>
+              <div><div class="legend-k">迷你卫星</div><div class="legend-v">对应会话实例</div></div>
+            </div>
+            <div class="legend-item">
+              <div class="legend-dot" style="background:linear-gradient(90deg,#fbbf24,#38bdf8);border-radius:4px;height:6px;margin:4px 0"></div>
+              <div><div class="legend-k">能量胶囊流</div><div class="legend-v">远控双向数据</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="home-bar"></div>
+    </div>
+  </div>
+</div>
+
+<div class="stage-controls">
+  <button class="stage-btn" id="burstToggleBtn">⚡ 数据洪流</button>
+  <button class="stage-btn" id="switchStarStageBtn">✦ 跃迁另一台电脑</button>
+  <button class="stage-btn" id="fullBleedBtn">⛶ 全屏预览</button>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  /* =========================================================
+     1. AUTHENTIC ORBIS AGENT MARKS & CARTOON DOCK BADGES
+     ========================================================= */
+  const CLAUDE_PATH = "M 4.709 15.955 l 4.72 -2.647 .08 -.23 -.08 -.128 H 9.2 l -.79 -.048 -2.698 -.073 -2.339 -.097 -2.266 -.122 -.571 -.121 L 0 11.784 l .055 -.352 .48 -.321 .686 .06 1.52 .103 2.278 .158 1.652 .097 2.449 .255 h .389 l .055 -.157 -.134 -.098 -.103 -.097 -2.358 -1.596 -2.552 -1.688 -1.336 -.972 -.724 -.491 -.364 -.462 -.158 -1.008 .656 -.722 .881 .06 .225 .061 .893 .686 1.908 1.476 2.491 1.833 .365 .304 .145 -.103 .019 -.073 -.164 -.274 -1.355 -2.446 -1.446 -2.49 -.644 -1.032 -.17 -.619 a 2.97 2.97 0 0 1 -.104 -.729 L 6.283 .134 6.696 0 l .996 .134 .42 .364 .62 1.414 1.002 2.229 1.555 3.03 .456 .898 .243 .832 .091 .255 h .158 V 9.01 l .128 -1.706 .237 -2.095 .23 -2.695 .08 -.76 .376 -.91 .747 -.492 .584 .28 .48 .685 -.067 .444 -.286 1.851 -.559 2.903 -.364 1.942 h .212 l .243 -.242 .985 -1.306 1.652 -2.064 .73 -.82 .85 -.904 .547 -.431 h 1.033 l .76 1.129 -.34 1.166 -1.064 1.347 -.881 1.142 -1.264 1.7 -.79 1.36 .073 .11 .188 -.02 2.856 -.606 1.543 -.28 1.841 -.315 .833 .388 .091 .395 -.328 .807 -1.969 .486 -2.309 .462 -3.439 .813 -.042 .03 .049 .061 1.549 .146 .662 .036 h 1.622 l 3.02 .225 .79 .522 .474 .638 -.079 .485 -1.215 .62 -1.64 -.389 -3.829 -.91 -1.312 -.329 h -.182 v .11 l 1.093 1.068 2.006 1.81 2.509 2.33 .127 .578 -.322 .455 -.34 -.049 -2.205 -1.657 -.851 -.747 -1.926 -1.62 h -.128 v .17 l .444 .649 2.345 3.521 .122 1.08 -.17 .353 -.608 .213 -.668 -.122 -1.374 -1.925 -1.415 -2.167 -1.143 -1.943 -.14 .08 -.674 7.254 -.316 .37 -.729 .28 -.607 -.461 -.322 -.747 .322 -1.476 .389 -1.924 .315 -1.53 .286 -1.9 .17 -.632 -.012 -.042 -.14 .018 -1.434 1.967 -2.18 2.945 -1.726 1.845 -.414 .164 -.717 -.37 .067 -.662 .401 -.589 2.388 -3.036 1.44 -1.882 .93 -1.086 -.006 -.158 h -.055 L 4.132 18.56 l -1.13 .146 -.487 -.456 .061 -.746 .231 -.243 1.908 -1.312 -.006 .006 z";
+  const DSH_WHALE_PATH = "M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479Z";
+
+  // Pre-compile Path2D for ultra-crisp 60fps canvas rendering of Claude starburst & DeepSeek whale!
+  const CLAUDE_PATH2D = new Path2D(CLAUDE_PATH);
+  const DSH_WHALE_PATH2D = new Path2D(DSH_WHALE_PATH);
+
+  const AGENT_SVGS = {
+    claude: `<svg viewBox="0 0 24 24"><path fill="#F59E78" d="${CLAUDE_PATH}"/></svg>`,
+    codex: `<svg viewBox="0 0 24 24"><path fill="#5EEAD4" fill-rule="evenodd" d="M 8.086 .457 a 6.105 6.105 0 0 1 3.046 -.415 c 1.333 .153 2.521 .72 3.564 1.7 a .117 .117 0 0 0 .107 .029 c 1.408 -.346 2.762 -.224 4.061 .366 l .063 .03 l .154 .076 c 1.357 .703 2.33 1.77 2.918 3.198 c .278 .679 .418 1.388 .421 2.126 a 5.655 5.655 0 0 1 -.18 1.631 a .167 .167 0 0 0 .04 .155 a 5.982 5.982 0 0 1 1.578 2.891 c .385 1.901 -.01 3.615 -1.183 5.14 l -.182 .22 a 6.063 6.063 0 0 1 -2.934 1.851 a .162 .162 0 0 0 -.108 .102 c -.255 .736 -.511 1.364 -.987 1.992 c -1.199 1.582 -2.962 2.462 -4.948 2.451 c -1.583 -.008 -2.986 -.587 -4.21 -1.736 a .145 .145 0 0 0 -.14 -.032 c -.518 .167 -1.04 .191 -1.604 .185 a 5.924 5.924 0 0 1 -2.595 -.622 a 6.058 6.058 0 0 1 -2.146 -1.781 c -.203 -.269 -.404 -.522 -.551 -.821 a 7.74 7.74 0 0 1 -.495 -1.283 a 6.11 6.11 0 0 1 -.017 -3.064 a .166 .166 0 0 0 .008 -.074 a .115 .115 0 0 0 -.037 -.064 a 5.958 5.958 0 0 1 -1.38 -2.202 a 5.196 5.196 0 0 1 -.333 -1.589 a 6.915 6.915 0 0 1 .188 -2.132 c .45 -1.484 1.309 -2.648 2.577 -3.493 c .282 -.188 .55 -.334 .802 -.438 c .286 -.12 .573 -.22 .861 -.304 a .129 .129 0 0 0 .087 -.087 A 6.016 6.016 0 0 1 5.635 2.31 C 6.315 1.464 7.132 .846 8.086 .457 z m -.804 7.85 a .848 .848 0 0 0 -1.473 .842 l 1.694 2.965 l -1.688 2.848 a .849 .849 0 0 0 1.46 .864 l 1.94 -3.272 a .849 .849 0 0 0 .007 -.854 l -1.94 -3.393 z m 5.446 6.24 a .849 .849 0 0 0 0 1.695 h 4.848 a .849 .849 0 0 0 0 -1.696 h -4.848 z"/></svg>`,
+    dsh: `<svg viewBox="0 0 48.34 48.34"><g transform="translate(-1 -0.99)"><path fill="#6D8BFF" d="${DSH_WHALE_PATH}"/></g></svg>`,
+    pi: `<svg viewBox="0 0 470 470"><g transform="translate(-165.29 -165.29)"><path fill="#F09082" d="M165.29,165.29H517.36V400H400V282.65H165.29Z"/><path fill="#4D9ABF" d="M165.29,282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/><path fill="#F1BE58" d="M517.36,400H634.72V634.72H517.36Z"/></g></svg>`,
+    openclaw: `<svg viewBox="0 0 24 24"><path fill="#FF5C5C" d="M12 2.568c-6.33 0-9.495 5.275-9.495 9.495 0 4.22 3.165 8.44 6.33 9.494v2.11h2.11v-2.11s1.055.422 2.11 0v2.11h2.11v-2.11c3.165-1.055 6.33-5.274 6.33-9.494S18.33 2.568 12 2.568z"/><circle cx="9" cy="7.8" r="1.15" fill="#00E5CC"/><circle cx="15" cy="7.8" r="1.15" fill="#00E5CC"/></svg>`
+  };
+
+  // Bespoke miniature cartoon planet SVGs for the bottom thumb Dock!
+  const DOCK_CARTOON_SVGS = {
+    claude: `<svg viewBox="0 0 40 40">
+      <circle cx="20" cy="20" r="14" fill="#E87C54" stroke="#FFE2CC" stroke-width="1.6"/>
+      <path d="M10 27 A14 14 0 0 0 32 13 A15 15 0 0 1 10 27 Z" fill="#B54925" opacity="0.55"/>
+      <g transform="translate(10.5 10.5) scale(0.79)"><path fill="#FFF4E4" d="${CLAUDE_PATH}"/></g>
+      <circle cx="13.5" cy="11.5" r="2.2" fill="#FFFFFF" opacity="0.65"/>
+    </svg>`,
+    codex: `<svg viewBox="0 0 40 40">
+      <ellipse cx="20" cy="22" rx="18" ry="6" fill="none" stroke="#9BFCE8" stroke-width="2.4" transform="rotate(-18 20 20)" opacity="0.5"/>
+      <circle cx="20" cy="20" r="13.5" fill="#2AD1AE" stroke="#BFFDF0" stroke-width="1.5"/>
+      <rect x="11.5" y="14" width="17" height="12" rx="5" fill="#0A3333" stroke="#7FF7DE" stroke-width="1.1"/>
+      <path d="M15.2 17.6 L18.4 20 L15.2 22.4" fill="none" stroke="#6CFCE0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="20.6" y1="22.4" x2="24.5" y2="22.4" stroke="#6CFCE0" stroke-width="1.8" stroke-linecap="round"/>
+      <path d="M4 25 A18 6 -18 0 0 36 15" fill="none" stroke="#B8FFF1" stroke-width="2.4" stroke-linecap="round"/>
+    </svg>`,
+    dsh: `<svg viewBox="0 0 40 40">
+      <circle cx="20" cy="21" r="13.5" fill="#4668FF" stroke="#B5C9FF" stroke-width="1.5"/>
+      <path d="M8 24 Q14 20 20 24 T32 24 A13.5 13.5 0 0 1 8 24 Z" fill="#233BB5" opacity="0.6"/>
+      <g transform="translate(10.5 12) scale(0.39)"><path fill="#EAF2FF" d="${DSH_WHALE_PATH}"/></g>
+      <circle cx="20" cy="5.5" r="2" fill="#93C5FD"/>
+      <circle cx="23.5" cy="7.5" r="1.2" fill="#DBEAFE"/>
+    </svg>`,
+    pi: `<svg viewBox="0 0 40 40">
+      <defs><clipPath id="dockPiClip"><circle cx="20" cy="20" r="13.5"/></clipPath></defs>
+      <g clip-path="url(#dockPiClip)">
+        <rect x="6" y="6" width="28" height="10" fill="#F09082"/>
+        <rect x="6" y="15.5" width="28" height="9" fill="#F4C458"/>
+        <rect x="6" y="24" width="28" height="10" fill="#4D9ABF"/>
+      </g>
+      <circle cx="20" cy="20" r="13.5" fill="none" stroke="#FFF2CC" stroke-width="1.6"/>
+      <ellipse cx="20" cy="20" rx="17.5" ry="5.2" fill="none" stroke="#FDE08A" stroke-width="1.5" stroke-dasharray="4 3" transform="rotate(20 20 20)"/>
+      <circle cx="14" cy="12" r="2" fill="#FFFFFF" opacity="0.65"/>
+    </svg>`,
+    openclaw: `<svg viewBox="0 0 40 40">
+      <path d="M7 18 C3 14 4 10 9 13 C6 15 8 17 10 17 Z" fill="#FF5A5A" stroke="#FFC4C4" stroke-width="1"/>
+      <path d="M33 18 C37 14 36 10 31 13 C34 15 32 17 30 17 Z" fill="#FF5A5A" stroke="#FFC4C4" stroke-width="1"/>
+      <circle cx="20" cy="21" r="13" fill="#EF4444" stroke="#FFB8B8" stroke-width="1.5"/>
+      <path d="M15 9 Q13 5 10 6" fill="none" stroke="#FF8282" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M25 9 Q27 5 30 6" fill="none" stroke="#FF8282" stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="15.5" cy="19.5" r="2.7" fill="#0B1120"/>
+      <circle cx="24.5" cy="19.5" r="2.7" fill="#0B1120"/>
+      <circle cx="15.8" cy="19.1" r="1.4" fill="#00F0D4"/>
+      <circle cx="24.8" cy="19.1" r="1.4" fill="#00F0D4"/>
+      <path d="M17.5 24.5 Q20 26.8 22.5 24.5" fill="none" stroke="#FFE4E6" stroke-width="1.4" stroke-linecap="round"/>
+    </svg>`
+  };
+
+  /* =========================================================
+     2. DATA MODEL: HOST STARS × CARTOON AGENT PLANETS × SATELLITE MOONS
+     ========================================================= */
+  const HOSTS = [
+    {
+      id: 'macbook',
+      name: 'MacBook Pro',
+      sub: 'Apple M4 Max 局域网直连',
+      latency: '4ms',
+      route: 'LAN',
+      starType: 'gold',
+      coreColor: '#FFFDF0',
+      midColor: '#FFD666',
+      coronaColor: '#FF8A3D',
+      outerColor: '#EA580C',
+      pulseColor: '#FFE89E',
+      dirs: ['~/orbis', '~/orbis/ios', '~/orbis/packages/relay', '~/tools/bench'],
+      planets: [
+        {
+          id: 'claude',
+          name: 'Claude Code',
+          shortName: 'Claude',
+          model: 'Opus 4.6',
+          style: 'claude-cartoon',
+          color: '#F08860',
+          palette: ['#FFDCC2', '#EE8057', '#B84723', '#61210E'],
+          orbitRadius: 0.36,
+          orbitSpeed: 0.19,
+          angle: 0.24,
+          radius: 19.5,
+          tilt: 0.14,
+          sessions: [
+            {
+              id: 'c-1',
+              title: '重构 WebSocket 断线重连',
+              dir: '~/orbis/packages/relay',
+              status: 'approval',
+              rate: '等待确认',
+              preview: '待执行 npx vitest run reconnect.test.ts',
+              approvalCmd: 'npx vitest run packages/relay/src/reconnect.test.ts',
+              orbitR: 34,
+              angle: 0.35,
+              speed: 0.78,
+              size: 5.5,
+              diffFile: 'packages/relay/src/reconnect.ts',
+              diffStat: '+42 -11',
+              diffLines: [
+                { t: 'hunk', s: '@@ -64,9 +64,14 @@ export class RelayReconnectScheduler {' },
+                { t: 'ctx', s: '  scheduleNext(reason: CloseReason): number {' },
+                { t: 'del', s: '-   const delay = Math.min(30_000, 1000 * (2 ** this.attempt))' },
+                { t: 'add', s: '+   const base = Math.min(18_000, 450 * (1.85 ** this.attempt))' },
+                { t: 'add', s: '+   const jitter = Math.round(base * (0.18 * Math.random()))' },
+                { t: 'add', s: '+   const delay = reason === "network-change" ? 180 : base + jitter' },
+                { t: 'ctx', s: '    this.attempt += 1' },
+                { t: 'add', s: '+   this.emitTelemetry({ type: "backoff", delay, attempt: this.attempt })' },
+                { t: 'ctx', s: '    return delay' },
+                { t: 'ctx', s: '  }' }
+              ],
+              messages: [
+                { role: 'user', text: '把弱网切换后的重连延迟压低一点，同时避免多端同时重连雪崩。' },
+                { role: 'assistant', text: '已调整 `RelayReconnectScheduler`：网络切换时首跳改为 `180ms` 快速探测，常规退避加入 18% 随机抖动防止集群共振。', tool: '编辑 packages/relay/src/reconnect.ts', diff: '+42 -11' },
+                { role: 'assistant', text: '准备运行断线重连回归套件验证 5 种弱网切换路径，确认后立即执行。', approval: true }
+              ]
+            },
+            {
+              id: 'c-2',
+              title: 'iOS 聊天列表滚动帧率优化',
+              dir: '~/orbis/ios/Orbis',
+              status: 'running',
+              rate: '64 tok/s',
+              preview: '正在分析 MarkdownLayoutCache 缓存命中率…',
+              orbitR: 45,
+              angle: 2.55,
+              speed: 0.56,
+              size: 5.2,
+              diffFile: 'ios/Orbis/Orbis/ChatView.swift',
+              diffStat: '+28 -9',
+              diffLines: [
+                { t: 'hunk', s: '@@ -142,6 +142,10 @@ struct ChatMessageRow: View, Equatable {' },
+                { t: 'ctx', s: '  static func == (lhs: Self, rhs: Self) -> Bool {' },
+                { t: 'del', s: '-   lhs.message.id == rhs.message.id && lhs.message.text == rhs.message.text' },
+                { t: 'add', s: '+   lhs.message.revision == rhs.message.revision &&' },
+                { t: 'add', s: '+   lhs.appearanceToken == rhs.appearanceToken' },
+                { t: 'ctx', s: '  }' }
+              ],
+              messages: [
+                { role: 'user', text: '快速滑动长对话时第 300 条附近偶发掉帧，帮我查下重绘源。' },
+                { role: 'assistant', text: '定位到 `ChatMessageRow` 在流式刷新尾部气泡时触发了上游历史行重复 diff。已改为按 `revision` 与材质令牌精确判等，正在采样验证主线程耗时。', tool: '读取 ios/Orbis/Orbis/ChatView.swift', streaming: true }
+              ]
+            },
+            {
+              id: 'c-3',
+              title: '整理多语言文案缺口',
+              dir: '~/orbis/localization',
+              status: 'idle',
+              rate: '18 分钟前',
+              preview: '已完成 14 项 key 对齐并通过校验',
+              orbitR: 55,
+              angle: 4.5,
+              speed: 0.36,
+              size: 4.5,
+              diffFile: 'localization/mobile.json',
+              diffStat: '+14 -0',
+              diffLines: [
+                { t: 'hunk', s: '@@ -312,3 +312,6 @@' },
+                { t: 'add', s: '+ "orbit.link.direct": { "zh": "局域网直连", "en": "LAN Direct" },' },
+                { t: 'add', s: '+ "orbit.link.relay": { "zh": "加密中继", "en": "E2EE Relay" }' }
+              ],
+              messages: [
+                { role: 'user', text: '核对 iOS 和 Android 最新新增字段的本地化条目。' },
+                { role: 'assistant', text: '已补齐 14 项缺失词条，`generate-mobile-localizations.py` 校验全部通过。' }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'codex',
+          name: 'Codex',
+          shortName: 'Codex',
+          model: 'GPT-5.4 Codex',
+          style: 'codex-cartoon',
+          color: '#34DFB9',
+          palette: ['#C8FFF3', '#2FD4B0', '#0F8E7F', '#073A3B'],
+          orbitRadius: 0.52,
+          orbitSpeed: 0.145,
+          angle: 2.58,
+          radius: 21,
+          ring: true,
+          tilt: -0.22,
+          sessions: [
+            {
+              id: 'x-1',
+              title: 'Android Compose 阴影批处理',
+              dir: '~/orbis/android',
+              status: 'running',
+              rate: '82 tok/s',
+              preview: '正在将渲染缓存迁移至 RenderNode…',
+              orbitR: 40,
+              angle: 0.85,
+              speed: 0.82,
+              size: 5.4,
+              diffFile: 'android/app/src/main/java/com/orbising/orbis/Neumorph.kt',
+              diffStat: '+56 -24',
+              diffLines: [
+                { t: 'hunk', s: '@@ -88,7 +88,11 @@ fun Modifier.orbisSurfaceDepth(' },
+                { t: 'del', s: '-   drawBehind { drawShadowLayers(depth) }' },
+                { t: 'add', s: '+   drawWithCache {' },
+                { t: 'add', s: '+     val cachedBrush = buildDepthBrush(size, depth, palette)' },
+                { t: 'add', s: '+     onDrawBehind { drawRoundRect(cachedBrush) }' },
+                { t: 'add', s: '+   }' }
+              ],
+              messages: [
+                { role: 'user', text: '把首页卡片的柔和双层阴影改成 `drawWithCache`，减少滚动时的离屏分配。' },
+                { role: 'assistant', text: '已将 `Neumorph.kt` 的内外影刷子提升到 `drawWithCache` 作用域，仅在尺寸或主题变化时重建。正在补齐 Compose 基准回归用例。', tool: '修改 Neumorph.kt', diff: '+56 -24', streaming: true }
+              ]
+            },
+            {
+              id: 'x-2',
+              title: 'QUIC 中继握手协议单测',
+              dir: '~/orbis/packages/protocol',
+              status: 'unread',
+              rate: '新回复',
+              preview: '12 项交叉版本兼容断言全部绿灯',
+              orbitR: 50,
+              angle: 3.1,
+              speed: 0.5,
+              size: 4.8,
+              diffFile: 'packages/protocol/src/handshake.test.ts',
+              diffStat: '+73 -4',
+              diffLines: [
+                { t: 'hunk', s: '@@ -19,4 +19,9 @@ describe("protocol v2 fallback", () => {' },
+                { t: 'add', s: '+ it("negotiates optional capability bitmask with v1 host", () => {' },
+                { t: 'add', s: '+   const res = negotiateHello(legacyHostFrame, mobileV2Caps)' },
+                { t: 'add', s: '+   expect(res.downgraded).toBe(false)' },
+                { t: 'add', s: '+ })' }
+              ],
+              messages: [
+                { role: 'user', text: '补一组旧版 Host 对新版 App 可选能力字段的握手测试。' },
+                { role: 'assistant', text: '已新增 12 个跨版本兼容测试，覆盖旧端未知字段忽略与重连回退，全部通过。' }
+              ]
+            },
+            {
+              id: 'x-3',
+              title: 'Codex Desktop 窗口桥接修复',
+              dir: '~/orbis/packages/host',
+              status: 'idle',
+              rate: '1 小时前',
+              preview: '空闲中',
+              orbitR: 59,
+              angle: 5.05,
+              speed: 0.34,
+              size: 4.4,
+              diffFile: 'packages/host/src/codex-bridge.ts',
+              diffStat: '+19 -7',
+              diffLines: [
+                { t: 'ctx', s: '  const windowId = resolveFocusedCodexWorkspace()' },
+                { t: 'add', s: '+ if (!windowId) return fallbackActiveTab()' }
+              ],
+              messages: [
+                { role: 'user', text: '修复多窗口下绑定错 Codex Desktop 标签的问题。' },
+                { role: 'assistant', text: '已按 workspace 绝对路径匹配目标窗口并增加兜底回退。' }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'dsh',
+          name: 'DeepSeek',
+          shortName: 'DeepSeek',
+          model: 'DeepSeek R2',
+          style: 'dsh-cartoon',
+          color: '#5E82FF',
+          palette: ['#C5D7FF', '#4D70FF', '#2441C9', '#121E66'],
+          orbitRadius: 0.67,
+          orbitSpeed: 0.115,
+          angle: 4.18,
+          radius: 19.5,
+          tilt: 0.14,
+          sessions: [
+            {
+              id: 'd-1',
+              title: '长上下文压缩算法推导',
+              dir: '~/tools/bench',
+              status: 'running',
+              rate: '54 tok/s',
+              preview: '正在推导滑动窗口与语义锚点保留上界…',
+              orbitR: 38,
+              angle: 1.5,
+              speed: 0.72,
+              size: 5.2,
+              diffFile: 'tools/bench/context-pruner.ts',
+              diffStat: '+64 -18',
+              diffLines: [
+                { t: 'hunk', s: '@@ -31,5 +31,9 @@ export function scoreAnchorSpan(span: Span) {' },
+                { t: 'add', s: '+ const recency = Math.exp(-span.ageTurns / 7.5)' },
+                { t: 'add', s: '+ return span.toolRefWeight * 0.62 + recency * 0.38' }
+              ],
+              messages: [
+                { role: 'user', text: '设计一个不丢代码修改锚点的消息摘要打分函数，并跑 100 轮长会话压测。' },
+                { role: 'assistant', text: '已完成双因子权重模型，正在执行 100 轮历史回放，当前召回率 97.4%，内存占用下降 41%。', tool: '运行 bench/context-pruner.ts', streaming: true }
+              ]
+            },
+            {
+              id: 'd-2',
+              title: 'E2EE 密钥轮换安全审计',
+              dir: '~/orbis/packages/protocol',
+              status: 'idle',
+              rate: '42 分钟前',
+              preview: '已输出 3 条边界加固建议',
+              orbitR: 49,
+              angle: 4.35,
+              speed: 0.42,
+              size: 4.5,
+              diffFile: 'packages/protocol/src/crypto.ts',
+              diffStat: '+12 -3',
+              diffLines: [{ t: 'add', s: '+ assertNonceMonotonic(sessionKey, frame.nonce)' }],
+              messages: [
+                { role: 'user', text: '审一遍配对后的会话密钥派生与重放保护。' },
+                { role: 'assistant', text: '主链路安全，建议在断线恢复帧额外校验 nonce 单调递增，避免并发重放窗口。' }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'pi',
+          name: 'Pi',
+          shortName: 'Pi',
+          model: 'Pi Native',
+          style: 'pi-cartoon',
+          color: '#F5C458',
+          palette: ['#FFE7A8', '#F4C458', '#4D9ABF', '#224560'],
+          orbitRadius: 0.81,
+          orbitSpeed: 0.088,
+          angle: 5.56,
+          radius: 17.5,
+          ring: true,
+          tilt: 0.28,
+          sessions: [
+            {
+              id: 'p-1',
+              title: '自动化真机巡检脚本',
+              dir: '~/orbis/scripts',
+              status: 'unread',
+              rate: '新回复',
+              preview: '已采集 6 张深浅主题视觉对照快照',
+              orbitR: 35,
+              angle: 2.1,
+              speed: 0.62,
+              size: 4.9,
+              diffFile: 'scripts/capture-visual-qa.mjs',
+              diffStat: '+35 -6',
+              diffLines: [{ t: 'add', s: '+ await captureThemePair(page, ["dark-mist", "dark-sage"])' }],
+              messages: [
+                { role: 'user', text: '把回归脚本扩展成自动对比雾蓝和灰绿深浅四套主题。' },
+                { role: 'assistant', text: '已更新截图巡检脚本并完成本轮 6 组页面比对，无布局溢出。' }
+              ]
+            },
+            {
+              id: 'p-2',
+              title: '轻量 CLI 协议探针',
+              dir: '~/orbis/packages/host',
+              status: 'idle',
+              rate: '2 小时前',
+              preview: '探针延迟均值 3.8ms',
+              orbitR: 46,
+              angle: 5.1,
+              speed: 0.38,
+              size: 4.3,
+              diffFile: 'packages/host/src/probe.ts',
+              diffStat: '+18 -2',
+              diffLines: [{ t: 'add', s: '+ const rttMs = performance.now() - pingSentAt' }],
+              messages: [
+                { role: 'user', text: '加个极简命令行探针测局域网直连抖动。' },
+                { role: 'assistant', text: '已完成探针并实测 500 帧，P99 为 6.2ms。' }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'openclaw',
+          name: 'OpenClaw',
+          shortName: 'OpenClaw',
+          model: 'Claw Gateway',
+          style: 'openclaw-cartoon',
+          color: '#FF5C5C',
+          palette: ['#FFACAC', '#F24949', '#B51A25', '#5C0B13'],
+          orbitRadius: 0.94,
+          orbitSpeed: 0.065,
+          angle: 1.48,
+          radius: 18.8,
+          tilt: -0.15,
+          sessions: [
+            {
+              id: 'o-1',
+              title: '定时巡检 GitHub Release 流水线',
+              dir: '~/orbis/deploy',
+              status: 'running',
+              rate: '32 tok/s',
+              preview: '正在校验 ARM64 产物签名与哈希…',
+              orbitR: 36,
+              angle: 0.95,
+              speed: 0.76,
+              size: 5.2,
+              diffFile: 'deploy/verify-release.sh',
+              diffStat: '+22 -4',
+              diffLines: [
+                { t: 'add', s: '+ codesign --verify --deep --strict "$APP_BUNDLE"' },
+                { t: 'add', s: '+ shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"' }
+              ],
+              messages: [
+                { role: 'user', text: '盯一下今晚的 Release 构建并自动核验签名完整性。' },
+                { role: 'assistant', text: '已接入构建网关事件流，macOS 签名校验通过，正在核对 Android APK 的 ABI 载荷与 ZIP 对齐。', tool: '执行 deploy/verify-release.sh', streaming: true }
+              ]
+            },
+            {
+              id: 'o-2',
+              title: '网关 Webhook 路由监控',
+              dir: '~/orbis/deploy',
+              status: 'idle',
+              rate: '35 分钟前',
+              preview: '所有节点心跳正常',
+              orbitR: 47,
+              angle: 3.9,
+              speed: 0.4,
+              size: 4.4,
+              diffFile: 'deploy/gateway.yaml',
+              diffStat: '+8 -2',
+              diffLines: [{ t: 'add', s: '+ healthcheck_interval: 15s' }],
+              messages: [
+                { role: 'user', text: '检查中继网关过去 24 小时的错误率。' },
+                { role: 'assistant', text: '过去 24 小时 99.98% 成功率，无异常重连尖峰。' }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      id: 'linux',
+      name: 'Linux Studio',
+      sub: 'RTX 5090 端到端加密中继',
+      latency: '24ms',
+      route: 'Relay',
+      starType: 'blue',
+      coreColor: '#F5FBFF',
+      midColor: '#7DD3FC',
+      coronaColor: '#3B82F6',
+      outerColor: '#1D4ED8',
+      pulseColor: '#BAE6FD',
+      dirs: ['/srv/train-kit', '/srv/orbis-relay', '/home/dev/kernels'],
+      planets: [
+        {
+          id: 'claude',
+          name: 'Claude Code',
+          shortName: 'Claude',
+          model: 'Opus 4.6',
+          style: 'claude-cartoon',
+          color: '#F08860',
+          palette: ['#FFDCC2', '#EE8057', '#B84723', '#61210E'],
+          orbitRadius: 0.36,
+          orbitSpeed: 0.19,
+          angle: 0.9,
+          radius: 19.5,
+          tilt: 0.14,
+          sessions: [
+            {
+              id: 'lc-1',
+              title: 'CUDA 算子内存对齐排障',
+              dir: '/home/dev/kernels',
+              status: 'running',
+              rate: '71 tok/s',
+              preview: '正在对比 Shared Memory Bank Conflict…',
+              orbitR: 36,
+              angle: 1.1,
+              speed: 0.8,
+              size: 5.3,
+              diffFile: 'kernels/flash_attn.cu',
+              diffStat: '+31 -14',
+              diffLines: [{ t: 'add', s: '+ __shared__ float tile[BLOCK_M][BLOCK_N + 1]; // avoid bank conflict' }],
+              messages: [
+                { role: 'user', text: '排查下 FP16 tile 读取时的吞吐抖动。' },
+                { role: 'assistant', text: '给共享内存补齐 1 列 padding 后吞吐从 61% 提升至 89%，正在跑全尺寸回归。', streaming: true }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'codex',
+          name: 'Codex',
+          shortName: 'Codex',
+          model: 'GPT-5.4 Codex',
+          style: 'codex-cartoon',
+          color: '#34DFB9',
+          palette: ['#C8FFF3', '#2FD4B0', '#0F8E7F', '#073A3B'],
+          orbitRadius: 0.53,
+          orbitSpeed: 0.145,
+          angle: 2.9,
+          radius: 21,
+          ring: true,
+          tilt: -0.22,
+          sessions: [
+            {
+              id: 'lx-1',
+              title: 'Relay Docker 多阶段镜像瘦身',
+              dir: '/srv/orbis-relay',
+              status: 'unread',
+              rate: '新回复',
+              preview: '镜像体积从 418MB 压缩至 64MB',
+              orbitR: 40,
+              angle: 2.3,
+              speed: 0.54,
+              size: 5.0,
+              diffFile: 'Dockerfile',
+              diffStat: '+18 -27',
+              diffLines: [{ t: 'add', s: '+ FROM gcr.io/distroless/nodejs22-debian12 AS runtime' }],
+              messages: [
+                { role: 'user', text: '瘦身生产中继容器镜像。' },
+                { role: 'assistant', text: '已切到 distroless 运行层并剥离构建期 devDependencies，镜像降至 64MB。' }
+              ]
+            },
+            {
+              id: 'lx-2',
+              title: 'Prometheus 指标导出',
+              dir: '/srv/orbis-relay',
+              status: 'idle',
+              rate: '50 分钟前',
+              preview: '空闲中',
+              orbitR: 51,
+              angle: 5.4,
+              speed: 0.35,
+              size: 4.4,
+              diffFile: 'metrics.ts',
+              diffStat: '+15 -0',
+              diffLines: [{ t: 'add', s: '+ export const activeTunnels = new Gauge(...)' }],
+              messages: [{ role: 'assistant', text: '已暴露 `/metrics` 内部端点。' }]
+            }
+          ]
+        },
+        {
+          id: 'dsh',
+          name: 'DeepSeek',
+          shortName: 'DeepSeek',
+          model: 'DeepSeek R2',
+          style: 'dsh-cartoon',
+          color: '#5E82FF',
+          palette: ['#C5D7FF', '#4D70FF', '#2441C9', '#121E66'],
+          orbitRadius: 0.69,
+          orbitSpeed: 0.11,
+          angle: 4.75,
+          radius: 19.5,
+          tilt: 0.14,
+          sessions: [
+            {
+              id: 'ld-1',
+              title: '训练 Loss 震荡根因分析',
+              dir: '/srv/train-kit',
+              status: 'running',
+              rate: '91 tok/s',
+              preview: '正在比对梯度裁剪阈值与学习率预热曲线…',
+              orbitR: 38,
+              angle: 0.4,
+              speed: 0.84,
+              size: 5.4,
+              diffFile: 'configs/stage2.yaml',
+              diffStat: '+4 -4',
+              diffLines: [
+                { t: 'del', s: '- grad_clip_norm: 2.0' },
+                { t: 'add', s: '+ grad_clip_norm: 0.85' }
+              ],
+              messages: [
+                { role: 'user', text: '第 14k step 之后 loss 偶发尖刺，帮我看下日志。' },
+                { role: 'assistant', text: '尖刺集中在长序列 batch 的注意力梯度溢出，正在验证 `grad_clip_norm: 0.85` 方案。', streaming: true }
+              ]
+            }
+          ]
+        },
+        {
+          id: 'pi',
+          name: 'Pi',
+          shortName: 'Pi',
+          model: 'Pi Native',
+          style: 'pi-cartoon',
+          color: '#F5C458',
+          palette: ['#FFE7A8', '#F4C458', '#4D9ABF', '#224560'],
+          orbitRadius: 0.82,
+          orbitSpeed: 0.088,
+          angle: 1.9,
+          radius: 17.5,
+          ring: true,
+          tilt: 0.28,
+          sessions: [
+            {
+              id: 'lp-1',
+              title: 'GPU 温度与显存看门狗',
+              dir: '/srv/train-kit',
+              status: 'idle',
+              rate: '12 分钟前',
+              preview: '当前 61°C 显存 68%',
+              orbitR: 35,
+              angle: 3.1,
+              speed: 0.45,
+              size: 4.5,
+              diffFile: 'scripts/gpu-watch.sh',
+              diffStat: '+11 -0',
+              diffLines: [{ t: 'add', s: '+ nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader' }],
+              messages: [{ role: 'assistant', text: '看门狗已挂载到 systemd，阈值 84°C 自动降频告警。' }]
+            }
+          ]
+        },
+        {
+          id: 'openclaw',
+          name: 'OpenClaw',
+          shortName: 'OpenClaw',
+          model: 'Claw Gateway',
+          style: 'openclaw-cartoon',
+          color: '#FF5C5C',
+          palette: ['#FFACAC', '#F24949', '#B51A25', '#5C0B13'],
+          orbitRadius: 0.94,
+          orbitSpeed: 0.065,
+          angle: 5.95,
+          radius: 18.8,
+          tilt: -0.15,
+          sessions: [
+            {
+              id: 'lo-1',
+              title: '定时同步对象存储 Checkpoint',
+              dir: '/srv/train-kit',
+              status: 'running',
+              rate: '46 tok/s',
+              preview: '已上传 epoch-18.safetensors (68%)',
+              orbitR: 36,
+              angle: 1.9,
+              speed: 0.72,
+              size: 5.2,
+              diffFile: 'scripts/sync-ckpt.py',
+              diffStat: '+20 -3',
+              diffLines: [{ t: 'add', s: '+ upload_multipart(ckpt_path, concurrency=8)' }],
+              messages: [{ role: 'assistant', text: '并发分片上传已提速 3.1 倍，当前剩余约 45 秒。', streaming: true }]
+            }
+          ]
+        }
+      ]
+    }
+  ];
+
+  /* =========================================================
+     3. APPLICATION STATE
+     ========================================================= */
+  const state = {
+    hostIdx: 0,
+    view: 'overview',
+    selectedPlanetId: null,
+    selectedSessionId: null,
+    highlightedSessionId: null,
+    draftOpen: false,
+    selectedDraftDir: null,
+    burstMode: false,
+    warpProgress: 0,
+    pointerDown: false,
+    pointerStart: { x: 0, y: 0 },
+    pointerMoved: false,
+    isTouchingCosmos: false,
+    tiltX: 0,
+    tiltY: 0,
+    targetTiltX: 0,
+    targetTiltY: 0,
+    cam: { x: 0, y: 0, zoom: 1 },
+    packets: [],
+    moonSparks: [],
+    ripples: [],
+    uplinkBeams: [],
+    starFlare: 0,
+    time: 0,
+    orbitScaleTime: 1
+  };
+
+  function currentHost() { return HOSTS[state.hostIdx]; }
+  function currentPlanet() { return currentHost().planets.find(p => p.id === state.selectedPlanetId) || null; }
+  function currentSession() {
+    const p = currentPlanet();
+    return p ? (p.sessions.find(s => s.id === state.selectedSessionId) || null) : null;
+  }
+
+  /* =========================================================
+     4. CANVAS & ILLUSTRATIVE COSMOS BACKDROP
+     ========================================================= */
+  const canvas = document.getElementById('cosmos');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const phoneScreen = document.getElementById('phoneScreen');
+  const labelsLayer = document.getElementById('canvasLabels');
+
+  let W = 371;
+  let H = 830;
+  let DPR = Math.min(window.devicePixelRatio || 1, 2);
+  let nebulaCanvas = null;
+
+  const stars = [];
+  function initStars() {
+    stars.length = 0;
+    const colors = ['#ffffff', '#dbeafe', '#fef08a', '#ddd6fe', '#fed7aa', '#a7f3d0'];
+    for (let i = 0; i < 165; i++) {
+      const layer = i < 95 ? 0 : i < 142 ? 1 : 2;
+      stars.push({
+        x: Math.random(),
+        y: Math.random(),
+        r: layer === 0 ? 0.6 + Math.random() * 0.6 : layer === 1 ? 1.0 + Math.random() * 0.7 : 1.8 + Math.random() * 1.4,
+        isSparkle: layer === 2 && Math.random() < 0.62, // cute 4-point cartoon twinkle stars!
+        alpha: 0.28 + Math.random() * 0.68,
+        twinklePhase: Math.random() * Math.PI * 2,
+        twinkleSpeed: 0.9 + Math.random() * 2.2,
+        depth: layer === 0 ? 0.25 : layer === 1 ? 0.55 : 1.0,
+        color: colors[Math.floor(Math.random() * colors.length)]
+      });
+    }
+  }
+
+  function buildNebulaCache() {
+    nebulaCanvas = document.createElement('canvas');
+    nebulaCanvas.width = Math.max(1, Math.floor(W * DPR));
+    nebulaCanvas.height = Math.max(1, Math.floor(H * DPR));
+    const nctx = nebulaCanvas.getContext('2d');
+    nctx.scale(DPR, DPR);
+
+    // Rich storybook twilight-indigo deep space
+    const bg = nctx.createLinearGradient(0, 0, W * 0.35, H);
+    bg.addColorStop(0, '#070b1c');
+    bg.addColorStop(0.45, '#0c132d');
+    bg.addColorStop(1, '#050814');
+    nctx.fillStyle = bg;
+    nctx.fillRect(0, 0, W, H);
+
+    const host = currentHost();
+    const clouds = host.starType === 'gold'
+      ? [
+          { x: W * 0.16, y: H * 0.22, r: W * 0.68, c0: 'rgba(99, 102, 241, 0.16)', c1: 'rgba(99, 102, 241, 0)' },
+          { x: W * 0.85, y: H * 0.38, r: W * 0.64, c0: 'rgba(52, 211, 153, 0.11)', c1: 'rgba(52, 211, 153, 0)' },
+          { x: W * 0.50, y: H * 0.36, r: W * 0.74, c0: 'rgba(251, 146, 60, 0.12)', c1: 'rgba(251, 146, 60, 0)' },
+          { x: W * 0.24, y: H * 0.72, r: W * 0.58, c0: 'rgba(244, 114, 182, 0.08)', c1: 'rgba(244, 114, 182, 0)' }
+        ]
+      : [
+          { x: W * 0.20, y: H * 0.20, r: W * 0.70, c0: 'rgba(59, 130, 246, 0.19)', c1: 'rgba(59, 130, 246, 0)' },
+          { x: W * 0.82, y: H * 0.40, r: W * 0.64, c0: 'rgba(139, 92, 246, 0.15)', c1: 'rgba(139, 92, 246, 0)' },
+          { x: W * 0.50, y: H * 0.36, r: W * 0.74, c0: 'rgba(56, 189, 248, 0.15)', c1: 'rgba(56, 189, 248, 0)' },
+          { x: W * 0.30, y: H * 0.72, r: W * 0.56, c0: 'rgba(45, 212, 191, 0.09)', c1: 'rgba(45, 212, 191, 0)' }
+        ];
+
+    for (const c of clouds) {
+      const g = nctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.r);
+      g.addColorStop(0, c.c0);
+      g.addColorStop(1, c.c1);
+      nctx.fillStyle = g;
+      nctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  function resizeCanvas() {
+    const rect = phoneScreen.getBoundingClientRect();
+    W = Math.max(280, rect.width);
+    H = Math.max(480, rect.height);
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = `${W}px`;
+    canvas.style.height = `${H}px`;
+    buildNebulaCache();
+  }
+
+  /* =========================================================
+     5. 2.5D ORBITAL GEOMETRY & CAMERA PROJECTION
+     ========================================================= */
+  function getSystemMetrics() {
+    const maxOrbitPx = Math.min(W * 0.455, H * 0.256);
+    const squash = Math.max(0.48, Math.min(0.84, 0.70 + state.tiltY * 0.16));
+    return { maxOrbitPx, squash };
+  }
+
+  function planetWorldPos(planet) {
+    const { maxOrbitPx, squash } = getSystemMetrics();
+    const r = planet.orbitRadius * maxOrbitPx;
+    const ang = planet.angle + state.tiltX * 0.35;
+    return {
+      x: Math.cos(ang) * r,
+      y: Math.sin(ang) * r * squash,
+      z: Math.sin(ang),
+      r,
+      ang
+    };
+  }
+
+  function moonWorldPos(planet, pPos, moon, focusExpand) {
+    const baseR = moon.orbitR * (focusExpand ? 1.50 : 0.79);
+    const squash = focusExpand ? 0.56 : 0.54;
+    const cosT = Math.cos(planet.tilt);
+    const sinT = Math.sin(planet.tilt);
+    const lx = Math.cos(moon.angle) * baseR;
+    const ly = Math.sin(moon.angle) * baseR * squash;
+    return {
+      x: pPos.x + (lx * cosT - ly * sinT),
+      y: pPos.y + (lx * sinT + ly * cosT),
+      z: Math.sin(moon.angle),
+      orbitR: baseR,
+      squash
+    };
+  }
+
+  function worldToScreen(wx, wy) {
+    return {
+      x: (wx - state.cam.x) * state.cam.zoom + W * 0.5,
+      y: (wy - state.cam.y) * state.cam.zoom + H * 0.5
+    };
+  }
+
+  function computeCameraTarget() {
+    if (state.view === 'overview') {
+      const hasBanner = Boolean(findFirstApproval());
+      const desiredStarY = hasBanner ? H * 0.378 : H * 0.43;
+      return { x: 0, y: H * 0.5 - desiredStarY, zoom: 1.0 };
+    }
+    const p = currentPlanet();
+    if (!p) return { x: 0, y: H * 0.12, zoom: 1.0 };
+    const pPos = planetWorldPos(p);
+
+    if (state.view === 'planet') {
+      const zoom = 1.94;
+      const desiredScreenY = H * 0.312;
+      const offsetY = (H * 0.5 - desiredScreenY) / zoom;
+      const starDirX = pPos.x === 0 ? 1 : Math.sign(pPos.x);
+      return { x: pPos.x - starDirX * 14, y: pPos.y + offsetY, zoom };
+    }
+
+    const zoom = 2.08;
+    const desiredScreenY = H * 0.18;
+    const offsetY = (H * 0.5 - desiredScreenY) / zoom;
+    return { x: pPos.x, y: pPos.y + offsetY, zoom };
+  }
+
+  /* =========================================================
+     6. REMOTE-CONTROL DATA TRANSMISSION ENGINE
+     ========================================================= */
+  function quadraticBezier(p0, p1, p2, t) {
+    const u = 1 - t;
+    return {
+      x: u * u * p0.x + 2 * u * t * p1.x + t * t * p2.x,
+      y: u * u * p0.y + 2 * u * t * p1.y + t * t * p2.y
+    };
+  }
+
+  function getConduitControlPoint(starPos, pPos, dir) {
+    const mx = (starPos.x + pPos.x) * 0.5;
+    const my = (starPos.y + pPos.y) * 0.5;
+    const dx = pPos.x - starPos.x;
+    const dy = pPos.y - starPos.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    const bow = Math.min(54, len * 0.28) * dir;
+    return { x: mx + nx * bow, y: my + ny * bow };
+  }
+
+  function spawnDataPacket(planet, dir, opts = {}) {
+    const host = currentHost();
+    const color = dir === 1
+      ? (host.starType === 'gold' ? '#FFE484' : '#A5E3FF')
+      : planet.color;
+
+    state.packets.push({
+      planetId: planet.id,
+      dir,
+      t: opts.startT || 0,
+      speed: opts.speed || (0.44 + Math.random() * 0.30),
+      size: opts.size || (dir === 1 ? 3.4 : 3.0),
+      color,
+      tailLen: opts.tailLen || 0.20,
+      targetSessionId: opts.targetSessionId || null,
+      bright: Boolean(opts.bright),
+      kind: Math.random() < 0.45 ? 'capsule' : 'orb' // stylized cartoon data capsules & glowing energy beads!
+    });
+  }
+
+  function spawnMoonSpark(planetId, sessionId, dir, color) {
+    state.moonSparks.push({
+      planetId,
+      sessionId,
+      dir,
+      t: 0,
+      speed: 1.4 + Math.random() * 0.6,
+      color
+    });
+  }
+
+  function spawnRipple(wx, wy, color, maxR = 30) {
+    state.ripples.push({ x: wx, y: wy, r: 4, maxR, alpha: 0.95, color });
+  }
+
+  function firePhoneCommandWave(planet, session, labelColor) {
+    const host = currentHost();
+    state.uplinkBeams.push({
+      t: 0,
+      speed: 2.35,
+      color: labelColor || host.pulseColor,
+      planetId: planet.id,
+      sessionId: session ? session.id : null,
+      dispatched: false
+    });
+  }
+
+  function spawnBurstTraffic(targetPlanet) {
+    const planets = targetPlanet ? [targetPlanet] : currentHost().planets;
+    for (const p of planets) {
+      for (let i = 0; i < 4; i++) {
+        setTimeout(() => {
+          spawnDataPacket(p, 1, { speed: 0.86 + Math.random() * 0.24, size: 3.8, tailLen: 0.24, bright: true });
+        }, i * 65);
+        setTimeout(() => {
+          spawnDataPacket(p, -1, { speed: 0.80 + Math.random() * 0.24, size: 3.4, tailLen: 0.22, bright: true });
+        }, 140 + i * 75);
+      }
+    }
+    state.starFlare = Math.min(1.5, state.starFlare + 0.95);
+  }
+
+  function seedInitialPackets() {
+    state.packets.length = 0;
+    for (const p of currentHost().planets) {
+      const running = p.sessions.some(s => s.status === 'running');
+      const approval = p.sessions.some(s => s.status === 'approval');
+      if (running || approval) {
+        spawnDataPacket(p, 1, { startT: 0.26 + Math.random() * 0.18, size: 3.5, tailLen: 0.22, bright: true });
+        spawnDataPacket(p, -1, { startT: 0.50 + Math.random() * 0.20, size: 3.2, tailLen: 0.21, bright: true });
+        spawnDataPacket(p, -1, { startT: 0.16 + Math.random() * 0.14, size: 2.9, tailLen: 0.18 });
+      } else {
+        spawnDataPacket(p, 1, { startT: 0.40, size: 2.5, tailLen: 0.15 });
+      }
+    }
+  }
+
+  /* =========================================================
+     7. STYLIZED CARTOON CELESTIAL DRAWING ROUTINES
+     ========================================================= */
+  function drawFourPointStar(x, y, r, color, alpha) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 1.45);
+    ctx.quadraticCurveTo(0, 0, r * 1.45, 0);
+    ctx.quadraticCurveTo(0, 0, 0, r * 1.45);
+    ctx.quadraticCurveTo(0, 0, -r * 1.45, 0);
+    ctx.quadraticCurveTo(0, 0, 0, -r * 1.45);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawStarfield() {
+    if (nebulaCanvas) ctx.drawImage(nebulaCanvas, 0, 0, W, H);
+    else {
+      ctx.fillStyle = '#060916';
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    const warp = state.warpProgress;
+    const parallaxX = -state.cam.x * 0.12 - state.tiltX * 18;
+    const parallaxY = -state.cam.y * 0.12 - state.tiltY * 14;
+
+    for (const s of stars) {
+      const sx = (s.x * W + parallaxX * s.depth + W * 4) % W;
+      const sy = (s.y * H + parallaxY * s.depth + H * 4) % H;
+      const tw = 0.58 + 0.42 * Math.sin(state.time * s.twinkleSpeed + s.twinklePhase);
+      const a = s.alpha * tw;
+
+      if (warp > 0.02) {
+        const cx = W * 0.5;
+        const cy = H * 0.36;
+        const stretch = 1 + warp * 0.45 * s.depth;
+        ctx.strokeStyle = s.color;
+        ctx.globalAlpha = Math.min(1, a * (1 + warp * 0.85));
+        ctx.lineWidth = s.r * 1.1;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(cx + (sx - cx) * stretch, cy + (sy - cy) * stretch);
+        ctx.stroke();
+      } else if (s.isSparkle) {
+        drawFourPointStar(sx, sy, s.r * (0.85 + tw * 0.35), s.color, a);
+      } else {
+        ctx.fillStyle = s.color;
+        ctx.globalAlpha = a;
+        ctx.beginPath();
+        ctx.arc(sx, sy, s.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawOrbits(starScreen) {
+    const host = currentHost();
+    const { maxOrbitPx, squash } = getSystemMetrics();
+    const focusP = currentPlanet();
+
+    ctx.save();
+    for (const p of host.planets) {
+      const r = p.orbitRadius * maxOrbitPx * state.cam.zoom;
+      const isFocused = focusP && focusP.id === p.id;
+      const hasRunning = p.sessions.some(s => s.status === 'running');
+      const hasApproval = p.sessions.some(s => s.status === 'approval');
+
+      ctx.beginPath();
+      ctx.ellipse(starScreen.x, starScreen.y, r, r * squash, 0, 0, Math.PI * 2);
+      ctx.setLineDash(isFocused ? [] : [5, 7]);
+
+      if (isFocused) {
+        ctx.strokeStyle = hexAlpha(p.color, 0.42);
+        ctx.lineWidth = 1.5;
+      } else if (state.view !== 'overview') {
+        ctx.strokeStyle = 'rgba(180, 200, 245, 0.10)';
+        ctx.lineWidth = 1.0;
+      } else {
+        ctx.strokeStyle = hasApproval
+          ? 'rgba(251, 191, 36, 0.34)'
+          : hasRunning
+            ? 'rgba(196, 218, 255, 0.24)'
+            : 'rgba(160, 182, 230, 0.14)';
+        ctx.lineWidth = hasRunning || hasApproval ? 1.15 : 0.9;
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+  }
+
+  /* ---- CARTOON HOST COMPUTER STAR (恒星 = 你的电脑) ---- */
+  function drawCartoonStar(starScreen) {
+    const host = currentHost();
+    const zoom = state.cam.zoom;
+    const baseR = 25 * zoom;
+    const bounce = 1 + state.starFlare * 0.16 + Math.sin(state.time * 2.6) * 0.025;
+    const r = baseR * bounce;
+
+    ctx.save();
+    ctx.translate(starScreen.x, starScreen.y);
+
+    // 1. Soft stylized pastel glow aura
+    const outerGlow = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 3.8);
+    outerGlow.addColorStop(0, host.starType === 'gold' ? 'rgba(255, 216, 102, 0.56)' : 'rgba(125, 211, 252, 0.58)');
+    outerGlow.addColorStop(0.4, host.starType === 'gold' ? 'rgba(255, 138, 61, 0.20)' : 'rgba(59, 130, 246, 0.22)');
+    outerGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = outerGlow;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 3.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 2. Playful animated cartoon scalloped sun-ray petals (Kurzgesagt-style wavy corona!)
+    const petals = 12;
+    ctx.save();
+    ctx.rotate(state.time * 0.22);
+    ctx.beginPath();
+    for (let i = 0; i <= petals * 6; i++) {
+      const a = (i / (petals * 6)) * Math.PI * 2;
+      const wave = Math.sin(a * petals) * r * (0.14 + state.starFlare * 0.06);
+      const rr = r * 1.24 + wave;
+      const x = Math.cos(a) * rr;
+      const y = Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = host.starType === 'gold' ? 'rgba(255, 178, 64, 0.42)' : 'rgba(96, 165, 250, 0.44)';
+    ctx.fill();
+    ctx.strokeStyle = host.starType === 'gold' ? 'rgba(255, 236, 168, 0.72)' : 'rgba(186, 230, 253, 0.78)';
+    ctx.lineWidth = Math.max(1.2, 1.6 * zoom * 0.65);
+    ctx.stroke();
+    ctx.restore();
+
+    // Counter-rotating inner soft sun ring
+    ctx.save();
+    ctx.rotate(-state.time * 0.16);
+    ctx.beginPath();
+    for (let i = 0; i <= 48; i++) {
+      const a = (i / 48) * Math.PI * 2;
+      const rr = r * 1.12 + Math.cos(a * 8) * r * 0.07;
+      const x = Math.cos(a) * rr;
+      const y = Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = host.starType === 'gold' ? 'rgba(255, 214, 102, 0.55)' : 'rgba(147, 213, 255, 0.56)';
+    ctx.fill();
+    ctx.restore();
+
+    // 3. Cel-shaded Sun Sphere Body
+    const coreG = ctx.createRadialGradient(-r * 0.25, -r * 0.25, r * 0.08, 0, 0, r);
+    coreG.addColorStop(0, host.coreColor);
+    coreG.addColorStop(0.55, host.midColor);
+    coreG.addColorStop(1, host.coronaColor);
+    ctx.fillStyle = coreG;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Crisp cartoon outline rim
+    ctx.strokeStyle = host.starType === 'gold' ? '#FFF6D6' : '#E0F2FE';
+    ctx.lineWidth = Math.max(1.5, r * 0.075);
+    ctx.stroke();
+
+    // Glossy candy top-left shine dot
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.42, -r * 0.44, r * 0.22, r * 0.12, -0.65, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 4. SUPER CLEAR & CUTE COMPUTER EMBLEM INSIDE THE STAR CORE ("电脑 = 恒星" 一眼秒懂!)
+    ctx.save();
+    const s = r * 0.54;
+    if (host.starType === 'gold') {
+      // Cute stylized MacBook silhouette inside golden sun!
+      ctx.fillStyle = '#4A2107';
+      ctx.strokeStyle = '#FFF9E6';
+      ctx.lineWidth = Math.max(1.1, r * 0.055);
+      // Screen lid
+      roundRectPath(ctx, -s * 0.78, -s * 0.62, s * 1.56, s * 1.02, s * 0.22);
+      ctx.fill();
+      ctx.stroke();
+      // Glowing little screen interior
+      ctx.fillStyle = '#FFE394';
+      roundRectPath(ctx, -s * 0.58, -s * 0.44, s * 1.16, s * 0.66, s * 0.12);
+      ctx.fill();
+      // Cute tiny glowing code lines on the mini MacBook screen
+      ctx.strokeStyle = '#9A3412';
+      ctx.lineWidth = Math.max(1.0, r * 0.045);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-s * 0.34, -s * 0.20);
+      ctx.lineTo(s * 0.22, -s * 0.20);
+      ctx.moveTo(-s * 0.34, 0.02 * s);
+      ctx.lineTo(s * 0.34, 0.02 * s);
+      ctx.stroke();
+      // Laptop keyboard base
+      ctx.fillStyle = '#FFF7DC';
+      roundRectPath(ctx, -s * 1.02, s * 0.42, s * 2.04, s * 0.24, s * 0.12);
+      ctx.fill();
+    } else {
+      // Cute stylized Workstation Monitor / Terminal inside blue-white star!
+      ctx.fillStyle = '#0F2557';
+      ctx.strokeStyle = '#E0F2FE';
+      ctx.lineWidth = Math.max(1.1, r * 0.055);
+      roundRectPath(ctx, -s * 0.82, -s * 0.66, s * 1.64, s * 1.08, s * 0.22);
+      ctx.fill();
+      ctx.stroke();
+      // Crisp glowing >_ inside monitor
+      ctx.strokeStyle = '#7DD3FC';
+      ctx.lineWidth = Math.max(1.2, r * 0.06);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-s * 0.42, -s * 0.30);
+      ctx.lineTo(-s * 0.10, -s * 0.10);
+      ctx.lineTo(-s * 0.42, s * 0.10);
+      ctx.moveTo(s * 0.08, s * 0.10);
+      ctx.lineTo(s * 0.42, s * 0.10);
+      ctx.stroke();
+      // Stand foot
+      ctx.fillStyle = '#E0F2FE';
+      roundRectPath(ctx, -s * 0.38, s * 0.48, s * 0.76, s * 0.18, s * 0.09);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // 5. Little cartoon 4-point star sparkles orbiting the Sun!
+    for (let i = 0; i < 3; i++) {
+      const a = state.time * 0.85 + i * 2.09;
+      const dist = r * (1.58 + 0.1 * Math.sin(state.time * 3 + i));
+      drawFourPointStar(
+        Math.cos(a) * dist,
+        Math.sin(a) * dist * 0.72,
+        Math.max(2.2, r * 0.13),
+        '#FFFFFF',
+        0.78 + 0.22 * Math.sin(state.time * 4 + i)
+      );
+    }
+
+    ctx.restore();
+  }
+
+  /* ---- CARTOON AGENT PLANETS (每个星球附带每个 Agent 的鲜明卡通特色!) ---- */
+  function drawCartoonRingHalf(pScr, p, r, isFront) {
+    if (!p.ring) return;
+    ctx.save();
+    ctx.translate(pScr.x, pScr.y);
+    ctx.rotate(p.tilt);
+
+    const startA = isFront ? 0 : Math.PI;
+    const endA = isFront ? Math.PI : Math.PI * 2;
+
+    if (p.style === 'codex-cartoon') {
+      // Chunky, glossy mint-cyan cartoon Saturn ring with scrolling dashed code ticks!
+      const rx = r * 1.78;
+      const ry = rx * 0.36;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rx, ry, 0, startA, endA);
+      ctx.strokeStyle = isFront ? '#99FCE8' : 'rgba(110, 231, 210, 0.55)';
+      ctx.lineWidth = Math.max(3.6, r * 0.27);
+      ctx.lineCap = 'round';
+      ctx.stroke();
+
+      // Inner dark-teal accent stripe + sliding code dashes on ring!
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rx, ry, 0, startA, endA);
+      ctx.strokeStyle = isFront ? '#0D5E59' : 'rgba(13, 94, 89, 0.45)';
+      ctx.lineWidth = Math.max(1.3, r * 0.085);
+      ctx.setLineDash([4, 6]);
+      ctx.lineDashOffset = -state.time * 18;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (p.style === 'pi-cartoon') {
+      // Playful golden dashed Bauhaus orbit ring with floating tiny colored pixel blocks!
+      const rx = r * 1.62;
+      const ry = rx * 0.38;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rx, ry, 0, startA, endA);
+      ctx.strokeStyle = isFront ? '#FDE08A' : 'rgba(253, 224, 138, 0.45)';
+      ctx.lineWidth = Math.max(2.0, r * 0.12);
+      ctx.setLineDash([6, 6]);
+      ctx.lineDashOffset = state.time * 14;
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Tiny floating Bauhaus pixel tiles riding the ring
+      const colors = ['#F09082', '#4D9ABF', '#F1BE58'];
+      for (let i = 0; i < 3; i++) {
+        const a = (state.time * 0.9 + i * 2.09) % (Math.PI * 2);
+        const onFront = a >= 0 && a <= Math.PI;
+        if (onFront !== isFront) continue;
+        const bx = Math.cos(a) * rx;
+        const by = Math.sin(a) * ry;
+        const bs = Math.max(2.6, r * 0.19);
+        ctx.save();
+        ctx.translate(bx, by);
+        ctx.rotate(state.time * 1.4 + i);
+        ctx.fillStyle = colors[i];
+        ctx.strokeStyle = '#FFFBEB';
+        ctx.lineWidth = 0.9;
+        roundRectPath(ctx, -bs / 2, -bs / 2, bs, bs, bs * 0.25);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    ctx.restore();
+  }
+
+  function drawCartoonPlanet(pScr, starScreen, p, r) {
+    ctx.save();
+    ctx.translate(pScr.x, pScr.y);
+
+    // Subtle pastel glow behind every cartoon planet
+    const aura = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 1.85);
+    aura.addColorStop(0, hexAlpha(p.color, 0.44));
+    aura.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = aura;
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 1.85, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Gentle cheerful bobbing wobble
+    const bob = Math.sin(state.time * 2.2 + p.orbitRadius * 12) * (r * 0.04);
+    ctx.translate(0, bob);
+
+    if (p.style === 'claude-cartoon') {
+      drawClaudeCartoonPlanet(r, p);
+    } else if (p.style === 'codex-cartoon') {
+      drawCodexCartoonPlanet(r, p);
+    } else if (p.style === 'dsh-cartoon') {
+      drawDeepSeekCartoonPlanet(r, p);
+    } else if (p.style === 'pi-cartoon') {
+      drawPiCartoonPlanet(r, p);
+    } else if (p.style === 'openclaw-cartoon') {
+      drawOpenClawCartoonPlanet(r, p);
+    }
+
+    // Focused planet playful dashed halo
+    if (state.view === 'planet' && state.selectedPlanetId === p.id) {
+      ctx.save();
+      ctx.strokeStyle = hexAlpha(p.palette[0], 0.52);
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 1.32, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  // Helper: Crisp cel-shaded crescent shadow + glossy candy highlight on any sphere
+  function drawCelShadingOverlay(r, darkColor, rimColor) {
+    // Cel-shaded bottom-right shadow crescent
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.clip();
+
+    ctx.fillStyle = darkColor;
+    ctx.globalAlpha = 0.34;
+    ctx.beginPath();
+    ctx.arc(r * 0.28, r * 0.26, r * 1.02, 0, Math.PI * 2);
+    ctx.arc(-r * 0.16, -r * 0.18, r * 0.96, 0, Math.PI * 2, true);
+    ctx.fill('evenodd');
+    ctx.globalAlpha = 1;
+
+    // Glossy cartoon specular pill highlight (top-left)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.52)';
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.42, -r * 0.44, r * 0.24, r * 0.12, -0.68, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(-r * 0.20, -r * 0.62, r * 0.065, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Crisp cartoon rim stroke
+    ctx.strokeStyle = rimColor;
+    ctx.lineWidth = Math.max(1.4, r * 0.085);
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  /* --- 1. CLAUDE CODE: Warm Terracotta Starburst World --- */
+  function drawClaudeCartoonPlanet(r, p) {
+    // Warm coral-terracotta base
+    const g = ctx.createRadialGradient(-r * 0.28, -r * 0.28, r * 0.1, 0, 0, r);
+    g.addColorStop(0, '#FFB58A');
+    g.addColorStop(0.55, '#E57A50');
+    g.addColorStop(1, '#B84723');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cute soft cream cartoon clouds drifting across globe
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.clip();
+    const drift = Math.sin(state.time * 0.6) * r * 0.16;
+    ctx.fillStyle = 'rgba(255, 239, 224, 0.24)';
+    roundRectPath(ctx, -r * 1.1 + drift, -r * 0.56, r * 0.95, r * 0.24, r * 0.12);
+    ctx.fill();
+    roundRectPath(ctx, r * 0.15 - drift, r * 0.34, r * 1.0, r * 0.24, r * 0.12);
+    ctx.fill();
+    ctx.restore();
+
+    drawCelShadingOverlay(r, '#5E1B08', '#FFD9BE');
+
+    // Signature Claude Starburst Emblem shining playfully on center!
+    ctx.save();
+    const pulse = 1 + Math.sin(state.time * 2.8) * 0.05;
+    const s = (r * 1.18 * pulse) / 24;
+    ctx.rotate(Math.sin(state.time * 0.7) * 0.16);
+    ctx.scale(s, s);
+    ctx.translate(-12, -12);
+    ctx.fillStyle = '#FFF5E6';
+    ctx.shadowColor = 'rgba(255, 226, 184, 0.85)';
+    ctx.shadowBlur = 8;
+    ctx.fill(CLAUDE_PATH2D);
+    ctx.restore();
+
+    // Cute floating warm spark orbiting Claude
+    const sa = state.time * 1.3;
+    drawFourPointStar(Math.cos(sa) * r * 1.28, Math.sin(sa) * r * 0.95, Math.max(2.0, r * 0.15), '#FFE7C2', 0.9);
+  }
+
+  /* --- 2. CODEX: Mint-Teal Ringed Planet with Animated >_ Terminal Visor --- */
+  function drawCodexCartoonPlanet(r, p) {
+    const g = ctx.createRadialGradient(-r * 0.28, -r * 0.28, r * 0.1, 0, 0, r);
+    g.addColorStop(0, '#89FCE6');
+    g.addColorStop(0.55, '#2AD1AE');
+    g.addColorStop(1, '#0F8B7C');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    drawCelShadingOverlay(r, '#053B3B', '#BDFEF1');
+
+    // Cute rounded dark-jade Terminal Visor Window right on Codex's face!
+    const vw = r * 1.24;
+    const vh = r * 0.84;
+    ctx.save();
+    ctx.fillStyle = '#08292B';
+    ctx.strokeStyle = '#99FCE8';
+    ctx.lineWidth = Math.max(1.2, r * 0.075);
+    roundRectPath(ctx, -vw / 2, -vh / 2, vw, vh, vh * 0.36);
+    ctx.fill();
+    ctx.stroke();
+
+    // Animated crisp >_ prompt!
+    ctx.strokeStyle = '#6CFCE0';
+    ctx.lineWidth = Math.max(1.5, r * 0.105);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.34, -r * 0.18);
+    ctx.lineTo(-r * 0.08, 0);
+    ctx.lineTo(-r * 0.34, r * 0.18);
+    ctx.stroke();
+
+    // Blinking underscore cursor!
+    if (Math.sin(state.time * 5.2) > -0.35) {
+      ctx.beginPath();
+      ctx.moveTo(r * 0.06, r * 0.18);
+      ctx.lineTo(r * 0.38, r * 0.18);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /* --- 3. DEEPSEEK: Adorable Ocean Planet with DeepSeek Whale & Water-Spout --- */
+  function drawDeepSeekCartoonPlanet(r, p) {
+    // Glossy deep-sapphire ocean sphere
+    const g = ctx.createRadialGradient(-r * 0.25, -r * 0.30, r * 0.1, 0, 0, r);
+    g.addColorStop(0, '#85A7FF');
+    g.addColorStop(0.55, '#4A6BFF');
+    g.addColorStop(1, '#2038B8');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Playful animated cartoon ocean wave band across lower half!
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.clip();
+    const waveShift = state.time * 1.8;
+    ctx.fillStyle = 'rgba(18, 34, 128, 0.52)';
+    ctx.beginPath();
+    ctx.moveTo(-r * 1.2, r * 0.22);
+    for (let x = -r * 1.2; x <= r * 1.2; x += r * 0.2) {
+      const y = r * 0.22 + Math.sin(x * 0.25 + waveShift) * r * 0.10;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(r * 1.2, r * 1.2);
+    ctx.lineTo(-r * 1.2, r * 1.2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    drawCelShadingOverlay(r, '#0D1759', '#C2D6FF');
+
+    // Iconic DeepSeek Whale swimming joyfully across the planet!
+    ctx.save();
+    const swimBob = Math.sin(state.time * 2.4) * r * 0.06;
+    const swimTilt = Math.sin(state.time * 2.4) * 0.08;
+    ctx.translate(0, swimBob + r * 0.04);
+    ctx.rotate(swimTilt);
+    const scale = (r * 1.22) / 48.34;
+    ctx.scale(scale, scale);
+    ctx.translate(-25.1, -25.1);
+    ctx.fillStyle = '#F0F6FF';
+    ctx.shadowColor = 'rgba(147, 197, 253, 0.85)';
+    ctx.shadowBlur = 6;
+    ctx.fill(DSH_WHALE_PATH2D);
+    ctx.restore();
+
+    // Cute animated water-bubble fountain puffing from the top of DeepSeek planet!
+    for (let i = 0; i < 3; i++) {
+      const phase = (state.time * 0.85 + i * 0.33) % 1;
+      const side = i === 0 ? 0 : i === 1 ? -1 : 1;
+      const bx = side * phase * r * 0.38;
+      const by = -r * 1.02 - phase * r * 0.56 + phase * phase * r * 0.16;
+      const br = Math.max(1.4, r * 0.13 * (1 - phase * 0.45));
+      ctx.save();
+      ctx.globalAlpha = (1 - phase) * 0.92;
+      ctx.fillStyle = '#BAE6FD';
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.arc(bx, by, br, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  /* --- 4. PI: Bauhaus Tri-Color Block Cartoon Planet --- */
+  function drawPiCartoonPlanet(r, p) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.clip();
+
+    // Bold playful Bauhaus tri-color curved stripes (Pi's iconic coral / sunny yellow / cerulean!)
+    ctx.rotate(-0.22);
+    ctx.fillStyle = '#F49788';
+    ctx.fillRect(-r * 1.2, -r * 1.2, r * 2.4, r * 0.88);
+    ctx.fillStyle = '#F6C95E';
+    ctx.fillRect(-r * 1.2, -r * 0.36, r * 2.4, r * 0.74);
+    ctx.fillStyle = '#4FA0C8';
+    ctx.fillRect(-r * 1.2, r * 0.34, r * 2.4, r * 0.96);
+
+    // Crisp playful white divider lines between color blocks
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+    ctx.lineWidth = Math.max(1.0, r * 0.06);
+    ctx.beginPath();
+    ctx.moveTo(-r * 1.2, -r * 0.34);
+    ctx.lineTo(r * 1.2, -r * 0.34);
+    ctx.moveTo(-r * 1.2, r * 0.35);
+    ctx.lineTo(r * 1.2, r * 0.35);
+    ctx.stroke();
+    ctx.restore();
+
+    drawCelShadingOverlay(r, '#19354A', '#FFF1C2');
+
+    // Crisp geometric Pi badge right at the heart!
+    ctx.save();
+    const ps = r * 0.58;
+    ctx.fillStyle = '#152538';
+    ctx.strokeStyle = '#FFF9E6';
+    ctx.lineWidth = Math.max(1.1, r * 0.065);
+    roundRectPath(ctx, -ps * 0.82, -ps * 0.78, ps * 1.64, ps * 1.56, ps * 0.38);
+    ctx.fill();
+    ctx.stroke();
+
+    // Draw mini Pi three-block mosaic mark cleanly inside badge!
+    const u = ps * 0.34;
+    ctx.fillStyle = '#F09082';
+    ctx.fillRect(-u * 1.35, -u * 1.25, u * 2.1, u * 0.72);
+    ctx.fillRect(u * 0.05, -u * 1.25, u * 0.7, u * 1.45);
+    ctx.fillStyle = '#4D9ABF';
+    ctx.fillRect(-u * 1.35, -u * 0.55, u * 0.72, u * 1.85);
+    ctx.fillRect(-u * 1.35, u * 0.15, u * 1.45, u * 0.72);
+    ctx.fillStyle = '#F1BE58';
+    ctx.fillRect(u * 0.65, u * 0.15, u * 0.72, u * 1.15);
+    ctx.restore();
+  }
+
+  /* --- 5. OPENCLAW: Expressive Cute Red Claw/Crab Planet with Blinking Cyan Eyes & Wiggling Pincers! --- */
+  function drawOpenClawCartoonPlanet(r, p) {
+    const snip = Math.sin(state.time * 3.8) * 0.18;
+
+    // 1. Cute wiggling cartoon antennae on top!
+    ctx.save();
+    ctx.strokeStyle = '#FF7C7C';
+    ctx.lineWidth = Math.max(1.6, r * 0.10);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.35, -r * 0.85);
+    ctx.quadraticCurveTo(-r * 0.62, -r * 1.32, -r * 0.92, -r * 1.18 + Math.sin(state.time * 3) * r * 0.06);
+    ctx.moveTo(r * 0.35, -r * 0.85);
+    ctx.quadraticCurveTo(r * 0.62, -r * 1.32, r * 0.92, -r * 1.18 - Math.sin(state.time * 3) * r * 0.06);
+    ctx.stroke();
+
+    // 2. Plump iconic cartoon lobster/crab pincers raised joyfully on both sides!
+    for (const side of [-1, 1]) {
+      ctx.save();
+      ctx.translate(side * r * 0.92, -r * 0.14);
+      ctx.rotate(side * (-0.32 + snip));
+      // Little arm stem
+      ctx.strokeStyle = '#FF5252';
+      ctx.lineWidth = Math.max(2.2, r * 0.14);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(0, r * 0.08);
+      ctx.lineTo(side * r * 0.24, -r * 0.06);
+      ctx.stroke();
+
+      // Classic plump U-claw pincer with crisp open V-notch!
+      ctx.translate(side * r * 0.34, -r * 0.14);
+      ctx.scale(side, 1);
+      ctx.fillStyle = '#FF4D4D';
+      ctx.strokeStyle = '#FFC9C9';
+      ctx.lineWidth = Math.max(1.1, r * 0.065);
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.12, r * 0.14);
+      ctx.quadraticCurveTo(-r * 0.24, -r * 0.28, r * 0.08, -r * 0.34);
+      ctx.quadraticCurveTo(r * 0.02, -r * 0.12, r * 0.06, -r * 0.06);
+      ctx.lineTo(r * 0.12, -r * 0.06);
+      ctx.quadraticCurveTo(r * 0.14, -r * 0.14, r * 0.26, -r * 0.26);
+      ctx.quadraticCurveTo(r * 0.38, r * 0.04, r * 0.08, r * 0.22);
+      ctx.quadraticCurveTo(-r * 0.04, r * 0.24, -r * 0.12, r * 0.14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+
+    // 3. Plump glossy crimson body sphere
+    const g = ctx.createRadialGradient(-r * 0.25, -r * 0.28, r * 0.1, 0, 0, r);
+    g.addColorStop(0, '#FF8080');
+    g.addColorStop(0.55, '#EC3E45');
+    g.addColorStop(1, '#A61722');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    drawCelShadingOverlay(r, '#4C070E', '#FFC4C4');
+
+    // 4. Signature OpenClaw Glowing Cyan Cartoon Eyes (with occasional adorable blink!)
+    const blinkCycle = (state.time % 4.4);
+    const isBlinking = blinkCycle > 4.22;
+
+    for (const side of [-1, 1]) {
+      const ex = side * r * 0.34;
+      const ey = -r * 0.06;
+      if (isBlinking) {
+        ctx.strokeStyle = '#00F0D4';
+        ctx.lineWidth = Math.max(1.6, r * 0.10);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.arc(ex, ey + r * 0.04, r * 0.17, Math.PI * 1.15, Math.PI * 1.85);
+        ctx.stroke();
+      } else {
+        // Dark eye socket
+        ctx.fillStyle = '#090D1A';
+        ctx.beginPath();
+        ctx.arc(ex, ey, r * 0.22, 0, Math.PI * 2);
+        ctx.fill();
+        // Electric cyan iris glow!
+        ctx.fillStyle = '#00F0D4';
+        ctx.shadowColor = '#00E5CC';
+        ctx.shadowBlur = 7;
+        ctx.beginPath();
+        ctx.arc(ex + r * 0.03, ey - r * 0.02, r * 0.125, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        // Cute white sparkle catchlight
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.arc(ex - r * 0.04, ey - r * 0.07, r * 0.055, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Little confident cartoon smirk!
+    ctx.strokeStyle = '#FFE4E6';
+    ctx.lineWidth = Math.max(1.2, r * 0.075);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(0, r * 0.22, r * 0.20, 0.28, Math.PI - 0.28);
+    ctx.stroke();
+  }
+
+  /* ---- CARTOON SESSION MOONS (卫星群 = 迷你卫星 / 泡泡卫星) ---- */
+  function drawMoonOrbitRings(pScr, p, focusExpand) {
+    const zoom = state.cam.zoom;
+    ctx.save();
+    ctx.translate(pScr.x, pScr.y);
+    ctx.rotate(p.tilt);
+
+    for (const m of p.sessions) {
+      const rx = m.orbitR * (focusExpand ? 1.50 : 0.79) * zoom;
+      const ry = rx * (focusExpand ? 0.56 : 0.54);
+      const isSelected = state.selectedSessionId === m.id || state.highlightedSessionId === m.id;
+
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+      ctx.setLineDash(focusExpand ? [4, 5] : [2, 4]);
+      ctx.strokeStyle = m.status === 'approval'
+        ? 'rgba(251, 191, 36, 0.48)'
+        : isSelected
+          ? hexAlpha(p.color, 0.70)
+          : focusExpand
+            ? 'rgba(215, 228, 255, 0.26)'
+            : 'rgba(210, 224, 255, 0.16)';
+      ctx.lineWidth = isSelected ? 1.5 : 0.9;
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Playful curved glowing tail behind running/approval moons
+      if (m.status === 'running' || m.status === 'approval') {
+        const wakeSpan = m.status === 'running' ? 0.76 : 0.48;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, rx, ry, 0, m.angle - wakeSpan, m.angle);
+        ctx.strokeStyle = m.status === 'approval' ? 'rgba(253, 224, 71, 0.80)' : hexAlpha(p.palette[0], 0.78);
+        ctx.lineWidth = focusExpand ? 2.2 : 1.5;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawSingleCartoonMoon(mScr, pScr, p, m, focusExpand, planetDrawR) {
+    const zoom = state.cam.zoom;
+    const isHighlighted = state.highlightedSessionId === m.id || state.selectedSessionId === m.id;
+    const r = m.size * (focusExpand ? 1.12 : 0.78) * Math.min(1.55, zoom * 0.82);
+
+    ctx.save();
+
+    // Cute dashed energy tether starting from planet EDGE so character faces stay 100% clean!
+    if (m.status === 'running' || m.status === 'approval') {
+      const dx = mScr.x - pScr.x;
+      const dy = mScr.y - pScr.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const edgeOffset = Math.min(dist * 0.72, (planetDrawR || 20) * 1.06);
+      const sx = pScr.x + (dx / dist) * edgeOffset;
+      const sy = pScr.y + (dy / dist) * edgeOffset;
+      if (dist > edgeOffset + r) {
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(mScr.x, mScr.y);
+        ctx.setLineDash([3, 4]);
+        ctx.strokeStyle = m.status === 'approval' ? 'rgba(251, 191, 36, 0.46)' : hexAlpha(p.color, 0.45);
+        ctx.lineWidth = focusExpand ? 1.4 : 0.95;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    ctx.translate(mScr.x, mScr.y);
+
+    if (m.status === 'approval') {
+      // Expanding cartoon amber sonar waves
+      for (let k = 0; k < 2; k++) {
+        const phase = (state.time * 0.92 + k * 0.5) % 1;
+        ctx.beginPath();
+        ctx.arc(0, 0, r + phase * r * 3.4, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(251, 191, 36, ${(1 - phase) * 0.92})`;
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+      }
+    } else if (m.status === 'running') {
+      // Soft halo + tiny cute cartoon solar-wing paddles + spinning M28 arc!
+      const halo = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 2.9);
+      halo.addColorStop(0, hexAlpha(p.color, 0.68));
+      halo.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 2.9, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Tiny stylized satellite wings (visible clearly when zoomed or moderately sized!)
+      ctx.save();
+      ctx.rotate(m.angle + 0.5);
+      ctx.fillStyle = '#93C5FD';
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 0.8;
+      roundRectPath(ctx, -r * 1.95, -r * 0.34, r * 0.72, r * 0.68, r * 0.16);
+      ctx.fill();
+      ctx.stroke();
+      roundRectPath(ctx, r * 1.23, -r * 0.34, r * 0.72, r * 0.68, r * 0.16);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      const arcStart = state.time * 3.6 + m.angle;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 1.65, arcStart, arcStart + 2.1);
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    } else if (m.status === 'unread') {
+      const glow = ctx.createRadialGradient(0, 0, r * 0.25, 0, 0, r * 2.5);
+      glow.addColorStop(0, 'rgba(224, 242, 254, 0.66)');
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Cel-shaded cartoon moon sphere
+    if (m.status === 'idle') {
+      ctx.fillStyle = '#182342';
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = isHighlighted ? '#FFFFFF' : '#B8C9F2';
+      ctx.lineWidth = isHighlighted ? 1.9 : 1.4;
+      ctx.stroke();
+      // Cute tiny moon crater dot
+      ctx.fillStyle = 'rgba(184, 201, 242, 0.35)';
+      ctx.beginPath();
+      ctx.arc(r * 0.26, -r * 0.18, r * 0.24, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const mg = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+      if (m.status === 'approval') {
+        mg.addColorStop(0, '#FFFBEB');
+        mg.addColorStop(0.55, '#FBBF24');
+        mg.addColorStop(1, '#D97706');
+      } else if (m.status === 'running') {
+        mg.addColorStop(0, '#FFFFFF');
+        mg.addColorStop(0.55, p.palette[0]);
+        mg.addColorStop(1, p.color);
+      } else {
+        mg.addColorStop(0, '#FFFFFF');
+        mg.addColorStop(0.65, '#DBEAFE');
+        mg.addColorStop(1, '#60A5FA');
+      }
+      ctx.fillStyle = mg;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = Math.max(1.0, r * 0.18);
+      ctx.stroke();
+
+      // Cute crisp "!" badge inside approval moon when big enough
+      if (m.status === 'approval' && r >= 5.2) {
+        ctx.fillStyle = '#3B1D00';
+        ctx.font = `800 ${Math.round(r * 1.25)}px -apple-system, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('!', 0, 0.6);
+      }
+    }
+
+    if (isHighlighted) {
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 2.35, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  /* ---- CARTOON ENERGY STREAMS & DATA CAPSULES (远控数据传递) ---- */
+  function drawFluxConduits(starScreen, planetScreens) {
+    const host = currentHost();
+    const focusP = currentPlanet();
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    if (state.view === 'overview') {
+      const dockY = H - 108;
+      const tetherG = ctx.createLinearGradient(starScreen.x, dockY, starScreen.x, starScreen.y + 26);
+      tetherG.addColorStop(0, 'rgba(255, 255, 255, 0)');
+      tetherG.addColorStop(0.55, host.starType === 'gold' ? 'rgba(255, 212, 102, 0.18)' : 'rgba(125, 211, 252, 0.20)');
+      tetherG.addColorStop(1, host.starType === 'gold' ? 'rgba(255, 230, 150, 0.36)' : 'rgba(186, 230, 253, 0.38)');
+      ctx.strokeStyle = tetherG;
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([4, 8]);
+      ctx.lineDashOffset = state.time * 26;
+      ctx.beginPath();
+      ctx.moveTo(starScreen.x, dockY);
+      ctx.lineTo(starScreen.x, starScreen.y + 26);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    for (const item of planetScreens) {
+      const p = item.planet;
+      const pScr = item.screen;
+      const isFocused = focusP && focusP.id === p.id;
+      const runningCount = p.sessions.filter(s => s.status === 'running').length;
+      const hasApproval = p.sessions.some(s => s.status === 'approval');
+
+      const activity = state.burstMode ? 1.0 : (runningCount > 0 ? 0.94 : hasApproval ? 0.74 : 0.26);
+      const dimFactor = state.view !== 'overview' && !isFocused ? 0.18 : 1.0;
+
+      for (const dir of [1, -1]) {
+        const ctrl = getConduitControlPoint(starScreen, pScr, dir);
+
+        // Soft glowing cartoon energy tube corridor
+        if (activity > 0.35) {
+          const auraG = ctx.createLinearGradient(starScreen.x, starScreen.y, pScr.x, pScr.y);
+          auraG.addColorStop(0, dir === 1
+            ? (host.starType === 'gold' ? `rgba(255, 210, 96, ${0.22 * activity * dimFactor})` : `rgba(125, 211, 252, ${0.24 * activity * dimFactor})`)
+            : hexAlpha(p.color, 0.13 * activity * dimFactor));
+          auraG.addColorStop(1, hexAlpha(p.color, 0.24 * activity * dimFactor));
+
+          ctx.beginPath();
+          ctx.moveTo(starScreen.x, starScreen.y);
+          ctx.quadraticCurveTo(ctrl.x, ctrl.y, pScr.x, pScr.y);
+          ctx.strokeStyle = auraG;
+          ctx.lineWidth = isFocused ? 8.2 : 5.8;
+          ctx.lineCap = 'round';
+          ctx.stroke();
+        }
+
+        // Core crisp stream path
+        const grad = ctx.createLinearGradient(starScreen.x, starScreen.y, pScr.x, pScr.y);
+        if (dir === 1) {
+          grad.addColorStop(0, host.starType === 'gold' ? `rgba(255, 226, 130, ${0.70 * activity * dimFactor})` : `rgba(165, 232, 255, ${0.72 * activity * dimFactor})`);
+          grad.addColorStop(0.5, hasApproval ? `rgba(251, 191, 36, ${0.60 * dimFactor})` : `rgba(255, 248, 214, ${0.38 * activity * dimFactor})`);
+          grad.addColorStop(1, hexAlpha(p.color, 0.58 * activity * dimFactor));
+        } else {
+          grad.addColorStop(0, hexAlpha(p.color, 0.24 * activity * dimFactor));
+          grad.addColorStop(0.5, hexAlpha(p.color, 0.52 * activity * dimFactor));
+          grad.addColorStop(1, hexAlpha(p.color, 0.72 * activity * dimFactor));
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(starScreen.x, starScreen.y);
+        ctx.quadraticCurveTo(ctrl.x, ctrl.y, pScr.x, pScr.y);
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = (isFocused ? 2.4 : 1.55) * (0.72 + activity * 0.36);
+        ctx.stroke();
+
+        // Playful animated dotted energy stream dashes
+        if (activity > 0.3) {
+          ctx.beginPath();
+          ctx.moveTo(starScreen.x, starScreen.y);
+          ctx.quadraticCurveTo(ctrl.x, ctrl.y, pScr.x, pScr.y);
+          ctx.strokeStyle = dir === 1
+            ? (hasApproval ? `rgba(253, 224, 71, ${0.74 * dimFactor})` : `rgba(255, 248, 210, ${0.58 * dimFactor})`)
+            : hexAlpha(p.palette[0], 0.64 * dimFactor);
+          ctx.lineWidth = isFocused ? 2.0 : 1.4;
+          ctx.lineCap = 'round';
+          ctx.setLineDash([6, 14]);
+          ctx.lineDashOffset = -dir * state.time * (state.burstMode ? 110 : 56);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawPacketsAndRipples(starScreen, planetMap) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (const pkt of state.packets) {
+      const pItem = planetMap.get(pkt.planetId);
+      if (!pItem) continue;
+      const pScr = pItem.screen;
+      const from = pkt.dir === 1 ? starScreen : pScr;
+      const to = pkt.dir === 1 ? pScr : starScreen;
+      const ctrl = getConduitControlPoint(starScreen, pScr, pkt.dir);
+
+      const head = quadraticBezier(from, ctrl, to, pkt.t);
+      const prev = quadraticBezier(from, ctrl, to, Math.max(0, pkt.t - 0.03));
+      const tail = quadraticBezier(from, ctrl, to, Math.max(0, pkt.t - pkt.tailLen));
+      const mid = quadraticBezier(from, ctrl, to, Math.max(0, pkt.t - pkt.tailLen * 0.45));
+
+      // Tapered pastel plasma wake
+      const wakeGrad = ctx.createLinearGradient(tail.x, tail.y, head.x, head.y);
+      wakeGrad.addColorStop(0, 'rgba(0,0,0,0)');
+      wakeGrad.addColorStop(0.55, hexAlpha(pkt.color, 0.50));
+      wakeGrad.addColorStop(1, hexAlpha(pkt.color, 0.96));
+
+      ctx.strokeStyle = wakeGrad;
+      ctx.lineWidth = pkt.size * (pkt.bright ? 1.95 : 1.55);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(tail.x, tail.y);
+      ctx.quadraticCurveTo(mid.x, mid.y, head.x, head.y);
+      ctx.stroke();
+
+      // Stylized glossy glowing Data Capsule or Bubble Orb at head!
+      const angle = Math.atan2(head.y - prev.y, head.x - prev.x);
+      const glow = ctx.createRadialGradient(head.x, head.y, 0, head.x, head.y, pkt.size * 3.4);
+      glow.addColorStop(0, '#FFFFFF');
+      glow.addColorStop(0.38, hexAlpha(pkt.color, 0.92));
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(head.x, head.y, pkt.size * 3.4, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.save();
+      ctx.translate(head.x, head.y);
+      ctx.rotate(angle);
+      ctx.fillStyle = '#FFFFFF';
+      if (pkt.kind === 'capsule') {
+        roundRectPath(ctx, -pkt.size * 1.4, -pkt.size * 0.62, pkt.size * 2.8, pkt.size * 1.24, pkt.size * 0.62);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(0, 0, pkt.size * 0.9, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Planet <-> Moon micro-sparks
+    for (const sp of state.moonSparks) {
+      const pItem = planetMap.get(sp.planetId);
+      if (!pItem) continue;
+      const mObj = pItem.moons.find(m => m.moon.id === sp.sessionId);
+      if (!mObj) continue;
+      const from = sp.dir === 1 ? pItem.screen : mObj.screen;
+      const to = sp.dir === 1 ? mObj.screen : pItem.screen;
+      const hx = from.x + (to.x - from.x) * sp.t;
+      const hy = from.y + (to.y - from.y) * sp.t;
+      const tx = from.x + (to.x - from.x) * Math.max(0, sp.t - 0.34);
+      const ty = from.y + (to.y - from.y) * Math.max(0, sp.t - 0.34);
+
+      ctx.strokeStyle = sp.color;
+      ctx.lineWidth = 2.0;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.beginPath();
+      ctx.arc(hx, hy, 2.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Phone -> Star Uplink Command Beam
+    for (const beam of state.uplinkBeams) {
+      const startPt = { x: W * 0.5, y: H - 54 };
+      const ctrlPt = { x: W * 0.5 + (starScreen.x - W * 0.5) * 0.35, y: (startPt.y + starScreen.y) * 0.5 };
+      const head = quadraticBezier(startPt, ctrlPt, starScreen, Math.min(1, beam.t));
+      const tail = quadraticBezier(startPt, ctrlPt, starScreen, Math.max(0, beam.t - 0.30));
+
+      const g = ctx.createLinearGradient(tail.x, tail.y, head.x, head.y);
+      g.addColorStop(0, 'rgba(255, 255, 255, 0)');
+      g.addColorStop(0.65, hexAlpha(beam.color, 0.88));
+      g.addColorStop(1, '#FFFFFF');
+
+      ctx.strokeStyle = g;
+      ctx.lineWidth = 4.0;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(tail.x, tail.y);
+      ctx.lineTo(head.x, head.y);
+      ctx.stroke();
+
+      drawFourPointStar(head.x, head.y, 9, '#FFFFFF', 0.95);
+    }
+
+    // Arrival ripples
+    for (const rip of state.ripples) {
+      const s = worldToScreen(rip.x, rip.y);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, rip.r * state.cam.zoom, 0, Math.PI * 2);
+      ctx.strokeStyle = hexAlpha(rip.color, rip.alpha);
+      ctx.lineWidth = 2.0;
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  function drawPlanetLabelsOverview(planetScreens) {
+    if (state.view !== 'overview') return;
+    ctx.save();
+    ctx.textAlign = 'center';
+    for (const item of planetScreens) {
+      const { planet, screen, drawR } = item;
+      const y = screen.y + drawR + (planet.ring ? 21 : 19);
+      const hasApproval = planet.sessions.some(s => s.status === 'approval');
+
+      ctx.font = '700 11.5px -apple-system, BlinkMacSystemFont, "SF Pro Rounded", "PingFang SC", sans-serif';
+      ctx.fillStyle = 'rgba(5, 8, 20, 0.82)';
+      ctx.fillText(planet.shortName, screen.x, y + 1.2);
+      ctx.fillStyle = hasApproval ? '#FEF08A' : 'rgba(244, 248, 255, 0.94)';
+      ctx.fillText(planet.shortName, screen.x, y);
+    }
+    ctx.restore();
+  }
+
+  function roundRectPath(c, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    c.beginPath();
+    c.moveTo(x + rr, y);
+    c.arcTo(x + w, y, x + w, y + h, rr);
+    c.arcTo(x + w, y + h, x, y + h, rr);
+    c.arcTo(x, y + h, x, y, rr);
+    c.arcTo(x, y, x + w, y, rr);
+    c.closePath();
+  }
+
+  /* =========================================================
+     8. FLOATING NON-OVERLAPPING MOON TAGS (PLANET FOCUS)
+     ========================================================= */
+  const moonTagEls = new Map();
+
+  function syncMoonFloatTags(focusedItem) {
+    if (state.view !== 'planet' || !focusedItem) {
+      if (labelsLayer.childElementCount > 0) {
+        labelsLayer.innerHTML = '';
+        moonTagEls.clear();
+      }
+      return;
+    }
+
+    const p = focusedItem.planet;
+    const activeIds = new Set(p.sessions.map(s => s.id));
+    for (const [id, elNode] of moonTagEls.entries()) {
+      if (!activeIds.has(id)) {
+        elNode.remove();
+        moonTagEls.delete(id);
+      }
+    }
+
+    const placed = [];
+    for (const mObj of focusedItem.moons) {
+      const m = mObj.moon;
+      let tag = moonTagEls.get(m.id);
+      if (!tag) {
+        tag = document.createElement('button');
+        tag.className = 'moon-float-tag';
+        tag.innerHTML = `<span class="orb-status"><span class="core"></span><span class="arc"></span></span><span class="label-text"></span>`;
+        tag.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openSession(p.id, m.id);
+        });
+        labelsLayer.appendChild(tag);
+        moonTagEls.set(m.id, tag);
+      }
+
+      tag.classList.toggle('approval', m.status === 'approval');
+      tag.classList.toggle('highlighted', state.highlightedSessionId === m.id);
+      const statusEl = tag.querySelector('.orb-status');
+      statusEl.className = `orb-status ${m.status}`;
+      statusEl.style.setProperty('--status-color', p.color);
+      tag.querySelector('.label-text').textContent = m.title;
+
+      const dx = mObj.screen.x - focusedItem.screen.x;
+      const dy = mObj.screen.y - focusedItem.screen.y;
+      const d = Math.hypot(dx, dy) || 1;
+      let tx = mObj.screen.x + (dx / d) * 24;
+      let ty = mObj.screen.y + (dy / d) * 22 - (dy < 0 ? 10 : -10);
+
+      tx = Math.max(80, Math.min(W - 80, tx));
+      ty = Math.max(116, Math.min(H * 0.456, ty));
+
+      for (const prev of placed) {
+        if (Math.abs(tx - prev.x) < 134 && Math.abs(ty - prev.y) < 32) {
+          ty = ty >= prev.y ? prev.y + 33 : prev.y - 33;
+          ty = Math.max(116, Math.min(H * 0.456, ty));
+        }
+      }
+      placed.push({ x: tx, y: ty });
+
+      tag.style.left = `${tx}px`;
+      tag.style.top = `${ty}px`;
+      tag.style.opacity = mObj.world.z < -0.45 ? '0.86' : '1';
+    }
+  }
+
+  /* =========================================================
+     9. MAIN 60FPS ANIMATION LOOP
+     ========================================================= */
+  let lastTs = performance.now();
+  let lastRenderPlanets = [];
+  let packetAccumulator = 0;
+
+  function tick(ts) {
+    const dt = Math.min(0.05, (ts - lastTs) / 1000);
+    lastTs = ts;
+    state.time += dt;
+
+    const targetSpeedScale = state.isTouchingCosmos
+      ? 0.14
+      : state.view === 'overview'
+        ? 1.0
+        : 0.22;
+    state.orbitScaleTime += (targetSpeedScale - state.orbitScaleTime) * Math.min(1, dt * 6);
+
+    const camTarget = computeCameraTarget();
+    const camLerp = 1 - Math.exp(-dt * 6.8);
+    state.cam.x += (camTarget.x - state.cam.x) * camLerp;
+    state.cam.y += (camTarget.y - state.cam.y) * camLerp;
+    state.cam.zoom += (camTarget.zoom - state.cam.zoom) * camLerp;
+
+    const tiltLerp = 1 - Math.exp(-dt * 7);
+    state.tiltX += (state.targetTiltX - state.tiltX) * tiltLerp;
+    state.tiltY += (state.targetTiltY - state.tiltY) * tiltLerp;
+
+    state.starFlare = Math.max(0, state.starFlare - dt * 1.45);
+    if (state.warpProgress > 0) state.warpProgress = Math.max(0, state.warpProgress - dt * 1.75);
+
+    const host = currentHost();
+    for (const p of host.planets) {
+      p.angle += p.orbitSpeed * dt * state.orbitScaleTime;
+      for (const m of p.sessions) {
+        const mBoost = m.status === 'running' ? 1.25 : m.status === 'approval' ? 0.65 : 0.72;
+        m.angle += m.speed * mBoost * dt * (state.view === 'planet' ? 0.25 : 0.9);
+      }
+    }
+
+    packetAccumulator += dt * (state.burstMode ? 4.4 : 1.35);
+    if (packetAccumulator >= 0.14) {
+      packetAccumulator = 0;
+      for (const p of host.planets) {
+        const runningSessions = p.sessions.filter(s => s.status === 'running');
+        const approval = p.sessions.some(s => s.status === 'approval');
+        if (state.burstMode || (runningSessions.length > 0 && Math.random() < 0.44 + runningSessions.length * 0.18)) {
+          const dir = Math.random() < 0.38 ? 1 : -1;
+          spawnDataPacket(p, dir, {
+            speed: state.burstMode ? 0.84 + Math.random() * 0.28 : 0.46 + Math.random() * 0.28,
+            size: dir === 1 ? 3.4 : 3.0
+          });
+          if (runningSessions.length > 0 && Math.random() < 0.55) {
+            const targetM = runningSessions[Math.floor(Math.random() * runningSessions.length)];
+            spawnMoonSpark(p.id, targetM.id, dir, dir === 1 ? '#FFE484' : p.palette[0]);
+          }
+        } else if (approval && Math.random() < 0.22) {
+          spawnDataPacket(p, -1, { speed: 0.36, size: 3.0 });
+        }
+      }
+    }
+
+    for (let i = state.packets.length - 1; i >= 0; i--) {
+      const pkt = state.packets[i];
+      pkt.t += pkt.speed * dt;
+      if (pkt.t >= 1) {
+        const p = host.planets.find(x => x.id === pkt.planetId);
+        if (p) {
+          if (pkt.dir === 1) {
+            const pPos = planetWorldPos(p);
+            spawnRipple(pPos.x, pPos.y, pkt.bright ? '#fde68a' : p.color, pkt.bright ? 38 : 26);
+            const activeM = p.sessions.find(s => s.id === pkt.targetSessionId) || p.sessions.find(s => s.status === 'running');
+            if (activeM) spawnMoonSpark(p.id, activeM.id, 1, '#FFF3C4');
+          } else {
+            state.starFlare = Math.min(1.25, state.starFlare + 0.09);
+          }
+        }
+        state.packets.splice(i, 1);
+      }
+    }
+
+    for (let i = state.moonSparks.length - 1; i >= 0; i--) {
+      state.moonSparks[i].t += state.moonSparks[i].speed * dt;
+      if (state.moonSparks[i].t >= 1) state.moonSparks.splice(i, 1);
+    }
+
+    for (let i = state.uplinkBeams.length - 1; i >= 0; i--) {
+      const b = state.uplinkBeams[i];
+      b.t += b.speed * dt;
+      if (b.t >= 0.96 && !b.dispatched) {
+        b.dispatched = true;
+        state.starFlare = Math.min(1.5, state.starFlare + 1.05);
+        spawnRipple(0, 0, b.color, 56);
+        const p = host.planets.find(x => x.id === b.planetId);
+        if (p) {
+          for (let k = 0; k < 5; k++) {
+            setTimeout(() => {
+              spawnDataPacket(p, 1, {
+                speed: 1.06 + k * 0.08,
+                size: 3.8,
+                tailLen: 0.24,
+                bright: true,
+                targetSessionId: b.sessionId
+              });
+            }, k * 55);
+          }
+        }
+      }
+      if (b.t >= 1.32) state.uplinkBeams.splice(i, 1);
+    }
+
+    for (let i = state.ripples.length - 1; i >= 0; i--) {
+      const r = state.ripples[i];
+      r.r += (r.maxR - r.r) * Math.min(1, dt * 5.2) + dt * 16;
+      r.alpha -= dt * 1.45;
+      if (r.alpha <= 0.01) state.ripples.splice(i, 1);
+    }
+
+    // ---- RENDER ----
+    ctx.save();
+    ctx.scale(DPR, DPR);
+
+    drawStarfield();
+
+    const starScreen = worldToScreen(0, 0);
+    drawOrbits(starScreen);
+
+    const planetScreens = [];
+    const planetMap = new Map();
+    for (const p of host.planets) {
+      const pWorld = planetWorldPos(p);
+      const pScr = worldToScreen(pWorld.x, pWorld.y);
+      const depthScale = 0.88 + (pWorld.z + 1) * 0.12;
+      const isFocused = state.view !== 'overview' && state.selectedPlanetId === p.id;
+      const drawR = p.radius * depthScale * state.cam.zoom * (isFocused ? 1.15 : 1.0);
+
+      const moons = p.sessions.map(m => {
+        const mWorld = moonWorldPos(p, pWorld, m, isFocused);
+        return { moon: m, world: mWorld, screen: worldToScreen(mWorld.x, mWorld.y) };
+      });
+
+      const entry = { planet: p, world: pWorld, screen: pScr, drawR, focusExpand: isFocused, moons };
+      planetScreens.push(entry);
+      planetMap.set(p.id, entry);
+    }
+    lastRenderPlanets = planetScreens;
+
+    drawFluxConduits(starScreen, planetScreens);
+
+    const renderQueue = [
+      { kind: 'star', z: 0 },
+      ...planetScreens.map(item => ({ kind: 'planet', z: item.world.z, item }))
+    ].sort((a, b) => a.z - b.z);
+
+    for (const node of renderQueue) {
+      if (node.kind === 'star') {
+        drawCartoonStar(starScreen);
+      } else {
+        const { planet, screen, drawR, focusExpand, moons } = node.item;
+        drawMoonOrbitRings(screen, planet, focusExpand);
+
+        for (const mObj of moons.filter(m => m.world.z < 0).sort((a, b) => a.world.z - b.world.z)) {
+          drawSingleCartoonMoon(mObj.screen, screen, planet, mObj.moon, focusExpand, drawR);
+        }
+        drawCartoonRingHalf(screen, planet, drawR, false);
+        drawCartoonPlanet(screen, starScreen, planet, drawR);
+        drawCartoonRingHalf(screen, planet, drawR, true);
+        for (const mObj of moons.filter(m => m.world.z >= 0).sort((a, b) => a.world.z - b.world.z)) {
+          drawSingleCartoonMoon(mObj.screen, screen, planet, mObj.moon, focusExpand, drawR);
+        }
+      }
+    }
+
+    drawPacketsAndRipples(starScreen, planetMap);
+    drawPlanetLabelsOverview(planetScreens);
+
+    ctx.restore();
+
+    const focusedItem = state.selectedPlanetId ? planetMap.get(state.selectedPlanetId) : null;
+    syncMoonFloatTags(focusedItem);
+
+    requestAnimationFrame(tick);
+  }
+
+  /* =========================================================
+     10. TOUCH & POINTER INTERACTION
+     ========================================================= */
+  function canvasCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    const pt = canvasCoords(e);
+    state.pointerDown = true;
+    state.pointerMoved = false;
+    state.isTouchingCosmos = true;
+    state.pointerStart = pt;
+    canvas.setPointerCapture(e.pointerId);
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (!state.pointerDown) return;
+    const pt = canvasCoords(e);
+    const dx = pt.x - state.pointerStart.x;
+    const dy = pt.y - state.pointerStart.y;
+    if (Math.hypot(dx, dy) > 7) state.pointerMoved = true;
+    if (state.pointerMoved) {
+      state.targetTiltX = Math.max(-0.85, Math.min(0.85, state.targetTiltX + dx * 0.0042));
+      state.targetTiltY = Math.max(-0.85, Math.min(0.85, state.targetTiltY + dy * 0.0042));
+      state.pointerStart = pt;
+    }
+  });
+
+  canvas.addEventListener('pointerup', (e) => {
+    if (!state.pointerDown) return;
+    const pt = canvasCoords(e);
+    state.pointerDown = false;
+    state.isTouchingCosmos = false;
+    if (!state.pointerMoved) handleCosmosTap(pt.x, pt.y);
+  });
+
+  canvas.addEventListener('pointercancel', () => {
+    state.pointerDown = false;
+    state.isTouchingCosmos = false;
+  });
+
+  function handleCosmosTap(x, y) {
+    if (state.view === 'session') { openPlanet(state.selectedPlanetId); return; }
+    if (state.view === 'planet') {
+      const focused = lastRenderPlanets.find(item => item.planet.id === state.selectedPlanetId);
+      if (focused) {
+        let bestMoon = null;
+        let bestDist = 38;
+        for (const mObj of focused.moons) {
+          const d = Math.hypot(x - mObj.screen.x, y - mObj.screen.y);
+          if (d < bestDist) { bestDist = d; bestMoon = mObj.moon; }
+        }
+        if (bestMoon) { openSession(focused.planet.id, bestMoon.id); return; }
+      }
+      const starScr = worldToScreen(0, 0);
+      if (Math.hypot(x - starScr.x, y - starScr.y) < 44) { goOverview(); return; }
+      return;
+    }
+
+    let hitPlanet = null;
+    let bestD = 44;
+    for (const item of lastRenderPlanets) {
+      const d = Math.hypot(x - item.screen.x, y - item.screen.y);
+      const threshold = Math.max(38, item.drawR + 18);
+      if (d < threshold && d < bestD) { bestD = d; hitPlanet = item.planet; }
+    }
+    if (hitPlanet) { openPlanet(hitPlanet.id); return; }
+
+    const starScr = worldToScreen(0, 0);
+    if (Math.hypot(x - starScr.x, y - starScr.y) < 46) openHostModal();
+  }
+
+  /* =========================================================
+     11. UI CONTROLLERS
+     ========================================================= */
+  const el = {
+    backBtn: document.getElementById('backBtn'),
+    backBtnLabel: document.getElementById('backBtnLabel'),
+    hostSwitcherBtn: document.getElementById('hostSwitcherBtn'),
+    hostNameText: document.getElementById('hostNameText'),
+    hostLatencyText: document.getElementById('hostLatencyText'),
+    txRate: document.getElementById('txRate'),
+    rxRate: document.getElementById('rxRate'),
+    overviewBottom: document.getElementById('overviewBottom'),
+    approvalBanner: document.getElementById('approvalBanner'),
+    approvalBannerHead: document.getElementById('approvalBannerHead'),
+    approvalTitle: document.getElementById('approvalTitle'),
+    approvalCmd: document.getElementById('approvalCmd'),
+    bannerAllowBtn: document.getElementById('bannerAllowBtn'),
+    bannerDenyBtn: document.getElementById('bannerDenyBtn'),
+    planetDock: document.getElementById('planetDock'),
+    planetSheet: document.getElementById('planetSheet'),
+    planetMarkBox: document.getElementById('planetMarkBox'),
+    planetSheetTitle: document.getElementById('planetSheetTitle'),
+    planetSheetModel: document.getElementById('planetSheetModel'),
+    planetSheetStats: document.getElementById('planetSheetStats'),
+    sessionList: document.getElementById('sessionList'),
+    draftPanel: document.getElementById('draftPanel'),
+    draftDirs: document.getElementById('draftDirs'),
+    draftInput: document.getElementById('draftInput'),
+    launchSessionBtn: document.getElementById('launchSessionBtn'),
+    sessionSheet: document.getElementById('sessionSheet'),
+    chatTitle: document.getElementById('chatTitle'),
+    chatAgentLabel: document.getElementById('chatAgentLabel'),
+    chatDirLabel: document.getElementById('chatDirLabel'),
+    openDiffBtn: document.getElementById('openDiffBtn'),
+    chatMessages: document.getElementById('chatMessages'),
+    chatInput: document.getElementById('chatInput'),
+    chatSendBtn: document.getElementById('chatSendBtn'),
+    hostModal: document.getElementById('hostModal'),
+    hostList: document.getElementById('hostList'),
+    diffModal: document.getElementById('diffModal'),
+    diffFileName: document.getElementById('diffFileName'),
+    diffContent: document.getElementById('diffContent'),
+    infoModal: document.getElementById('infoModal'),
+    toast: document.getElementById('toast')
+  };
+
+  let toastTimer = null;
+  function showToast(text) {
+    el.toast.textContent = text;
+    el.toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.toast.classList.remove('show'), 2100);
+  }
+
+  function findFirstApproval() {
+    for (const p of currentHost().planets) {
+      for (const s of p.sessions) {
+        if (s.status === 'approval') return { planet: p, session: s };
+      }
+    }
+    return null;
+  }
+
+  function renderDock() {
+    const host = currentHost();
+    el.planetDock.innerHTML = '';
+    for (const p of host.planets) {
+      const btn = document.createElement('button');
+      btn.className = 'dock-planet';
+      btn.style.setProperty('--planet-color', p.color);
+      const hasApproval = p.sessions.some(s => s.status === 'approval');
+      const running = p.sessions.filter(s => s.status === 'running').length;
+      const badgeClass = hasApproval ? 'alert' : running > 0 ? 'live' : '';
+      const badgeText = hasApproval ? '!' : String(p.sessions.length);
+
+      btn.innerHTML = `
+        <div class="dock-orb-wrap">
+          ${DOCK_CARTOON_SVGS[p.id] || ''}
+          <span class="dock-badge ${badgeClass}">${badgeText}</span>
+        </div>
+        <span class="dock-name">${p.shortName}</span>
+      `;
+      btn.addEventListener('click', () => openPlanet(p.id));
+      el.planetDock.appendChild(btn);
+    }
+  }
+
+  function renderApprovalBanner() {
+    const found = findFirstApproval();
+    if (!found) { el.approvalBanner.classList.add('dismissed'); return; }
+    el.approvalBanner.classList.remove('dismissed');
+    el.approvalTitle.textContent = `${found.planet.name} ${found.session.title}`;
+    el.approvalCmd.textContent = found.session.approvalCmd || '确认执行命令';
+  }
+
+  function renderPlanetSheet() {
+    const p = currentPlanet();
+    if (!p) return;
+    el.planetMarkBox.innerHTML = AGENT_SVGS[p.id] || '';
+    el.planetSheetTitle.textContent = p.name;
+    el.planetSheetModel.textContent = p.model;
+    const runningCount = p.sessions.filter(s => s.status === 'running').length;
+    el.planetSheetStats.textContent = `${p.sessions.length} 颗卫星会话   ${runningCount > 0 ? `${runningCount} 运行中` : '全部待命'}`;
+
+    const dirs = currentHost().dirs;
+    if (!state.selectedDraftDir || !dirs.includes(state.selectedDraftDir)) state.selectedDraftDir = dirs[0];
+    el.draftDirs.innerHTML = dirs.map(d =>
+      `<button class="dir-chip ${d === state.selectedDraftDir ? 'active' : ''}" data-dir="${escapeHtml(d)}">${escapeHtml(d)}</button>`
+    ).join('');
+    el.draftDirs.querySelectorAll('.dir-chip').forEach(btn => {
+      btn.addEventListener('click', () => { state.selectedDraftDir = btn.dataset.dir; renderPlanetSheet(); });
+    });
+
+    el.sessionList.innerHTML = '';
+    for (const s of p.sessions) {
+      const row = document.createElement('button');
+      row.className = `session-row ${s.status === 'approval' ? 'approval' : ''}`;
+      const statusLabel = s.status === 'running' ? '执行中' : s.status === 'approval' ? '待确认' : s.status === 'unread' ? '已完成' : '空闲';
+
+      row.innerHTML = `
+        <div class="session-row-top">
+          <span class="session-row-title">${escapeHtml(s.title)}</span>
+          <span class="session-row-state">
+            <span class="orb-status ${s.status}" style="--status-color:${p.color}"><span class="core"></span><span class="arc"></span></span>
+            <span>${statusLabel}</span>
+          </span>
+        </div>
+        <div class="session-row-path">${escapeHtml(s.dir)}</div>
+        <div class="session-row-foot">
+          <span class="session-row-preview">${escapeHtml(s.preview)}</span>
+          <span class="session-rate">${escapeHtml(s.rate)}</span>
+        </div>
+      `;
+      row.addEventListener('pointerenter', () => { state.highlightedSessionId = s.id; });
+      row.addEventListener('pointerleave', () => { if (state.highlightedSessionId === s.id) state.highlightedSessionId = null; });
+      row.addEventListener('click', () => openSession(p.id, s.id));
+      el.sessionList.appendChild(row);
+    }
+  }
+
+  function renderSessionChat() {
+    const p = currentPlanet();
+    const s = currentSession();
+    if (!p || !s) return;
+
+    el.chatTitle.textContent = s.title;
+    el.chatAgentLabel.textContent = `${p.name} ${p.model}`;
+    el.chatDirLabel.textContent = s.dir;
+    el.openDiffBtn.textContent = s.diffStat || '+0 -0';
+
+    el.chatMessages.innerHTML = '';
+    for (const msg of s.messages) {
+      const wrap = document.createElement('div');
+      wrap.className = `msg ${msg.role}`;
+
+      if (msg.tool) {
+        const chip = document.createElement('button');
+        chip.className = 'tool-chip';
+        chip.innerHTML = `<span>◈ ${escapeHtml(msg.tool)}</span>${msg.diff ? `<span class="tool-diff-stat">${escapeHtml(msg.diff)}</span>` : ''}`;
+        chip.addEventListener('click', openDiffModal);
+        wrap.appendChild(chip);
+      }
+
+      const bubble = document.createElement('div');
+      bubble.className = 'msg-bubble';
+      bubble.innerHTML = formatInlineCode(msg.text) + (msg.streaming ? '<span class="stream-caret"></span>' : '');
+      wrap.appendChild(bubble);
+
+      if (msg.approval && s.status === 'approval') {
+        const card = document.createElement('div');
+        card.className = 'approval-card';
+        card.style.marginTop = '4px';
+        card.innerHTML = `
+          <div class="approval-cmd">${escapeHtml(s.approvalCmd || '')}</div>
+          <div class="approval-actions">
+            <button class="btn-tactile deny" data-act="deny">拒绝</button>
+            <button class="btn-tactile allow" data-act="allow">允许执行</button>
+          </div>
+        `;
+        card.querySelector('[data-act="allow"]').addEventListener('click', () => resolveApproval(p, s, true));
+        card.querySelector('[data-act="deny"]').addEventListener('click', () => resolveApproval(p, s, false));
+        wrap.appendChild(card);
+      }
+
+      el.chatMessages.appendChild(wrap);
+    }
+    el.chatMessages.scrollTop = el.chatMessages.scrollHeight;
+  }
+
+  function syncViewUI() {
+    const host = currentHost();
+    document.body.classList.toggle('host-linux', host.starType === 'blue');
+    el.hostNameText.textContent = host.name;
+    el.hostLatencyText.textContent = host.latency;
+
+    if (state.view === 'overview') {
+      el.backBtn.style.display = 'none';
+      el.hostSwitcherBtn.style.display = 'inline-flex';
+      el.overviewBottom.classList.remove('hidden');
+      el.planetSheet.classList.remove('open');
+      el.sessionSheet.classList.remove('open');
+      state.draftOpen = false;
+      el.draftPanel.classList.remove('open');
+      renderDock();
+      renderApprovalBanner();
+    } else if (state.view === 'planet') {
+      el.backBtn.style.display = 'inline-flex';
+      el.backBtnLabel.textContent = '星系';
+      el.hostSwitcherBtn.style.display = 'none';
+      el.overviewBottom.classList.add('hidden');
+      el.planetSheet.classList.add('open');
+      el.sessionSheet.classList.remove('open');
+      renderPlanetSheet();
+    } else if (state.view === 'session') {
+      const p = currentPlanet();
+      el.backBtn.style.display = 'inline-flex';
+      el.backBtnLabel.textContent = p ? p.shortName : '返回';
+      el.hostSwitcherBtn.style.display = 'none';
+      el.overviewBottom.classList.add('hidden');
+      el.planetSheet.classList.remove('open');
+      el.sessionSheet.classList.add('open');
+      renderSessionChat();
+    }
+  }
+
+  function goOverview() {
+    state.view = 'overview';
+    state.selectedPlanetId = null;
+    state.selectedSessionId = null;
+    state.highlightedSessionId = null;
+    syncViewUI();
+  }
+
+  function openPlanet(planetId) {
+    state.selectedPlanetId = planetId;
+    state.selectedSessionId = null;
+    state.highlightedSessionId = null;
+    state.view = 'planet';
+    const p = currentPlanet();
+    if (p) {
+      spawnDataPacket(p, 1, { speed: 0.9, size: 3.5, bright: true });
+      spawnDataPacket(p, -1, { speed: 0.8, size: 3.2, bright: true });
+    }
+    syncViewUI();
+  }
+
+  function openSession(planetId, sessionId) {
+    state.selectedPlanetId = planetId;
+    state.selectedSessionId = sessionId;
+    state.view = 'session';
+    const p = currentPlanet();
+    const s = currentSession();
+    if (s && s.status === 'unread') { s.status = 'idle'; s.rate = '刚刚'; }
+    if (p) {
+      spawnDataPacket(p, 1, { speed: 0.95, size: 3.3 });
+      spawnDataPacket(p, -1, { speed: 0.88, size: 3.0 });
+    }
+    syncViewUI();
+  }
+
+  function resolveApproval(planet, session, approved) {
+    firePhoneCommandWave(planet, session, approved ? '#fbbf24' : '#fb7185');
+    if (approved) {
+      session.status = 'running';
+      session.rate = '76 tok/s';
+      session.preview = '正在运行测试套件 (14/14)…';
+      session.messages.push({ role: 'assistant', text: '已收到放行指令，正在本机执行 `reconnect.test.ts`…', streaming: true });
+      showToast(`已放行 ${planet.name} 执行命令`);
+
+      setTimeout(() => {
+        const last = session.messages[session.messages.length - 1];
+        if (last && last.streaming) {
+          last.streaming = false;
+          last.text = '14 项弱网切换与退避抖动测试全部通过，平均重连耗时降至 `214ms`。';
+        }
+        session.status = 'unread';
+        session.rate = '新回复';
+        session.preview = '14/14 全部通过，平均重连 214ms';
+        spawnBurstTraffic(planet);
+        syncViewUI();
+      }, 2800);
+    } else {
+      session.status = 'idle';
+      session.rate = '已拒绝';
+      session.preview = '命令已取消，等待下一步指示';
+      session.messages.push({ role: 'assistant', text: '已取消该命令执行，保留当前未提交改动。' });
+      showToast('已拒绝执行请求');
+    }
+    syncViewUI();
+  }
+
+  function launchNewSessionMoon() {
+    const p = currentPlanet();
+    if (!p) return;
+    const promptText = el.draftInput.value.trim();
+    const dir = state.selectedDraftDir || currentHost().dirs[0];
+    const newId = `${p.id}-${Date.now()}`;
+    const title = promptText ? promptText.slice(0, 18) : `新任务 ${p.sessions.length + 1}`;
+    const maxR = p.sessions.reduce((acc, s) => Math.max(acc, s.orbitR), 30);
+
+    const newMoon = {
+      id: newId,
+      title,
+      dir,
+      status: promptText ? 'running' : 'idle',
+      rate: promptText ? '58 tok/s' : '刚创建',
+      preview: promptText ? '正在载入工作区上下文…' : '卫星已入轨，随时发送任务',
+      orbitR: Math.min(62, maxR + 9),
+      angle: Math.random() * Math.PI * 2,
+      speed: 0.62,
+      size: 5.2,
+      diffFile: `${dir}/index.ts`,
+      diffStat: '+0 -0',
+      diffLines: [{ t: 'ctx', s: '// 暂无代码变更' }],
+      messages: promptText
+        ? [
+            { role: 'user', text: promptText },
+            { role: 'assistant', text: `已接入 \`${dir}\`，正在分析目录结构并准备执行计划…`, streaming: true }
+          ]
+        : [{ role: 'assistant', text: `卫星会话已接入本机 \`${dir}\`，直接发送需求即可开始远控。` }]
+    };
+
+    p.sessions.unshift(newMoon);
+    el.draftInput.value = '';
+    state.draftOpen = false;
+    el.draftPanel.classList.remove('open');
+
+    firePhoneCommandWave(p, newMoon, p.color);
+    const pPos = planetWorldPos(p);
+    spawnRipple(pPos.x, pPos.y, '#FFFFFF', 46);
+    spawnRipple(pPos.x, pPos.y, p.color, 64);
+    showToast(`新卫星会话已入轨 ${p.shortName}`);
+    openSession(p.id, newId);
+    if (promptText) simulateAssistantReply(p, newMoon, promptText, true);
+  }
+
+  function sendChatMessage(rawText) {
+    const text = (rawText ?? el.chatInput.value).trim();
+    const p = currentPlanet();
+    const s = currentSession();
+    if (!text || !p || !s) return;
+
+    el.chatInput.value = '';
+    s.messages.push({ role: 'user', text });
+    s.status = 'running';
+    s.rate = `${55 + Math.floor(Math.random() * 38)} tok/s`;
+    s.preview = '正在处理指令…';
+
+    firePhoneCommandWave(p, s, p.color);
+    s.messages.push({ role: 'assistant', text: '', streaming: true });
+    renderSessionChat();
+    simulateAssistantReply(p, s, text, false);
+  }
+
+  function simulateAssistantReply(planet, session, prompt, replaceLast) {
+    const cannedReplies = [
+      `已通过电脑端 \`${planet.name}\` 扫描 \`${session.dir}\`：核心链路状态健康，已同步补充边界校验并生成差异快照，可点右上角查看逐行改动。`,
+      `正在本机执行验证：3 组关键路径延迟均稳定在阈值以内，同时已清理多余临时句柄，当前无未释放订阅。`,
+      `已汇总本轮改动：聚焦于状态同步与主线程零阻塞优化，关键变更共 2 个文件，随时可继续下发下一步指令。`
+    ];
+    const fullText = prompt.includes('单测')
+      ? '本机测试套件执行完毕：18 / 18 通过（耗时 1.42s），覆盖重连退避、状态对账与异常回滚。'
+      : prompt.includes('总结')
+        ? '本轮共收口 3 处改动：降低弱网重连首跳延迟、为流式行增加精确判等、并将阴影刷子缓存化，帧率稳定满帧。'
+        : cannedReplies[Math.floor(Math.random() * cannedReplies.length)];
+
+    const targetMsg = session.messages[session.messages.length - 1];
+    let idx = 0;
+    if (replaceLast) targetMsg.text = '';
+
+    const streamTimer = setInterval(() => {
+      idx += 3 + Math.floor(Math.random() * 4);
+      targetMsg.text = fullText.slice(0, idx);
+      spawnDataPacket(planet, -1, { speed: 0.78 + Math.random() * 0.25, size: 3.1 });
+      spawnMoonSpark(planet.id, session.id, -1, planet.palette[0]);
+      if (state.view === 'session' && state.selectedSessionId === session.id) renderSessionChat();
+      if (idx >= fullText.length) {
+        clearInterval(streamTimer);
+        targetMsg.streaming = false;
+        session.status = 'idle';
+        session.rate = '刚刚';
+        session.preview = fullText.slice(0, 26) + '…';
+        if (state.view === 'session' && state.selectedSessionId === session.id) renderSessionChat();
+        else syncViewUI();
+      }
+    }, 115);
+  }
+
+  function switchHost(nextIdx) {
+    if (nextIdx === state.hostIdx) { closeModals(); return; }
+    closeModals();
+    state.warpProgress = 1.0;
+    state.packets.length = 0;
+    state.moonSparks.length = 0;
+    state.ripples.length = 0;
+    state.hostIdx = nextIdx;
+    state.view = 'overview';
+    state.selectedPlanetId = null;
+    state.selectedSessionId = null;
+    state.starFlare = 1.4;
+    buildNebulaCache();
+    seedInitialPackets();
+    syncViewUI();
+    spawnBurstTraffic();
+    showToast(`已跃迁至 ${currentHost().name}`);
+  }
+
+  /* =========================================================
+     12. MODALS & EVENT BINDINGS
+     ========================================================= */
+  function closeModals() {
+    el.hostModal.classList.remove('open');
+    el.diffModal.classList.remove('open');
+    el.infoModal.classList.remove('open');
+  }
+
+  function openHostModal() {
+    el.hostList.innerHTML = HOSTS.map((h, idx) => `
+      <button class="host-option ${idx === state.hostIdx ? 'active' : ''}" data-host-idx="${idx}">
+        <div class="host-opt-left">
+          <div class="host-star-preview" style="background:radial-gradient(circle,${h.coreColor} 0%,${h.midColor} 55%,${h.coronaColor} 100%);box-shadow:0 0 18px ${h.coronaColor}"></div>
+          <div>
+            <div class="host-opt-name">${escapeHtml(h.name)}</div>
+            <div class="host-opt-sub">${escapeHtml(h.sub)}</div>
+          </div>
+        </div>
+        <span class="latency-tag">${escapeHtml(h.latency)}</span>
+      </button>
+    `).join('');
+    el.hostList.querySelectorAll('.host-option').forEach(btn => {
+      btn.addEventListener('click', () => switchHost(Number(btn.dataset.hostIdx)));
+    });
+    el.hostModal.classList.add('open');
+  }
+
+  function openDiffModal() {
+    const s = currentSession();
+    if (!s) return;
+    el.diffFileName.textContent = s.diffFile || 'diff';
+    el.diffContent.innerHTML = (s.diffLines || []).map(l =>
+      `<div class="diff-line ${l.t}">${escapeHtml(l.s)}</div>`
+    ).join('');
+    el.diffModal.classList.add('open');
+  }
+
+  el.backBtn.addEventListener('click', () => {
+    if (state.view === 'session') openPlanet(state.selectedPlanetId);
+    else goOverview();
+  });
+
+  el.hostSwitcherBtn.addEventListener('click', openHostModal);
+  document.getElementById('infoBtn').addEventListener('click', () => el.infoModal.classList.add('open'));
+  document.getElementById('fluxPulseBtn').addEventListener('click', () => {
+    spawnBurstTraffic(currentPlanet());
+    showToast('已同步最新远控遥测流');
+  });
+
+  el.approvalBannerHead.addEventListener('click', () => {
+    const found = findFirstApproval();
+    if (found) openSession(found.planet.id, found.session.id);
+  });
+  el.bannerAllowBtn.addEventListener('click', () => {
+    const found = findFirstApproval();
+    if (found) resolveApproval(found.planet, found.session, true);
+  });
+  el.bannerDenyBtn.addEventListener('click', () => {
+    const found = findFirstApproval();
+    if (found) resolveApproval(found.planet, found.session, false);
+  });
+
+  document.getElementById('prevPlanetBtn').addEventListener('click', () => {
+    const list = currentHost().planets;
+    const idx = list.findIndex(p => p.id === state.selectedPlanetId);
+    openPlanet(list[(idx - 1 + list.length) % list.length].id);
+  });
+  document.getElementById('nextPlanetBtn').addEventListener('click', () => {
+    const list = currentHost().planets;
+    const idx = list.findIndex(p => p.id === state.selectedPlanetId);
+    openPlanet(list[(idx + 1) % list.length].id);
+  });
+
+  document.getElementById('toggleDraftBtn').addEventListener('click', () => {
+    state.draftOpen = !state.draftOpen;
+    el.draftPanel.classList.toggle('open', state.draftOpen);
+    if (state.draftOpen) el.draftInput.focus();
+  });
+
+  el.launchSessionBtn.addEventListener('click', launchNewSessionMoon);
+  el.draftInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') launchNewSessionMoon(); });
+
+  el.openDiffBtn.addEventListener('click', openDiffModal);
+  el.chatSendBtn.addEventListener('click', () => sendChatMessage());
+  el.chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChatMessage(); });
+
+  document.getElementById('quickChips').querySelectorAll('.quick-chip').forEach(btn => {
+    btn.addEventListener('click', () => sendChatMessage(btn.dataset.prompt));
+  });
+
+  document.querySelectorAll('.modal-backdrop').forEach(modal => {
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeModals(); });
+  });
+  document.querySelectorAll('[data-close-modal]').forEach(btn => btn.addEventListener('click', closeModals));
+
+  const burstToggleBtn = document.getElementById('burstToggleBtn');
+  burstToggleBtn.addEventListener('click', () => {
+    state.burstMode = !state.burstMode;
+    burstToggleBtn.classList.toggle('active', state.burstMode);
+    if (state.burstMode) spawnBurstTraffic();
+    showToast(state.burstMode ? '高负载数据洪流已开启' : '恢复常规遥测速率');
+  });
+
+  document.getElementById('switchStarStageBtn').addEventListener('click', () => {
+    switchHost((state.hostIdx + 1) % HOSTS.length);
+  });
+
+  const fullBleedBtn = document.getElementById('fullBleedBtn');
+  fullBleedBtn.addEventListener('click', () => {
+    const active = document.body.classList.toggle('full-bleed');
+    fullBleedBtn.classList.toggle('active', active);
+    setTimeout(resizeCanvas, 480);
+    resizeCanvas();
+  });
+
+  /* =========================================================
+     13. TELEMETRY METRICS, DEEP-LINK HASH & UTILITIES
+     ========================================================= */
+  function updateLiveMetrics() {
+    const running = currentHost().planets.reduce(
+      (sum, p) => sum + p.sessions.filter(s => s.status === 'running').length, 0
+    );
+    const mult = state.burstMode ? 3.4 : 1.0;
+    el.txRate.textContent = ((0.5 + running * 0.5 + Math.random() * 0.7) * mult).toFixed(1);
+    el.rxRate.textContent = ((2.8 + running * 4.6 + Math.random() * 3.8) * mult).toFixed(1);
+
+    const now = new Date();
+    document.getElementById('clockText').textContent =
+      `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function hexAlpha(hex, alpha) {
+    if (!hex || !hex.startsWith('#')) return hex;
+    let c = hex.slice(1);
+    if (c.length === 3) c = c.split('').map(ch => ch + ch).join('');
+    const num = parseInt(c, 16);
+    return `rgba(${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}, ${Math.max(0, Math.min(1, alpha)).toFixed(3)})`;
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  }
+
+  function formatInlineCode(str) {
+    return escapeHtml(str).replace(/`([^`]+)`/g, '<code>$1</code>');
+  }
+
+  function applyInitialHash() {
+    const hash = location.hash.replace(/^#/, '');
+    if (!hash) return;
+    const params = new URLSearchParams(hash);
+    if (params.get('host') === 'linux') {
+      state.hostIdx = 1;
+      buildNebulaCache();
+    }
+    const planetId = params.get('planet');
+    const sessionId = params.get('session');
+    if (planetId && currentHost().planets.some(p => p.id === planetId)) {
+      state.selectedPlanetId = planetId;
+      state.view = 'planet';
+      if (sessionId) {
+        const p = currentPlanet();
+        if (p && p.sessions.some(s => s.id === sessionId)) {
+          state.selectedSessionId = sessionId;
+          state.view = 'session';
+        }
+      }
+      const t = computeCameraTarget();
+      state.cam.x = t.x;
+      state.cam.y = t.y;
+      state.cam.zoom = t.zoom;
+    }
+  }
+
+  /* =========================================================
+     14. BOOTSTRAP
+     ========================================================= */
+  document.body.classList.add('booting');
+  initStars();
+  resizeCanvas();
+  applyInitialHash();
+  if (state.view === 'overview') {
+    const t = computeCameraTarget();
+    state.cam.x = t.x;
+    state.cam.y = t.y;
+    state.cam.zoom = t.zoom;
+  }
+  seedInitialPackets();
+  syncViewUI();
+  updateLiveMetrics();
+  void document.body.offsetHeight;
+  requestAnimationFrame(() => document.body.classList.remove('booting'));
+  setInterval(updateLiveMetrics, 950);
+  window.addEventListener('resize', resizeCanvas);
+
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
