@@ -59,4 +59,42 @@ class SubscriptionQuotaTest {
         assertEquals(failed, failed.failSubscriptionQuery("query", "旧错误"))
     }
 
+    // QUOTA-FEEDBACK-02: a partial catalog is not evidence that a queried configuration disappeared.
+    @Test fun temporaryCatalogProblemKeepsTheReadingAndSettlesTheOwningReply() {
+        val profiles = """[{"id":"official","enabled":true,"subscriptionSupported":true}]"""
+        val readyCatalog = """{"providers":[{"agentKind":"claude","availability":"ready","profiles":$profiles}]}"""
+        val loaded = waiting.withModelFixture("providers", readyCatalog, scope = "host").withSubscriptionResult(response())
+        val refreshing = loaded.beginSubscriptionQuery(provider, "pending").let {
+            it.copy(agentProviders = it.agentProviders.copy(kind = "codex", providers = emptyList()))
+        }
+        val partial = refreshing.withModelFixture("providers", readyCatalog.replace("ready", "unknown"), revision = 2, scope = "host")
+        assertNotNull(partial.providerCatalogProblems["claude"])
+        assertEquals(loaded.subscriptionQuotas["claude"], partial.subscriptionQuotas["claude"])
+        val failure = Json.parseToJsonElement(
+            """{"type":"provider.subscription.result","requestId":"pending","kind":"claude","id":"official","error":"登录过期"}"""
+        ).jsonObject
+        val failed = partial.withSubscriptionResult(failure)
+        assertNull(failed.agentProviders.quotaRequestId)
+        assertNull(failed.agentProviders.error)
+        val recovered = failed.withModelFixture("providers", readyCatalog, revision = 3, scope = "host")
+        assertNull(recovered.providerCatalogProblems["claude"])
+        assertEquals("登录过期", recovered.subscriptionQuotas["claude"]?.error)
+        assertEquals(loaded.subscriptionQuotas["claude"]?.quota, recovered.subscriptionQuotas["claude"]?.quota)
+        assertEquals(recovered, recovered.withSubscriptionResult(response(request = "pending")))
+    }
+
+    @Test fun verifiedRemovalOfAQuotaOwnerInvalidatesItsPendingRead() {
+        val loaded = waiting.withSubscriptionResult(response())
+        val codex = provider.copy(kind = "codex")
+        val withBoth = loaded.copy(providerCatalogs = mapOf("codex" to listOf(codex)))
+            .beginSubscriptionQuery(codex, "codex").withSubscriptionResult(response(request = "codex", kind = "codex"))
+        val refreshing = withBoth.beginSubscriptionQuery(provider, "pending")
+        val changed = refreshing.withModelFixture("providers",
+            """{"providers":[{"agentKind":"claude","availability":"ready","profiles":[]}]}""", scope = "host")
+        assertNull(changed.subscriptionQuotas["claude"])
+        assertNull(changed.agentProviders.quotaRequestId)
+        assertEquals(withBoth.subscriptionQuotas["codex"], changed.subscriptionQuotas["codex"])
+        assertEquals(changed, changed.withSubscriptionResult(response(request = "pending")))
+    }
+
 }

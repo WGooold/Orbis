@@ -168,6 +168,46 @@ struct HostStateTests {
         #expect(state.subscriptionQuota(for: "claude")?.quota?.windows.last?.remainingPercent == 40)
     }
 
+    // QUOTA-FEEDBACK-02: only a confirmed configuration change supersedes a pending quota reply.
+    @Test func temporaryCatalogGapKeepsQuotaButAConfirmedSwitchInvalidatesIt() async throws {
+        let (state, sent) = setup()
+        await installProviders(state, sent)
+        let subscription = sent.last
+        func catalogSnapshot(_ revision: Int, _ value: [String: Any]) -> [String: Any] {
+            var update = snapshot(sent, domains: [domain("providers", revision: revision, value: value)])
+            update["requestId"] = subscription["requestId"]
+            update["stateFormat"] = subscription["stateFormat"]
+            return update
+        }
+        let provider = try #require(state.currentProvider(for: "codex"))
+        let key = try #require(state.hostKey)
+        state.querySubscription(provider, expectedHostKey: key)
+        let quota: [String: Any] = ["checkedAt": 1000, "windows": [
+            ["name": "five_hour", "remainingPercent": 80, "resetsAt": NSNull()],
+            ["name": "seven_day", "remainingPercent": 40, "resetsAt": NSNull()]]]
+        await state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": provider.id, "quota": quota])
+        state.querySubscription(provider, expectedHostKey: key)
+        let pending = sent.last["requestId"]!
+        await state.consume(catalogSnapshot(2, ["providers": [
+            ["agentKind": "codex", "availability": "unknown", "profiles": NSNull()]
+        ]]))
+        #expect(state.domains["providers"]?.revision == 2)
+        await state.consume(["type": "provider.subscription.result", "requestId": pending, "kind": "codex", "id": provider.id, "error": "登录过期"])
+        #expect(!state.queryingQuota)
+        #expect(state.providerError == nil)
+        await state.consume(catalogSnapshot(3, providers()))
+        #expect(state.subscriptionQuota(for: "codex")?.error == "登录过期")
+        #expect(state.subscriptionQuota(for: "codex")?.quota?.windows.first?.remainingPercent == 80)
+        state.querySubscription(provider, expectedHostKey: key)
+        let superseded = sent.last["requestId"]!
+        await state.consume(catalogSnapshot(4, providers(enabled: "team")))
+        #expect(state.domains["providers"]?.revision == 4)
+        #expect(!state.queryingQuota)
+        #expect(state.subscriptionQuotas["codex"] == nil)
+        await state.consume(["type": "provider.subscription.result", "requestId": superseded, "kind": "codex", "id": provider.id, "quota": quota])
+        #expect(state.subscriptionQuotas["codex"] == nil)
+    }
+
     @Test func domainsMergeAcrossSplitResponsesAndRefreshRetainsSubscription() async throws {
         let (state, sent) = setup()
         let original = snapshot(sent, domains: [domain("diagnostics", value: ["records": 12])])

@@ -94,8 +94,14 @@ internal fun RemoteState.withSubscriptionResult(message: JsonObject): RemoteStat
     val id = message["id"]?.jsonPrimitive?.contentOrNull ?: return this
     val kind = current.quotaKind ?: current.kind
     if (request != current.quotaRequestId || id != current.quotaProviderId || current.hostId != hostId ||
-        message["kind"]?.jsonPrimitive?.contentOrNull != kind ||
-        providersForKind(kind).none { it.id == id && it.enabled && it.subscriptionSupported }) return this
+        message["kind"]?.jsonPrimitive?.contentOrNull != kind) return this
+    val knownProviders = providerCatalogs[kind] ?: current.providers.takeIf {
+        current.kind == kind && kind !in providerCatalogProblems && it.isNotEmpty()
+    }
+    // A temporary catalog gap does not disown a query registered for a known configuration.
+    val matchesProvider = knownProviders?.any { it.id == id && it.enabled && it.subscriptionSupported }
+        ?: (subscriptionQuotas[kind]?.providerId == id)
+    if (!matchesProvider) return this
     val failure = message["error"]?.jsonPrimitive?.contentOrNull
     val quota = (message["quota"] as? JsonObject)?.let(::parseSubscriptionQuota)
     val error = failure ?: if (quota == null) L10n.tr("配额数据格式无法识别，请升级 Host 后重试") else null

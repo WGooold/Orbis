@@ -223,9 +223,16 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
         catalogs[providerState.kind]?.let { providers -> providerState = providerState.copy(providers = providers,
             loading = providerState.requestId != null || providerState.pendingRemovals.isNotEmpty()) }
         state = state.copy(currentProviders = current, providerCatalogs = catalogs, providerCatalogProblems = problems,
-            subscriptionQuotas = state.subscriptionQuotas.filter { (kind, snapshot) ->
-                catalogs[kind]?.any { it.enabled && it.id == snapshot.providerId && it.subscriptionSupported } == true
-            }, agentProviders = providerState)
+            agentProviders = providerState)
+        // The Host's provider projection is partial. Only a verified list for this Agent can invalidate its quota owner.
+        for ((kind, providers) in catalogs) {
+            val owner = state.subscriptionQuotas[kind]?.providerId ?: providerState.quotaProviderId?.takeIf {
+                (providerState.quotaKind ?: providerState.kind) == kind
+            }
+            if (owner != null && providers.none { it.id == owner && it.enabled && it.subscriptionSupported }) {
+                state = state.clearProviderQuota(kind)
+            }
+        }
     }
     return state
 }

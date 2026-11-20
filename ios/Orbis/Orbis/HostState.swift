@@ -528,6 +528,16 @@ final class HostState: ObservableObject {
         if let kind { subscriptionQuotas.removeValue(forKey: kind) } else { subscriptionQuotas = [:] }
     }
 
+    private func reconcileQuotaProviders() {
+        // Missing or incomplete catalog data is not proof that a configuration was removed.
+        for (kind, snapshot) in subscriptionQuotas {
+            guard providerCatalogProblem(for: kind) == nil else { continue }
+            if !providers(for: kind).contains(where: { $0.id == snapshot.providerId && $0.enabled && $0.subscriptionSupported }) {
+                clearQuota(for: kind)
+            }
+        }
+    }
+
     func removeProviders(_ selected: [AgentProvider], expectedHostKey: String) {
         guard hostKey == expectedHostKey, canChangeProvider, !selected.isEmpty,
               Set(selected.map(\.id)).count == selected.count,
@@ -594,7 +604,7 @@ final class HostState: ObservableObject {
             guard let request = quotaRequest, request.id == message["requestId"] as? String,
                   request.kind == message["kind"] as? String, request.providerId == message["id"] as? String,
                   request.hostKey == hostKey,
-                  providers(for: request.kind).contains(where: { $0.id == request.providerId && $0.enabled && $0.subscriptionSupported }) else { return true }
+                  subscriptionQuotas[request.kind]?.providerId == request.providerId else { return true }
             if let error = message["error"] as? String { finishQuota(error: error); return true }
             guard let raw = message["quota"] as? [String: Any], let result: SubscriptionQuota = decode(raw), result.valid else {
                 finishQuota(error: L10n.tr("配额数据格式无法识别，请升级 Host 后重试")); return true
@@ -698,6 +708,7 @@ final class HostState: ObservableObject {
         for (name, reason) in prepared.absent { missing[name] = reason }
         pendingDomains.subtract(prepared.resolved)
         truncated = prepared.truncated; modelError = nil
+        if prepared.accepted["providers"] != nil { reconcileQuotaProviders() }
         didProject?(prepared.accepted)
         if let catalog = prepared.accepted["catalog"] { await beginCatalog(catalog, prepared: prepared.catalog) }
         if prepared.accepted["catalog"] != nil { directoryReconcile.confirmed(Date()) }
