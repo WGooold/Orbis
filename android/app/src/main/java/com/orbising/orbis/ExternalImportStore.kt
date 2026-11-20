@@ -182,6 +182,14 @@ internal class ExternalImportStore(
     private fun readBatch(directory: File, id: String): ExternalImportBatch =
         Json.decodeFromString<ExternalImportBatch>(File(directory, MANIFEST).readText()).also { check(it.id == id) }
 
+    /**
+     * IMPORT-05: only a Session-confirmed receipt completes the handover; every other state stays recoverable.
+     * [keep] leaves an in-flight send to the caller that owns its completion.
+     */
+    fun removeAccepted(keep: String? = null): List<ExternalImportBatch> = synchronized(lock) {
+        listLocked().filter { it.attempt?.receipt == ExternalImportReceipt.ACCEPTED && it.id != keep }.onEach { delete(it.id) }
+    }
+
     fun delete(id: String) = synchronized(lock) {
         if (!validId(id)) return@synchronized
         val ready = File(root, READY + id)
@@ -221,6 +229,26 @@ internal fun RemoteState.externalImportRuntimes(): List<RuntimeSummary> {
             runtime.status in setOf("idle", "running") && runtime.runtimeId !in closing && session !in archiving &&
             sessions[session]?.archived != true && codexProviderMismatch(session) == null
     }
+}
+
+/** Presentation facts beside a routing destination; never persisted with the batch. */
+internal data class ExternalImportChoice(
+    val destination: ExternalImportDestination,
+    val agentKind: String?,
+    val running: Boolean,
+    val current: Boolean = false,
+)
+
+/** OI-08: last confirmed target, then the open chat, lead the picker. Ordering never selects for the user. */
+internal fun orderImportChoices(choices: List<ExternalImportChoice>, recent: ExternalImportTarget?): List<List<ExternalImportChoice>> {
+    fun rank(choice: ExternalImportChoice) = when {
+        choice.destination.target == recent -> 0
+        choice.current -> 1
+        else -> 2
+    }
+    return choices.groupBy { it.destination.target.hostId }.values
+        .map { group -> group.sortedBy(::rank) }
+        .sortedBy { group -> rank(group.first()) }
 }
 
 private fun validId(raw: String): Boolean = runCatching { UUID.fromString(raw).toString() == raw }.getOrDefault(false)

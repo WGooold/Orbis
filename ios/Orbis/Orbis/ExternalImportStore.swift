@@ -54,6 +54,64 @@ struct ExternalImportBatch: Codable, Equatable, Identifiable, Sendable {
     var destination: ExternalImportDestination? = nil
     var attempt: ExternalImportAttempt? = nil
     var launch: ExternalImportLaunch? = nil
+    /// OI-08: the description typed beside the content; not part of the shared text.
+    var note: String? = nil
+    /// OI-08: Send was tapped in the Share Extension; Orbis performs it once on its next foreground.
+    var sendRequestedAt: Date? = nil
+}
+
+/// Presentation only: what an explicit send is waiting on right now.
+enum ExternalImportPhase: Equatable, Sendable {
+    case uploading(Int, Int), sending, checking, launching
+}
+
+/// Presentation facts beside a routing destination; never persisted with the batch.
+struct ExternalImportChoice: Identifiable, Equatable {
+    let destination: ExternalImportDestination
+    let agentKind: String?
+    let running: Bool
+    var current = false
+    var id: ExternalImportTarget { destination.target }
+
+    /// OI-08: last confirmed target, then the open chat, lead the picker. Ordering never selects for the user.
+    static func ordered(_ choices: [Self], recent: ExternalImportTarget?) -> [[Self]] {
+        func rank(_ choice: Self) -> Int { choice.destination.target == recent ? 0 : choice.current ? 1 : 2 }
+        var groups: [[Self]] = []
+        for choice in choices {
+            if let index = groups.firstIndex(where: { $0[0].destination.target.hostId == choice.destination.target.hostId }) {
+                groups[index].append(choice)
+            } else { groups.append([choice]) }
+        }
+        let sorted = groups.map { group in group.enumerated().sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }.map(\.element) }
+        return sorted.enumerated().sorted { (rank($0.element[0]), $0.offset) < (rank($1.element[0]), $1.offset) }.map(\.element)
+    }
+}
+
+/// OI-08: a Send tapped in the Share Extension is performed once, only while it is still recent.
+enum ExternalImportAutoSend {
+    static let window: TimeInterval = 10 * 60
+
+    static func next(_ batches: [ExternalImportBatch], now: Date) -> ExternalImportBatch? {
+        batches.filter { batch in
+            guard let requested = batch.sendRequestedAt, batch.destination != nil, batch.attempt == nil, batch.launch == nil else { return false }
+            return now.timeIntervalSince(requested) <= window && requested <= now.addingTimeInterval(60)
+        }.max { $0.sendRequestedAt! < $1.sendRequestedAt! }
+    }
+}
+
+/// OI-08: the minimal target list the main app leaves for the Share Extension. Labels only; Orbis re-checks
+/// the live Session, pairing and project before anything is uploaded.
+struct ExternalImportTargetSnapshot: Codable, Equatable, Sendable {
+    struct Entry: Codable, Equatable, Sendable {
+        let destination: ExternalImportDestination
+        let agentKind: String?
+        let running: Bool
+    }
+    var entries: [Entry]
+    var recent: ExternalImportTarget?
+    var savedAt: Date
+
+    var choices: [ExternalImportChoice] { entries.map { ExternalImportChoice(destination: $0.destination, agentKind: $0.agentKind, running: $0.running) } }
 }
 
 enum ExternalImportProblem: Error, Equatable {
@@ -160,7 +218,9 @@ struct ExternalImportStore: Sendable {
         }
     }
 
-    func publish(_ stage: ExternalImportStage, text: String?, files: [ExternalImportedFile]) throws -> ExternalImportBatch {
+    /// `request` binds the batch to a Session and records Send in the same atomic publish.
+    func publish(_ stage: ExternalImportStage, text: String?, files: [ExternalImportedFile], note: String? = nil,
+                 request: (destination: ExternalImportDestination, at: Date)? = nil) throws -> ExternalImportBatch {
         let text = try Self.checkedText(text)
         guard text != nil || !files.isEmpty else { throw ExternalImportProblem.empty }
         guard files.count <= Self.fileCount else { throw ExternalImportProblem.limit }
@@ -186,7 +246,12 @@ struct ExternalImportStore: Sendable {
             guard existing.count < Self.batchCount, used + bytes + Int64(text?.utf8.count ?? 0) <= inboxBytes else {
                 throw ExternalImportProblem.full
             }
-            let batch = ExternalImportBatch(id: id, createdAt: Date(), text: text, files: files)
+            var batch = ExternalImportBatch(id: id, createdAt: Date(), text: text, files: files)
+            batch.note = note?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? note : nil
+            if let request {
+                batch.destination = request.destination
+                batch.sendRequestedAt = request.at
+            }
             let manifest = directory.appendingPathComponent("batch.json")
             try JSONEncoder().encode(batch).write(to: manifest, options: .atomic)
             do { try move(directory, to: ready(id)) }
@@ -298,14 +363,44 @@ struct ExternalImportStore: Sendable {
     }
 
     func delete(_ id: UUID) throws {
-        try withLock {
-            let source = ready(id)
-            guard FileManager.default.fileExists(atPath: source.path) else { return }
-            // Unpublish before unlinking; a killed process cannot expose a partly deleted batch.
-            let directory = staging(UUID())
-            try move(source, to: directory)
-            try FileManager.default.removeItem(at: directory)
+        try withLock { try unpublishLocked(id) }
+    }
+
+    /// The automatic attempt is spent before it starts; a failure leaves an ordinary bound draft.
+    func clearSendRequest(_ id: UUID) throws {
+        _ = try update(id) { $0.sendRequestedAt = nil }
+    }
+
+    func saveTargets(_ snapshot: ExternalImportTargetSnapshot) throws {
+        let data = try JSONEncoder().encode(snapshot)
+        try withLock { try data.write(to: root.appendingPathComponent("targets.json"), options: .atomic) }
+    }
+
+    func loadTargets() -> ExternalImportTargetSnapshot? {
+        try? withLock {
+            let url = root.appendingPathComponent("targets.json")
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            return try JSONDecoder().decode(ExternalImportTargetSnapshot.self, from: Data(contentsOf: url))
         }
+    }
+
+    /// IMPORT-05: only a Session-confirmed receipt completes the handover; every other state stays recoverable.
+    /// `keeping` leaves an in-flight send to the caller that owns its completion.
+    @discardableResult func removeAccepted(keeping: UUID? = nil) throws -> [ExternalImportBatch] {
+        try withLock {
+            let accepted = try listLocked().filter { $0.attempt?.receipt == .accepted && $0.id != keeping }
+            for batch in accepted { try unpublishLocked(batch.id) }
+            return accepted
+        }
+    }
+
+    private func unpublishLocked(_ id: UUID) throws {
+        let source = ready(id)
+        guard FileManager.default.fileExists(atPath: source.path) else { return }
+        // Unpublish before unlinking; a killed process cannot expose a partly deleted batch.
+        let directory = staging(UUID())
+        try move(source, to: directory)
+        try FileManager.default.removeItem(at: directory)
     }
 
     func importDocument(_ source: URL) throws -> ExternalImportBatch {

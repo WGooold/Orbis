@@ -296,6 +296,8 @@ private struct NavigationRoot: View, Equatable {
             }
         }
         .onChange(of: scenePhase) { old, new in
+            // OI-08: the Share Extension can only offer Sessions Orbis saw as it left the foreground.
+            if old == .active && new != .active { externalImports.saveTargets(store.hosts.flatMap { $0.connection.externalImportChoices() }) }
             if new == .background { LiveActivityCoordinator.shared.cancelQueuedOpen() }
             if new != .active { store.toolContent.close() }
             if old == .background && new == .active { store.resumeForeground() }
@@ -319,7 +321,7 @@ private struct NavigationRoot: View, Equatable {
             }
         }
         .orbisBottomSheet(isPresented: $externalImports.isOpen) {
-            ExternalImportInboxView(model: externalImports, store: store).orbisSheet([.large])
+            ExternalImportInboxView(model: externalImports, store: store, onOpenSession: openImportedSession).orbisSheet([.large])
         }
         .orbisOverlayHost(overlay)
         .modifier(OrbisInputModality())
@@ -519,6 +521,14 @@ private struct NavigationRoot: View, Equatable {
         ChatSchedulingTrace.pageOpenRequested(target: runtime.runtimeId)
         #endif
         store.selectRuntime(runtime.runtimeId); setDrawer(false); navigation.replace(with: [.chat])
+    }
+    /// OI-08: after a confirmed import the user can continue in that exact Session; nothing else is selected for them.
+    private func openImportedSession(_ target: ExternalImportTarget) {
+        guard let runtime = store.connection(for: target.hostId)?.runtimes.first(where: { $0.sessionId == target.sessionId }) else { return }
+        LiveActivityCoordinator.shared.cancelQueuedOpen()
+        rootTab = .chat; displayedRoot = .chat
+        store.selectRuntime(hostId: target.hostId, runtimeId: runtime.runtimeId)
+        setDrawer(false); navigation.replace(with: [.chat])
     }
     private func openCachedSession(_ session: SessionSummary) -> Bool {
         LiveActivityCoordinator.shared.cancelQueuedOpen()

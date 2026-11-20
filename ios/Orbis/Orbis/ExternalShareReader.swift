@@ -7,8 +7,9 @@ struct ExternalSharePrepared: Sendable {
     let text: String?
     let files: [ExternalImportedFile]
 
-    func save(text: String) throws -> ExternalImportBatch {
-        try store.publish(stage, text: text, files: files)
+    func save(text: String?, note: String? = nil,
+              request: (destination: ExternalImportDestination, at: Date)? = nil) throws -> ExternalImportBatch {
+        try store.publish(stage, text: text, files: files, note: note, request: request)
     }
 
     func discard() { store.discard(stage) }

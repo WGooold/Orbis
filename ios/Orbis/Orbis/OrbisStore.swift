@@ -520,15 +520,24 @@ final class HostConnection: ObservableObject {
         return externalImportRuntimes().first { $0.sessionId == target.sessionId && $0.cwd == target.cwd }
     }
 
-    func externalImportDestinations() -> [ExternalImportDestination] {
+    func externalImportDestinations() -> [ExternalImportDestination] { externalImportChoices().map(\.destination) }
+
+    /// `current` marks this connection's open chat; the caller decides whether this Host is the foreground one.
+    func externalImportChoices() -> [ExternalImportChoice] {
         guard let host = selectedHost else { return [] }
         let pairingKey = PushNotificationIdentity.pairingKey(host)
         return externalImportRuntimes().compactMap { runtime in
             guard let sessionId = runtime.sessionId else { return nil }
-            return ExternalImportDestination(target: .init(hostId: host.hostId, pairingKey: pairingKey,
+            return ExternalImportChoice(destination: ExternalImportDestination(target: .init(hostId: host.hostId, pairingKey: pairingKey,
                 sessionId: sessionId, cwd: runtime.cwd), hostName: host.hostName,
-                sessionName: directoryCatalog.titles[sessionId] ?? sessionTitle(runtime: runtime, session: sessionIndex[sessionId]))
+                sessionName: directoryCatalog.titles[sessionId] ?? sessionTitle(runtime: runtime, session: sessionIndex[sessionId])),
+                agentKind: agentKind(runtime), running: runtime.status == "running", current: runtime.runtimeId == selectedRuntimeId)
         }
+    }
+
+    /// True while this pairing may still publish sessions, so an empty picker is not yet final.
+    var externalImportConnecting: Bool {
+        connection == .connecting || connection == .online || (connection == .secured && !homeDirectoryReceived)
     }
 
     private func externalImportRuntimes() -> [RuntimeSummary] {
@@ -569,7 +578,8 @@ final class HostConnection: ObservableObject {
     }
 
     func launchExternalImport(_ batch: ExternalImportBatch, from inbox: ExternalImportStore,
-                              agent: String, cwd: String, instruction: String) async throws {
+                              agent: String, cwd: String, instruction: String,
+                              phase: @escaping @MainActor (ExternalImportPhase) -> Void = { _ in }) async throws {
         guard !importDeliveryActive else { throw ExternalImportProblem.busy }
         guard canLaunchExternalImport, let host = selectedHost else { throw ExternalImportProblem.hostUpgrade }
         guard enabledAgentKinds?.contains(agent) != false, let config = sessionConfiguration, config.agentKind == agent, config.cwd == cwd,
@@ -591,20 +601,21 @@ final class HostConnection: ObservableObject {
             throw ExternalImportProblem.launchConfiguration
         }
         let result = await waitForExternalLaunch(launch, configuration: config)
-        try await continueExternalLaunch(batch, launch: launch, result: result, inbox: inbox)
+        try await continueExternalLaunch(batch, launch: launch, result: result, inbox: inbox, phase: phase)
     }
 
     /// Recovery reads the original Host launch. It never sends another create, even if Host reports absence.
-    func recoverExternalLaunch(_ batch: ExternalImportBatch, in inbox: ExternalImportStore) async throws {
+    func recoverExternalLaunch(_ batch: ExternalImportBatch, in inbox: ExternalImportStore,
+                               phase: @escaping @MainActor (ExternalImportPhase) -> Void = { _ in }) async throws {
         guard !importDeliveryActive else { throw ExternalImportProblem.busy }
         guard batch.attempt == nil, let launch = batch.launch, !launch.failed, matchesImportLaunch(launch) else { throw ExternalImportProblem.targetUnavailable }
         importDeliveryActive = true; defer { importDeliveryActive = false }
         let result = await waitForExternalLaunch(launch, configuration: nil)
-        try await continueExternalLaunch(batch, launch: launch, result: result, inbox: inbox)
+        try await continueExternalLaunch(batch, launch: launch, result: result, inbox: inbox, phase: phase)
     }
 
-    private func continueExternalLaunch(_ batch: ExternalImportBatch, launch: ExternalImportLaunch,
-                                        result: ImportLaunchResult, inbox: ExternalImportStore) async throws {
+    private func continueExternalLaunch(_ batch: ExternalImportBatch, launch: ExternalImportLaunch, result: ImportLaunchResult,
+                                        inbox: ExternalImportStore, phase: @escaping @MainActor (ExternalImportPhase) -> Void) async throws {
         if result == .failed { try await Task.detached { try inbox.failLaunch(batch.id, launchId: launch.id) }.value; return }
         guard case .ready(let sessionId) = result, matchesImportLaunch(launch) else { return }
         let target = ExternalImportTarget(hostId: launch.hostId, pairingKey: launch.pairingKey, sessionId: sessionId, cwd: launch.cwd)
@@ -616,7 +627,7 @@ final class HostConnection: ObservableObject {
         for _ in 0..<50 {
             guard matchesImportLaunch(launch) else { return }
             if let runtime = externalImportRuntime(target), agentKind(runtime) == launch.agent {
-                try await deliverExternalBatch(bound, from: inbox, instruction: launch.instruction)
+                try await deliverExternalBatch(bound, from: inbox, instruction: launch.instruction, phase: phase)
                 return
             }
             try await Task.sleep(for: .milliseconds(100))
@@ -667,13 +678,15 @@ final class HostConnection: ObservableObject {
         return true
     }
 
-    func sendExternalImport(_ batch: ExternalImportBatch, from inbox: ExternalImportStore, instruction: String) async throws {
+    func sendExternalImport(_ batch: ExternalImportBatch, from inbox: ExternalImportStore, instruction: String,
+                            phase: @escaping @MainActor (ExternalImportPhase) -> Void = { _ in }) async throws {
         guard !importDeliveryActive else { throw ExternalImportProblem.busy }
         importDeliveryActive = true; defer { importDeliveryActive = false }
-        try await deliverExternalBatch(batch, from: inbox, instruction: instruction)
+        try await deliverExternalBatch(batch, from: inbox, instruction: instruction, phase: phase)
     }
 
-    private func deliverExternalBatch(_ batch: ExternalImportBatch, from inbox: ExternalImportStore, instruction: String) async throws {
+    private func deliverExternalBatch(_ batch: ExternalImportBatch, from inbox: ExternalImportStore, instruction: String,
+                                      phase: @escaping @MainActor (ExternalImportPhase) -> Void) async throws {
         guard let target = batch.destination?.target, let runtime = externalImportRuntime(target) else { throw ExternalImportProblem.targetUnavailable }
         guard importConnection(target) else { throw ExternalImportProblem.hostUpgrade }
         let generation = connectionGeneration, history = historyGeneration, epoch = admittedModelEpoch
@@ -688,9 +701,11 @@ final class HostConnection: ObservableObject {
             try ExternalImportStore.messageBody(text: batch.text, instruction: instruction, attachmentFallback: fallback, quotedPrefix: prefix)
         }.value
         var paths: [String] = []
-        for (source, file) in sources {
+        for (index, (source, file)) in sources.enumerated() {
+            phase(.uploading(index + 1, sources.count))
             paths.append(try await transfers.uploadImport(source, file: file, target: target, runtimeId: runtimeId, ifReady: current))
         }
+        phase(.sending)
         guard current() else { throw ExternalImportProblem.targetUnavailable }
         let attempt = ExternalImportAttempt(id: UUID(), runtimeId: runtimeId, receipt: .pending, instruction: instruction)
         try await Task.detached { try inbox.beginDelivery(batch.id, target: target, attempt: attempt) }.value

@@ -38,6 +38,14 @@ internal data class ExternalImportAttempt(
 
 internal data class ImportUploadSource(val file: File, val metadata: ImportedFile)
 
+/** Presentation only: what the explicit send is waiting on right now. */
+internal sealed interface ImportPhase {
+    data class Uploading(val index: Int, val total: Int) : ImportPhase
+    data object Sending : ImportPhase
+    data object Checking : ImportPhase
+    data object Launching : ImportPhase
+}
+
 internal fun ExternalImportTarget.wire(): JsonObject = buildJsonObject {
     put("sessionId", sessionId)
     put("cwd", cwd)
@@ -132,16 +140,19 @@ internal class ExternalImportDelivery {
     suspend fun send(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String,
                      runtime: () -> RuntimeSummary?, capable: () -> Boolean,
                      upload: suspend (ImportUploadSource, String) -> String,
-                     request: suspend (ExternalImportAttempt, JsonObject?) -> ExternalImportReceipt) = exclusive {
+                     request: suspend (ExternalImportAttempt, JsonObject?) -> ExternalImportReceipt,
+                     phase: (ImportPhase) -> Unit = {}) = exclusive {
         val target = batch.destination?.target ?: reject(ImportProblem.TARGET_UNAVAILABLE)
         val runtimeId = runtime()?.runtimeId ?: reject(ImportProblem.TARGET_UNAVAILABLE)
         if (!capable()) reject(ImportProblem.HOST_UPGRADE)
         val sources = inbox.uploadSources(batch.id, target)
         val body = externalImportMessage(batch.text, instruction, L10n.tr("请查看附件。"), L10n.tr("导入的内容："))
-        val paths = sources.map { source ->
+        val paths = sources.mapIndexed { index, source ->
             if (!capable() || runtime()?.runtimeId != runtimeId) reject(ImportProblem.TARGET_UNAVAILABLE)
+            phase(ImportPhase.Uploading(index + 1, sources.size))
             upload(source, runtimeId)
         }
+        phase(ImportPhase.Sending)
         if (!capable() || runtime()?.runtimeId != runtimeId) reject(ImportProblem.TARGET_UNAVAILABLE)
         val attempt = ExternalImportAttempt(UUID.randomUUID().toString(), runtimeId, ExternalImportReceipt.PENDING, instruction)
         currentCoroutineContext().ensureActive()

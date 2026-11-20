@@ -1,35 +1,52 @@
 package com.orbising.orbis
 
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.runtime.key
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalFocusManager
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Badge
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -42,7 +59,7 @@ internal fun ExternalImportButton(count: Int, action: () -> Unit) {
             NeumorphIconButton(
                 onClick = action,
                 icon = OrbisSymbols.Archive,
-                contentDescription = L10n.tr("待导入 · {0}", count),
+                contentDescription = L10n.tr("待发送 · {0}", count),
                 size = 40.dp,
             )
             Box(Modifier.size(RemoteUi.TouchTarget)) {
@@ -58,120 +75,102 @@ internal fun ExternalImportButton(count: Int, action: () -> Unit) {
     }
 }
 
-private enum class ImportRoute { PREVIEW, SESSIONS, COMPUTERS, SETUP }
+private enum class ImportRoute { MAIN, COMPUTERS, SETUP }
+private enum class ImportStage { COMPOSE, AWAITING_RECEIPT, AWAITING_LAUNCH }
 
+private fun ExternalImportBatch.stage(): ImportStage {
+    val receipt = attempt?.receipt
+    if (receipt != null && receipt.mayCheck) return ImportStage.AWAITING_RECEIPT
+    if (destination == null && launch != null && !launch.failed) return ImportStage.AWAITING_LAUNCH
+    return ImportStage.COMPOSE
+}
+
+/** OI-08: one page — what is being sent, an optional note, which Session — then one Send. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportViewModel, remote: RemoteViewModel) {
+internal fun ExternalImportSheet(
+    ui: ExternalImportUi, model: ExternalImportViewModel, remote: RemoteViewModel,
+    destinations: suspend () -> List<ExternalImportChoice> = { remote.externalImportDestinations() },
+) {
     val batch = ui.batches.firstOrNull { it.id == ui.selected }
-    var route by remember(batch?.id) { mutableStateOf(ImportRoute.PREVIEW) }
+    val completed = ui.completed
+    var route by remember(batch?.id) { mutableStateOf(ImportRoute.MAIN) }
     var launchHost by remember(batch?.id) { mutableStateOf<String?>(null) }
-    var setupBack by remember(batch?.id) { mutableStateOf(ImportRoute.SESSIONS) }
-    var instruction by remember(batch?.id) { mutableStateOf((batch?.attempt?.instruction ?: batch?.launch?.instruction).orEmpty()) }
+    var setupBack by remember(batch?.id) { mutableStateOf(ImportRoute.MAIN) }
+    var note by remember(batch?.id) { mutableStateOf((batch?.attempt?.instruction ?: batch?.launch?.instruction).orEmpty()) }
+    var choice by remember(batch?.id) { mutableStateOf(batch?.destination?.target) }
     var deleting by remember(batch?.id) { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     val hosts by remote.hosts.collectAsStateWithLifecycle()
-    var targets by remember(batch?.id) { mutableStateOf<List<ExternalImportDestination>?>(null) }
-    val choosing = route == ImportRoute.SESSIONS && batch?.destination == null
-    LaunchedEffect(batch?.id, choosing, hosts) {
-        targets = if (choosing) remote.externalImportDestinations() else null
+    var choices by remember(batch?.id) { mutableStateOf<List<ExternalImportChoice>?>(null) }
+    val composing = batch != null && route == ImportRoute.MAIN && batch.stage() == ImportStage.COMPOSE
+    LaunchedEffect(batch?.id, composing, hosts) {
+        if (composing) choices = destinations()
     }
-    val destination = batch?.destination
-    val launch = batch?.launch
-    val receipt = batch?.attempt?.receipt
-    val processing = ui.busy || (batch != null && ui.delivering == batch.id)
+    val delivering = batch != null && ui.delivering == batch.id
+    val processing = ui.busy || delivering
     val actionable = !ui.busy && ui.delivering == null
-    val editable = destination != null && (receipt == null || receipt == ExternalImportReceipt.FAILED)
-    val screen = if (destination != null || launch != null) ImportRoute.PREVIEW else route
     val title = when {
-        batch == null -> L10n.tr("待导入")
-        screen == ImportRoute.SESSIONS -> L10n.tr("选择发送目标")
-        screen == ImportRoute.COMPUTERS -> L10n.tr("选择电脑")
-        screen == ImportRoute.SETUP -> L10n.tr("新建会话")
-        receipt == ExternalImportReceipt.ACCEPTED -> L10n.tr("会话已接收")
-        editable -> L10n.tr("发送到会话")
-        else -> L10n.tr("分享内容")
+        completed != null -> L10n.tr("已发送")
+        batch == null -> L10n.tr("待发送")
+        route == ImportRoute.COMPUTERS -> L10n.tr("选择电脑")
+        route == ImportRoute.SETUP -> L10n.tr("新建会话")
+        else -> L10n.tr("发送到会话")
     }
+    val showsBack = (completed != null && ui.batches.isNotEmpty()) || (completed == null && (route != ImportRoute.MAIN || (batch != null && ui.batches.size > 1)))
 
     fun back() {
         focus.clearFocus()
-        when (screen) {
+        if (completed != null) { model.finishCompleted(); return }
+        when (route) {
             ImportRoute.SETUP -> { launchHost = null; route = setupBack }
-            ImportRoute.COMPUTERS -> route = ImportRoute.SESSIONS
-            ImportRoute.SESSIONS -> route = ImportRoute.PREVIEW
-            ImportRoute.PREVIEW -> model.select(null)
+            ImportRoute.COMPUTERS -> route = ImportRoute.MAIN
+            ImportRoute.MAIN -> model.select(null)
         }
     }
 
+    fun newSession() {
+        focus.clearFocus()
+        val computers = remote.externalImportHosts()
+        if (computers.size == 1) {
+            launchHost = computers.first().first.hostId; setupBack = ImportRoute.MAIN; route = ImportRoute.SETUP
+        } else route = ImportRoute.COMPUTERS
+    }
+
     OrbisBottomSheet(onDismissRequest = model::close, maxHeightFraction = 0.94f) {
+        // System Back walks the same steps as the header arrow; only the top level closes the sheet.
+        BackHandler(enabled = showsBack) { if (!ui.busy) back() }
+        val closeSheet = sheetCloseAction(model::close)
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).testTag("external-import-sheet")) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (batch != null) NeumorphIconButton(::back, OrbisSymbols.ArrowBack, L10n.tr("返回"), enabled = !ui.busy, size = 36.dp)
+                if (showsBack) NeumorphIconButton(::back, OrbisSymbols.ArrowBack, L10n.tr("返回"), enabled = !ui.busy, size = 36.dp)
                 Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                if (batch != null && screen == ImportRoute.PREVIEW) {
+                if (batch != null && route == ImportRoute.MAIN && completed == null) {
                     NeumorphIconButton({ deleting = true }, OrbisSymbols.Delete, L10n.tr("删除"), enabled = !processing, size = 36.dp)
                 }
-                NeumorphIconButton(sheetCloseAction(model::close), OrbisSymbols.Close, L10n.tr("关闭"), size = 36.dp)
+                NeumorphIconButton(closeSheet, OrbisSymbols.Close, L10n.tr("关闭"), size = 36.dp)
             }
-            if (processing) LinearProgressIndicator(Modifier.fillMaxWidth())
-            key(batch?.id, screen, destination?.target, launch?.id) {
-                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    ui.problem?.let { ImportStatus(importProblemText(it), OrbisSymbols.Error, error = true) }
+            if (processing) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+            key(batch?.id, route, completed?.target) {
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                    ui.problem?.let { ImportNotice(importProblemText(it)) }
                     when {
-                        batch == null -> {
-                            if (ui.batches.isEmpty() && !processing && ui.problem == null) ImportEmpty(L10n.tr("暂无待导入内容"), OrbisSymbols.Archive)
-                            val (pending, placed) = ui.batches.partition { it.destination == null && it.launch == null }
-                            if (pending.isNotEmpty()) ImportGroup {
-                                pending.forEachIndexed { index, item ->
-                                    if (index > 0) ImportDivider()
-                                    BatchRow(item, model, !ui.busy)
-                                }
-                            }
-                            if (placed.isNotEmpty()) {
-                                ImportHeading(L10n.tr("导入记录"))
-                                ImportGroup {
-                                    placed.forEachIndexed { index, item ->
-                                        if (index > 0) ImportDivider()
-                                        BatchRow(item, model, !ui.busy)
-                                    }
-                                }
-                            }
-                        }
-                        screen == ImportRoute.SESSIONS -> {
-                            val available = targets
-                            when {
-                                available == null -> Text(L10n.tr("正在读取…"), style = MaterialTheme.typography.bodyMedium)
-                                available.isEmpty() -> ImportEmpty(L10n.tr("暂无可加入的会话"), OrbisSymbols.ChatBubble)
-                                else -> available.groupBy { it.target.hostId }.values.forEach { group ->
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        ImportHeading(group.first().hostName)
-                                        ImportGroup {
-                                            group.forEachIndexed { index, target ->
-                                                if (index > 0) ImportDivider()
-                                                ImportRow(OrbisSymbols.ChatBubble, target.sessionName, target.target.cwd, enabled = actionable,
-                                                    onClick = {
-                                                        model.assign(batch.id, target) { remote.externalImportRuntime(target.target) != null }
-                                                    })
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        screen == ImportRoute.COMPUTERS -> {
+                        completed != null -> ImportCompleted(completed, remote.externalImportAgent(completed.target))
+                        batch == null -> ImportInbox(ui, model)
+                        route == ImportRoute.COMPUTERS -> {
                             val computers = remote.externalImportHosts()
                             if (computers.isEmpty()) ImportEmpty(L10n.tr("暂无可用电脑"), OrbisSymbols.Computer)
-                            else ImportGroup {
-                                computers.forEachIndexed { index, (host, _) ->
-                                    if (index > 0) ImportDivider()
-                                    ImportRow(OrbisSymbols.Computer, host.name, enabled = actionable,
-                                        onClick = { launchHost = host.hostId; setupBack = ImportRoute.COMPUTERS; route = ImportRoute.SETUP })
+                            else Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                computers.forEach { (host, _) ->
+                                    ImportLinkRow(OrbisSymbols.Computer, host.name, enabled = actionable) {
+                                        launchHost = host.hostId; setupBack = ImportRoute.COMPUTERS; route = ImportRoute.SETUP
+                                    }
                                 }
                             }
                         }
-                        screen == ImportRoute.SETUP -> {
+                        route == ImportRoute.SETUP -> {
                             val owner = launchHost?.let(remote::externalImportConnection)
                             if (owner == null) ImportEmpty(L10n.tr("暂无可用电脑"), OrbisSymbols.Computer)
                             else {
@@ -181,110 +180,254 @@ internal fun ExternalImportSheet(ui: ExternalImportUi, model: ExternalImportView
                                     SessionDraftCard(state, true, null, owner::browseSessions, owner::browseInto, owner::browseUp,
                                         onCancel = ::back, onLoadConfiguration = owner::loadSessionConfiguration,
                                         onSaveConfiguration = owner::saveSessionConfiguration, importMode = true
-                                    ) { agent, cwd, note, _, _ ->
-                                        launchHost = null; route = ImportRoute.PREVIEW
-                                        model.launch(batch, owner, agent, cwd, note)
+                                    ) { agent, cwd, first, _, _ ->
+                                        val instruction = listOf(note.trim(), first).filter(String::isNotEmpty).joinToString("\n\n")
+                                        launchHost = null; route = ImportRoute.MAIN
+                                        model.launch(batch, owner, agent, cwd, instruction)
                                         true
                                     }
                                 }
                             }
                         }
                         else -> {
-                            if (destination != null) ImportGroup {
-                                val change: (() -> Unit)? = if (editable && launch == null) ({
-                                    focus.clearFocus()
-                                    route = ImportRoute.SESSIONS
-                                    model.unassign(batch.id, destination.target)
-                                }) else null
-                                ImportRow(OrbisSymbols.ChatBubble, destination.sessionName,
-                                    L10n.tr("{0} · {1}", destination.hostName, destination.target.cwd),
-                                    actionLabel = if (change != null) L10n.tr("更换会话") else null,
-                                    enabled = actionable, onClick = change)
-                            } else if (launch != null) ImportGroup { ImportRow(OrbisSymbols.Computer, launch.hostName, launch.cwd) }
-                            when {
-                                receipt == ExternalImportReceipt.FAILED -> ImportStatus(L10n.tr("发送失败"), OrbisSymbols.Error, true)
-                                receipt?.mayCheck == true -> ImportStatus(L10n.tr("发送结果待核对"), OrbisSymbols.Refresh)
-                                destination == null && launch?.failed == true -> ImportStatus(L10n.tr("启动失败"), OrbisSymbols.Error, true)
-                                destination == null && launch != null -> ImportStatus(L10n.tr("启动结果待核对"), OrbisSymbols.Refresh)
+                            if (!delivering) {
+                                if (batch.attempt?.receipt == ExternalImportReceipt.FAILED) ImportNotice(L10n.tr("发送失败"))
+                                if (batch.destination == null && batch.launch?.failed == true) ImportNotice(L10n.tr("新会话没有启动"))
                             }
-                            ImportPayload(batch, muted = destination != null || launch != null)
-                            if (editable) NeumorphTextField(instruction, { instruction = it },
-                                modifier = Modifier.fillMaxWidth(), placeholder = { Text(L10n.tr("补充要求（可选）")) },
-                                minLines = 2, maxLines = 5, enabled = !processing)
+                            ImportContentCard(batch)
+                            when (batch.stage()) {
+                                ImportStage.AWAITING_RECEIPT -> batch.destination?.let { destination ->
+                                    ImportTargetRow(destination.sessionName, listOf(destination.hostName, directoryDisplayName(destination.target.cwd)),
+                                        remote.externalImportAgent(destination.target), selected = true)
+                                    if (!delivering) ImportStatus(L10n.tr("未收到电脑确认"))
+                                }
+                                ImportStage.AWAITING_LAUNCH -> batch.launch?.let { launch ->
+                                    ImportTargetRow(L10n.tr("新建会话"), listOf(launch.hostName, directoryDisplayName(launch.cwd)), launch.agent, selected = true)
+                                    if (!delivering) ImportStatus(L10n.tr("未收到新会话确认"))
+                                }
+                                ImportStage.COMPOSE -> {
+                                    NeumorphTextField(note, { note = it },
+                                        modifier = Modifier.fillMaxWidth().testTag("external-import-note"),
+                                        placeholder = { Text(L10n.tr("添加说明…")) }, minLines = 1, maxLines = 4, enabled = !processing)
+                                    val locked = batch.destination?.takeIf { batch.launch != null }
+                                    // A Session created for this content stays its only target.
+                                    if (locked != null) ImportTargetRow(locked.sessionName, listOf(locked.hostName, directoryDisplayName(locked.target.cwd)),
+                                        remote.externalImportAgent(locked.target), selected = true)
+                                    else ImportTargets(choices, ui.recent, choice, actionable, remote.externalImportConnecting(),
+                                        onSelect = { focus.clearFocus(); choice = if (choice == it) null else it },
+                                        onNewSession = ::newSession)
+                                }
+                            }
                         }
                     }
                 }
             }
-            if (batch != null) {
-                @Composable fun action(label: String, icon: ImageVector, tag: String = "", run: () -> Unit) {
-                    ImportDivider()
-                    NeumorphActionButton(onClick = { focus.clearFocus(); run() }, text = label, icon = icon,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).then(if (tag.isEmpty()) Modifier else Modifier.testTag(tag)),
-                        enabled = actionable)
+            @Composable fun action(label: String, icon: ImageVector?, tag: String, enabled: Boolean = actionable, run: () -> Unit) {
+                ImportDivider()
+                NeumorphActionButton(onClick = { focus.clearFocus(); run() }, text = label, icon = icon,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag(tag), enabled = enabled)
+            }
+            val phase = ui.phase.takeIf { delivering }
+            when {
+                completed != null -> action(L10n.tr("打开会话"), OrbisSymbols.ChatBubble, "external-import-open-session") {
+                    // The chat is already underneath when the sheet finishes its exit.
+                    remote.openSession(completed.target.hostId, completed.target.sessionId)
+                    closeSheet()
                 }
-                when {
-                    screen == ImportRoute.SESSIONS -> action(L10n.tr("新建会话"), OrbisSymbols.Add, "external-import-new-session") {
-                        val computers = remote.externalImportHosts()
-                        if (computers.size == 1) {
-                            launchHost = computers.first().first.hostId; setupBack = ImportRoute.SESSIONS; route = ImportRoute.SETUP
-                        } else route = ImportRoute.COMPUTERS
+                batch == null || route != ImportRoute.MAIN -> Unit
+                phase != null -> action(importPhaseText(phase), null, "external-import-progress", enabled = false) {}
+                batch.stage() != ImportStage.COMPOSE ->
+                    action(L10n.tr("重新检查"), OrbisSymbols.Refresh, "external-import-recheck") { model.recheck(batch, remote) }
+                else -> {
+                    val target = batch.destination?.takeIf { batch.launch != null }
+                        ?: choices?.firstOrNull { it.destination.target == choice }?.destination
+                    if (target == null) action(L10n.tr("选一个会话"), null, "external-import-send", enabled = false) {}
+                    else action(L10n.tr("发送到「{0}」", target.sessionName), OrbisSymbols.ArrowUpward, "external-import-send") {
+                        model.send(batch, target, remote, note)
                     }
-                    screen != ImportRoute.PREVIEW -> Unit
-                    editable -> action(L10n.tr("发送"), OrbisSymbols.ArrowUpward, "external-import-send") { model.deliver(batch, remote, instruction) }
-                    receipt?.mayCheck == true || (destination == null && launch != null && !launch.failed) ->
-                        action(L10n.tr("核对结果"), OrbisSymbols.Refresh) { model.deliver(batch, remote, null) }
-                    destination == null && launch?.failed == true ->
-                        action(L10n.tr("移回待导入"), OrbisSymbols.Archive) { model.clearFailedLaunch(batch.id, launch.id) }
-                    destination == null && launch == null -> action(L10n.tr("选择发送目标"), OrbisSymbols.ArrowUpward, "external-import-choose-target") { route = ImportRoute.SESSIONS }
                 }
             }
         }
     }
     if (deleting && batch != null) NeumorphDialog(
-        onDismissRequest = { deleting = false }, title = { Text(L10n.tr("删除待导入内容？")) }, text = {},
+        onDismissRequest = { deleting = false }, title = { Text(L10n.tr("删除这条内容？")) }, text = {},
         dismissButton = { NeumorphTextButton(L10n.tr("取消"), onClick = { deleting = false }) },
         confirmButton = { NeumorphTextButton(L10n.tr("删除"), onClick = { deleting = false; model.delete(batch.id) }, danger = true, enabled = !processing) },
     )
 }
 
 @Composable
-private fun ImportDivider() = HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
-
-@Composable
-private fun ImportGroup(content: @Composable () -> Unit) {
-    NeumorphSurface(Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed, contentInset = 0.dp) {
-        Column { content() }
-    }
-}
-
-@Composable
-private fun ImportHeading(title: String) {
-    Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-}
-
-@Composable
-private fun ImportRow(icon: ImageVector, title: String, subtitle: String? = null, actionLabel: String? = null,
-                      modifier: Modifier = Modifier, enabled: Boolean = true, onClick: (() -> Unit)? = null) {
-    NeumorphSurface(modifier = modifier.fillMaxWidth(), shape = RemoteUi.ControlShape,
-        flat = true, onClick = onClick, enabled = enabled) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(icon, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+private fun ImportTargets(choices: List<ExternalImportChoice>?, recent: ExternalImportTarget?, selected: ExternalImportTarget?,
+                          enabled: Boolean, connecting: Boolean, onSelect: (ExternalImportTarget) -> Unit, onNewSession: () -> Unit) {
+    when {
+        choices == null -> ImportStatus(L10n.tr("正在读取…"))
+        // A cold start from the share sheet races the first catalog; empty is not final yet.
+        choices.isEmpty() && connecting -> ImportStatus(L10n.tr("正在连接…"))
+        choices.isEmpty() -> ImportEmpty(L10n.tr("暂无可加入的会话"), OrbisSymbols.ChatBubble)
+        else -> orderImportChoices(choices, recent).forEach { group ->
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ImportHeading(group.first().destination.hostName)
+                group.forEach { option ->
+                    val target = option.destination.target
+                    ImportTargetRow(option.destination.sessionName,
+                        listOf(directoryDisplayName(target.cwd), L10n.tr("运行中").takeIf { option.running },
+                            L10n.tr("最近使用").takeIf { target == recent }),
+                        option.agentKind, selected = target == selected, enabled = enabled,
+                        modifier = Modifier.testTag("external-import-target"), onClick = { onSelect(target) })
+                }
             }
-            if (actionLabel != null) Text(actionLabel, style = MaterialTheme.typography.labelMedium,
-                color = if (enabled) MaterialTheme.colorScheme.primary else LocalOrbisPalette.current.faint,
-                modifier = Modifier.weight(0.45f, fill = false))
-            else if (onClick != null) Icon(OrbisSymbols.ChevronRight, null, Modifier.size(16.dp), tint = LocalOrbisPalette.current.faint)
+        }
+    }
+    ImportLinkRow(OrbisSymbols.Add, L10n.tr("新建会话"), enabled = enabled,
+        modifier = Modifier.testTag("external-import-new-session"), onClick = onNewSession)
+}
+
+@Composable
+private fun ImportInbox(ui: ExternalImportUi, model: ExternalImportViewModel) {
+    if (ui.batches.isEmpty()) {
+        if (!ui.busy && ui.problem == null) ImportEmpty(L10n.tr("没有待发送的内容"), OrbisSymbols.Archive)
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        ui.batches.forEach { item ->
+            val error = item.attempt?.receipt == ExternalImportReceipt.FAILED || (item.destination == null && item.launch?.failed == true)
+            NeumorphSurface(Modifier.fillMaxWidth().testTag("external-import-${item.id}"), shape = RemoteUi.ControlShape, shadowScale = 0.5f,
+                onClick = { model.select(item.id) }, enabled = !ui.busy) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    ImportContentIcon(item, 36.dp)
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(importTitle(item), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(importStatusLine(item), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Icon(OrbisSymbols.ChevronRight, null, Modifier.size(16.dp), tint = LocalOrbisPalette.current.faint)
+                }
+            }
         }
     }
 }
 
 @Composable
+private fun ImportCompleted(destination: ExternalImportDestination, agent: String?) {
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { reveal.animateTo(1f, tween(InteractionMotion.duration(InteractionMotion.Panel))) }
+    Column(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Icon(OrbisSymbols.CheckCircleFill, null, Modifier.size(52.dp).graphicsLayer {
+            alpha = reveal.value; scaleX = 0.8f + 0.2f * reveal.value; scaleY = scaleX
+        }, tint = LocalOrbisPalette.current.success)
+        ImportTargetRow(destination.sessionName, listOf(destination.hostName, directoryDisplayName(destination.target.cwd)),
+            agent, selected = false, showsIndicator = false, modifier = Modifier.testTag("external-import-completed"))
+    }
+}
+
+/** OI-08: what is being sent, in one card that expands in place. */
+@Composable
+private fun ImportContentCard(batch: ExternalImportBatch) {
+    var expanded by remember(batch.id) { mutableStateOf(false) }
+    val expandable = batch.files.size > 1 || (batch.files.isNotEmpty() && batch.text != null) ||
+        (batch.files.isEmpty() && (batch.text?.length ?: 0) > 90)
+    val turn by animateFloatAsState(if (expanded) 180f else 0f, label = "import-expand")
+    NeumorphSurface(Modifier.fillMaxWidth().testTag("external-import-summary"), shape = RoundedCornerShape(18.dp),
+        onClick = if (expandable) ({ expanded = !expanded }) else null, contentInset = 0.dp) {
+        Column(Modifier.animateContentSize()) {
+            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                ImportContentIcon(batch, 40.dp)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(importTitle(batch), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(importKind(batch), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (expandable) Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(18.dp).rotate(turn), tint = LocalOrbisPalette.current.faint)
+            }
+            if (expanded && expandable) {
+                ImportDivider(66.dp)
+                Column(Modifier.fillMaxWidth().padding(start = 66.dp, end = 14.dp, top = 12.dp, bottom = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    batch.files.drop(1).forEach { file ->
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Box(Modifier.weight(1f)) { FileNameText(file.name, style = MaterialTheme.typography.bodySmall) }
+                            Text(formatByteCount(file.bytes), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    batch.text?.takeIf { batch.files.isNotEmpty() || it.length > 90 }?.let { text ->
+                        SelectionContainer {
+                            Text(importPreview(text, 2000), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportContentIcon(batch: ExternalImportBatch, size: androidx.compose.ui.unit.Dp) {
+    val palette = LocalOrbisPalette.current
+    Box(Modifier.size(size).clip(RoundedCornerShape(size * 0.28f)).background(palette.accentSoft), contentAlignment = Alignment.Center) {
+        Icon(if (batch.files.isEmpty()) OrbisSymbols.ChatBubble else OrbisSymbols.Description, null,
+            Modifier.size(size * 0.5f), tint = palette.accent)
+    }
+}
+
+/** Shared selection language: a raised tile at rest, pressed in once chosen. */
+@Composable
+private fun ImportTargetRow(title: String, notes: List<String?>, agent: String?, selected: Boolean, enabled: Boolean = true,
+                            showsIndicator: Boolean = true, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
+    val palette = LocalOrbisPalette.current
+    val interaction = remember { MutableInteractionSource() }
+    NeumorphSurface(
+        modifier = modifier.fillMaxWidth().then(if (onClick != null) Modifier.selectable(selected, enabled = enabled,
+            role = Role.RadioButton, interactionSource = interaction, indication = null, onClick = onClick) else Modifier),
+        interactionSource = interaction, enabled = enabled || onClick == null, shape = RemoteUi.ControlShape,
+        style = if (selected && showsIndicator) NeumorphStyle.Pressed else NeumorphStyle.Raised, shadowScale = 0.5f,
+    ) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (agent != null) AgentIcon(agentBrand(agent), Modifier.size(24.dp))
+            else Icon(OrbisSymbols.ChatBubble, null, Modifier.size(22.dp), tint = palette.accent)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                val line = notes.filterNotNull().joinToString(" · ")
+                if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (showsIndicator) {
+                if (selected) Icon(OrbisSymbols.CheckCircleFill, null, Modifier.size(22.dp), tint = palette.accent)
+                else Box(Modifier.size(20.dp).border(1.5.dp, palette.faint.copy(alpha = 0.5f), CircleShape))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportLinkRow(icon: ImageVector, title: String, enabled: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    NeumorphSurface(modifier = modifier.fillMaxWidth().semantics { this.role = Role.Button }, shape = RemoteUi.ControlShape,
+        shadowScale = 0.5f, onClick = onClick, enabled = enabled) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Icon(icon, null, Modifier.size(22.dp), tint = LocalOrbisPalette.current.accent)
+            Text(title, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+            Icon(OrbisSymbols.ChevronRight, null, Modifier.size(16.dp), tint = LocalOrbisPalette.current.faint)
+        }
+    }
+}
+
+@Composable
+private fun ImportDivider(inset: androidx.compose.ui.unit.Dp = 0.dp) =
+    HorizontalDivider(Modifier.padding(start = inset), thickness = 0.5.dp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.16f))
+
+@Composable
+private fun ImportHeading(title: String) {
+    Text(title, Modifier.padding(start = 4.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
 private fun ImportEmpty(text: String, icon: ImageVector) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally,
+    Column(Modifier.fillMaxWidth().padding(vertical = 28.dp), horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Icon(icon, null, Modifier.size(28.dp), tint = LocalOrbisPalette.current.faint)
         Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -292,82 +435,62 @@ private fun ImportEmpty(text: String, icon: ImageVector) {
 }
 
 @Composable
-private fun ImportStatus(text: String, icon: ImageVector, error: Boolean = false) {
-    val color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+private fun ImportStatus(text: String) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Icon(icon, null, Modifier.size(18.dp), tint = color)
-        Text(text, style = MaterialTheme.typography.bodyMedium, color = color)
+        Icon(OrbisSymbols.History, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun ImportPayload(batch: ExternalImportBatch, muted: Boolean) {
-    var expanded by remember(batch.id, muted) { mutableStateOf(false) }
-    val fold = !expanded && (muted || batch.files.size > 3 || (batch.text?.length ?: 0) > 260)
-    val files = if (fold && muted) emptyList() else if (fold) batch.files.take(3) else batch.files
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (files.isNotEmpty()) {
-            ImportHeading(L10n.tr("{0} 个文件", batch.files.size))
-            ImportGroup {
-                files.forEachIndexed { index, file ->
-                    if (index > 0) ImportDivider()
-                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Icon(OrbisSymbols.Description, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                        Box(Modifier.weight(1f)) { FileNameText(file.name, style = MaterialTheme.typography.bodyMedium) }
-                        Text(formatByteCount(file.bytes), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-        }
-        batch.text?.takeUnless { fold && muted }?.let { text ->
-            ImportHeading(L10n.tr("分享文字"))
-            ImportGroup {
-                SelectionContainer { Text(importPreview(text, if (fold) 260 else 2000), Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium) }
-            }
-        }
-        if (fold || expanded) {
-            NeumorphTextButton(if (expanded) L10n.tr("收起") else L10n.tr("查看分享内容"),
-                onClick = { expanded = !expanded }, dismissOnClick = false)
-        }
+private fun ImportNotice(text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Icon(OrbisSymbols.Error, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
+        Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
     }
 }
 
-@Composable
-private fun BatchRow(batch: ExternalImportBatch, model: ExternalImportViewModel, enabled: Boolean) {
+private fun importTitle(batch: ExternalImportBatch): String =
+    batch.files.firstOrNull()?.name ?: importPreview(batch.text.orEmpty().trim(), 200)
+
+private fun importKind(batch: ExternalImportBatch): String =
+    if (batch.files.isEmpty()) L10n.tr("文字")
+    else L10n.tr("{0} 个文件 · {1}", batch.files.size, formatByteCount(batch.files.sumOf { it.bytes }))
+
+private fun importStatusLine(batch: ExternalImportBatch): String {
     val destination = batch.destination
     val launch = batch.launch
-    val status = when (batch.attempt?.receipt) {
-        ExternalImportReceipt.ACCEPTED -> L10n.tr("已接收")
-        ExternalImportReceipt.FAILED -> L10n.tr("失败")
-        null -> if (destination != null) L10n.tr("待发送") else launch?.let { if (it.failed) L10n.tr("失败") else L10n.tr("待核对") }
-        else -> L10n.tr("待核对")
+    return when {
+        destination != null -> L10n.tr("{0} · {1}", when (batch.attempt?.receipt) {
+            ExternalImportReceipt.FAILED -> L10n.tr("发送失败")
+            null -> L10n.tr("未发送")
+            else -> L10n.tr("未确认")
+        }, destination.sessionName)
+        launch != null -> if (launch.failed) L10n.tr("新会话没有启动") else L10n.tr("{0} · {1}", L10n.tr("新会话未确认"), launch.hostName)
+        else -> importKind(batch)
     }
-    val context = when {
-        destination != null -> destination.sessionName
-        launch != null -> launch.hostName
-        batch.files.isNotEmpty() -> L10n.tr("{0} 个文件 · {1}", batch.files.size, formatByteCount(batch.files.sumOf { it.bytes }))
-        else -> L10n.tr("分享文字")
-    }
-    ImportRow(if (batch.files.isEmpty()) OrbisSymbols.ChatBubble else OrbisSymbols.Description,
-        batch.files.firstOrNull()?.name ?: importPreview(batch.text.orEmpty(), 120),
-        status?.let { L10n.tr("{0} · {1}", it, context) } ?: context,
-        modifier = Modifier.testTag("external-import-${batch.id}"), enabled = enabled, onClick = { model.select(batch.id) })
 }
 
 private fun importPreview(body: String, limit: Int): String = if (body.length <= limit) body
     else body.take(limit).trimEnd(Char::isHighSurrogate) + "…"
 
+private fun importPhaseText(phase: ImportPhase): String = when (phase) {
+    is ImportPhase.Uploading -> L10n.tr("正在上传 {0}/{1}", phase.index, phase.total)
+    ImportPhase.Sending -> L10n.tr("正在发送…")
+    ImportPhase.Checking -> L10n.tr("正在检查…")
+    ImportPhase.Launching -> L10n.tr("正在创建会话…")
+}
+
 private fun importProblemText(problem: ImportProblem): String = when (problem) {
-    ImportProblem.EMPTY -> L10n.tr("没有可导入的内容")
+    ImportProblem.EMPTY -> L10n.tr("没有可发送的内容")
     ImportProblem.UNSUPPORTED -> L10n.tr("不支持此分享内容")
-    ImportProblem.LIMIT -> L10n.tr("导入内容超过大小或数量上限")
-    ImportProblem.FULL -> L10n.tr("待导入空间已满")
-    ImportProblem.BUSY -> L10n.tr("已有导入正在进行，请稍后重试")
-    ImportProblem.UNREADABLE -> L10n.tr("无法读取导入内容")
+    ImportProblem.LIMIT -> L10n.tr("内容超过大小或数量上限")
+    ImportProblem.FULL -> L10n.tr("待发送内容已满，请先删除一些")
+    ImportProblem.BUSY -> L10n.tr("上一条还在处理，请稍后再试")
+    ImportProblem.UNREADABLE -> L10n.tr("无法读取分享的内容")
     ImportProblem.TARGET_UNAVAILABLE -> L10n.tr("所选会话已不可用")
-    ImportProblem.LAUNCH_CONFIGURATION -> L10n.tr("配置未确认，请刷新核对")
-    ImportProblem.HOST_UPGRADE -> L10n.tr("更新电脑端后可发送导入内容")
+    ImportProblem.LAUNCH_CONFIGURATION -> L10n.tr("会话配置还没准备好，请稍后再试")
+    ImportProblem.HOST_UPGRADE -> L10n.tr("电脑端版本较旧，更新后才能发送")
     ImportProblem.UPLOAD_FAILED -> L10n.tr("上传未完成，附件已保留")
-    ImportProblem.ALREADY_ASSIGNED -> L10n.tr("此内容已加入其他会话草稿")
+    ImportProblem.ALREADY_ASSIGNED -> L10n.tr("这条内容已选定其他会话")
 }

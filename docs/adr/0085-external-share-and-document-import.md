@@ -141,3 +141,17 @@ Android 冷启动／`onNewIntent` 入口、受系统授权的文件流、原子�
 验证：[Android 导入回归](../../.artifacts/external-import/oi-07/android-final/build.log) 10/10；[Android UI 用例](../../android/app/src/androidTest/java/com/orbising/orbis/ExternalImportSheetInstrumentedTest.kt)已[编译](../../.artifacts/external-import/oi-07/android-ui-final/build.log)，未在设备运行；[iOS 模拟器目标及扩展构建](../../.artifacts/external-import/oi-07/ios-final/run.log)通过，[收件箱单测](../../.artifacts/external-import/oi-07/ios-tests/run.log) 5/5。共享 QA MCP 无法连接，未登记、未分发，待用户验证。
 
 本机安装：Redmi K70 Ultra 已覆盖安装 ARM64 Release `0.1.60 (61)`，设备 APK SHA-256 与候选包完全匹配。见[安装记录](../../.artifacts/external-import/oi-07/phone-install/command.log)和[包审计](../../.artifacts/external-import/oi-07/phone-package/Orbis-0.1.60-OI-07-arm64.audit.json)。仅此设备，待用户验收。
+
+### OI-08 单页直发
+
+替代 OI-07 的分步页面。
+
+- 双端主 App 的分享面板只有一页：内容卡片（文件名或正文开头，点按就地展开）、可选说明，以及按电脑分组的会话列表。点选会话只改变选中状态，底部固定按钮「发送到「会话名」」；未选择时不可用。只有明确点按发送才绑定会话、上传附件；更换会话会替换尚未发送的选择。新建会话作为列表末行，进入现有配置页。
+- 会话行显示 Agent 图标、会话名、项目名与运行状态。最近确认接收的目标、当前打开的会话排在前面，只排序、不预选。电脑仍在连接或目录未到时显示「正在连接…」。
+- 结果不明时只显示目标与「重新检查」（只读核对）；失败时保留选择和说明，可直接重发。发送中底部按钮显示上传进度或当前阶段。会话确认接收后，本地批次自动移出，显示「已发送」与「打开会话」；早期版本留下的已接收批次在下次读取时一并清理。Android 系统返回键逐级返回。
+- 文案改用直白说法：待发送、添加说明、未收到电脑确认、重新检查等，问题提示同步改写。
+- iOS 分享扩展使用同样的单页布局，会话列表来自主 App 离开前台时写入共享区的最小目标清单（标签与路由身份，不含配对凭据）。选定会话并点按发送后，批次与目标、说明、请求时间原子写入；扩展随后只发一条本地通知。主 App 下次进入前台时，对 10 分钟内的请求等待目标电脑就绪并发送一次。请求在开始时即作废，超时、关闭面板或失败都只留下已绑定的草稿，由用户再次点按。选「先存入 Orbis」只保存，不弹出、不发送。扩展内后台直投仍属阶段 C。
+
+实现：[Android 面板](../../android/app/src/main/java/com/orbising/orbis/ExternalImportSheet.kt)与[状态](../../android/app/src/main/java/com/orbising/orbis/ExternalImportViewModel.kt)、[iOS 面板](../../ios/Orbis/Orbis/ExternalImportInboxView.swift)、[iOS 分享扩展](../../ios/Orbis/ShareExtension/ShareViewController.swift)；清理、排序、目标清单与发送请求在双端[存储](../../android/app/src/main/java/com/orbising/orbis/ExternalImportStore.kt)（[iOS](../../ios/Orbis/Orbis/ExternalImportStore.swift)）。
+
+验证：[Android 导入单测](../../.artifacts/external-import/oi-08/android-single-overlay/) 12/12；[模拟器面板用例](../../.artifacts/external-import/oi-08/android-capture-2/) 3/3，含浅色、深色与已发送[截图](../../.artifacts/external-import/oi-08/android-capture-2/device-files/)。两项均用源码覆盖构建，只替换了同时期另一任务在 `RemoteState.kt` 中无法编译的一行，[首次失败](../../.artifacts/external-import/oi-08/android-single/build.log)保留。[Swift 定向回归](../../.artifacts/external-import/oi-08/ios-core-single/run.log) 35/35；[iOS 模拟器目标及扩展构建](../../.artifacts/external-import/oi-08/ios-app-final-2/run.log)通过。iOS 界面未截图，未安装、未分发，待用户验证。

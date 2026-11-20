@@ -35,6 +35,41 @@ class ExternalImportStoreTest {
         assertEquals("contents", File(root, "ready-${batch.id}/file-0").readText())
     }
 
+    // OI-08: only a Session-confirmed receipt hands a batch over; ambiguous or failed sends must stay recoverable.
+    @Test fun onlyAcceptedBatchesLeaveTheInbox() {
+        val root = temporary.newFolder()
+        val store = ExternalImportStore(root)
+        val target = ExternalImportTarget("host-a", "pair-a", "session-a", "/work")
+        val receipts = ExternalImportReceipt.entries
+        val batches = receipts.map { receipt ->
+            val batch = store.save("body $receipt", emptyList())
+            store.assign(batch.id, ExternalImportDestination(target, "Computer A", "Session A"))
+            store.beginDelivery(batch.id, target, ExternalImportAttempt("attempt-$receipt", "runtime-a", ExternalImportReceipt.PENDING))
+            store.recordDelivery(batch.id, "attempt-$receipt", receipt)
+            receipt to batch.id
+        }
+        val untouched = store.save("not assigned", emptyList())
+        val removed = store.removeAccepted()
+        assertEquals(listOf(batches.single { it.first == ExternalImportReceipt.ACCEPTED }.second), removed.map { it.id })
+        val remaining = ExternalImportStore(root).list().map { it.id }.toSet()
+        assertEquals(batches.filter { it.first != ExternalImportReceipt.ACCEPTED }.map { it.second }.toSet() + untouched.id, remaining)
+        assertFalse(File(root, "ready-${removed.single().id}").exists())
+    }
+
+    // OI-08: ordering may lift the last target and the open chat, but never drops or merges same-ID sessions across computers.
+    @Test fun pickerOrderLeadsWithRecentThenOpenChat() {
+        fun choice(host: String, session: String, current: Boolean = false) = ExternalImportChoice(
+            ExternalImportDestination(ExternalImportTarget(host, "pair-$host", session, "/work"), host, session), "pi", false, current)
+        val choices = listOf(choice("a", "s1"), choice("a", "s2", current = true), choice("b", "s1"), choice("b", "s3"))
+        val recent = choices[3].destination.target
+        val ordered = orderImportChoices(choices, recent)
+        assertEquals(listOf(listOf("b/s3", "b/s1"), listOf("a/s2", "a/s1")),
+            ordered.map { group -> group.map { "${it.destination.target.hostId}/${it.destination.target.sessionId}" } })
+        assertEquals(listOf(listOf("a/s1", "a/s2"), listOf("b/s1", "b/s3")),
+            orderImportChoices(choices.map { it.copy(current = false) }, null)
+                .map { group -> group.map { "${it.destination.target.hostId}/${it.destination.target.sessionId}" } })
+    }
+
     @Test fun requiresLiveUnambiguousSessionAndBindsThePairing() {
         val runtime = RuntimeSummary("r1", "Agent", "/project", "idle", "s1")
         val current = RemoteState(hostId = "h1", connection = RelayConnection.ONLINE, e2eReady = true,

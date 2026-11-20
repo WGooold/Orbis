@@ -374,8 +374,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         connection.selectRuntime(runtimeId)
     }
 
-    internal suspend fun externalImportDestinations(): List<ExternalImportDestination> = withContext(Dispatchers.Default) {
-        val current = synchronized(lock) { connections.values.toList() }
+    internal suspend fun externalImportDestinations(): List<ExternalImportChoice> = withContext(Dispatchers.Default) {
+        val (current, activeHost) = synchronized(lock) { connections.values.toList() to activeHostId.value }
         current.flatMap { connection ->
             val pairing = connection.pairing
             val state = connection.state.value
@@ -383,17 +383,35 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             val hostName = HostSnapshot(pairing, state, hasPendingInteraction = false).name
             state.externalImportRuntimes().mapNotNull { runtime ->
                 val session = runtime.sessionId ?: return@mapNotNull null
-                ExternalImportDestination(ExternalImportTarget(pairing.hostId, pairingKey, session, runtime.cwd),
-                    hostName, state.sessionDisplayName(session, runtime))
+                ExternalImportChoice(
+                    ExternalImportDestination(ExternalImportTarget(pairing.hostId, pairingKey, session, runtime.cwd),
+                        hostName, state.sessionDisplayName(session, runtime)),
+                    agentKind = runtime.agentKind ?: state.sessions[session]?.agentKind,
+                    running = runtime.status == "running",
+                    current = pairing.hostId == activeHost && state.selectedRuntimeId == runtime.runtimeId,
+                )
             }
         }
     }
 
-    internal suspend fun deliverExternalImport(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String?) {
+    /** True while a paired computer may still publish sessions, so an empty picker is not yet final. */
+    internal fun externalImportConnecting(): Boolean = synchronized(lock) { connections.values.toList() }.any { connection ->
+        val state = connection.state.value
+        state.connection == RelayConnection.CONNECTING || state.connection == RelayConnection.RECONNECTING ||
+            (state.connection == RelayConnection.ONLINE && !state.homeDirectoryReceived)
+    }
+
+    internal fun externalImportAgent(target: ExternalImportTarget): String? {
+        val connection = connectionFor(target.hostId) ?: return null
+        return externalImportRuntime(target)?.agentKind ?: connection.state.value.sessions[target.sessionId]?.agentKind
+    }
+
+    internal suspend fun deliverExternalImport(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String?,
+                                               phase: (ImportPhase) -> Unit = {}) {
         val hostId = batch.destination?.target?.hostId ?: batch.launch?.hostId ?: reject(ImportProblem.TARGET_UNAVAILABLE)
         val connection = connectionFor(hostId) ?: reject(ImportProblem.TARGET_UNAVAILABLE)
-        if (batch.destination == null && instruction == null) connection.recoverImportLaunch(batch, inbox)
-        else connection.deliverImport(batch, inbox, instruction)
+        if (batch.destination == null && instruction == null) connection.recoverImportLaunch(batch, inbox, phase)
+        else connection.deliverImport(batch, inbox, instruction, phase)
     }
 
     internal fun externalImportHosts(): List<Pair<HostSnapshot, HostConnection>> = synchronized(lock) {

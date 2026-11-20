@@ -933,7 +933,8 @@ internal class HostConnection(
         it.sessionConfigurationSupported && it.canOperateSessions && it.homeDirectoryReceived
     } && relay.externalImportChannel() != null
 
-    suspend fun launchImport(batch: ExternalImportBatch, inbox: ExternalImportStore, agent: String, cwd: String, instruction: String) = withContext(Dispatchers.IO) {
+    suspend fun launchImport(batch: ExternalImportBatch, inbox: ExternalImportStore, agent: String, cwd: String, instruction: String,
+                             phase: (ImportPhase) -> Unit = {}) = withContext(Dispatchers.IO) {
         if (!importLaunchGate.tryLock()) reject(ImportProblem.BUSY)
         try {
             val channel = relay.externalImportChannel() ?: reject(ImportProblem.HOST_UPGRADE)
@@ -953,24 +954,25 @@ internal class HostConnection(
                 inbox.failLaunch(batch.id, launch.id)
                 reject(ImportProblem.LAUNCH_CONFIGURATION)
             }
-            continueImportLaunch(batch, inbox, launch, requestImportLaunch(launch, channel, snapshot))
+            continueImportLaunch(batch, inbox, launch, requestImportLaunch(launch, channel, snapshot), phase)
         } finally { importLaunchGate.unlock() }
     }
 
-    suspend fun recoverImportLaunch(batch: ExternalImportBatch, inbox: ExternalImportStore) = withContext(Dispatchers.IO) {
+    suspend fun recoverImportLaunch(batch: ExternalImportBatch, inbox: ExternalImportStore, phase: (ImportPhase) -> Unit = {}) = withContext(Dispatchers.IO) {
         if (!importLaunchGate.tryLock()) reject(ImportProblem.BUSY)
         try {
             val launch = batch.launch ?: reject(ImportProblem.TARGET_UNAVAILABLE)
             if (launch.failed || batch.attempt != null || !matchesImportLaunch(launch)) reject(ImportProblem.TARGET_UNAVAILABLE)
             val channel = relay.externalImportChannel() ?: reject(ImportProblem.HOST_UPGRADE)
-            continueImportLaunch(batch, inbox, launch, requestImportLaunch(launch, channel, null))
+            continueImportLaunch(batch, inbox, launch, requestImportLaunch(launch, channel, null), phase)
         } finally { importLaunchGate.unlock() }
     }
 
     private fun matchesImportLaunch(launch: ExternalImportLaunch) =
         hostId == launch.hostId && externalImportPairingKey(pairing) == launch.pairingKey && canLaunchExternalImport()
 
-    private suspend fun continueImportLaunch(batch: ExternalImportBatch, inbox: ExternalImportStore, launch: ExternalImportLaunch, result: ImportLaunchResult) {
+    private suspend fun continueImportLaunch(batch: ExternalImportBatch, inbox: ExternalImportStore, launch: ExternalImportLaunch,
+                                             result: ImportLaunchResult, phase: (ImportPhase) -> Unit) {
         if (result == ImportLaunchResult.Failed) { inbox.failLaunch(batch.id, launch.id); return }
         if (result !is ImportLaunchResult.Ready || !matchesImportLaunch(launch)) return
         val bound = inbox.bindLaunch(batch.id, launch, result.sessionId)
@@ -979,7 +981,7 @@ internal class HostConnection(
             if (!matchesImportLaunch(launch)) return
             val runtime = importRuntime(target)
             if (runtime != null && (runtime.agentKind ?: mutableState.value.sessions[target.sessionId]?.agentKind ?: "pi") == launch.agent) {
-                deliverImport(bound, inbox, launch.instruction)
+                deliverImport(bound, inbox, launch.instruction, phase)
                 return
             }
             delay(100)
@@ -1020,7 +1022,8 @@ internal class HostConnection(
         mutableState.value.externalImportRuntimes().firstOrNull { it.sessionId == target.sessionId && it.cwd == target.cwd }
     } else null
 
-    suspend fun deliverImport(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String?) = withContext(Dispatchers.IO) {
+    suspend fun deliverImport(batch: ExternalImportBatch, inbox: ExternalImportStore, instruction: String?,
+                              phase: (ImportPhase) -> Unit = {}) = withContext(Dispatchers.IO) {
         val target = batch.destination?.target ?: reject(ImportProblem.TARGET_UNAVAILABLE)
         val connection = generation
         val epoch = mutableState.value.agentModelEpoch
@@ -1033,7 +1036,7 @@ internal class HostConnection(
         } else {
             importDelivery.send(batch, inbox, instruction, ::current, ::capable,
                 upload = { source, id -> uploadExternalImport(source, target, id, channel!!) { capable() && current()?.runtimeId == id } },
-                request = { attempt, command -> waitForExternalImport(attempt, target, channel!!, command) })
+                request = { attempt, command -> waitForExternalImport(attempt, target, channel!!, command) }, phase = phase)
         }
     }
 

@@ -112,4 +112,75 @@ struct ExternalImportStoreTests {
             #expect(try store.list() == [first])
         }
     }
+
+    // OI-08: only a Session-confirmed receipt hands a batch over; ambiguous or failed sends must stay recoverable.
+    @Test func onlyAcceptedBatchesLeaveTheInbox() throws {
+        try withRoot { _, inbox in
+            let store = ExternalImportStore(root: inbox)
+            let target = ExternalImportTarget(hostId: "a", pairingKey: "pair-a", sessionId: "s", cwd: "/work")
+            var byReceipt: [ExternalImportReceipt: UUID] = [:]
+            for receipt in [ExternalImportReceipt.pending, .accepted, .failed, .unconfirmed, .unknown] {
+                let batch = try store.publish(try store.begin(), text: "body \(receipt)", files: [])
+                _ = try store.assign(batch.id, to: .init(target: target, hostName: "Computer A", sessionName: "Session"))
+                let attempt = ExternalImportAttempt(id: UUID(), runtimeId: "r", receipt: .pending)
+                try store.beginDelivery(batch.id, target: target, attempt: attempt)
+                try store.recordDelivery(batch.id, attempt: attempt.id, receipt: receipt)
+                byReceipt[receipt] = batch.id
+            }
+            let accepted = try #require(byReceipt[.accepted])
+            #expect(try store.removeAccepted(keeping: accepted).isEmpty)
+            #expect(try store.removeAccepted().map(\.id) == [accepted])
+            #expect(Set(try ExternalImportStore(root: inbox).list().map(\.id)) == Set(byReceipt.filter { $0.key != .accepted }.values))
+        }
+    }
+
+    // OI-08: Send from the Share Extension is bound atomically and performed at most once, only while recent.
+    @Test func extensionSendRequestIsBoundAndSpentOnce() throws {
+        try withRoot { _, inbox in
+            let store = ExternalImportStore(root: inbox)
+            let destination = ExternalImportDestination(target: .init(hostId: "a", pairingKey: "pair-a", sessionId: "s", cwd: "/w"),
+                                                        hostName: "Computer A", sessionName: "Session")
+            let now = Date()
+            let requested = try store.publish(try store.begin(), text: "https://example.test", files: [], note: "  look  ",
+                                              request: (destination, now))
+            let saved = try store.publish(try store.begin(), text: "later", files: [], note: " ")
+            #expect(requested.destination == destination && requested.sendRequestedAt == now && requested.note == "  look  ")
+            #expect(saved.destination == nil && saved.sendRequestedAt == nil && saved.note == nil)
+            let listed = try store.list()
+            #expect(ExternalImportAutoSend.next(listed, now: now.addingTimeInterval(30))?.id == requested.id)
+            #expect(ExternalImportAutoSend.next(listed, now: now.addingTimeInterval(ExternalImportAutoSend.window + 1)) == nil)
+            try store.clearSendRequest(requested.id)
+            #expect(ExternalImportAutoSend.next(try store.list(), now: now) == nil)
+            #expect(try store.list().first { $0.id == requested.id }?.destination == destination)
+        }
+    }
+
+    // OI-08: manifests written before the note and send-request fields still open; the extension reads only what Orbis saved.
+    @Test func readsEarlierManifestsAndTargetSnapshots() throws {
+        let legacy = #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","createdAt":0,"text":"old","files":[]}"#
+        let batch = try JSONDecoder().decode(ExternalImportBatch.self, from: Data(legacy.utf8))
+        #expect(batch.note == nil && batch.sendRequestedAt == nil && batch.text == "old")
+        try withRoot { _, inbox in
+            let store = ExternalImportStore(root: inbox)
+            #expect(store.loadTargets() == nil)
+            let entry = ExternalImportTargetSnapshot.Entry(destination: .init(target: .init(hostId: "a", pairingKey: "p", sessionId: "s", cwd: "/w"),
+                                                                              hostName: "A", sessionName: "S"), agentKind: "pi", running: true)
+            let snapshot = ExternalImportTargetSnapshot(entries: [entry], recent: entry.destination.target, savedAt: Date(timeIntervalSince1970: 5))
+            try store.saveTargets(snapshot)
+            #expect(store.loadTargets() == snapshot)
+            #expect(try store.list().isEmpty)
+        }
+    }
+
+    // OI-08: ordering may lift the last target and the open chat, but never drops or merges same-ID sessions across computers.
+    @Test func pickerOrderLeadsWithRecentThenOpenChat() {
+        func choice(_ host: String, _ session: String, current: Bool = false) -> ExternalImportChoice {
+            ExternalImportChoice(destination: .init(target: .init(hostId: host, pairingKey: "pair-" + host, sessionId: session, cwd: "/w"),
+                                                    hostName: host, sessionName: session), agentKind: "pi", running: false, current: current)
+        }
+        let choices = [choice("a", "s1"), choice("a", "s2", current: true), choice("b", "s1"), choice("b", "s3")]
+        let names = { (groups: [[ExternalImportChoice]]) in groups.map { $0.map { $0.destination.target.hostId + "/" + $0.destination.target.sessionId } } }
+        #expect(names(ExternalImportChoice.ordered(choices, recent: choices[3].destination.target)) == [["b/s3", "b/s1"], ["a/s2", "a/s1"]])
+        #expect(names(ExternalImportChoice.ordered(choices.map { var c = $0; c.current = false; return c }, recent: nil)) == [["a/s1", "a/s2"], ["b/s1", "b/s3"]])
+    }
 }
