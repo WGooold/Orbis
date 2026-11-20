@@ -57,18 +57,30 @@ ApplicationWindow {
             // DSH-DESKTOP-09: only a Desktop Orbis opened can be attached, so its single action is always opening it from here.
             {kind: "dshDesktop", name: "DeepSeek 桌面版", mark: "dsh", installed: dsh.desktopInstalled === true,
              broken: window.dshDesktopBlocked(), opensToFix: true}
-        ].concat(host.openClaw.url ? [{kind: "openclaw", name: "OpenClaw", mark: "openclaw", installed: true, broken: false}] : []).concat(hermes.installed === true || !!hermes.cliIssue || hermes.detecting === true || host.backends.some(function(b) { return b.kind === "hermes" })
-            ? [{kind: "hermes", name: "Hermes Agent", symbol: "chat_bubble", installed: hermes.installed === true || host.backends.some(function(b) { return b.kind === "hermes" && b.ready }), broken: hermes.cliIssue === "unrunnable", cliIssue: hermes.cliIssue, passive: true}]
+        ].concat(window.agentEnabled("openclaw") ? [{kind: "openclaw", name: "OpenClaw", mark: "openclaw", installed: true, broken: false}] : [])
+         .concat(window.agentEnabled("hermes")
+            ? [{kind: "hermes", name: "Hermes Agent", symbol: "chat_bubble", installed: hermes.installed === true || window.backendFor("hermes")?.ready === true,
+                broken: hermes.cliIssue === "unrunnable", cliIssue: hermes.cliIssue, passive: true}]
             : [])
+         .concat((host.agentEnablement.agents || []).filter(function(agent) {
+            return agent.enabled && ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "openclaw", "hermes"].indexOf(agent.kind) < 0
+         }).map(function(agent) {
+            return {kind: agent.kind, name: agent.label, symbol: "chat_bubble", installed: window.backendFor(agent.kind)?.ready === true, broken: false, passive: true}
+         })).filter(function(row) { return window.agentEnabled(row.kind) })
+    }
+    function agentEnabled(kind) {
+        const row = (host.agentEnablement.agents || []).find(function(agent) { return agent.kind === kind })
+        return row !== undefined && row.enabled === true
     }
     readonly property bool openClawReady: window.backendFor("openclaw")?.ready === true && host.desiredRunning
     readonly property string openClawStateText: host.openClaw.invalid ? "配置无效"
-        : !host.openClaw.url ? "未启用" : host.resumePending ? "正在重新连接"
+        : !host.openClaw.url ? "待配置" : host.resumePending ? "正在重新连接"
         : window.openClawReady ? "已连接" : host.desiredRunning ? "Gateway 未就绪" : "Host 未连接"
     // HOST-ACTIVITY-05: while the saved activation is still being read, "not activated" is not known yet.
     readonly property string nextStep: !host.activated ? (host.credentialsLoading ? "" : "activate")
         : !host.desiredRunning && !host.resumePending ? "connect"
         : host.devices.length === 0 ? "pair"
+        : overviewAgents.length === 0 ? "enable"
         : !overviewAgents.some(function(agent) { return agent.installed }) ? "install" : "open"
     function backendFor(kind) { return host.backends.find(function(backend) { return backend.kind === kind }) }
     /** Whether a phone can use this Agent through the running Host right now. */
@@ -99,6 +111,7 @@ ApplicationWindow {
     }
     function agentPhoneState(agent, sessions) {
         if (agent.kind === "openclaw" && !window.agentReachable(agent)) return window.openClawStateText
+        if (agent.passive && !window.agentReachable(agent)) return "未接入"
         // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。Claude 有自己的检测。
         if (!host.bridgeReady || window.agentCliDetecting(agent.kind)) return "检测中"
         if (agent.cliIssue === "unrunnable") return "入口不可用"
@@ -168,8 +181,8 @@ ApplicationWindow {
     }
     function showAgentInstaller(agent) { installKind = agent.kind; installAgentData = agent; installDialog.open() }
     function batchAgentTargets() {
-        var targets = host.agents.filter(a => !a.installed || a.updateAvailable || a.installedButBroken)
-        if (host.claudeInstalled && !host.claudeDetecting && (host.claudeUpdateAvailable || !host.claudeCompatible)) targets.push({kind: "claude"})
+        var targets = host.agents.filter(a => window.agentEnabled(a.kind) && (!a.installed || a.updateAvailable || a.installedButBroken))
+        if (window.agentEnabled("claude") && host.claudeInstalled && !host.claudeDetecting && (host.claudeUpdateAvailable || !host.claudeCompatible)) targets.push({kind: "claude"})
         return targets
     }
     function showAgentBatch() { batchInstallDialog.open() }
@@ -367,7 +380,7 @@ ApplicationWindow {
         if (!host.activated && host.bridgeReady) return "未激活"
         return ({connected: "已连接", connecting: "连接中", reconnecting: "重连中", closed: "已断开", stopped: "已暂停", error: "需要处理"})[host.state] || "正在准备"
     }
-    function agentUpdatesAvailable() { return (host.claudeInstalled && host.claudeUpdateAvailable) || host.agents.some(function(agent) { return agent.installed && agent.updateAvailable }) }
+    function agentUpdatesAvailable() { return (window.agentEnabled("claude") && host.claudeInstalled && host.claudeUpdateAvailable) || host.agents.some(function(agent) { return window.agentEnabled(agent.kind) && agent.installed && agent.updateAvailable }) }
     function androidUpdatesAvailable() { return host.devices.some(function(device) { return device.androidUpdateAvailable }) }
     function pageHasUpdate(index) {
         if (index === 1) return window.androidUpdatesAvailable()
@@ -924,6 +937,12 @@ ApplicationWindow {
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 6
                                 Heading { text: "Agent"; Layout.bottomMargin: 6 }
+                                ActionButton {
+                                    objectName: "overviewEnableAgents"; text: "启用 Agent"
+                                    visible: window.overviewAgents.length === 0
+                                    primary: window.nextStep === "enable"
+                                    onClicked: window.selectPage(2)
+                                }
                                 Repeater {
                                     model: window.overviewAgents
                                     delegate: RowLayout {
@@ -1006,15 +1025,15 @@ ApplicationWindow {
                                 DownloadBar { visible: host.downloadReceived >= 0 && host.agentInstalling; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true; Layout.topMargin: 6 }
                                 // 终端接入的配套包不在启动关键路径上：手机已经能连，这里只显示它还差多少。
                                 DownloadBar {
-                                    visible: window.codexTerminalPreparing && window.codexTerminalState.receivedBytes > 0
+                                    visible: window.agentEnabled("codex") && window.codexTerminalPreparing && window.codexTerminalState.receivedBytes > 0
                                     label: "Codex 终端接入"
                                     received: window.codexTerminalState.receivedBytes || 0
                                     total: window.codexTerminalState.totalBytes || 0
                                     Layout.fillWidth: true; Layout.topMargin: 6
                                 }
-                                Hint { visible: window.codexTerminalState.state === "error"; text: "Codex 终端接入未就绪，Codex 会话暂时不可用"; Layout.fillWidth: true; Layout.topMargin: 6 }
+                                Hint { visible: window.agentEnabled("codex") && window.codexTerminalState.state === "error"; text: "Codex 终端接入未就绪，Codex 会话暂时不可用"; Layout.fillWidth: true; Layout.topMargin: 6 }
                                 // HOST-PREP-04: a failed automatic registration only affects Claude Code started in a terminal.
-                                Hint { visible: window.preparationOf("claude").state === "error"; text: "Claude Code 插件未登记，终端里运行的 Claude Code 暂时不会连接 Orbis"; Layout.fillWidth: true; Layout.topMargin: 6 }
+                                Hint { visible: window.agentEnabled("claude") && window.preparationOf("claude").state === "error"; text: "Claude Code 插件未登记，终端里运行的 Claude Code 暂时不会连接 Orbis"; Layout.fillWidth: true; Layout.topMargin: 6 }
                             }
                         }
                     }
@@ -1069,7 +1088,7 @@ ApplicationWindow {
                         }
                         DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
                         Repeater {
-                            model: host.agents
+                            model: host.agents.filter(agent => window.agentEnabled(agent.kind))
                             delegate: Card {
                                 required property var modelData
                                 Layout.fillWidth: true
@@ -1093,7 +1112,8 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        Card { Layout.fillWidth: true
+                        Card {
+                            visible: window.agentEnabled("claude"); Layout.fillWidth: true
                             ColumnLayout { anchors.fill: parent; spacing: 12
                                 RowLayout { Layout.fillWidth: true
                                     Heading { text: "Claude Code"; color: Theme.agentClaude }
@@ -1112,12 +1132,44 @@ ApplicationWindow {
                                 }
                             }
                         }
+                        Card {
+                            Layout.fillWidth: true
+                            visible: host.bridgeReady
+                            ColumnLayout {
+                                anchors.fill: parent; spacing: 8
+                                Heading { text: "启用 Agent" }
+                                Hint { visible: !(host.agentEnablement.agents || []).length; text: "无法读取 Agent 设置，请检查 Host 状态目录后重启 Host。"; width: parent.width }
+                                Repeater {
+                                    model: host.agentEnablement.agents || []
+                                    delegate: SoftSwitch {
+                                        required property var modelData
+                                        objectName: "enableAgent-" + modelData.kind
+                                        Layout.fillWidth: true
+                                        text: modelData.label
+                                        marksProviderDirty: false
+                                        enabled: host.bridgeReady && !host.busy
+                                        checked: modelData.enabled === true
+                                        onClicked: {
+                                            // Restore the binding before the next rendered frame; Host owns the value.
+                                            checked = Qt.binding(function() { return modelData.enabled === true })
+                                            if (!modelData.enabled) host.setAgentEnabled(modelData.kind, true, host.agentEnablement.revision, false)
+                                            else {
+                                                disableAgentDialog.sourceKind = modelData.kind
+                                                disableAgentDialog.sourceLabel = modelData.label
+                                                disableAgentDialog.revision = host.agentEnablement.revision
+                                                disableAgentDialog.open()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         // OPENCLAW-04: configure the local Gateway without managing its process.
                         Card {
                             id: openClawCard
                             objectName: "openClawCard"
                             Layout.fillWidth: true
-                            visible: host.bridgeReady && !!host.openClaw.source
+                            visible: host.bridgeReady && !!host.openClaw.source && window.agentEnabled("openclaw")
                             readonly property bool editable: host.openClaw.source === "file"
                             readonly property bool dirty: clawUrl.text.trim() !== (host.openClaw.url || "") || clawToken.text.length > 0
                             function reset() { clawUrl.text = host.openClaw.url || ""; clawToken.clear() }
@@ -1159,7 +1211,7 @@ ApplicationWindow {
                                         onClicked: host.reconnectOpenClaw()
                                     }
                                     ActionButton {
-                                        objectName: "disableOpenClaw"; text: "停用"
+                                        objectName: "disableOpenClaw"; text: "移除连接配置"
                                         visible: openClawCard.editable && (!!host.openClaw.url || host.openClaw.invalid)
                                         enabled: !host.busy
                                         onClicked: { clawToken.clear(); host.saveOpenClaw("", "") }
@@ -1251,8 +1303,8 @@ ApplicationWindow {
                         // HOST-LIVE-01: start parameters of the running service apply by reconnecting it; the button says so.
                         readonly property bool reconnects: host.desiredRunning && (relayField.text.trim().replace(/\/+$/, "") !== host.relayUrl
                             || (nameField.text.trim().length > 0 && nameField.text.trim() !== host.hostName) || codexSwitch.checked !== host.codexEnabled
-                            || (host.kimiCodeAvailable && (kimiSwitch.checked !== host.kimiCodeEnabled || (kimiSwitch.checked && host.kimiDesktopSupported && kimiSource.currentValue !== host.kimiCodeSource))) || dshSwitch.checked !== host.dshEnabled || dshWebUrlField.text.trim() !== host.dshWebUrl)
-                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled; kimiSwitch.checked = host.kimiCodeEnabled; kimiSource.currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0; piIntegrationSwitch.checked = host.piIntegrationEnabled; claudeIntegrationSwitch.checked = host.claudeIntegrationEnabled }
+                            || (host.kimiCodeEnabled && host.kimiDesktopSupported && kimiSource.currentValue !== host.kimiCodeSource) || dshSwitch.checked !== host.dshEnabled || dshWebUrlField.text.trim() !== host.dshWebUrl)
+                        function load() { relayField.text = host.relayUrl; nameField.text = host.hostName; dshWebUrlField.text = host.dshWebUrl; startupSwitch.checked = host.autoStart; codexSwitch.checked = host.codexEnabled; dshSwitch.checked = host.dshEnabled; kimiSource.currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0; piIntegrationSwitch.checked = host.piIntegrationEnabled; claudeIntegrationSwitch.checked = host.claudeIntegrationEnabled }
                         ColumnLayout {
                             anchors.fill: parent; spacing: 15
                             Heading { text: "外观" }
@@ -1317,18 +1369,15 @@ ApplicationWindow {
 
                             Label { text: "电脑名称"; color: Theme.inkMuted }
                             Field { id: nameField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; maximumLength: 80 }
-                            SoftSwitch { id: codexSwitch; enabled: host.bridgeReady && !host.busy; text: "启动 Host 时预启动 Codex 终端后端" }
-                            SoftSwitch { id: dshSwitch; enabled: host.bridgeReady && !host.busy; text: "启动 Host 时预启动 DeepSeek Harness" }
+                            SoftSwitch { id: codexSwitch; visible: window.agentEnabled("codex"); enabled: host.bridgeReady && !host.busy; text: "启动 Host 时预启动 Codex 终端后端" }
+                            SoftSwitch { id: dshSwitch; visible: window.agentEnabled("dsh"); enabled: host.bridgeReady && !host.busy; text: "启动 Host 时预启动 DeepSeek Harness" }
                             RowLayout {
-                                visible: host.kimiCodeAvailable; Layout.fillWidth: true; spacing: 12
-                                onVisibleChanged: if (visible) { kimiSwitch.checked = host.kimiCodeEnabled; kimiSource.currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0 }
-                                SoftSwitch {
-                                    id: kimiSwitch; objectName: "kimiCodeSwitch"; Layout.fillWidth: true
-                                    enabled: host.bridgeReady && !host.busy; text: "接入 Kimi Code"
-                                }
+                                visible: host.kimiCodeAvailable && window.agentEnabled("kimiCode"); Layout.fillWidth: true; spacing: 12
+                                onVisibleChanged: if (visible) kimiSource.currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0
+                                Label { text: "Kimi Code"; Layout.fillWidth: true }
                                 SoftComboBox {
                                     id: kimiSource; objectName: "kimiCodeSource"
-                                    visible: host.kimiDesktopSupported && kimiSwitch.checked
+                                    visible: host.kimiDesktopSupported
                                     enabled: host.bridgeReady && !host.busy
                                     model: [{ label: "Web", value: "web" }, { label: "桌面版", value: "desktop" }]
                                     textRole: "label"; valueRole: "value"
@@ -1336,7 +1385,7 @@ ApplicationWindow {
                                 }
                                 Hint {
                                     objectName: "kimiCodeStatus"
-                                    visible: host.kimiCodeEnabled && kimiSwitch.checked && (!host.kimiDesktopSupported || kimiSource.currentValue === host.kimiCodeSource)
+                                    visible: host.kimiCodeEnabled && (!host.kimiDesktopSupported || kimiSource.currentValue === host.kimiCodeSource)
                                     text: !host.desiredRunning ? "未连接" : ({ connected: "已接入", connecting: "正在连接", not_running: host.kimiCodeSource === "desktop" ? "桌面版未连接" : "服务未启动", ambiguous: "有多个实例", unauthorized: "认证失败", unsupported: "版本不支持", unsafe: "配置不安全", unavailable: "暂不可用" })[host.kimiCodeState] || "未连接"
                                 }
                                 SoftToolButton {
@@ -1345,13 +1394,13 @@ ApplicationWindow {
                                     ToolTip.visible: hovered; ToolTip.text: "Kimi Code 接入说明"
                                 }
                             }
-                            SoftSwitch { id: piIntegrationSwitch; enabled: host.bridgeReady && !host.busy; visible: Qt.platform.os === "osx"; text: "让终端里运行的 Pi 连接 Orbis" }
-                            Hint { visible: Qt.platform.os === "osx"; text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"; Layout.fillWidth: true }
-                            SoftSwitch { id: claudeIntegrationSwitch; enabled: host.bridgeReady && !host.busy; text: "让终端里运行的 Claude Code 连接 Orbis" }
-                            Hint { text: "安装或首次打开 Host 时自动安装 Orbis 插件；未安装 Claude Code 时跳过，安装后重新打开 Host 即可。关闭此项会卸载插件，更新 Host 会保留关闭状态。需要 Claude Code 2.1.287 或更新版本，以及 PATH 中的 node。已在运行的 Claude Code 需执行 /reload-plugins 或重启。"; Layout.fillWidth: true }
+                            SoftSwitch { id: piIntegrationSwitch; enabled: host.bridgeReady && !host.busy; visible: Qt.platform.os === "osx" && window.agentEnabled("pi"); text: "让终端里运行的 Pi 连接 Orbis" }
+                            Hint { visible: Qt.platform.os === "osx" && window.agentEnabled("pi"); text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"; Layout.fillWidth: true }
+                            SoftSwitch { id: claudeIntegrationSwitch; visible: window.agentEnabled("claude"); enabled: host.bridgeReady && !host.busy; text: "让终端里运行的 Claude Code 连接 Orbis" }
+                            Hint { visible: window.agentEnabled("claude"); text: "安装或首次打开 Host 时自动安装 Orbis 插件；未安装 Claude Code 时跳过，安装后重新打开 Host 即可。关闭此项会卸载插件，更新 Host 会保留关闭状态。需要 Claude Code 2.1.287 或更新版本，以及 PATH 中的 node。已在运行的 Claude Code 需执行 /reload-plugins 或重启。"; Layout.fillWidth: true }
                             RowLayout {
                                 objectName: "piCommandRow"
-                                visible: ["installed", "available", "foreign"].includes(window.piAgent().terminalCommand)
+                                visible: window.agentEnabled("pi") && ["installed", "available", "foreign"].includes(window.piAgent().terminalCommand)
                                 Layout.fillWidth: true; spacing: 12
                                 Hint { text: "终端命令 pi：" + (window.piAgent().terminalCommandDetail || ""); Layout.fillWidth: true }
                                 ActionButton {
@@ -1363,7 +1412,7 @@ ApplicationWindow {
                                 }
                             }
                             RowLayout {
-                                visible: host.agents.some(a => a.kind === "codex" && a.terminalNeedsElevation === true)
+                                visible: window.agentEnabled("codex") && host.agents.some(a => a.kind === "codex" && a.terminalNeedsElevation === true)
                                 Layout.fillWidth: true; spacing: 12
                                 Hint { text: "系统 PATH 里其他 codex 抢先于 Orbis，终端接入无法生效"; Layout.fillWidth: true; color: Theme.warning }
                                 ActionButton { text: "修复终端接入"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.enableCodexTerminal() }
@@ -1372,7 +1421,7 @@ ApplicationWindow {
                             Field { id: relayField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
                             Label { text: "DeepSeek Web 启动链接（可选）"; color: Theme.inkMuted }
                             Field { id: dshWebUrlField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "http://127.0.0.1:3080/?token=..."; Accessible.name: "DeepSeek Web 启动链接" }
-                            ActionButton { objectName: "applySettings"; text: settingsPane.reconnects ? "应用并重新连接" : "应用设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked, kimiSwitch.checked, host.kimiDesktopSupported ? kimiSource.currentValue : "") }
+                            ActionButton { objectName: "applySettings"; text: settingsPane.reconnects ? "应用并重新连接" : "应用设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, codexSwitch.checked, nameField.text, dshSwitch.checked, dshWebUrlField.text, piIntegrationSwitch.checked, claudeIntegrationSwitch.checked, host.kimiDesktopSupported ? kimiSource.currentValue : "") }
                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
                             DownloadBar { visible: host.downloadReceived >= 0; label: host.downloadLabel || "Host 更新"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
@@ -1390,10 +1439,15 @@ ApplicationWindow {
                             }
                         }
                         Card {
+                            visible: window.agentEnabled("codexDesktop")
                             Layout.fillWidth: true
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 12
-                                Heading { text: "Codex 桌面版接入" }
+                                RowLayout { Layout.fillWidth: true
+                                    Heading { text: "Codex 桌面版接入" }
+                                    Item { Layout.fillWidth: true }
+                                    ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders("codex") }
+                                }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 10
                                     StatusDot { color: window.codexDesktopColor(); idle: window.codexDesktopState() === "closed" }
@@ -1404,6 +1458,7 @@ ApplicationWindow {
                         }
                         Card {
                             objectName: "dshDesktopAttach"
+                            visible: window.agentEnabled("dshDesktop")
                             Layout.fillWidth: true
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 12
@@ -1534,6 +1589,20 @@ ApplicationWindow {
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: "撤销配对"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: revokeDialog.accept(); onRejected: revokeDialog.reject() }
         Label { width: parent.width; text: "连接会立即失效。"; wrapMode: Text.WordWrap }
         onAccepted: host.revoke(window.revokeId)
+    }
+    SoftDialog {
+        id: disableAgentDialog; objectName: "disableAgentDialog"; anchors.centerIn: parent; modal: true; width: 410
+        property string sourceKind: ""
+        property string sourceLabel: ""
+        property double revision: -1
+        title: "停用 " + sourceLabel + "？"
+        contentItem: Hint { text: "Orbis 将断开此 Agent 的接入，不会退出原生应用。"; width: parent.width }
+        footer: SoftDialogButtons {
+            ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            ActionButton { text: "停用"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            onAccepted: disableAgentDialog.accept(); onRejected: disableAgentDialog.reject()
+        }
+        onAccepted: host.setAgentEnabled(sourceKind, false, revision, true)
     }
     SoftDialog {
         id: restartDshDialog; title: "重启 DSH Server？"; anchors.centerIn: parent; modal: true; width: 480

@@ -533,7 +533,14 @@ data class SessionActivationInfo(
     val at: Long = System.currentTimeMillis(),
 )
 
+data class AgentEnablementRow(val kind: String, val label: String, val enabled: Boolean)
+
 data class RemoteState(
+    val agentEnablementAvailable: Boolean = false,
+    val agentEnablementRows: List<AgentEnablementRow> = emptyList(),
+    val agentEnablementRevision: Long? = null,
+    val agentEnablementPending: String? = null,
+    val agentEnablementFailed: Boolean = false,
     val notificationEpoch: String? = null,
     val notificationProjections: Map<String, NoticeProjection> = emptyMap(),
     val notificationReceipts: Map<String, Long> = emptyMap(),
@@ -1318,6 +1325,11 @@ internal fun RemoteState.sessionHost(language: AppLanguage): SessionHost? {
 internal val RemoteState.canOperateSessions: Boolean
     get() = !hostId.isNullOrBlank() && connection == RelayConnection.ONLINE && e2eReady
 
+/** Null means no policy has been received (including legacy Hosts); an empty set is authoritative. */
+internal fun RemoteState.enabledAgentKinds(): Set<String>? = agentEnablementRevision?.let {
+    agentEnablementRows.filter { row -> row.enabled }.mapTo(mutableSetOf()) { row -> row.kind }
+}
+
 internal fun RemoteState.canCreateSessionOn(expectedHostId: String?): Boolean =
     canOperateSessions && expectedHostId == hostId && sessionActivateRequests.isEmpty()
 
@@ -1801,6 +1813,8 @@ internal fun RemoteState.markReconnecting(): RemoteState {
         currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
         e2eReady = false,
+        agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
+        agentEnablementPending = null, agentEnablementFailed = false,
         conversations = conversations.mapValues { (_, conversation) ->
             conversation.withoutActiveTurn().copy(
                 interactions = conversation.interactions.mapValues { (_, interaction) ->
@@ -2036,6 +2050,7 @@ class RelayReducer(
                 val runtimes = message["runtimes"]?.let {
                     json.decodeFromJsonElement<List<RuntimeSummary>>(it)
                 }.orEmpty().map { it.withOpenClawKind().withKimiIdentity() }.associateBy(RuntimeSummary::runtimeId)
+                val managedAgentView = readyAdmitsAgentEnablement(message)
                 val openClawNegotiated = readyAdmitsOpenClaw(message)
                 val projectionChanged = state.openClawNegotiated != openClawNegotiated
                 // 「这台电脑支持哪些 agent」只有 Host 说得准。中继那条种子 device.ready 发的是
@@ -2146,8 +2161,8 @@ class RelayReducer(
                     agentCatalogRange = state.agentCatalogRange?.takeIf { !projectionChanged && state.agentModelEpoch == message.string("modelEpoch") },
                     agentCatalogRangeRequest = null,
                     catalogQuery = state.catalogQuery.takeUnless { projectionChanged },
-                    supportedAgents = if (openClawNegotiated || projectionChanged) supportedAgents else state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
-                    launchableAgents = if (openClawNegotiated || projectionChanged) launchableAgents else state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    supportedAgents = if (managedAgentView || openClawNegotiated || projectionChanged) supportedAgents else state.supportedAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    launchableAgents = if (managedAgentView || openClawNegotiated || projectionChanged) launchableAgents else state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     codexDesktop = state.codexDesktop.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     openCodeAvailability = state.openCodeAvailability.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     sessionListRequests = emptySet(),
@@ -2327,6 +2342,8 @@ class RelayReducer(
                 val interrupted = state.pendingCommands.keys
                 state.copy(
                     e2eReady = false,
+                    agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
+                    agentEnablementPending = null, agentEnablementFailed = false,
                     homeDirectoryReceived = false,
                     kimiCodeSupported = false,
                     prefersAutoSessionSpawn = false,
@@ -3755,8 +3772,11 @@ internal fun runtimeStatusText(status: String): String = when (status) {
     else -> L10n.tr("未知状态")
 }
 
+internal fun RemoteState.allowsAgentSource(kind: String): Boolean =
+    agentEnablementRevision == null || agentEnablementRows.any { it.kind == kind && it.enabled }
+
 internal fun RemoteState.supportsSessionConfiguration(agentKind: String): Boolean =
-    sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated) && (agentKind != KIMI_CODE_KIND || kimiCodeSupported)
+    allowsAgentSource(agentKind) && sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated) && (agentKind != KIMI_CODE_KIND || kimiCodeSupported)
 
 internal fun RemoteState.canLaunchOpenClaw(): Boolean =
     supportsSessionConfiguration("openclaw") && (launchableAgents ?: supportedAgents)?.contains("openclaw") == true

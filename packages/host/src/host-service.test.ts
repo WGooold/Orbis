@@ -77,6 +77,7 @@ import type { DshWebConnection } from "./dsh-web-client.js";
 import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { ProviderManager } from "./provider-manager.js";
 import { SessionConfigurationStore } from "./session-configuration-store.js";
+import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
 import { OpenCodeServiceConnection, type OpenCodeClient } from "./opencode-service-connection.js";
 import { relayBusinessDeviceURL, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 
@@ -3178,11 +3179,18 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       model: { list: async () => ({ data: [{ ...selected, enabled: true, name: "Fixture model", variants: [] }] }),
         default: async () => ({ data: selected }) }, agent: { list: async () => ({ data: [] }) },
     };
-    const connection = new OpenCodeServiceConnection({ discover: async () => ({ url: "http://127.0.0.1:4096" }),
-      createClient: () => client as unknown as OpenCodeClient });
+    const discover = vi.fn(async () => ({ url: "http://127.0.0.1:4096" }));
+    const createOpenCodeConnection = vi.fn(() => new OpenCodeServiceConnection({ discover,
+      createClient: () => client as unknown as OpenCodeClient }));
+    const policy = new AgentEnablementController(new AgentEnablementStore(stateDir), () => {});
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
-      adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "sessions"), reconnect: false, lan: false, opencodeConnection: connection });
+      adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "sessions"), reconnect: false, lan: false, agentEnablement: policy, createOpenCodeConnection });
     await host.start();
+    expect(createOpenCodeConnection).not.toHaveBeenCalled();
+    expect(discover).not.toHaveBeenCalled();
+    await policy.set({ kind: "pi", enabled: true, expectedRevision: 0 });
+    await policy.set({ kind: "opencode", enabled: true, expectedRevision: 1 });
+    await vi.waitFor(() => expect(host!.opencodeServiceStatus.state).toBe("ready"));
     device = await readyDevice({ host, relay });
     const owner = device;
     const other = await readyDevice({ host, relay });
@@ -3262,6 +3270,15 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       });
       expect(conflict).toMatchObject({ type: "protocol.error", code: "command_id_conflict" });
       expect(prompt).toHaveBeenCalledTimes(1);
+      await policy.set({ kind: "opencode", enabled: false, expectedRevision: 2, confirmDisable: true });
+      await vi.waitFor(() => expect(host!.opencodeServiceStatus.state).toBe("closed"));
+      request(owner, { type: "session.configuration.read", requestId: "config-disabled", ...kind });
+      await expect(reply(owner, "config-disabled")).resolves.toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+      expect(host.readHostState(["backends"]).domains[0]?.value).toMatchObject({ agents: expect.arrayContaining(["pi"]) });
+      await policy.set({ kind: "opencode", enabled: true, expectedRevision: 3 });
+      await vi.waitFor(() => expect(host!.opencodeServiceStatus.state).toBe("ready"));
+      expect(createOpenCodeConnection).toHaveBeenCalledTimes(2);
+      expect(create).toHaveBeenCalledTimes(1);
     } finally { other.close(); }
   });
 
@@ -5085,7 +5102,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     relay = await startRelayLocal(stateDir);
     const thread = { id: "desktop-new", cwd: stateDir, status: { type: "idle" }, turns: [] };
     let created = false;
-    const request = vi.fn(async (method: string, _params?: unknown) => {
+    const request = vi.fn<(method: string, params?: unknown) => Promise<unknown>>(async (method) => {
       if (method === "thread/loaded/list") return { data: created ? [thread.id] : [] };
       if (method === "thread/start") { created = true; return { thread }; }
       if (method === "thread/read" || method === "thread/resume") return { thread };

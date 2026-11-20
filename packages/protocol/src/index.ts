@@ -1,6 +1,7 @@
 import { TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema, TurnChangesSummariesSchema, TurnChangesUpdatedSchema, TurnChangesPageSchema, FileChangeDetailPageSchema, TurnChangesFailedSchema } from "./turn-file-changes.js";
 export * from "./turn-file-changes.js";
 import { z } from "zod";
+import { AgentEnablementReadSchema, AgentEnablementWriteSchema, AgentEnablementUpdateSchema } from "./agent-enablement.js";
 import { DshDesktopAttachSchema } from "./host-model-domains.js";
 import { ModelSelectionValuesSchema, TurnConfigurationSchema } from "./turn-configuration.js";
 export * from "./turn-configuration.js";
@@ -254,6 +255,7 @@ export type SessionCatalogEntry = z.infer<typeof SessionCatalogEntrySchema>;
  * 客户端仍从 `@orbis/protocol` 取类型。
  */
 export * from "./agent-state.js";
+export * from "./agent-enablement.js";
 export * from "./host-model-domains.js";
 
 /**
@@ -1275,6 +1277,8 @@ const ExternalImportReceiptIdentity = {
 };
 
 export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
+  AgentEnablementReadSchema.extend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
+  AgentEnablementWriteSchema.extend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({ type: z.literal("session.catalog.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
   CatalogQueryRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
   z.strictObject({ type: z.literal("session.history.capabilities.request"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128) }),
@@ -1391,6 +1395,7 @@ export const SharedSessionContentSchema = z.strictObject({
 });
 
 export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
+  ...AgentEnablementUpdateSchema.options,
   SessionConfigurationResultSchema,
   SessionLaunchResultSchema,
   z.strictObject({ type: z.literal("session.catalog.capabilities"), protocolVersion: z.literal(PROTOCOL_VERSION), requestId: z.string().min(1).max(128), format: z.literal("v1") }),

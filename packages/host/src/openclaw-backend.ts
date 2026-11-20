@@ -214,6 +214,7 @@ export class OpenClawBackend implements AgentBackend {
       }
       if (!context?.deviceId || !context.launchId) throw new ActivationError("agent_unsupported", "OpenClaw requires a durable launch identity");
       const key = this.#launchKey(context.deviceId, context.launchId);
+      context?.requireCurrent?.();
       const response = openClawRecord(await this.#rpc("sessions.create", { key, idempotencyKey: key, cwd: target.cwd }));
       const entry = openClawRecord(response?.entry);
       const confirmed = this.#ref({ ...entry, key: response?.key, sessionId: response?.sessionId, agentId: response?.agentId });
@@ -224,6 +225,7 @@ export class OpenClawBackend implements AgentBackend {
       await context?.onCreated?.({ sessionId: ref.id, spawnMode: "headless" });
     } else ref = await this.#find(target.sessionId);
     if (ref.archived) throw new ActivationError("session_not_found", "Restore this OpenClaw session before opening it");
+    if (target.type === "resume") context?.requireCurrent?.();
     await this.#attach(ref);
     return { sessionId: ref.id, spawnMode: "headless" };
   }

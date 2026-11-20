@@ -209,6 +209,12 @@ func resolvedAgentKind(runtimeId: String, declared: String?, catalogKind: String
 let kimiCodeKind = "kimiCode"
 private let kimiCodeFeature = "agent.kimiCode"
 
+func readyAdmitsAgentEnablement(_ ready: [String: Any]) -> Bool {
+    let feature = "agent.enablement.v1"
+    return (ready["hostFeatures"] as? [String] ?? []).contains(feature) &&
+        (ready["deviceFeatures"] as? [String] ?? []).contains(feature)
+}
+
 func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
     let advertised = ready["hostFeatures"] as? [String] ?? []
     guard advertised.contains("device.features") else { return [] }
@@ -218,6 +224,7 @@ func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
         "agent.openclaw",
         "agent.hermes",
         "agent.opencode",
+        "agent.enablement.v1",
         "state.compact-bootstrap.v1",
         "claude.send-now.v1",
     ].filter { advertised.contains($0) }
@@ -1192,9 +1199,10 @@ struct SessionDirectoryFilter: Hashable {
     let currentProvider: String?
     let language: String
     var queryRevision: UUID? = nil
+    var enabledAgentKinds: Set<String>? = nil
     func sameView(as other: Self) -> Bool {
         hostId == other.hostId && query == other.query && kind == other.kind && archived == other.archived &&
-            provider == other.provider && currentProvider == other.currentProvider && language == other.language
+            provider == other.provider && currentProvider == other.currentProvider && language == other.language && enabledAgentKinds == other.enabledAgentKinds
     }
 }
 
@@ -1226,12 +1234,15 @@ actor SessionDirectoryWorker {
     func resolve(catalog: SessionDirectoryCatalog, filter: SessionDirectoryFilter, knownProviders: [String] = [], hasUnknown: Bool = false) -> SessionDirectoryProjection {
         if let previous, previous.filter == filter { return previous }
         beforeResolve?()
-        let options = sessionProviderOptions(catalog.sessions, kind: filter.kind ?? "codex", current: filter.currentProvider,
+        let admitted = catalog.sessions.filter { session in
+            session.agentKind.map { filter.enabledAgentKinds?.contains($0) != false } ?? true
+        }
+        let options = sessionProviderOptions(admitted, kind: filter.kind ?? "codex", current: filter.currentProvider,
             knownProviders: knownProviders, hasUnknown: hasUnknown)
         let provider = options.contains { $0.key == filter.provider } ? filter.provider : "current"
-        let visible = filter.kind == "codex" || filter.kind == "codexDesktop" ? catalog.sessions.filter {
+        let visible = filter.kind == "codex" || filter.kind == "codexDesktop" ? admitted.filter {
             matchesSessionProvider($0, filter: provider, current: filter.currentProvider)
-        } : catalog.sessions
+        } : admitted
         let directories = sessionDirectories(visible, query: filter.query, kind: filter.kind, archived: filter.archived,
                                              title: { catalog.titles[$0.sessionId] ?? $0.sessionId })
         let result = SessionDirectoryProjection(filter: filter, directories: directories, options: options, provider: provider)

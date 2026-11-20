@@ -47,6 +47,79 @@ final class HostConnection: ObservableObject {
     let notifications = RuntimeNotifications()
     private let replyCompletions: ReplyCompletionTracker
     @Published private(set) var pairings: [HostPairing] = []
+    struct AgentEnablementRow: Identifiable, Equatable {
+        let id: String
+        let label: String
+        let enabled: Bool
+    }
+    private static let agentEnablementFeature = "agent.enablement.v1"
+    @Published private(set) var agentEnablementRows: [AgentEnablementRow] = [] {
+        didSet { if oldValue != agentEnablementRows { directoryViewRevision &+= 1 } }
+    }
+    /// Nil is the legacy/unknown view; an empty set means the Host disabled every source.
+    var enabledAgentKinds: Set<String>? {
+        agentEnablementRevision.map { _ in Set(agentEnablementRows.filter(\.enabled).map(\.id)) }
+    }
+    @Published private(set) var agentEnablementPending: String?
+    @Published private(set) var agentEnablementAvailable = false
+    @Published private(set) var agentEnablementFailed = false
+    private(set) var agentEnablementRevision: Int?
+
+    private func resetAgentEnablement() {
+        agentEnablementAvailable = false
+        agentEnablementPending = nil
+        agentEnablementRevision = nil
+        agentEnablementRows = []
+        agentEnablementFailed = false
+    }
+
+    func setAgentEnabled(_ kind: String, enabled: Bool, expectedRevision: Int? = nil, confirmDisable: Bool = false) {
+        guard agentEnablementAvailable, agentEnablementPending == nil, let revision = agentEnablementRevision,
+              expectedRevision == nil || expectedRevision == revision,
+              agentEnablementRows.contains(where: { $0.id == kind && $0.enabled != enabled }) else { return }
+        var request: [String: Any] = ["type": "agent.enablement.write", "kind": kind, "enabled": enabled, "expectedRevision": revision]
+        if confirmDisable { request["confirmDisable"] = true }
+        requestAgentEnablement(request)
+    }
+
+    func refreshAgentEnablement() {
+        guard agentEnablementAvailable, agentEnablementPending == nil else { return }
+        requestAgentEnablement(["type": "agent.enablement.read"])
+    }
+
+    private func requestAgentEnablement(_ body: [String: Any]) {
+        let id = "agent-enablement:" + UUID().uuidString
+        agentEnablementFailed = false
+        agentEnablementPending = id
+        var request = body; request["requestId"] = id; request["protocolVersion"] = orbisProtocolVersion
+        if !transport.send(request) { agentEnablementPending = nil; agentEnablementFailed = true; return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self, self.agentEnablementPending == id else { return }
+            self.agentEnablementPending = nil
+            self.agentEnablementFailed = true
+        }
+    }
+
+    private func receiveAgentEnablement(_ message: [String: Any]) {
+        guard agentEnablementAvailable, let snapshot = message["snapshot"] as? [String: Any],
+              let revision = snapshot["revision"] as? Int, revision >= 0,
+              let raw = snapshot["agents"] as? [[String: Any]], raw.count <= 128 else { return }
+        let rows = raw.compactMap { row -> AgentEnablementRow? in
+            guard let id = row["kind"] as? String, let label = row["label"] as? String, let enabled = row["enabled"] as? Bool else { return nil }
+            return AgentEnablementRow(id: id, label: label, enabled: enabled)
+        }
+        guard rows.count == raw.count, Set(rows.map(\.id)).count == rows.count else { return }
+        if revision >= (agentEnablementRevision ?? -1) {
+            agentEnablementRevision = revision
+            agentEnablementRows = rows
+        }
+        if let pending = agentEnablementPending, message["requestId"] as? String == pending {
+            agentEnablementPending = nil
+            agentEnablementFailed = message["status"] as? String == "conflict"
+        }
+    }
+
     @Published private(set) var selectedHostId: String?
     @Published private(set) var runtimes: [RuntimeSummary] = [] { didSet { runtimeIndex = Dictionary(runtimes.map { ($0.runtimeId, $0) }, uniquingKeysWith: { _, last in last }); markHomeMetadataChanged(); directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
     @Published private(set) var sessions: [SessionSummary] = [] {
@@ -199,7 +272,7 @@ final class HostConnection: ObservableObject {
     var sessionConfigurationValues: SessionConfigurationValues { proposedSessionConfiguration ?? sessionConfiguration?.values ?? SessionConfigurationValues() }
 
     func supportsSessionConfiguration(for agent: String) -> Bool {
-        sessionConfigurationSupported && (agent != "openclaw" || openClawNegotiated) && (agent != kimiCodeKind || kimiCodeSupported)
+        enabledAgentKinds?.contains(agent) != false && sessionConfigurationSupported && (agent != "openclaw" || openClawNegotiated) && (agent != kimiCodeKind || kimiCodeSupported)
     }
 
     func loadSessionConfiguration(agent: String, cwd: String) {
@@ -263,7 +336,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func createConfiguredSession(agent: String, cwd: String, firstMessage: String) -> Bool {
-        guard connection == .secured, activationRequestId == nil, let config = sessionConfiguration,
+        guard enabledAgentKinds?.contains(agent) != false, connection == .secured, activationRequestId == nil, let config = sessionConfiguration,
               config.agentKind == agent, config.cwd == cwd, sessionConfigurationError == nil, agent != kimiCodeKind || kimiCodeSupported else { return false }
         guard !hasLaunchJournal else { recoverConfiguredLaunch(); sessionLaunchError = L10n.tr("请先核对上一次启动及首句结果"); return false }
         let id = UUID().uuidString, placeholder = "launch:" + id
@@ -461,9 +534,9 @@ final class HostConnection: ObservableObject {
     private func externalImportRuntimes() -> [RuntimeSummary] {
         guard connection == .secured, homeDirectoryReceived else { return [] }
         let counts = Dictionary(grouping: runtimes.compactMap(\.sessionId), by: { $0 }).mapValues(\.count)
-        let closing = closingRuntimeIds, archiving = OperationKinds.archiveOverrides(ledger)
+        let closing = closingRuntimeIds, archiving = OperationKinds.archiveOverrides(ledger), enabled = enabledAgentKinds
         return runtimes.filter { runtime in
-            guard let id = runtime.sessionId, !id.isEmpty, counts[id] == 1, !runtime.cwd.isEmpty,
+            guard enabled?.contains(agentKind(runtime) ?? "pi") != false, let id = runtime.sessionId, !id.isEmpty, counts[id] == 1, !runtime.cwd.isEmpty,
                   ["idle", "running"].contains(runtime.status), !closing.contains(runtime.runtimeId),
                   archiving[id] == nil else { return false }
             guard let session = sessionIndex[id] else { return true }
@@ -499,7 +572,7 @@ final class HostConnection: ObservableObject {
                               agent: String, cwd: String, instruction: String) async throws {
         guard !importDeliveryActive else { throw ExternalImportProblem.busy }
         guard canLaunchExternalImport, let host = selectedHost else { throw ExternalImportProblem.hostUpgrade }
-        guard let config = sessionConfiguration, config.agentKind == agent, config.cwd == cwd,
+        guard enabledAgentKinds?.contains(agent) != false, let config = sessionConfiguration, config.agentKind == agent, config.cwd == cwd,
               sessionConfigurationRequest == nil, sessionConfigurationError == nil,
               (launchableAgents ?? supportedAgents ?? []).contains(agent), !cwd.isEmpty else { throw ExternalImportProblem.launchConfiguration }
         importDeliveryActive = true; defer { importDeliveryActive = false }
@@ -512,7 +585,8 @@ final class HostConnection: ObservableObject {
             try inbox.reserveLaunch(batch.id, launch: launch)
         }.value
         guard matchesImportLaunch(launch), generation == connectionGeneration, history == historyGeneration, epoch == admittedModelEpoch,
-              config == sessionConfiguration, sessionConfigurationRequest == nil, sessionConfigurationError == nil else {
+              enabledAgentKinds?.contains(agent) != false, config == sessionConfiguration,
+              sessionConfigurationRequest == nil, sessionConfigurationError == nil else {
             try await Task.detached { try inbox.failLaunch(batch.id, launchId: launch.id) }.value
             throw ExternalImportProblem.launchConfiguration
         }
@@ -1200,7 +1274,7 @@ final class HostConnection: ObservableObject {
         pairings = []
         guard selectedHostId == hostId else { return }
         importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
-        connectionGeneration = UUID(); filteredReady = nil
+        connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
@@ -1224,7 +1298,7 @@ final class HostConnection: ObservableObject {
     func shutdown() {
         clearFeedbackScope()
         importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
-        connectionGeneration = UUID(); filteredReady = nil
+        connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
@@ -1256,7 +1330,7 @@ final class HostConnection: ObservableObject {
         homeDirectoryReceived = false
         defaultSessionSpawnMode = "tui"
         importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
-        connectionGeneration = UUID(); filteredReady = nil
+        connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
@@ -1311,7 +1385,7 @@ final class HostConnection: ObservableObject {
             else { self.ledgerOpenConnection() }
             self.connection = state
             if state != .secured { self.pathRTT = nil }
-            if state != .secured { self.homeDirectoryReceived = false; self.defaultSessionSpawnMode = "tui"; self.filteredReady = nil; self.importReady = false; self.finishExternalImport(.unconfirmed); self.finishExternalLaunch(.unconfirmed) }
+            if state != .secured { self.homeDirectoryReceived = false; self.defaultSessionSpawnMode = "tui"; self.filteredReady = nil; self.resetAgentEnablement(); self.importReady = false; self.finishExternalImport(.unconfirmed); self.finishExternalLaunch(.unconfirmed) }
             self.recordConnectionEvent(L10n.tr("连接：{0}", state.rawValue))
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
             if state != .secured { self.openClawNegotiated = false; self.kimiCodeSupported = false; self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
@@ -2172,7 +2246,8 @@ final class HostConnection: ObservableObject {
     #endif
 
     private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String? = nil, displayTitle: String? = nil) {
-        guard connection == .secured, activationRequestId == nil else { return }
+        guard connection == .secured, activationRequestId == nil,
+              (target["agentKind"] as? String).map({ enabledAgentKinds?.contains($0) != false }) != false else { return }
         let requestId = UUID().uuidString
         let placeholder = "launch:" + requestId
         let creation = ledger.create(opId: requestId, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
@@ -3269,6 +3344,8 @@ final class HostConnection: ObservableObject {
             guard lastOverflowRecovery.map({ now.timeIntervalSince($0) >= 3 }) ?? true else { return }
             lastOverflowRecovery = now
             if let selectedRuntime { syncSession(selectedRuntime, force: true) }
+        case "agent.enablement.snapshot", "agent.enablement.result":
+            if channel != nil { receiveAgentEnablement(message) }
         case "device.ready":
             guard channel != nil, let values = message["runtimes"] as? [[String: Any]] else { return }
             // OpenClaw's echo is independent of Gateway readiness. The old Host
@@ -3277,7 +3354,8 @@ final class HostConnection: ObservableObject {
             let supportsRender = features.contains(messageRenderFeature)
             let admittedOpenClaw = features.contains("agent.openclaw") && (message["deviceFeatures"] as? [String])?.contains("agent.openclaw") == true
             if features.contains("device.features"), message["_orbisFilteredFallback"] == nil,
-               message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw {
+               message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw ||
+               features.contains(Self.agentEnablementFeature) && !readyAdmitsAgentEnablement(message) {
                 if filteredReady != nil { return }
                 let requested = deviceAgentFeatures(message)
                 if transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": requested]) {
@@ -3293,6 +3371,9 @@ final class HostConnection: ObservableObject {
                 }
             }
             filteredReady = nil
+            let management = readyAdmitsAgentEnablement(message)
+            if management && !agentEnablementAvailable { agentEnablementAvailable = true; refreshAgentEnablement() }
+            else if !management && agentEnablementAvailable { resetAgentEnablement() }
             let previousDisplayVersion = expectedMessageDisplayVersion
             // The Host advertises the rich projection on its ready message; older Hosts keep the
             // released display version, and the filtered (non-`dshDesktop`) view never carries it.
@@ -3493,6 +3574,10 @@ final class HostConnection: ObservableObject {
             }
             refreshSessions()
         case "protocol.error":
+            if let id = message["requestId"] as? String, id.hasPrefix("agent-enablement:") {
+                if agentEnablementPending == id { agentEnablementPending = nil; agentEnablementFailed = true }
+                return
+            }
             if let result = menuOptions.consume(message) {
                 menuOptionsTimeout?.cancel()
                 menuErrors[result.runtimeId + "\u{0}" + result.name] = L10n.tr("命令选项读取失败，请重新打开菜单")

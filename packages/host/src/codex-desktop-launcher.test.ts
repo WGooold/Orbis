@@ -280,7 +280,7 @@ describe("staged Codex wrapper runtime on macOS", () => {
 
     if (process.platform !== "win32") {
       expect((await stat(staged.launcher)).mode & 0o111).not.toBe(0);
-      await expect(run(staged.launcher, ["app-server", "--analytics-default-enabled", "it's"])).resolves
+      await expect(run(staged.launcher, ["app-server", "--analytics-default-enabled", "it's"], { env: { PATH: "/usr/bin:/bin" } })).resolves
         .toMatchObject({ stdout: `${JSON.stringify(["app-server", "--analytics-default-enabled", "it's"])}\n` });
     }
   });
@@ -291,8 +291,8 @@ describe("staged Codex wrapper runtime on macOS", () => {
     await writeFile(real, "#!/bin/sh\necho real \"$@\"\n", { mode: 0o755 });
     const root = await testDirectory(join(tmpdir(), "orbis-wrapper-fallback-root-"));
     const staged = stageCodexWrapper({ launcher: "", node: join(dir, "missing-node"), script: join(dir, "missing.js") }, root, undefined, "darwin");
-    await expect(run(staged.launcher, ["--version"], { env: { ...process.env, ORBIS_CODEX_REAL: real } })).resolves.toMatchObject({ stdout: "real --version\n" });
-    await expect(run(staged.launcher, ["--version"], { env: { ...process.env, ORBIS_CODEX_REAL: "" } })).rejects.toMatchObject({ code: 127 });
+    await expect(run(staged.launcher, ["--version"], { env: { PATH: "/usr/bin:/bin", ORBIS_CODEX_REAL: real } })).resolves.toMatchObject({ stdout: "real --version\n" });
+    await expect(run(staged.launcher, ["--version"], { env: { PATH: "/usr/bin:/bin" } })).rejects.toMatchObject({ code: 127 });
   });
 
   it("resolves the wrapper without a shipped launcher binary", async () => {

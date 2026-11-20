@@ -6,6 +6,8 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 ## Current references
 
+- [ADR-0094](adr/0094-host-agent-enablement.md)：Host 保存 Agent 启用状态，桌面与配对 App 均可修改并以 Host 结果对账；定义逐来源默认、设置、生命周期、显示及升级语义。桌面、iOS、Android 和十种来源的生命周期已接入；待设备验收。
+
 - [ADR-0086](adr/0086-kimi-code-native-web-integration.md)：通过已开启的本机原生 Web 服务接入 Kimi Code；原生探针已完成，Orbis 适配未实施。
 - [ADR-0077](adr/0077-cli-host-and-headless-validation.md)：CLI Host 产品化与无头运行调研；现有入口、逐后端缺口、Linux 有限证据及分阶段验证方案，提案未实现、未发布。
 - [ADR-0078](adr/0078-linux-desktop-host.md)：Linux 桌面 Host 适配；凭据、终端 / 浏览器、桌面集成、打包更新与验证门槛，提案未实现、未构建。

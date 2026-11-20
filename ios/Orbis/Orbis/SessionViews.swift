@@ -175,7 +175,13 @@ struct SessionDrawerView: View, Equatable {
     @State private var incomingProjection: SessionDirectoryProjection?
     @State private var hostMenuAnchor = OrbisAnchor()
     private var catalog: SessionDirectoryCatalog { store.activeConnection.directoryCatalog }
-    private var filterKind: String? { state.kind == kimiCodeKind && !store.activeConnection.kimiCodeSupported ? nil : state.kind }
+    private var enabledAgentKinds: Set<String>? { store.activeConnection.enabledAgentKinds }
+    private var filterKind: String? {
+        guard let kind = state.kind, enabledAgentKinds?.contains(kind) != false,
+              kind != kimiCodeKind || store.activeConnection.kimiCodeSupported,
+              kind != "openclaw" || store.openClawNegotiated else { return nil }
+        return kind
+    }
     private var networkQuery: CatalogQuery {
         var projection = state; projection.kind = filterKind; return projection.networkQuery
     }
@@ -183,7 +189,7 @@ struct SessionDrawerView: View, Equatable {
         SessionDirectoryFilter(hostId: store.selectedHostId, catalogRevision: catalog.revision, query: state.query,
             kind: filterKind, archived: state.archived, provider: state.providerKey,
             currentProvider: store.currentProvider(for: state.kind ?? "codex"), language: String(describing: AppLocalization.shared.language),
-            queryRevision: store.hostState.catalogQueryRevision)
+            queryRevision: store.hostState.catalogQueryRevision, enabledAgentKinds: enabledAgentKinds)
     }
     private var projection: SessionDirectoryProjection? {
         incomingProjection?.filter.sameView(as: request) == true ? incomingProjection : nil
@@ -197,7 +203,7 @@ struct SessionDrawerView: View, Equatable {
     let onUnpair: (HostPairing) -> Void
     @EnvironmentObject private var overlay: OrbisOverlay
 
-    private var hasProviderFilter: Bool { state.kind == "codex" || state.kind == "codexDesktop" }
+    private var hasProviderFilter: Bool { filterKind == "codex" || filterKind == "codexDesktop" }
     private var providerOptions: [SessionProviderOption] { projection?.options ?? [] }
     private var effectiveProviderKey: String { projection?.provider ?? state.providerKey }
     private var providerLabel: String { providerOptions.first { $0.key == effectiveProviderKey }?.label ?? L10n.tr("当前 provider") }
@@ -323,9 +329,7 @@ struct SessionDrawerView: View, Equatable {
             }
             .task(id: networkQuery) {
                 do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
-                var query = state.networkQuery
-                if query.agentKind == "openclaw", !store.openClawNegotiated { query.agentKind = nil }
-                store.hostState.setCatalogQuery(query)
+                store.hostState.setCatalogQuery(networkQuery)
             }
             .onChange(of: store.openClawNegotiated) { _, admitted in
                 if !admitted && state.kind == "openclaw" { selectFilter(nil) }
@@ -379,8 +383,9 @@ struct SessionDrawerView: View, Equatable {
     }
 
     private var filterMenuItems: [OrbisMenuItem] {
-        [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: state.kind == nil) { selectFilter(nil) }]
+        [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: filterKind == nil) { selectFilter(nil) }]
         + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind, "hermes", "opencode"].filter { kind in
+            guard enabledAgentKinds?.contains(kind) != false else { return false }
             if kind == "opencode", store.activeConnection.openCodeAvailability != nil { return true }
             if kind == kimiCodeKind { return store.activeConnection.kimiCodeSupported }; if kind == "openclaw", !store.openClawNegotiated { return false }
             return !["dshDesktop", "openclaw", "hermes", "opencode"].contains(kind) || store.supportedAgents?.contains(kind) == true
@@ -655,13 +660,18 @@ struct SessionDraftView: View {
     private var draftRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session", name: "", cwd: "", status: "idle", sessionId: "local-new-session", agentKind: agent) }
     private var pathRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session-path", name: "", cwd: "", status: "idle", sessionId: "local-new-session-path", agentKind: agent) }
     private var allowed: [String] {
-        let choices: [String] = owner.launchableAgents ?? owner.supportedAgents ?? ["pi", "codex"]
-        return choices.filter { $0 != kimiCodeKind || owner.kimiCodeSupported }.filter { $0 != "openclaw" || owner.openClawNegotiated }
+        let enabled = owner.enabledAgentKinds
+        let choices = owner.launchableAgents ?? owner.supportedAgents ?? (enabled == nil ? ["pi", "codex"] : [])
+        return choices.filter { enabled?.contains($0) != false }.filter { $0 != kimiCodeKind || owner.kimiCodeSupported }.filter { $0 != "openclaw" || owner.openClawNegotiated }
     }
     private var family: String { agentFamily(agent) }
-    private var openCode: OpenCodeAvailability? { owner.connection == .secured ? owner.openCodeAvailability : nil }
+    private var openCode: OpenCodeAvailability? { owner.connection == .secured && owner.enabledAgentKinds?.contains("opencode") != false ? owner.openCodeAvailability : nil }
     private var showsOpenCode: Bool { openCode != nil || (owner.connection == .secured && allowed.contains("opencode")) }
-    private var agentChoices: [String] { ["codex", "claude", "dsh", "pi"] + [kimiCodeKind, "openclaw", "hermes"].filter { allowed.contains($0) } + (showsOpenCode ? ["opencode"] : []) }
+    private var agentChoices: [String] {
+        let all = ["codex", "claude", "dsh", "pi"] + [kimiCodeKind, "openclaw", "hermes"].filter { allowed.contains($0) } + (showsOpenCode ? ["opencode"] : [])
+        guard let enabled = owner.enabledAgentKinds else { return all }
+        return all.filter { agentVariants($0).contains(where: enabled.contains) }
+    }
     private func canChoose(_ kind: String) -> Bool {
         (kind != "opencode" || (owner.connection == .secured && openCode?.ready != false)) && agentVariants(kind).contains(where: allowed.contains)
     }
@@ -708,6 +718,10 @@ struct SessionDraftView: View {
                     agentLabel.frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
+            if owner.enabledAgentKinds?.isEmpty == true {
+                Text(L10n.tr("没有已启用的 Agent")).font(.orbisCaption()).foregroundStyle(p.secondary)
+                    .accessibilityIdentifier("draft-no-enabled-agents")
+            }
             if let message = openCode?.message {
                 Text(message).font(.orbisCaption()).foregroundStyle(p.secondary)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("draft-opencode-unavailable")
@@ -719,7 +733,9 @@ struct SessionDraftView: View {
                     Spacer(minLength: 0); Image(systemName: "chevron.down").font(.orbisCaption())
                 }.foregroundStyle(p.secondary).frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("draft-directory")
-            if owner.supportsSessionConfiguration(for: agent) && agent != "openclaw" {
+            if owner.enabledAgentKinds?.contains(agent) == false {
+                // Keep the draft without settings belonging to a retired source.
+            } else if owner.supportsSessionConfiguration(for: agent) && agent != "openclaw" {
                 if agent != kimiCodeKind {
                     // S55 / SC79: the model owns a row; permission text cannot resize either value.
                     VStack(spacing: 8) {
@@ -752,7 +768,7 @@ struct SessionDraftView: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
-                    placeholder: L10n.tr("让 {0} 做什么？", agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
+                    placeholder: owner.enabledAgentKinds?.contains(agent) == false ? L10n.tr("输入消息") : L10n.tr("让 {0} 做什么？", agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
                     ink: UIColor(p.text), placeholderInk: UIColor(p.secondary),
                     onEdit: { value, marked, _ in
                         text = value
@@ -830,7 +846,9 @@ struct SessionDraftView: View {
     }
     @ViewBuilder private var agentLabel: some View {
         let p = OrbisPalette(scheme)
-        if agentVariants(family).count > 1 {
+        if owner.enabledAgentKinds?.contains(agent) == false {
+            EmptyView()
+        } else if agentVariants(family).count > 1 {
             OrbisMotionButton { showVariantChoices(family, from: codexLabelFrame) } label: {
                 HStack(spacing: 6) {
                     Text(agentTitle(agent)).font(.orbisLabel(.semibold)).lineLimit(1)

@@ -33,6 +33,10 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (method === "start") fs.writeFileSync(path.join(__dirname, "start.json"), JSON.stringify(params));
   if (method === "start") { out({ event: "state", state: "connecting" }); out({ event: "state", state: "connected" }); }
   if (method === "stop") out({ event: "state", state: "stopped" });
+  if (method === "agent.enablement.write") {
+    const snapshot = { revision: params.expectedRevision + 1, agents: [{ kind: params.kind, label: params.kind, enabled: params.enabled }] };
+    return out({ id, result: { status: "applied", snapshot } });
+  }
   if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
   if (method === "selectAgentEntry") return out({ id, result: { entry: params.entry, version: "2.1.322" } });
   if (method === "detect") return out({ id, result: [] });
@@ -41,11 +45,11 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
 });
 )JS");
     }
-    static QStringList methods(const QString &root) {
+    static QStringList methods(const QString &root, bool includeDetect = false) {
         QFile file(root + "/packages/host/dist/methods.log");
         if (!file.open(QIODevice::ReadOnly)) return {};
         QStringList result;
-        for (const auto &line : QString::fromUtf8(file.readAll()).split('\n', Qt::SkipEmptyParts)) if (line != "detect") result.append(line);
+        for (const auto &line : QString::fromUtf8(file.readAll()).split('\n', Qt::SkipEmptyParts)) if (includeDetect || line != "detect") result.append(line);
         return result;
     }
     static void clearMethods(const QString &root) { QFile::remove(root + "/packages/host/dist/methods.log"); }
@@ -104,6 +108,33 @@ private slots:
         settle(host);
         QVERIFY(host.agentEntryOverrides().value("codex").toString().isEmpty());
         QVERIFY(host.desiredRunning());
+    }
+
+    // HOST-AGENT-06: only the Host's snapshot changes the desktop toggle; a local edit
+    // does not pause Host and delayed snapshots cannot undo edits from a paired device.
+    void agentEnablementUsesHostAuthorityWithoutReconnect() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        const auto deliver = [&host](int revision, bool enabled) {
+            host.receiveLine({{"event", "agentEnablement"}, {"snapshot", QJsonObject{
+                {"revision", revision}, {"agents", QJsonArray{QJsonObject{{"kind", "openclaw"}, {"enabled", enabled}}}}
+            }}});
+        };
+        const auto enabled = [&host]() { return host.agentEnablement().value("agents").toList().first().toMap().value("enabled").toBool(); };
+        deliver(0, false);
+        settle(host);
+        host.setAgentEnabled("openclaw", true);
+        QVERIFY(!enabled());
+        settle(host);
+        QVERIFY(enabled());
+        QCOMPARE(methods(root()), QStringList({"agent.enablement.write"}));
+        QCOMPARE(methods(root(), true), QStringList({"detect", "agent.enablement.write", "detect"}));
+        QCOMPARE(host.state(), QString("connected"));
+        deliver(2, false);
+        deliver(1, true);
+        settle(host);
+        QVERIFY(!enabled());
+        QCOMPARE(host.agentEnablement().value("revision").toInt(), 2);
     }
 
     // OPENCLAW-04: only a successful save reconnects a running Host; a paused Host stays paused.
@@ -212,30 +243,22 @@ private slots:
         QCOMPARE(methods(root()), QStringList({"updateAgent", "rename"}));
         QCOMPARE(host.state(), QString("stopped")); QVERIFY(!host.desiredRunning());
     }
-    // KIMI-10: inherit once, apply explicit off by reconnecting, then save while paused without starting.
-    void kimiSettingUsesCurrentHostRun() {
+    // A legacy Kimi setting is not a second writer; toggling uses the common bridge.
+    void kimiEnablementIsAuthoritative() {
         auto &host = *m_host;
         connectHost(host, root());
-        QVERIFY(!host.kimiCodeAvailable());
         host.m_kimiCodeSupported = true;
-        host.m_kimiCodeDefaultEnabled = true;
+        host.m_settings.setValue("kimiCodeEnabled", false);
+        host.applyAgentEnablement({{"revision", 1}, {"agents", QJsonArray{QJsonObject{{"kind", "kimiCode"}, {"enabled", true}}}}});
+        settle(host);
         QVERIFY(host.kimiCodeAvailable()); QVERIFY(host.kimiCodeEnabled());
         host.receiveLine({{"event", "status"}, {"kimiCodeState", "connected"}});
         QCOMPARE(host.kimiCodeState(), QString("connected"));
-        host.saveSettings(host.relayUrl(), host.autoStart(), host.codexEnabled(), host.hostName(), host.dshEnabled(), host.dshWebUrl(), true, true, false);
-        QVERIFY(host.resumePending());
+        host.setAgentEnabled("kimiCode", false, 1, true);
         settle(host);
-        QCOMPARE(methods(root()), QStringList({"stop", "start"}));
+        QCOMPARE(methods(root()), QStringList({"agent.enablement.write"}));
         QVERIFY(!host.kimiCodeEnabled()); QVERIFY(host.kimiCodeState().isEmpty());
-        QFile start(root() + "/packages/host/dist/start.json");
-        QVERIFY(start.open(QIODevice::ReadOnly));
-        QCOMPARE(QJsonDocument::fromJson(start.readAll()).object().value("kimiCodeEnabled"), QJsonValue(false));
-        host.stopHost(); settle(host); clearMethods(root());
-        host.saveSettings(host.relayUrl(), host.autoStart(), host.codexEnabled(), host.hostName(), host.dshEnabled(), host.dshWebUrl(), true, true, true);
-        settle(host);
-        QVERIFY(host.kimiCodeEnabled()); QVERIFY(!host.desiredRunning()); QVERIFY(methods(root()).isEmpty());
-        host.receiveLine({{"event", "status"}, {"kimiCodeState", "connected"}});
-        QVERIFY(host.kimiCodeState().isEmpty());
+        QCOMPARE(host.state(), QString("connected"));
     }
     // KIMI-11: source changes apply through the same stop/start path and do not replace the inherited default.
     void kimiSourceSwitchRestartsEnabledHost() {
@@ -243,9 +266,10 @@ private slots:
         connectHost(host, root());
         host.m_kimiCodeSupported = true;
         host.m_kimiDesktopSupported = true;
-        host.m_kimiCodeDefaultEnabled = true;
+        host.applyAgentEnablement({{"revision", 1}, {"agents", QJsonArray{QJsonObject{{"kind", "kimiCode"}, {"enabled", true}}}}});
+        settle(host);
         QCOMPARE(host.kimiCodeSource(), QString("web"));
-        host.saveSettings(host.relayUrl(), host.autoStart(), host.codexEnabled(), host.hostName(), host.dshEnabled(), host.dshWebUrl(), true, true, true, "desktop");
+        host.saveSettings(host.relayUrl(), host.autoStart(), host.codexEnabled(), host.hostName(), host.dshEnabled(), host.dshWebUrl(), true, true, "desktop");
         settle(host);
         QCOMPARE(host.kimiCodeSource(), QString("desktop"));
         QCOMPARE(methods(root()), QStringList({"stop", "start"}));

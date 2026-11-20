@@ -46,6 +46,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.JsonObjectBuilder
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -223,6 +224,7 @@ internal class HostConnection(
 
     private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String? = null, firstMessage: String = ""): Boolean {
         val state = mutableState.value; val config = state.sessionConfiguration; val snapshot = config.snapshot
+        if (!state.allowsAgentSource(kind)) return false
         if (kind == KIMI_CODE_KIND && (!state.kimiCodeSupported || !state.sessionConfigurationSupported)) return false
         val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded, configuredLaunchJournal.snapshot != null)
         if (!admission.allowed) {
@@ -268,6 +270,56 @@ internal class HostConnection(
     private fun savedRelayMode(): RelayTransportMode = runCatching {
         RelayTransportMode.valueOf(relayPreferences.getString(hostId, RelayTransportMode.AUTO.name)!!)
     }.getOrDefault(RelayTransportMode.AUTO)
+    fun setAgentEnabled(kind: String, enabled: Boolean, expectedRevision: Long, confirmDisable: Boolean) {
+        val state = mutableState.value
+        val revision = state.agentEnablementRevision?.takeIf { it == expectedRevision } ?: return
+        if (state.agentEnablementRows.none { it.kind == kind && it.enabled != enabled }) return
+        requestAgentEnablement(revision) {
+            put("type", "agent.enablement.write"); put("kind", kind); put("enabled", enabled); put("expectedRevision", revision)
+            if (confirmDisable) put("confirmDisable", true)
+        }
+    }
+
+    fun refreshAgentEnablement() = requestAgentEnablement(null) { put("type", "agent.enablement.read") }
+
+    private fun requestAgentEnablement(revision: Long?, body: JsonObjectBuilder.() -> Unit) {
+        val id = "agent-enablement:${UUID.randomUUID()}"
+        updateState { state ->
+            if (!state.agentEnablementAvailable || state.agentEnablementPending != null ||
+                revision != null && revision != state.agentEnablementRevision) state
+            else state.copy(agentEnablementPending = id, agentEnablementFailed = false)
+        }
+        if (mutableState.value.agentEnablementPending != id) return
+        val sent = relay.sendDeviceMessage(buildJsonObject { body(); put("requestId", id); put("protocolVersion", PROTOCOL_VERSION) })
+        fun fail() = updateState { state ->
+            if (state.agentEnablementPending != id) state else state.copy(agentEnablementPending = null, agentEnablementFailed = true)
+        }
+        if (!sent) fail() else scope.launch { delay(10_000); fail() }
+    }
+
+    private fun receiveAgentEnablement(message: JsonObject) {
+        val snapshot = message["snapshot"] as? JsonObject ?: return
+        val revision = (snapshot["revision"] as? JsonPrimitive)?.longOrNull?.takeIf { it in 0..9_007_199_254_740_991L } ?: return
+        val raw = (snapshot["agents"] as? JsonArray)?.takeIf { it.size <= 128 } ?: return
+        val rows = raw.map { value ->
+            val row = value as? JsonObject ?: return
+            val kind = (row["kind"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: return
+            val label = (row["label"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: return
+            val enabled = (row["enabled"] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull ?: return
+            AgentEnablementRow(kind, label, enabled)
+        }
+        if (rows.map { it.kind }.toSet().size != rows.size) return
+        updateState { state ->
+            if (!state.agentEnablementAvailable) return@updateState state
+            val owned = state.agentEnablementPending != null && state.agentEnablementPending == (message["requestId"] as? JsonPrimitive)?.contentOrNull
+            val current = revision >= (state.agentEnablementRevision ?: -1L)
+            state.copy(agentEnablementRows = if (current) rows else state.agentEnablementRows,
+                agentEnablementRevision = if (current) revision else state.agentEnablementRevision,
+                agentEnablementPending = if (owned) null else state.agentEnablementPending,
+                agentEnablementFailed = if (owned) (message["status"] as? JsonPrimitive)?.contentOrNull == "conflict" else state.agentEnablementFailed)
+        }
+    }
+
     fun setRelayTransportMode(mode: RelayTransportMode) {
         relayPreferences.edit().putString(hostId, mode.name).apply()
         relay.setRelayTransportMode(mode)
@@ -889,14 +941,15 @@ internal class HostConnection(
             val state = mutableState.value
             val config = state.sessionConfiguration
             val snapshot = config.snapshot ?: reject(ImportProblem.LAUNCH_CONFIGURATION)
-            if (config.requestId != null || config.error != null || snapshot.agentKind != agent || snapshot.cwd != cwd ||
+            if (!state.allowsAgentSource(agent) || config.requestId != null || config.error != null || snapshot.agentKind != agent || snapshot.cwd != cwd ||
                 agent !in (state.launchableAgents ?: state.supportedAgents).orEmpty()) reject(ImportProblem.LAUNCH_CONFIGURATION)
             val launch = ExternalImportLaunch("import-launch:" + UUID.randomUUID(), hostId, externalImportPairingKey(pairing),
                 pairing.hostName ?: hostId, agent, cwd, instruction)
             externalImportMessage(batch.text, instruction, L10n.tr("请查看附件。"), L10n.tr("导入的内容："))
             inbox.reserveLaunch(batch.id, launch)
-            if (!matchesImportLaunch(launch) || relay.externalImportChannel() !== channel || mutableState.value.agentModelEpoch != state.agentModelEpoch ||
-                mutableState.value.sessionConfiguration != config) {
+            val current = mutableState.value
+            if (!matchesImportLaunch(launch) || relay.externalImportChannel() !== channel || current.agentModelEpoch != state.agentModelEpoch ||
+                !current.allowsAgentSource(agent) || current.sessionConfiguration != config) {
                 inbox.failLaunch(batch.id, launch.id)
                 reject(ImportProblem.LAUNCH_CONFIGURATION)
             }
@@ -1229,6 +1282,8 @@ internal class HostConnection(
     }
 
     private fun activateTarget(target: JsonObject, spawnMode: String? = null): Boolean {
+        val kind = (target["agentKind"] as? JsonPrimitive)?.contentOrNull
+        if (kind != null && !mutableState.value.allowsAgentSource(kind)) return false
         lastSessionRestorer.cancel()
         val requestId = UUID.randomUUID().toString()
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”，草稿和消息先归属启动请求。
@@ -1968,7 +2023,7 @@ internal class HostConnection(
 
     internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =
         synchronized(stateWriterLock) {
-            if (kind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return@synchronized null
+            if (!mutableState.value.allowsAgentSource(kind) || kind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return@synchronized null
             if (!mutableState.value.supportsSessionConfiguration(kind)) updateState { it.copy(sessionConfiguration =
                 it.sessionConfiguration.copy(agentKind = kind, cwd = cwd)) }
             // S49 / SC70: an empty first message launches without a send operation.
@@ -2982,10 +3037,27 @@ internal class HostConnection(
                         }
                     }
                     filteredReady.set(null)
+                    val management = readyAdmitsAgentEnablement(incomingMessage)
+                    if (management && !mutableState.value.agentEnablementAvailable) {
+                        updateState { it.copy(agentEnablementAvailable = true) }
+                        refreshAgentEnablement()
+                    } else if (!management) updateState { it.copy(agentEnablementAvailable = false, agentEnablementRevision = null,
+                        agentEnablementRows = emptyList(), agentEnablementPending = null, agentEnablementFailed = false) }
                     expectedMessageDisplayVersion = when {
                         MESSAGE_RENDER_FEATURE !in deviceAgentFeatures(incomingMessage) -> LEGACY_DISPLAY_PROJECTION_VERSION
                         incomingMessage.containsKey("dshDesktop") -> DISPLAY_PROJECTION_VERSION
                         else -> null  // The capability response may still be in flight.
+                    }
+                }
+                if (interactiveChannel != null && incomingMessage != null) {
+                    val settingsType = (incomingMessage["type"] as? JsonPrimitive)?.contentOrNull
+                    val id = (incomingMessage["requestId"] as? JsonPrimitive)?.contentOrNull
+                    if (settingsType == "agent.enablement.snapshot" || settingsType == "agent.enablement.result") {
+                        receiveAgentEnablement(incomingMessage); continue
+                    }
+                    if (settingsType == "protocol.error" && id?.startsWith("agent-enablement:") == true) {
+                        updateState { if (it.agentEnablementPending == id) it.copy(agentEnablementPending = null, agentEnablementFailed = true) else it }
+                        continue
                     }
                 }
                 if (interactiveChannel != null && incomingMessage != null && incomingMessage.get("type")?.jsonPrimitive?.contentOrNull in setOf("agent.menu.options.page", "protocol.error") && menuOptions.owns(incomingMessage)) {

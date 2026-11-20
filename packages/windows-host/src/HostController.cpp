@@ -114,7 +114,10 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     // Keychain or a re-signed app). It used to run here on the UI thread, before the window existed.
     if (!m_qaMode) loadStoredActivation();
     connect(&m_bridge, &QProcess::started, this, [this] {
-        command("initialize", {{"claudeIntegrationEnabled", m_automaticIntegrations && claudeIntegrationEnabled()},
+        command("initialize", {{"claudeIntegrationEnabled", m_automaticIntegrations && claudeIntegrationEnabled()}, {"dshEnabled", dshEnabled()}, {"codexEnabled", m_settings.contains("codexEnabled") && codexEnabled()},
+            {"piIntegrationEnabled", m_settings.contains("piIntegrationEnabled") && piIntegrationEnabled()},
+            {"legacyClaudeEnabled", m_settings.contains("claudeIntegrationEnabled") && claudeIntegrationEnabled()},
+            {"legacyKimiEnabled", m_settings.contains("kimiCodeEnabled") ? QJsonValue(m_settings.value("kimiCodeEnabled").toBool()) : QJsonValue(QJsonValue::Null)},
             {"agentEntryOverrides", QJsonObject::fromVariantMap(agentEntryOverrides())}}, [this](const QJsonValue &result) {
             const auto obj = result.toObject();
             const auto actualId = obj.value("hostId").toString();
@@ -123,11 +126,11 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_hostPub = obj.value("hostPub").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
             refreshDeviceUpdateIndicators();
+            applyAgentEnablement(obj.value("agentEnablement").toObject());
             m_openClaw = obj.value("openClaw").toObject().toVariantMap();
-            m_kimiCodeSupported = obj.value("kimiCodeDefaultEnabled").isBool();
+            m_kimiCodeSupported = obj.value("kimiCodeSupported").toBool();
             m_kimiDesktopSupported = obj.value("kimiDesktopSupported").toBool();
             m_kimiCodeDefaultSource = obj.value("kimiCodeDefaultSource").toString("web");
-            m_kimiCodeDefaultEnabled = obj.value("kimiCodeDefaultEnabled").toBool();
             m_bridgeReady = true;
             emit openClawChanged();
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
@@ -161,6 +164,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         if (error == QProcess::FailedToStart) { m_state = "error"; setMessage("无法启动内置 Host：" + m_bridge.errorString()); }
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
+        m_agentEnablement.clear(); emit agentEnablementChanged();
         m_kimiCodeSupported = false;
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
         // 在途命令随内核一起没了：进度说明也必须跟着消失，否则会永久停在“正在做什么”。
@@ -248,6 +252,7 @@ static QPair<QString, QString> activityFor(const QString &method, const QJsonObj
     if (method == "activateInstallation") return { "agentVersion", "正在切换 Agent 版本" };
     if (method == "claudeIntegration") return { "claude", "正在更新 Claude Code 插件" };
     if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
+    if (method == "agent.enablement.write") return { "agentEnablement", "正在保存 Agent 设置" };
     if (method == "openclaw.save") return { "openClaw", "正在保存 OpenClaw 配置" };
     if (method == "rename") return { "host", "正在保存电脑名称" };
     if (method.startsWith("provider.")) {
@@ -415,6 +420,7 @@ void HostController::receiveLine(const QJsonObject &line) {
                 m_settings.remove(kind + "ManualEntry"); m_settings.sync();
             }
         }
+        else if (event == "agentEnablement") { applyAgentEnablement(line.value("snapshot").toObject()); }
         else if (event == "status") {
             m_devices = line.value("devices").toArray().toVariantList(); refreshDeviceUpdateIndicators(); m_runtimeCount = line.value("runtimeCount").toInt();
             // The running service's own model; offline status events (rename/revoke while paused) carry none.
@@ -424,7 +430,7 @@ void HostController::receiveLine(const QJsonObject &line) {
                     backends = domain.toObject().value("value").toObject().value("backends").toArray().toVariantList();
             }
             m_backends = backends;
-            m_kimiCodeState = m_desiredRunning ? line.value("kimiCodeState").toString() : QString();
+            m_kimiCodeState = m_desiredRunning && kimiCodeEnabled() ? line.value("kimiCodeState").toString() : QString();
         }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
         else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
@@ -813,9 +819,36 @@ void HostController::startHost() {
     auto params = agentSettings(); params.insert("relayUrl", relayUrl()); params.insert("credential", m_credential); params.insert("codexEnabled", codexEnabled());
     params.insert("dshEnabled", dshEnabled()); params.insert("piIntegrationEnabled", piIntegrationEnabled());
     params.insert("claudeIntegrationEnabled", claudeIntegrationEnabled());
-    if (kimiCodeAvailable() && m_settings.contains("kimiCodeEnabled")) params.insert("kimiCodeEnabled", kimiCodeEnabled());
     if (kimiCodeAvailable() && m_settings.contains("kimiCodeSource")) params.insert("kimiCodeSource", kimiCodeSource());
     command("start", params);
+}
+bool HostController::kimiCodeEnabled() const {
+    for (const auto &value : m_agentEnablement.value("agents").toList()) {
+        auto row = value.toMap();
+        if (row.value("kind").toString() == "kimiCode") return row.value("enabled").toBool();
+    }
+    return false;
+}
+void HostController::applyAgentEnablement(const QJsonObject &snapshot) {
+    if (!snapshot.value("revision").isDouble() || !snapshot.value("agents").isArray()) return;
+    if (!m_agentEnablement.isEmpty() && snapshot.value("revision").toDouble() <= m_agentEnablement.value("revision").toDouble()) return;
+    m_agentEnablement = snapshot.toVariantMap();
+    if (!kimiCodeEnabled()) m_kimiCodeState.clear();
+    emit agentEnablementChanged();
+    emit changed();
+    if (m_bridgeReady && !m_exiting) detectAgents();
+}
+void HostController::setAgentEnabled(const QString &kind, bool enabled, double expectedRevision, bool confirmDisable) {
+    if (!m_bridgeReady || busy() || m_agentEnablement.isEmpty()) return;
+    const auto revision = m_agentEnablement.value("revision").toDouble();
+    if (expectedRevision >= 0 && expectedRevision != revision) { setMessage("Agent 设置已在其他设备更新，请确认后重试"); return; }
+    QJsonObject params{{"kind", kind}, {"enabled", enabled}, {"expectedRevision", revision}};
+    if (confirmDisable) params.insert("confirmDisable", true);
+    command("agent.enablement.write", params, [this](const QJsonValue &value) {
+        const auto result = value.toObject();
+        applyAgentEnablement(result.value("snapshot").toObject());
+        if (result.value("status").toString() == "conflict") setMessage("Agent 设置已在其他设备更新，请确认后重试");
+    });
 }
 void HostController::saveOpenClaw(const QString &url, const QString &token) {
     if (!m_bridgeReady || busy() || m_openClaw.value("source").toString() != "file") return;
@@ -824,7 +857,7 @@ void HostController::saveOpenClaw(const QString &url, const QString &token) {
         emit openClawChanged();
         // Preserve the current connection when validation or persistence failed.
         reconnectOpenClaw();
-        setMessage(m_openClaw.value("url").toString().isEmpty() ? "OpenClaw 已停用" : "OpenClaw 配置已保存");
+        setMessage(m_openClaw.value("url").toString().isEmpty() ? "OpenClaw 连接配置已移除" : "OpenClaw 配置已保存");
     });
 }
 void HostController::reconnectOpenClaw() {
@@ -1087,7 +1120,7 @@ void HostController::setAutoStart(bool enabled) {
     setMessage(enabled ? "已开启登录启动" : "已关闭登录启动");
 }
 
-void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration, bool claudeIntegration, const QVariant &kimiCode, const QString &kimiSource) {
+void HostController::saveSettings(const QString &relay, bool startup, bool codex, const QString &name, bool dsh, const QString &dshUrl, bool piIntegration, bool claudeIntegration, const QString &kimiSource) {
     if (busy()) return;
     const auto normalized = CredentialStore::normalizedRelay(relay);
     if (!validRelay(normalized)) { setMessage("中继地址必须使用 wss://；本机测试可使用 ws://127.0.0.1"); return; }
@@ -1107,11 +1140,11 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
         // Drain the old runtime first: an authentication refusal from that connection
         // must finish persisting before the worker selects another Relay's active slot.
         pauseForChange(); m_relaySelectionPending = true; emit changed();
-        afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode, kimiSource] {
+        afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiSource] {
             m_relaySelectionPending = false;
-            restoreActivation(normalized, [this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode, kimiSource] {
-                afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode, kimiSource] {
-                    saveSettings(normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiCode, kimiSource);
+            restoreActivation(normalized, [this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiSource] {
+                afterQueuedCommands([this, normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiSource] {
+                    saveSettings(normalized, startup, codex, name, dsh, dshUrl, piIntegration, claudeIntegration, kimiSource);
                 });
             });
         });
@@ -1125,11 +1158,9 @@ void HostController::saveSettings(const QString &relay, bool startup, bool codex
     // terminal integrations and login startup keep applying live without touching the connection.
     const auto hostName = name.trimmed();
     const bool rename = !hostName.isEmpty() && hostName != m_hostName;
-    const bool kimiChanged = kimiCodeAvailable() && kimiCode.isValid() && kimiCode.toBool() != kimiCodeEnabled();
     const bool kimiSourceChanged = kimiCodeAvailable() && (kimiSource == "web" || (kimiSource == "desktop" && kimiDesktopSupported())) && kimiSource != kimiCodeSource();
-    if (kimiChanged || (kimiSourceChanged && kimiCodeEnabled()) || normalized != relayUrl() || rename || codex != codexEnabled() || dsh != dshEnabled() || dshUrl.trimmed() != dshWebUrl()) pauseForChange();
+    if ((kimiSourceChanged && kimiCodeEnabled()) || normalized != relayUrl() || rename || codex != codexEnabled() || dsh != dshEnabled() || dshUrl.trimmed() != dshWebUrl()) pauseForChange();
     m_settings.setValue("relayUrl", normalized); m_settings.setValue("codexEnabled", codex);
-    if (kimiChanged) m_settings.setValue("kimiCodeEnabled", kimiCode.toBool());
     if (kimiSourceChanged) m_settings.setValue("kimiCodeSource", kimiSource);
     m_settings.setValue("dshEnabled", dsh); m_settings.setValue("dshWebUrl", dshUrl.trimmed());
 #ifdef Q_OS_MACOS

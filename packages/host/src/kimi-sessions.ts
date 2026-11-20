@@ -70,10 +70,11 @@ export class KimiSessions {
     }
     return kimiLocalDirectory(binding.data.cwd ?? session.metadata.cwd);
   }
-  async create(path: string, marker: string): Promise<KimiSession> {
+  async create(path: string, marker: string, requireCurrent?: () => void): Promise<KimiSession> {
     const directory = await kimiLocalDirectory(path);
     const auth = z.object({ models_ready: z.boolean() }).parse(await this.client.requestJson("/api/v1/auth"));
     if (!auth.models_ready) throw new KimiLaunchBlocked("agent_unsupported", "请先在 Kimi Code 配置默认模型");
+    requireCurrent?.();
     const result = KimiSessionSchema.parse(await this.client.requestJson("/api/v1/sessions", {
       method: "POST", body: { metadata: { cwd: directory, [markerKey]: marker }, environment_id: "local" },
     }));

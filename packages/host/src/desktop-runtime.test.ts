@@ -28,29 +28,50 @@ describe("desktop Host lifecycle", () => {
   });
   afterEach(() => { vi.restoreAllMocks(); });
 
-  // KIMI-10: explicit UI off overrides inherited opt-in; enabled state comes from the owned adapter.
-  it("honors the desktop Kimi toggle and publishes adapter status independently of Relay", async () => {
+  // HOST-AGENT-06: the desktop writer works before connecting and retains the explicit off choice.
+  it("persists desktop Agent settings while paused and publishes only the Host revision", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-agent-enablement-"));
+    const published: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => published.push(event), root);
+    try {
+      const initial = await runtime.readAgentEnablement();
+      const existing = initial.agents.find(row => row.kind === "openclaw")!;
+      expect(initial.revision).toBe(0);
+      const changed = await runtime.setAgentEnablement({ kind: "openclaw", enabled: !existing.enabled, expectedRevision: 0 });
+      expect(changed).toMatchObject({ status: "applied", snapshot: { revision: 1, agents: expect.arrayContaining([expect.objectContaining({ kind: "openclaw", enabled: !existing.enabled })]) } });
+      expect(published.filter(event => event.event === "agentEnablement").map(event => event.snapshot)).toEqual([initial, changed.snapshot]);
+      expect(await runtime.setAgentEnablement({ kind: "openclaw", enabled: existing.enabled, expectedRevision: 0 }))
+        .toEqual({ status: "conflict", snapshot: changed.snapshot });
+      const reopened = new DesktopRuntime(() => {}, root);
+      try { expect(await reopened.readAgentEnablement()).toEqual(changed.snapshot); }
+      finally { await reopened.close(); }
+    } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // An explicit legacy UI off wins once, while a later common switch starts
+  // the actual Kimi adapter with its separately selected native source.
+  it("migrates Kimi off once and uses Host policy for its connection status", async () => {
     const root = await mkdtemp(join(tmpdir(), "orbis-desktop-kimi-"));
     const credential = "orbis_host_" + "A".repeat(43);
     const relay = await createRelayServer({ runtimeCredentials: [credential] });
     const events: DesktopEvent[] = [];
     const runtime = new DesktopRuntime(event => events.push(event), root,
       { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
-    const create = vi.spyOn(HostService, "create");
-    vi.spyOn(KimiRuntime.prototype, "start").mockImplementation(() => {});
+    const started = vi.spyOn(KimiRuntime.prototype, "start").mockImplementation(() => {});
+    vi.spyOn(KimiRuntime.prototype, "connectionState", "get").mockReturnValue("not_running");
     const settings = { relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
       piIntegrationEnabled: false, claudeIntegrationEnabled: false };
     try {
       await writeFile(join(root, "config.json"), JSON.stringify({ kimiCodeEnabled: true, kimiCodeHome: join(root, "kimi") }));
       await runtime.start({ ...settings, kimiCodeEnabled: false });
-      expect(create.mock.lastCall?.[0].kimiCodeRuntime).toBeUndefined();
-      runtime.status();
-      expect(events).toContainEqual(expect.objectContaining({ event: "status", kimiCodeState: "disabled" }));
+      expect(started).not.toHaveBeenCalled();
       await runtime.stop();
       await runtime.start(settings);
-      const kimi = create.mock.lastCall?.[0].kimiCodeRuntime;
-      expect(kimi).toBeInstanceOf(KimiRuntime);
-      vi.spyOn(kimi!, "connectionState", "get").mockReturnValue("not_running");
+      expect(started).not.toHaveBeenCalled();
+      runtime.status();
+      expect(events).toContainEqual(expect.objectContaining({ event: "status", kimiCodeState: "disabled" }));
+      await runtime.setAgentEnablement({ kind: "kimiCode", enabled: true, expectedRevision: 0 });
+      await vi.waitFor(() => expect(started).toHaveBeenCalledTimes(1));
       runtime.status();
       expect(events).toContainEqual(expect.objectContaining({ event: "status", kimiCodeState: "not_running" }));
     } finally { await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
@@ -70,6 +91,7 @@ describe("desktop Host lifecycle", () => {
     vi.mocked(DshRuntime.connectExisting).mockResolvedValue(dsh);
     const launch = vi.spyOn(DshRuntime, "create").mockRejectedValue(new Error("must not prestart DSH"));
     try {
+      await runtime.setAgentEnablement({ kind: "dsh", enabled: true, expectedRevision: 0 });
       await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false });
       await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
       expect(launch).not.toHaveBeenCalled();
@@ -77,6 +99,46 @@ describe("desktop Host lifecycle", () => {
       await runtime.stop();
       expect(client.stop).toHaveBeenCalledTimes(1);
     } finally { await runtime.close(); await dsh.stop(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // Disabling terminal attachment must not stop the desktop watcher or reconnect Relay.
+  it("toggles DeepSeek terminal and desktop independently while Host stays connected", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-dsh-enablement-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    const discoverDesktop = vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "isInstalled").mockResolvedValue(false);
+    const watch = vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "watch").mockImplementation(() => {});
+    const desktopStop = vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "stop");
+    const recoverDesktop = vi.spyOn(dshDesktopLifecycle.DshDesktopLifecycle.prototype, "connectExisting").mockResolvedValue(undefined);
+    const launchTerminal = vi.spyOn(DshRuntime, "create");
+    const client: DshConnection = { onNotification: undefined, onRequest: undefined, onExit: undefined,
+      request: vi.fn(async () => ({ sessions: [] })), notify: vi.fn(), stop: vi.fn(async () => {}) };
+    const terminal = new DshRuntime(client, { list: async () => [],
+      read: async id => ({ header: { id, cwd: root, createdAt: 1 }, events: [] }), close: async () => {} });
+    vi.mocked(DshRuntime.connectExisting).mockResolvedValue(terminal);
+    try {
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
+        piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      expect(DshRuntime.connectExisting).not.toHaveBeenCalled();
+      expect(discoverDesktop).not.toHaveBeenCalled();
+      await expect(runtime.openAgent("dsh")).rejects.toThrow("请先在 Agent 设置中启用");
+      await runtime.setAgentEnablement({ kind: "dsh", enabled: true, expectedRevision: 0 });
+      await vi.waitFor(() => expect(DshRuntime.connectExisting).toHaveBeenCalledTimes(1));
+      expect(watch).not.toHaveBeenCalled();
+      await runtime.setAgentEnablement({ kind: "dshDesktop", enabled: true, expectedRevision: 1 });
+      await vi.waitFor(() => expect(recoverDesktop).toHaveBeenCalledTimes(1));
+      expect(watch).toHaveBeenCalledTimes(1);
+      await runtime.setAgentEnablement({ kind: "dsh", enabled: false, expectedRevision: 2 });
+      await vi.waitFor(() => expect(client.stop).toHaveBeenCalledTimes(1));
+      expect(desktopStop).not.toHaveBeenCalled();
+      expect(launchTerminal).not.toHaveBeenCalled();
+      await runtime.setAgentEnablement({ kind: "dshDesktop", enabled: false, expectedRevision: 3 });
+      await vi.waitFor(() => expect(desktopStop).toHaveBeenCalledTimes(1));
+      expect(events.filter(event => event.event === "state").map(event => event.state).at(-1)).toBe("connected");
+    } finally { await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
   });
 
   // HOST-DESKTOP-CANCEL-01: invalidate desktop discovery before waiting for the
@@ -102,6 +164,10 @@ describe("desktop Host lifecycle", () => {
     try {
       await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
         piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      await runtime.setAgentEnablement({ kind: "dshDesktop", enabled: true, expectedRevision: 0 });
+      await vi.waitFor(() => expect(dshDesktopLifecycle.DshDesktopLifecycle.prototype.watch).toHaveBeenCalled());
+      await runtime.setAgentEnablement({ kind: "codexDesktop", enabled: true, expectedRevision: 1 });
+      await vi.waitFor(() => expect(CodexDesktopLifecycle.prototype.probe).toHaveBeenCalled());
       codexStop.mockClear(); dshStop.mockClear();
       vi.spyOn(HostService.prototype, "stop").mockImplementationOnce(async function (this: HostService) {
         held = true;
@@ -188,7 +254,7 @@ describe("desktop Host lifecycle", () => {
     const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
     const find = vi.spyOn(claudeInstallation, "findClaudeExecutable").mockResolvedValue(executable);
     try {
-      await runtime.initialize({ claudeIntegrationEnabled: false });
+      await runtime.initialize({ claudeIntegrationEnabled: false, legacyClaudeEnabled: true });
       expect(events).toContainEqual({ event: "claudeStatus", installed: executable !== undefined, minimumVersion: "2.1.287",
         compatible: executable !== undefined, updateAvailable: false, ...(executable ? { version: "2.1.322" } : { cliIssue: "missing" }) });
     } finally { find.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
@@ -204,7 +270,7 @@ describe("desktop Host lifecycle", () => {
     if (version) vi.mocked(claudeVersion.readClaudeVersion).mockResolvedValue(version);
     else vi.mocked(claudeVersion.readClaudeVersion).mockRejectedValue(new Error("无法读取 Claude Code 版本"));
     try {
-      await expect(runtime.initialize({ claudeIntegrationEnabled: false })).resolves.toHaveProperty("hostId");
+      await expect(runtime.initialize({ claudeIntegrationEnabled: false, legacyClaudeEnabled: true })).resolves.toHaveProperty("hostId");
       expect(events).toContainEqual(expect.objectContaining({ event: "claudeStatus", installed: true,
         minimumVersion: "2.1.287", compatible: version === "2.1.287",
         ...(version ? { version } : {}), ...(version === "2.1.287" ? {} : { error: expect.stringContaining(version ? "最低 2.1.287" : "无法读取") }) }));
@@ -221,7 +287,7 @@ describe("desktop Host lifecycle", () => {
     let finish!: (version: string) => void;
     vi.mocked(claudeVersion.readClaudeVersion).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
     let initialized = false;
-    const pending = runtime.initialize({ claudeIntegrationEnabled: false }).then(() => { initialized = true; });
+    const pending = runtime.initialize({ claudeIntegrationEnabled: false, legacyClaudeEnabled: true }).then(() => { initialized = true; });
     try {
       await vi.waitFor(() => expect(claudeVersion.readClaudeVersion).toHaveBeenCalled());
       await vi.waitFor(() => expect(initialized).toBe(true));
@@ -238,7 +304,7 @@ describe("desktop Host lifecycle", () => {
     const runtime = new DesktopRuntime(() => {}, join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
     const install = vi.spyOn(runtime, "setClaudeIntegration").mockResolvedValue(undefined);
     try {
-      await runtime.initialize(enabled === undefined ? {} : { claudeIntegrationEnabled: enabled });
+      await runtime.initialize({ legacyClaudeEnabled: true, ...(enabled === undefined ? {} : { claudeIntegrationEnabled: enabled }) });
       if (enabled === false) expect(install).not.toHaveBeenCalled();
       else expect(install).toHaveBeenCalledWith(true, true, expect.any(AbortSignal));
     } finally { install.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
@@ -250,7 +316,7 @@ describe("desktop Host lifecycle", () => {
     const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"), { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
     const install = vi.spyOn(runtime, "setClaudeIntegration").mockRejectedValue(new Error("plugin command failed"));
     try {
-      await expect(runtime.initialize()).resolves.toHaveProperty("hostId");
+      await expect(runtime.initialize({ legacyClaudeEnabled: true })).resolves.toHaveProperty("hostId");
       await vi.waitFor(() => expect(events).toContainEqual({ event: "log", message: "登记 Claude Code 插件失败：plugin command failed" }));
       expect(events).toContainEqual({ event: "preparation", kind: "claude", state: "error", message: "plugin command failed" });
     } finally { install.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
@@ -270,7 +336,7 @@ describe("desktop Host lifecycle", () => {
       return new Promise<void>((_resolve, reject) => received?.addEventListener("abort", () => reject(received.reason)));
     });
     try {
-      await expect(runtime.initialize()).resolves.toHaveProperty("hostId");
+      await expect(runtime.initialize({ legacyClaudeEnabled: true })).resolves.toHaveProperty("hostId");
       expect(events).toContainEqual({ event: "preparation", kind: "claude", state: "preparing" });
       await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false, piIntegrationEnabled: false });
       expect(events).toContainEqual({ event: "state", state: "connected" });
@@ -294,7 +360,7 @@ describe("desktop Host lifecycle", () => {
       if (signal) await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
     });
     try {
-      await runtime.initialize();
+      await runtime.initialize({ legacyClaudeEnabled: true });
       // Turning the integration off cancels the automatic run first; the two never run `claude plugin` at once.
       await runtime.configureClaudeIntegration(false);
       expect(calls).toEqual([[true, true], [false, false]]);
@@ -310,7 +376,7 @@ describe("desktop Host lifecycle", () => {
     // event; registration recovery is judged by its own preparation state.
     const preparation = () => events.filter(event => event.event === "preparation" && event.kind === "claude").at(-1);
     try {
-      await runtime.initialize();
+      await runtime.initialize({ legacyClaudeEnabled: true });
       await vi.waitFor(() => expect(preparation()).toMatchObject({ event: "preparation", kind: "claude", state: "error" }));
       await runtime.configureClaudeIntegration(true);
       // Without this the desktop kept showing "插件未登记" after the user fixed it from Settings.
@@ -360,6 +426,7 @@ describe("desktop Host lifecycle", () => {
     });
     const states = () => events.filter(event => event.event === "dshDesktopOpen").map(event => event.state);
     try {
+      await runtime.setAgentEnablement({ kind: "dshDesktop", enabled: true, expectedRevision: 0 });
       await runtime.openAgent("dshDesktop");
       expect(states()).toEqual(["opening", "waiting"]);
       // A second click while waiting keeps the same open.
@@ -394,6 +461,8 @@ describe("desktop Host lifecycle", () => {
       const activated = await registration.activate({ ...request, ...challenge, code: verificationCode });
       await runtime.start({ relayUrl: relay.url, credential: activated.credential, lanPort: 0 });
       expect(events).toContainEqual({ event: "state", state: "connected" });
+      const { revision } = await runtime.readAgentEnablement();
+      await runtime.setAgentEnablement({ kind: "pi", enabled: true, expectedRevision: revision });
       await expect(runtime.install("pi")).rejects.toThrow("请先暂停 Host");
       await expect(runtime.installAll("update")).rejects.toThrow("请先暂停 Host");
       const pair = await runtime.pair() as { qr: string; expiresAt: number };
@@ -475,7 +544,7 @@ describe("desktop Host lifecycle", () => {
         piIntegrationEnabled: false, claudeIntegrationEnabled: false });
       // The start resolves with the Relay online, before the delayed preparation failure lands.
       expect(events).toContainEqual({ event: "state", state: "connected" });
-      expect(events).toContainEqual(expect.objectContaining({ event: "preparation", kind: "codex", state: "preparing" }));
+      await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ event: "preparation", kind: "codex", state: "preparing" })));
       await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ event: "preparation", kind: "codex", state: "error",
         message: expect.stringContaining("app-server 启动失败") })), { timeout: 5_000 });
       const connectedAt = events.findIndex(event => event.event === "state" && event.state === "connected");
@@ -616,7 +685,7 @@ describe("desktop Host lifecycle", () => {
     const runtime = new DesktopRuntime(event => events.push(event), join(root, "state"),
       { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
     try {
-      await expect(runtime.initialize({ claudeIntegrationEnabled: false })).resolves.toHaveProperty("hostId");
+      await expect(runtime.initialize({ claudeIntegrationEnabled: false, codexEnabled: true })).resolves.toHaveProperty("hostId");
       await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: true, dshEnabled: false,
         piIntegrationEnabled: false, claudeIntegrationEnabled: false });
       expect(events).toContainEqual({ event: "state", state: "connected" });
@@ -657,6 +726,8 @@ describe("desktop Host lifecycle", () => {
       while (held.length === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
       await stopPromise;
       // 已暂停就应当允许安装：在途的旧尝试不能把闸门继续锁着。
+      const { revision } = await runtime.readAgentEnablement();
+      await runtime.setAgentEnablement({ kind: "pi", enabled: true, expectedRevision: revision });
       await expect(runtime.activateInstallation("pi", "missing")).rejects.toThrow("安装记录不存在");
       // 那条在途连接随后才失败：它的链路状态不能翻回来盖掉“已暂停”，否则界面会卡在
       // “连接已断开”，Agent 安装的门就以“需先暂停 Host”永久挡住。

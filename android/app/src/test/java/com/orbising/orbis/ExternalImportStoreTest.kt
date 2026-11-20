@@ -42,6 +42,11 @@ class ExternalImportStoreTest {
         assertEquals(listOf(runtime), current.externalImportRuntimes())
         assertTrue(current.copy(homeDirectoryReceived = false).externalImportRuntimes().isEmpty())
         assertTrue(current.copy(e2eReady = false).externalImportRuntimes().isEmpty())
+        // A policy snapshot can precede the updated runtime projection.
+        val retiring = current.copy(agentEnablementRevision = 1, agentEnablementRows = listOf(AgentEnablementRow("pi", "Pi", false)))
+        assertTrue(retiring.externalImportRuntimes().isEmpty())
+        assertEquals(listOf(runtime), retiring.copy(agentEnablementRevision = 2,
+            agentEnablementRows = listOf(AgentEnablementRow("pi", "Pi", true))).externalImportRuntimes())
         assertTrue(current.copy(runtimes = current.runtimes + ("r2" to runtime.copy(runtimeId = "r2")))
             .externalImportRuntimes().isEmpty())
         assertTrue(current.copy(sessions = mapOf("s1" to SessionCatalogEntry("s1", archived = true)))

@@ -45,9 +45,14 @@ input.on("line", line => {
       const p = request.params ?? {};
       let result: unknown = {};
       switch (request.method) {
-        case "initialize": result = await runtime.initialize({ claudeIntegrationEnabled: p.claudeIntegrationEnabled !== false,
+        case "initialize": result = await runtime.initialize({
+          claudeIntegrationEnabled: p.claudeIntegrationEnabled !== false,
+          dshEnabled: p.dshEnabled === true, codexEnabled: p.codexEnabled === true,
+          piIntegrationEnabled: p.piIntegrationEnabled === true, legacyClaudeEnabled: p.legacyClaudeEnabled === true,
+          ...(typeof p.legacyKimiEnabled === "boolean" ? { kimiCodeEnabled: p.legacyKimiEnabled } : {}),
           ...(p.agentEntryOverrides && typeof p.agentEntryOverrides === "object"
-            ? { agentEntryOverrides: p.agentEntryOverrides as NonNullable<DesktopSettings["agentEntryOverrides"]> } : {}) }); break;
+            ? { agentEntryOverrides: p.agentEntryOverrides as NonNullable<DesktopSettings["agentEntryOverrides"]> } : {}),
+        }); break;
         case "detect": result = await runtime.detect(p, p.checkLatest === true); break;
         case "state.read": {
           const domains = p.domains;
@@ -58,6 +63,8 @@ input.on("line", line => {
           const range = AgentStateRangeRequestSchema.parse({ type: "agent.state.range.request", requestId: "desktop:host-range", ...p });
           result = await runtime.readRange(range); break;
         }
+        case "agent.enablement.read": result = await runtime.readAgentEnablement(); break;
+        case "agent.enablement.write": result = await runtime.setAgentEnablement(p); break;
         case "openclaw.save": result = await runtime.saveOpenClaw(p.url, p.token); break;
         case "start": await runtime.start(p as DesktopSettings); break;
         case "stop": await runtime.stop(); break;

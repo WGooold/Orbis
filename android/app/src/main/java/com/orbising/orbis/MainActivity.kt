@@ -3523,7 +3523,7 @@ internal fun StatusScreen(
     onBack: () -> Unit,
     root: Boolean = false,
 ) {
-    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode, model)
+    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode, model, model::setAgentEnabled, model::refreshAgentEnablement)
 }
 
 

@@ -43,7 +43,14 @@ export type BackendActivation = {
 /** 分派一条已认领命令的三种结果：处理成功 / 后端不认识 / runtime 掉线。 */
 export type CommandDispatch = "handled" | "unsupported" | "offline";
 
+/** Revoked before issuing a native launch; this generation must not be retried. */
+export class AgentLaunchRevoked extends ActivationError {
+  constructor() { super("agent_unsupported", "Agent 已停用或连接已改变，已取消待启动的操作"); }
+}
+
 export type AgentActivateContext = {
+  /** Invoke after asynchronous preflight, just before issuing a native launch. */
+  requireCurrent?: () => void;
   deviceId?: string;
   launchId?: string;
   /** Claude's preallocated native identity, durably recorded before terminal launch. */
@@ -158,6 +165,7 @@ export class PiBackend implements AgentBackend {
     if (target.type === "resume") {
       const online = this.#options.runtimeMetadata?.().find(item => item.sessionId === target.sessionId);
       if (online) {
+        context?.requireCurrent?.();
         if (context?.configuration) await this.#confirmConfiguration(target.sessionId, context.configuration, true);
         return { sessionId: target.sessionId, spawnMode: "tui" };
       }
@@ -173,6 +181,7 @@ export class PiBackend implements AgentBackend {
       const spawned = await this.#options.spawner.activate({
         deviceId: context?.deviceId ?? "",
         target: { type: "resume", sessionId: target.sessionId, cwd: entry.cwd, sessionFile },
+        ...(context?.requireCurrent === undefined ? {} : { requireCurrent: context.requireCurrent }),
         ...(context?.configuration === undefined ? {} : { configuration: context.configuration }),
         ...(context?.spawnMode === undefined ? {} : { spawnMode: context.spawnMode }),
       });
@@ -186,6 +195,7 @@ export class PiBackend implements AgentBackend {
     const spawned = await this.#options.spawner.activate({
       deviceId: context?.deviceId ?? "",
       target: { type: "new", agentKind: "pi", cwd: target.cwd },
+      ...(context?.requireCurrent === undefined ? {} : { requireCurrent: context.requireCurrent }),
       ...(context?.spawnMode === undefined ? {} : { spawnMode: context.spawnMode }),
       ...(context?.configuration === undefined ? {} : { configuration: context.configuration }),
     });
@@ -311,13 +321,13 @@ export class ClaudeBackend implements AgentBackend {
       const file = await this.#options.catalog?.find(target.sessionId, this.#configDirs());
       if (file === undefined) throw new ActivationError("session_not_found", `Claude Code 会话目录里没有 ${target.sessionId}`);
       await this.#requireDirectory(file.cwd);
-      const runtime = await this.#launch({ cwd: file.cwd, resume: target.sessionId, ...(context?.configuration === undefined ? {} : { configuration: context.configuration }) });
+      const runtime = await this.#launch({ cwd: file.cwd, resume: target.sessionId, ...(context?.requireCurrent === undefined ? {} : { requireCurrent: context.requireCurrent }), ...(context?.configuration === undefined ? {} : { configuration: context.configuration }) });
       if (context?.configuration) await this.#confirmConfiguration(runtime, context.configuration);
       return { sessionId: runtime.sessionId ?? target.sessionId, spawnMode: "tui" };
     }
     if (!isAbsolute(target.cwd)) throw new ActivationError("cwd_missing", "请选择存在的绝对目录");
     await this.#requireDirectory(target.cwd);
-    const runtime = await this.#launch({ cwd: target.cwd, ...(context?.launchId === undefined ? {} : { launchId: context.launchId }),
+    const runtime = await this.#launch({ cwd: target.cwd, ...(context?.requireCurrent === undefined ? {} : { requireCurrent: context.requireCurrent }), ...(context?.launchId === undefined ? {} : { launchId: context.launchId }),
       ...(context?.expectedSessionId === undefined ? {} : { sessionId: context.expectedSessionId }),
       ...(context?.configuration === undefined ? {} : { configuration: context.configuration }) });
     await context?.onCreated?.({ ...(runtime.sessionId === undefined ? {} : { sessionId: runtime.sessionId }), spawnMode: "tui" });
@@ -497,9 +507,10 @@ export class ClaudeBackend implements AgentBackend {
     return this.#options.modsBridge.findLaunch(launchId, expectedSessionId);
   }
 
-  async #launch(request: { cwd: string; resume?: string; sessionId?: string; launchId?: string; configuration?: SessionConfigurationValues }): Promise<RuntimeMetadata> {
+  async #launch(request: { cwd: string; resume?: string; sessionId?: string; launchId?: string; configuration?: SessionConfigurationValues; requireCurrent?: () => void }): Promise<RuntimeMetadata> {
     const reason = await this.#launchUnavailable();
     if (reason !== undefined || this.#options.launcher === undefined) throw new ActivationError("agent_unsupported", reason ?? "无法打开 Claude Code");
+    request.requireCurrent?.();
     const launchId = request.launchId ?? randomUUID();
     const timeoutMs = this.#options.launchTimeoutMs ?? 60_000;
     const connected = this.#options.modsBridge.waitForLaunch(launchId, timeoutMs, request.sessionId ?? request.resume);

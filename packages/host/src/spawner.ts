@@ -252,6 +252,7 @@ export type ActivateInput = {
     | { type: "new"; agentKind: AgentKind; cwd: string };
   spawnMode?: SpawnMode;
   configuration?: import("@orbis/protocol").SessionConfigurationValues;
+  requireCurrent?: () => void;
 };
 
 export type SessionSpawnerOptions = {
@@ -305,6 +306,7 @@ export class SessionSpawner {
   async activate(input: ActivateInput): Promise<SpawnedAgent> {
     const cwd = input.target.cwd;
     await this.#requireDir(cwd);
+    input.requireCurrent?.();
     const running = this.running;
 
     // 先发现，再拉起（§8.4）：这个会话可能已经被本 Host 拉起来的一个进程持有。
@@ -357,6 +359,7 @@ export class SessionSpawner {
           ? { type: "resume", sessionId: input.target.sessionId, sessionFile: input.target.sessionFile }
           : { type: "new", sessionId: newSessionId ?? "" },
     };
+    input.requireCurrent?.();
     if (platform() === "darwin" && (mode === "tui" || mode === "auto" && desktop && terminal)) {
       return this.#activateMac(input, planInput);
     }
@@ -443,6 +446,7 @@ export class SessionSpawner {
       const scriptFile = join(handshake, "Pi.command");
       const plan = buildSpawnPlan({ ...planInput, pidFile, scriptFile });
       await writeFile(scriptFile, plan.script!, { mode: 0o700 });
+      input.requireCurrent?.();
       const child = this.#spawn(plan.command, plan.args, {
         cwd: plan.cwd, env: planInput.env, shell: false, stdio: ["ignore", "ignore", "pipe"], timeout: 15_000,
       });

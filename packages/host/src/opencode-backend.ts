@@ -174,6 +174,7 @@ export class OpenCodeBackend implements AgentBackend {
         await this.#checkDirectory(target.cwd);
         if (context?.configuration) selected = selectionModel(await readModels(client, target.cwd, this.#request(attempt)), context.configuration);
         attempt.controller.signal.throwIfAborted();
+        context?.requireCurrent?.();
         const info = await client.session.create({ location: { directory: target.cwd }, ...(selected ? { model: selected } : {}) }, this.#request(attempt));
         sessionId = info.id;
         await context?.onCreated?.({ sessionId, spawnMode: "headless" });
@@ -185,11 +186,13 @@ export class OpenCodeBackend implements AgentBackend {
       const record = this.#record(sessionId);
       try {
         await this.#enqueue(record, attempt, async () => {
+          if (target.type === "resume") context?.requireCurrent?.();
           // A configured launch recovery may only apply settings to the already recorded session.
           if (target.type === "resume" && context?.configuration) {
             const info = await client.session.get({ sessionID: sessionId }, this.#request(attempt));
             const models = await readModels(client, info.location.directory, this.#request(attempt));
             const model = selectionModel(models, context.configuration);
+            context.requireCurrent?.();
             if (model && !sameModel(info.model, model)) await this.#switchModel(record, attempt, model);
           }
           await this.#refresh(record, attempt);

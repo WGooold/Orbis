@@ -25,6 +25,7 @@ import { relayHistoryMode, type RelayHistoryMode } from "./history-delivery.js";
 import { PushWakeReceipts } from "./push-wake.js";
 import { HermesHostConnection, type HermesHostOptions } from "./hermes-host-connection.js";
 import type { HermesAgentBackend } from "./hermes-agent-backend.js";
+import { AgentDisableConfirmationRequired, AgentLifecycleRegistry, type AgentEnablementController, type AgentEnablementSnapshot, type AgentLifecycleLease, type AgentLifecycleRegistration } from "./agent-enablement.js";
 import { LiveActivityPublisher } from "./live-activity.js";
 
 import {
@@ -54,6 +55,7 @@ import {
   HOST_FEATURE_DEVICE_FEATURES,
   HOST_FEATURE_IMPORT_TARGET,
   HOST_FEATURE_SESSION_SPAWN_AUTO,
+  AGENT_ENABLEMENT_FEATURE,
   PROTOCOL_VERSION,
   type AgentKind,
   type HostProviderSummary,
@@ -102,7 +104,7 @@ import { encodeDeviceMessage, omitRuntimeSendNow, projectCompactDeviceMessage, t
 import { CompactStateModel } from "./compact-state-model.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentBackend, BackendActivation } from "./agent-backend.js";
-import { ClaudeBackend, PiBackend } from "./agent-backend.js";
+import { AgentLaunchRevoked, ClaudeBackend, PiBackend } from "./agent-backend.js";
 import type { KimiRuntime } from "./kimi-runtime.js";
 import { isKimiId, KIMI_KIND, KimiLaunchBlocked } from "./kimi-sessions.js";
 import { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
@@ -115,8 +117,8 @@ import { CodexRuntime } from "./codex-runtime.js";
 import { OpenCodeServiceConnection, type OpenCodeServiceStatus } from "./opencode-service-connection.js";
 import { OpenCodeBackend } from "./opencode-backend.js";
 import type { DshRuntime } from "./dsh-runtime.js";
-import { DSH_DESKTOP_KIND, OPENCODE_KIND, OPENCODE_RUNTIME_PREFIX, agentViews, allowsAgent, allowsAgentIdentity, allowsAgentRequest, allowsRuntime, applyDeviceViewEpoch, deviceAgentView,
-  hiddenKinds, projectAgentMessage, projectBackendDomain, type AgentView } from "./device-agent-visibility.js";
+import { DSH_DESKTOP_KIND, OPENCODE_KIND, OPENCODE_RUNTIME_PREFIX, policyAgentViews, allowsAgent, allowsAgentIdentity, allowsAgentRequest, allowsRuntime, applyDeviceViewEpoch, deviceAgentView,
+  hiddenKinds, negotiatedAgentFeature, projectAgentMessage, projectBackendDomain, type AgentView } from "./device-agent-visibility.js";
 import { OpenClawBackend } from "./openclaw-backend.js";
 import { loadOpenClawConfig, type OpenClawConfig } from "./openclaw-gateway.js";
 import { OPENCLAW_PREFIX } from "./openclaw-history.js";
@@ -255,11 +257,15 @@ export type HostServiceOptions = {
   codexRuntime?: CodexRuntime;
   codexDesktopRuntime?: CodexRuntime;
   /** Read-only connection monitor for the already-running OpenCode shared service. */
-  opencodeConnection?: OpenCodeServiceConnection;
+  opencodeConnection?: OpenCodeServiceConnection | false;
+  createOpenCodeConnection?: () => OpenCodeServiceConnection;
   /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
   ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
   /** Codex 桌面版已安装，可在手机新建会话时按需启动；不代表 GUI 当前在线。 */
   codexDesktopLaunchable?: boolean;
+  ensureCodexRuntime?: () => Promise<CodexRuntime | undefined>;
+  prepareManagedCodex?: (kind: "codex" | "codexDesktop", lease: AgentLifecycleLease) => Promise<boolean>;
+  releaseManagedCodex?: (kind: "codex" | "codexDesktop") => Promise<void>;
   /**
    * Codex 桌面版 app-server 此刻的接入分档（ADR-0022），随 `device.ready` 下发。
    * 缺省/返回 `undefined` 时下发 `null`：手机端只能知道「不知道」，不能把它当成未接入。
@@ -274,10 +280,13 @@ export type HostServiceOptions = {
   recoverDshRuntime?: () => Promise<DshRuntime | undefined>;
   /** DeepSeek Harness 已安装且 Host 可启动；与当前是否已连接分开公告。 */
   dshLaunchable?: boolean;
+  prepareManagedDsh?: (kind: DshKind, lease: AgentLifecycleLease) => Promise<boolean>;
+  releaseManagedDsh?: (kind: DshKind) => void;
   /** DeepSeek Harness Desktop (ADR-0076): a separate entry with its own kind, namespace and connection. */
   dshDesktopRuntime?: DshRuntime;
   /** Existing, user-managed Kimi Web service. */
   kimiCodeRuntime?: KimiRuntime;
+  createKimiCodeRuntime?: () => Promise<KimiRuntime>;
   /** Open Desktop when closed and attach to the backend it owns; never a substitute Web service. */
   ensureDshDesktopRuntime?: () => Promise<DshRuntime | undefined>;
   /** Reconnect only to the Desktop instance Orbis launched; automatic recovery never opens Desktop. */
@@ -295,6 +304,9 @@ export type HostServiceOptions = {
   claude?: { configDir?: string; launcher?: ClaudeLauncher };
   /** Explicit isolated fixture, or false to prevent QA from inheriting a user's opt-in. */
   openClaw?: OpenClawConfig | false;
+  /** Staged composition: only sources with a registered lifecycle can be edited by paired clients. */
+  agentEnablement?: AgentEnablementController;
+  prepareLocalAgent?: (kind: "pi" | "claude", lease: AgentLifecycleLease) => Promise<void>;
   hermes?: HermesHostOptions;
   providers?: ProviderManager;
   providerUsage?: (kind: AgentKind, providerId: string) => UsageSnapshot | undefined;
@@ -343,7 +355,68 @@ export class HostService {
    */
   #backends: AgentBackend[];
   #openClaw: OpenClawBackend | undefined;
-  readonly #hermes: HermesHostConnection | undefined;
+  readonly #managedDshLaunchable = new Set<DshKind>();
+  readonly #managedCodexLaunchable = new Set<"codex" | "codexDesktop">();
+  readonly #managedAgents = new AgentLifecycleRegistry({
+    pi: { start: async lease => this.#options.prepareLocalAgent?.("pi", lease), stop: async () => { this.#loopback?.disconnectRuntimes("agent_disabled"); } },
+    claude: {
+      start: async lease => {
+        await this.#options.prepareLocalAgent?.("claude", lease);
+        if (lease.isCurrent()) await this.#startClaudeBridge(lease.isCurrent);
+      },
+      stop: async () => {
+        this.#claudeLaunchable = false;
+        this.#stopClaudeBridge();
+      },
+    },
+    codex: { start: lease => this.#startManagedCodex("codex", lease), stop: () => this.#stopManagedCodex("codex") },
+    codexDesktop: { start: lease => this.#startManagedCodex("codexDesktop", lease), stop: () => this.#stopManagedCodex("codexDesktop") },
+    dsh: { start: lease => this.#startManagedDsh("dsh", lease), stop: () => this.#stopManagedDsh("dsh") },
+    dshDesktop: { start: lease => this.#startManagedDsh("dshDesktop", lease), stop: () => this.#stopManagedDsh("dshDesktop") },
+    kimiCode: {
+      start: async lease => {
+        if (!this.#options.createKimiCodeRuntime) return;
+        const runtime = await this.#options.createKimiCodeRuntime();
+        if (!lease.isCurrent()) { await runtime.stop(); return; }
+        this.#kimi = runtime;
+        this.#attachKimiBackend(runtime, lease.isCurrent);
+        runtime.start();
+      },
+      stop: async () => {
+        const runtime = this.#kimi;
+        if (!runtime) return;
+        this.#kimi = undefined;
+        this.#backends = this.#backends.filter(item => item !== runtime);
+        for (const entry of runtime.directoryEntries()) {
+          this.#notifications.end(entry.runtimeId);
+          this.#markRuntimeOffline(entry.runtimeId, "agent_disabled");
+        }
+        await runtime.stop();
+        this.#invalidateCatalog();
+        this.#broadcastDeviceReady();
+      },
+    },
+    hermes: {
+      start: async lease => {
+        if (!this.#options.hermes || !lease.isCurrent()) return;
+        const connection = this.#hermes = this.#makeHermesConnection(this.#options.hermes, lease.isCurrent);
+        await connection.discover();
+      },
+      stop: async () => {
+        const connection = this.#hermes;
+        this.#hermes = undefined;
+        if (connection?.backend) this.#updateHermesBackend(undefined, connection.backend);
+        await connection?.close();
+      },
+    },
+    opencode: { start: async lease => this.#startOpenCode(true, lease.isCurrent), stop: async () => this.#stopOpenCode() },
+    openclaw: { start: async lease => this.#startOpenClaw(lease.isCurrent), stop: async () => this.#stopManagedOpenClaw() },
+  } satisfies Record<AgentKind, AgentLifecycleRegistration>, (kind, phase) => this.#options.log?.(`Agent ${kind} ${phase} failed`));
+  #managedPolicy: AgentEnablementSnapshot | undefined;
+  #disabledSources = new Set<AgentKind>();
+  #unsubscribeEnablement: (() => void) | undefined;
+  #hermes: HermesHostConnection | undefined;
+  #kimi: KimiRuntime | undefined;
   #hermesMutation: Promise<void> = Promise.resolve();
   readonly #hermesLaunches = new Map<string, Promise<void>>();
   /** DSH Web and Desktop each own their connection, start and recovery state (ADR-0076 DSH-DESKTOP-03). */
@@ -579,7 +652,7 @@ export class HostService {
     const modelEpoch = this.#agentStateRegistry.currentModelEpoch();
     const kinds: AgentKind[] = ["pi", "codex", "dsh", "claude"];
     if (this.#backends.some(backend => backend.kind === "codexDesktop")) kinds.push("codexDesktop");
-    const providers = await Promise.all(kinds.map(async (kind) => {
+    const providers = await Promise.all(kinds.filter(kind => !this.#disabledSources.has(kind)).map(async (kind) => {
       const switching = providerSwitchingFact(this.#providerChanging, kind);
       const empty = { agentKind: kind, availability: "unknown" as const, current: null, profiles: null, authenticated: null, switching,
         usage: { availability: "unknown" as const, detail: null } };
@@ -624,19 +697,21 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", OPENCODE_KIND, ...(this.#options.kimiCodeRuntime ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#openCodeBackend ? [OPENCODE_KIND] as const : []), ...(this.#kimi ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
     if (this.#hermes?.installed) kinds.push("hermes");
-    const openCodeReason = this.#opencodeConnection.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "event_stream_unavailable";
-    facts.backends({ backends: kinds.map(kind => {
+    const openCodeReason = this.#opencodeConnection?.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "event_stream_unavailable";
+    facts.backends({ backends: kinds.filter(kind => !this.#disabledSources.has(kind)).map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
         reason: kind === OPENCODE_KIND ? (backend?.isReady() ? null : openCodeReason) : backend === undefined ? "backend_not_attached" : backend.isReady() ? null
-          : kind === KIMI_KIND ? this.#options.kimiCodeRuntime?.reason ?? "backend_not_ready" : "backend_not_ready" };
+          : kind === KIMI_KIND ? this.#kimi?.reason ?? "backend_not_ready" : "backend_not_ready" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
     const catalog = this.#hostStateFacts.read();
     const candidates = [...(this.#catalogCache?.sessions ?? []), ...runtimes];
-    for (const view of agentViews) {
+    const views = policyAgentViews(this.#disabledSources);
+    for (const view of this.#workspaceViews.keys()) if (!views.includes(view)) this.#workspaceViews.delete(view);
+    for (const view of views) {
       const grouped = new Map<string, Set<string>>();
       for (const session of candidates) {
         if (!session.cwd || !allowsAgentIdentity(view, session)) continue;
@@ -747,10 +822,10 @@ export class HostService {
   #providerFactsGeneration = 0;
   #providerFactsClosing = false;
   #serviceClosed = false;
-  readonly #opencodeConnection: OpenCodeServiceConnection;
-  readonly #openCodeBackend: OpenCodeBackend;
+  #opencodeConnection: OpenCodeServiceConnection | undefined;
+  #openCodeBackend: OpenCodeBackend | undefined;
   readonly #openCodePublishedRuntimes = new Set<string>();
-  readonly #unsubscribeOpenCodeStatus: () => void;
+  #unsubscribeOpenCodeStatus: (() => void) | undefined;
   readonly #providerFactsPending = new Set<Promise<void>>();
   #modelLifecycle: HostManagementState["lifecycle"] = "stopped";
   #activationsPending = 0;
@@ -776,12 +851,6 @@ export class HostService {
     store: DeviceStore,
   ) {
     this.#options = { ...options, relayHistoryMode: relayHistoryMode(options.relayHistoryMode) };
-    this.#opencodeConnection = options.opencodeConnection ?? new OpenCodeServiceConnection();
-    this.#unsubscribeOpenCodeStatus = this.#opencodeConnection.subscribe(() => {
-      if (this.#serviceClosed || this.#providerFactsClosing) return;
-      this.refreshHostFacts();
-      this.#invalidateCatalog();
-    });
     this.#stateDir = stateDir;
     this.#sessionConfigurations = new SessionConfigurationStore(join(stateDir, "session-configuration.json"));
     // Released Hosts parse every launch entry strictly; never mix new kinds into their file.
@@ -856,7 +925,7 @@ export class HostService {
         return !scope || !this.#conversationState.hasBaseline(scope);
       },
       encodeEvent: (runtimeId, event, deviceId) => {
-        if (!allowsRuntime(this.#agentView(deviceId), runtimeId)) throw new Error("agent_feature_required");
+        if (!this.#allowsDeviceRuntime(deviceId, runtimeId)) throw new Error("agent_feature_required");
         return this.#encodeForDevice(deviceId, this.#runtimeEventMessage(runtimeId, event));
       },
       acceptSnapshot: (runtimeId, event) => {
@@ -951,8 +1020,7 @@ export class HostService {
       this.#claudeBackend,
     ];
     this.#backends = backends;
-    this.#hermes = options.hermes ? new HermesHostConnection(options.hermes, identity.hostId,
-      (backend, retired) => this.#updateHermesBackend(backend, retired)) : undefined;
+    this.#hermes = options.hermes && !options.agentEnablement ? this.#makeHermesConnection(options.hermes) : undefined;
     // 共享同一个单写者：Agent 事实与设备视图回执都写进这一份模型。
     const agentStateRegistry = new AgentStateRegistry({ maxValueBytes: 4 * 1024 * 1024 });
     const agentStateOptions = {
@@ -1019,7 +1087,7 @@ export class HostService {
     this.#toolIngestion = new ToolInventoryIngestion(this.#toolInventory);
     const project = (deviceId: string, scope: StateScope, domain: string, value: unknown) => this.#projectHostDomain(deviceId, scope, domain, value);
     this.#agentStateSubscriptions = new AgentStateSubscriptions(agentStateRegistry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
-    this.#compactState = new CompactStateModel(agentStateRegistry, value => new Map(agentViews.filter(view => view !== 0).map(view =>
+    this.#compactState = new CompactStateModel(agentStateRegistry, value => new Map(policyAgentViews(this.#disabledSources).filter(view => view !== 0).map(view =>
       [view, this.#projectCatalog(view, value)])));
     this.#compactStateSubscriptions = new AgentStateSubscriptions(this.#compactState.registry, (deviceId, message) => this.#sendToDevice(deviceId, message), project);
     for (const codex of [options.codexRuntime, options.codexDesktopRuntime]) {
@@ -1027,41 +1095,44 @@ export class HostService {
     }
     if (options.dshRuntime !== undefined) this.#attachDshBackend(options.dshRuntime);
     if (options.dshDesktopRuntime !== undefined) this.#attachDshBackend(options.dshDesktopRuntime);
-    if (options.kimiCodeRuntime !== undefined) this.#attachKimiBackend(options.kimiCodeRuntime);
-    this.#openCodeBackend = new OpenCodeBackend({
-      connection: this.#opencodeConnection,
-      hostId: this.#identity.hostId,
-      onRuntimeOnline: runtime => this.#registerOpenCodeRuntime(runtime),
-      onRuntimeOffline: (runtimeId, reason) => this.#unregisterOpenCodeRuntime(runtimeId, reason),
-      onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
-      onCatalogChange: () => this.#invalidateCatalog(),
-      onAvailabilityChange: () => { if (!this.#providerFactsClosing) this.#broadcastDeviceReady(); },
-    });
-    this.#backends.push(this.#openCodeBackend);
+    if (!options.agentEnablement && options.kimiCodeRuntime !== undefined) {
+      this.#kimi = options.kimiCodeRuntime;
+      this.#attachKimiBackend(this.#kimi);
+    }
+    if (!options.agentEnablement) this.#startOpenCode(false);
     this.refreshHostFacts();
   }
 
-  #attachKimiBackend(runtime: KimiRuntime): void {
+  #attachKimiBackend(runtime: KimiRuntime, current = (): boolean => true): void {
     this.#backends.push(runtime);
     if (this.#toolContentStore) runtime.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
-    runtime.setEventSink((event, id) => this.#publishRuntimeEvent(id, event));
-    runtime.onCatalogChange = () => this.#invalidateCatalog();
-    runtime.onReadyChange = () => this.#broadcastDeviceReady();
+    runtime.setEventSink((event, id) => { if (current()) this.#publishRuntimeEvent(id, event); });
+    runtime.onCatalogChange = () => { if (current()) this.#invalidateCatalog(); };
+    runtime.onReadyChange = () => { if (current()) this.#broadcastDeviceReady(); };
     runtime.onMetadataChange = metadata => {
+      if (!current()) return;
       const { runtimeId, sessionId } = metadata;
       if (!this.#notifications.has(runtimeId) || this.#notifications.needsAttach(runtimeId)) this.#notifications.attach(runtimeId, sessionId);
       this.#publishRuntimeEvent(runtimeId, { type: "runtime.metadata", metadata });
       this.#broadcastDeviceMessage({ type: "runtime.online", runtime: metadata });
     };
     runtime.onArchiveChange = (sessionId, archived) => {
+      if (!current()) return;
       this.#invalidateCatalog();
       this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: KIMI_KIND, sessionId, archived });
     };
     runtime.onOffline = (metadata, reason) => {
+      if (!current()) return;
       this.#notifications.end(metadata.runtimeId);
       this.#markRuntimeOffline(metadata.runtimeId, reason);
       this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: metadata.runtimeId, reason });
     };
+  }
+
+  #makeHermesConnection(options: HermesHostOptions, current = (): boolean => true): HermesHostConnection {
+    return new HermesHostConnection(options, this.hostId, (backend, retired) => {
+      if (current()) this.#updateHermesBackend(backend, retired);
+    });
   }
 
   /** Wire a Codex runtime once. Desktop runtimes can be attached after relay startup. */
@@ -1094,7 +1165,11 @@ export class HostService {
 
   async #ensureHermes(): Promise<HermesAgentBackend> {
     try {
-      if (this.#hermes) return await this.#hermes.ensure();
+      const connection = this.#hermes;
+      if (connection && !this.#disabledSources.has("hermes")) {
+        const backend = await connection.ensure();
+        if (!this.#disabledSources.has("hermes") && this.#hermes === connection) return backend;
+      }
     } catch { /* Native details may contain private paths; do not relay them. */ }
     throw new ActivationError("agent_unsupported", "Hermes Gateway 不可用，请在电脑端核对 Hermes CLI 与 Gateway");
   }
@@ -1179,6 +1254,39 @@ export class HostService {
     this.#dsh[kind].runtime = dsh;
   }
 
+  #startOpenCode(start: boolean, current = (): boolean => true): void {
+    if (this.#options.opencodeConnection === false || !current()) return;
+    const connection = this.#options.createOpenCodeConnection?.() ?? this.#options.opencodeConnection ?? new OpenCodeServiceConnection();
+    this.#opencodeConnection = connection;
+    const admitted = () => current() && this.#opencodeConnection === connection && !this.#providerFactsClosing;
+    this.#unsubscribeOpenCodeStatus = connection.subscribe(() => {
+      if (!admitted()) return;
+      this.refreshHostFacts();
+      this.#invalidateCatalog();
+    });
+    const backend = this.#openCodeBackend = new OpenCodeBackend({
+      connection,
+      hostId: this.#identity.hostId,
+      onRuntimeOnline: runtime => { if (admitted()) this.#registerOpenCodeRuntime(runtime); },
+      onRuntimeOffline: (runtimeId, reason) => this.#unregisterOpenCodeRuntime(runtimeId, reason),
+      onEvent: (runtimeId, event) => { if (admitted()) this.#publishRuntimeEvent(runtimeId, event); },
+      onCatalogChange: () => { if (admitted()) this.#invalidateCatalog(); },
+      onAvailabilityChange: () => { if (admitted()) this.#broadcastDeviceReady(); },
+    });
+    this.#backends.push(backend);
+    if (start) { backend.start(); void connection.start(); }
+  }
+
+  #stopOpenCode(): void {
+    const backend = this.#openCodeBackend, connection = this.#opencodeConnection;
+    this.#openCodeBackend = this.#opencodeConnection = undefined;
+    this.#unsubscribeOpenCodeStatus?.(); this.#unsubscribeOpenCodeStatus = undefined;
+    if (backend) this.#backends = this.#backends.filter(item => item !== backend);
+    backend?.close();
+    connection?.close();
+    this.#invalidateCatalog();
+  }
+
   #registerOpenCodeRuntime(runtime: RuntimeMetadata): void {
     const alreadyPublished = this.#openCodePublishedRuntimes.has(runtime.runtimeId);
     const displaced = this.#agentFacts.displacedRuntime(runtime.runtimeId, runtime);
@@ -1200,7 +1308,8 @@ export class HostService {
   }
 
   /** Attach a newly connected DeepSeek backend and publish the changed capability. */
-  async attachDshRuntime(runtime: DshRuntime): Promise<void> {
+  async attachDshRuntime(runtime: DshRuntime, current = (): boolean => !this.#disabledSources.has(runtime.kind)): Promise<void> {
+    if (!current()) return;
     const existing = this.#backends.find(backend => backend.kind === runtime.kind);
     if (existing === runtime) return;
     if (existing !== undefined) {
@@ -1208,6 +1317,7 @@ export class HostService {
       this.detachDshRuntime(previous);
       await previous.stop().catch(error => this.#options.log?.(`关闭旧的 DeepSeek 接入失败：${describeError(error)}`));
     }
+    if (!current()) return;
     this.#attachDshBackend(runtime);
     try { await runtime.start(); }
     catch (error) { this.#options.log?.(`DeepSeek 会话发现暂时失败，将自动重试：${describeError(error)}`); }
@@ -1219,6 +1329,7 @@ export class HostService {
   detachDshRuntime(runtime: DshRuntime): void {
     const index = this.#backends.indexOf(runtime);
     if (index < 0 || (runtime.kind !== "dsh" && runtime.kind !== "dshDesktop")) return;
+    runtime.setEventSink(() => {});
     runtime.onDiagnostic = undefined;
     runtime.onFileChangeEvent = undefined;
     runtime.onCatalogChange = undefined;
@@ -1233,7 +1344,7 @@ export class HostService {
 
   /** Attach the terminal Codex backend once its app-server is ready, so Relay connectivity never waits for it. */
   attachCodexRuntime(runtime: CodexRuntime): void {
-    if (runtime.kind !== "codex") return;
+    if (runtime.kind !== "codex" || this.#disabledSources.has("codex")) return;
     const existing = this.#backends.find(backend => backend.kind === "codex");
     if (existing !== undefined && existing !== runtime) this.detachCodexRuntime(existing as CodexRuntime);
     this.#options.codexRuntime = runtime;
@@ -1248,6 +1359,7 @@ export class HostService {
   detachCodexRuntime(runtime: CodexRuntime): void {
     const index = this.#backends.indexOf(runtime);
     if (index < 0 || runtime.kind !== "codex") return;
+    runtime.setEventSink(() => {});
     runtime.onMetadataChange = undefined;
     runtime.onCatalogChange = undefined;
     runtime.onOffline = undefined;
@@ -1260,6 +1372,7 @@ export class HostService {
 
   /** Attach a newly connected desktop proxy and immediately publish its capability. */
   attachCodexDesktopRuntime(runtime: CodexRuntime): void {
+    if (this.#disabledSources.has("codexDesktop")) return;
     const existing = this.#backends.find(backend => backend.kind === "codexDesktop");
     if (existing !== undefined && existing !== runtime) this.detachCodexDesktopRuntime(existing as CodexRuntime);
     this.#attachCodexBackend(runtime);
@@ -1272,6 +1385,7 @@ export class HostService {
   detachCodexDesktopRuntime(runtime: CodexRuntime): void {
     const index = this.#backends.indexOf(runtime);
     if (index < 0 || runtime.kind !== "codexDesktop") return;
+    runtime.setEventSink(() => {});
     runtime.onMetadataChange = undefined;
     runtime.onCatalogChange = undefined;
     runtime.onOffline = undefined;
@@ -1314,13 +1428,13 @@ export class HostService {
     return this.#pairing;
   }
 
-  get kimiCodeConnectionState() { return this.#options.kimiCodeRuntime?.connectionState ?? "disabled"; }
+  get kimiCodeConnectionState() { return this.#kimi?.connectionState ?? (this.#managedPolicy && !this.#disabledSources.has(KIMI_KIND) ? "unavailable" : "disabled"); }
 
   get relayState(): HostRelayState {
     return this.#relay?.state ?? "closed";
   }
 
-  get opencodeServiceStatus(): OpenCodeServiceStatus { return this.#opencodeConnection.status; }
+  get opencodeServiceStatus(): OpenCodeServiceStatus { return this.#opencodeConnection?.status ?? { state: "closed" }; }
 
   /** 本机 loopback 端点。未启用或未启动时为 `undefined`。 */
   get loopback(): HostLoopbackServer | undefined {
@@ -1341,7 +1455,7 @@ export class HostService {
 
   /** 当前已接入 Host 的本机 runtime（Pi 进程）。 */
   get localRuntimes(): readonly RuntimeMetadata[] {
-    return this.#loopback?.runtimes ?? [];
+    return this.#disabledSources.has("pi") ? [] : this.#loopback?.runtimes ?? [];
   }
 
   async assertProviderSwitchReady(kind: AgentKind): Promise<void> {
@@ -1361,24 +1475,28 @@ export class HostService {
   }
 
   async reloadProviderConfiguration(kind: AgentKind, env: NodeJS.ProcessEnv, live = false): Promise<void> {
-    if (kind === "codex") await this.#options.codexRuntime?.reloadProviderConfiguration();
-    if (kind === "dsh") await this.#dsh.dsh.runtime?.reloadProviderConfiguration(env, live);
+    if (kind === "codex" && !this.#disabledSources.has("codex")) await this.#options.codexRuntime?.reloadProviderConfiguration(this.#sourceCurrent("codex"));
+    if (kind === "dsh" && !this.#disabledSources.has("dsh")) await this.#dsh.dsh.runtime?.reloadProviderConfiguration(env, live);
     this.#invalidateCatalog();
   }
 
   changeProvider<T>(kind: AgentKind, operation: () => Promise<T>, mode: "switch" | "save" = "switch"): Promise<T> {
+    const current = this.#providerCurrent(kind);
+    const requireCurrent = () => { if (!current()) throw new ProviderError("此 Agent 未启用"); };
     const operationId = this.#beginSharedOperation("provider.change", kind);
     const result = this.#sessionMutation.then(async () => {
       this.#providerChanging = kind;
       this.#settleSharedOperation(operationId, "running");
       void this.refreshProviderFacts();
       try {
+        requireCurrent();
         const desktopReady = this.#backends.some(backend => backend.kind === "codexDesktop" && backend.isReady());
         // DSH saves defer readiness to ProviderManager: only an actual activation
         // needs idle; editing the active provider is validated by live reload.
         if (!(kind === "dsh" && mode === "save") && !(kind === "codex" && this.#options.providers?.proxyTakeoverActive && !desktopReady)) {
           await this.assertProviderSwitchReady(kind);
         }
+        requireCurrent();
         const value = await operation();
         this.#settleSharedOperation(operationId, "succeeded");
         return value;
@@ -1453,7 +1571,7 @@ export class HostService {
         if (threadId !== undefined) backend.announce(threadId);
       }
       for (const kind of DSH_KINDS) if (this.#dsh[kind].runtime?.ownsRuntime(runtimeId)) this.#dsh[kind].runtime!.announce();
-      if (this.#options.kimiCodeRuntime?.ownsRuntime(runtimeId)) this.#options.kimiCodeRuntime.announce();
+      if (this.#kimi?.ownsRuntime(runtimeId)) this.#kimi.announce();
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
     if (request.runtimeId && request.domains?.includes("records")) this.#agentFacts.refreshRecords(request.runtimeId);
@@ -1481,7 +1599,34 @@ export class HostService {
     }
   }
 
-  #agentView(deviceId: string): AgentView { return deviceAgentView(this.#deviceFeatures.get(deviceId)); }
+  #agentView(deviceId: string): AgentView { return deviceAgentView(this.#deviceFeatures.get(deviceId), this.#disabledSources); }
+
+  #allowsDeviceRuntime(deviceId: string, runtimeId: string): boolean {
+    const view = this.#agentView(deviceId);
+    const scope = this.#agentFacts.scopeOf(runtimeId);
+    return (scope?.kind !== "agent" || allowsAgent(view, scope.key.agentKind)) && allowsRuntime(view, runtimeId);
+  }
+
+  /** Capture the source generation before starting an async operation. A later
+   * re-enable must not resume an operation from the previous generation. */
+  #sourceCurrent(kind: AgentKind): () => boolean {
+    const policy = this.#options.agentEnablement;
+    const lease = policy?.lease(kind);
+    return () => !this.#providerFactsClosing && !this.#serviceClosed && (policy === undefined || lease?.isCurrent() === true);
+  }
+
+  #providerCurrent(kind: AgentKind): () => boolean {
+    const current = this.#sourceCurrent(kind);
+    if (kind !== "codex") return current;
+    const desktop = this.#sourceCurrent("codexDesktop");
+    return () => current() || desktop();
+  }
+
+  #allowsDeviceRequest(deviceId: string, message: object): boolean {
+    const view = this.#agentView(deviceId);
+    const { runtimeId } = message as { runtimeId?: unknown };
+    return (typeof runtimeId !== "string" || this.#allowsDeviceRuntime(deviceId, runtimeId)) && allowsAgentRequest(view, message);
+  }
 
   #resetAgentView(deviceId: string): void {
     this.#deviceViewEpochs.set(deviceId, randomUUID());
@@ -1520,8 +1665,21 @@ export class HostService {
   }
 
   #visibleTo(deviceId: string, message: object): object | undefined {
-    const visible = projectAgentMessage(this.#agentView(deviceId), message);
-    return visible === undefined ? undefined : applyDeviceViewEpoch(visible, this.#deviceViewEpochs.get(deviceId));
+    const runtimeId = (message as { runtimeId?: string }).runtimeId;
+    if (runtimeId && !this.#allowsDeviceRuntime(deviceId, runtimeId)) return undefined;
+    const view = this.#agentView(deviceId);
+    const category = message as { type?: string; kind?: AgentKind };
+    const sharedCodexProvider = category.type?.startsWith("provider.") && category.kind === "codex" && allowsAgent(view, "codexDesktop");
+    const visible = sharedCodexProvider ? message : projectAgentMessage(view, message);
+    if (visible === undefined) return undefined;
+    // Policy visibility never changes the set of parsers negotiated by this device.
+    const ready = message as { type?: string; deviceFeatures?: string[] };
+    const projected = this.#managedPolicy && ready.type === "device.ready" ? {
+      ...visible,
+      ...(ready.deviceFeatures ? { deviceFeatures: ready.deviceFeatures } : {}),
+      ...(this.#disabledSources.has("dshDesktop") && this.#deviceFeatures.get(deviceId)?.has(negotiatedAgentFeature("dshDesktop")!) ? { dshDesktop: null } : {}),
+    } : visible;
+    return applyDeviceViewEpoch(projected, this.#deviceViewEpochs.get(deviceId));
   }
 
   #rejectAgentFeature(deviceId: string, message: { requestId?: unknown; commandId?: unknown }): void {
@@ -1554,16 +1712,21 @@ export class HostService {
 
   async #handleProviderRequest(deviceId: string, request: ProviderRequest): Promise<void> {
     const send = (message: object): void => this.#sendJsonToDevice(deviceId, message, "ctl");
+    const current = this.#providerCurrent(request.kind);
+    const requireCurrent = () => { if (!current()) throw new ProviderError("此 Agent 未启用"); };
     try {
+      requireCurrent();
       const manager = this.#options.providers;
       if (!manager) throw new ProviderError("此 Host 尚未启用供应商管理，请升级并重启 Host");
       if (request.type === "provider.subscription") {
         const quota = await manager.querySubscription(request.kind, request.id!);
+        requireCurrent();
         send({ type: "provider.subscription.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId, kind: request.kind, id: request.id, quota });
         return;
       }
       const providers = request.type === "provider.list" ? await manager.list(request.kind)
         : await this.changeProvider(request.kind, () => manager.switch(request.kind, request.id!, request.enabled));
+      requireCurrent();
       send(providerResult(request, providers, request.kind === "codex" && manager.proxyTakeoverActive));
       if (request.type === "provider.switch") this.announceProviderChange(request.kind, deviceId);
       // 这次真的读了清单：把完整摘要写进模型。会话列表那条路径不再写这个领域，所以不会互相覆盖。
@@ -1585,6 +1748,7 @@ export class HostService {
   #runtimesSnapshot(): RuntimeMetadata[] {
     const runtimes = [...this.localRuntimes];
     for (const backend of this.#backends) {
+      if (this.#disabledSources.has(backend.kind)) continue;
       runtimes.push(...(backend.directoryEntries?.() ?? []));
     }
     return runtimes;
@@ -1597,20 +1761,21 @@ export class HostService {
    * `#launchableAgentsSnapshot` 公告，手机不把它们误画成已连接。
    */
   #agentsSnapshot(): AgentKind[] {
-    return this.#backends.filter((backend) => backend.isReady()).map((backend) => backend.kind);
+    return this.#backends.filter((backend) => !this.#disabledSources.has(backend.kind) && backend.isReady()).map((backend) => backend.kind);
   }
 
   #launchableAgentsSnapshot(): AgentKind[] {
     // Claude Code runs only in its official TUI: launchable where the Host can open a terminal.
     const agents = this.#agentsSnapshot().filter(kind => kind !== "claude" || this.#claudeLaunchable);
-    if (this.#options.codexDesktopLaunchable === true && !agents.includes("codexDesktop")) agents.push("codexDesktop");
-    if (this.#options.dshLaunchable === true && !agents.includes("dsh")) agents.push("dsh");
+    if (this.#managedCodexLaunchable.has("codex") && !agents.includes("codex")) agents.push("codex");
+    if ((this.#managedPolicy ? this.#managedCodexLaunchable.has("codexDesktop") : this.#options.codexDesktopLaunchable === true) && !agents.includes("codexDesktop")) agents.push("codexDesktop");
+    if ((this.#managedPolicy ? this.#managedDshLaunchable.has("dsh") : this.#options.dshLaunchable === true) && !agents.includes("dsh")) agents.push("dsh");
     // A Desktop whose version cannot be attached is not offered as launchable (DSH-DESKTOP-01).
     if (this.#hermes?.installed && !agents.includes("hermes")) agents.push("hermes");
-    const desktop = this.#options.dshDesktopStatus?.()?.state;
-    if (this.#options.dshDesktopLaunchable === true && !agents.includes("dshDesktop")
+    const desktop = this.#dshDesktopSnapshot()?.state;
+    if ((this.#managedPolicy ? this.#managedDshLaunchable.has("dshDesktop") : this.#options.dshDesktopLaunchable === true) && !agents.includes("dshDesktop")
       && desktop !== "unsupported" && desktop !== "notInstalled" && desktop !== "incompatible") agents.push("dshDesktop");
-    return agents;
+    return agents.filter(kind => !this.#disabledSources.has(kind));
   }
 
   /** Recover existing native work without creating a Session, starting a Web service or opening Desktop. */
@@ -1628,6 +1793,8 @@ export class HostService {
 
   #scheduleDshRecovery(kind: DshKind = "dsh"): void {
     const slot = this.#dsh[kind];
+    const lease = this.#managedPolicy ? this.#managedAgents.lease(kind) : undefined;
+    if (this.#managedPolicy && !lease) return;
     if (!(kind === "dsh" ? this.#options.recoverDshRuntime : this.#options.recoverDshDesktopRuntime) || this.#providerFactsClosing || this.#serviceClosed) return;
     void this.recoverDshRuntime(kind).then(() => { slot.recoveryError = undefined; }, error => {
       const message = describeError(error);
@@ -1636,14 +1803,16 @@ export class HostService {
         this.#options.log?.(`${kind === "dsh" ? "DeepSeek" : "DeepSeek Desktop"} 自动接入暂时失败，将重试：${message}`);
       }
     }).finally(() => {
-      if (this.#providerFactsClosing || this.#serviceClosed) return;
+      if (this.#providerFactsClosing || this.#serviceClosed || lease?.isCurrent() === false) return;
       slot.recoveryTimer = setTimeout(() => { slot.recoveryTimer = undefined; this.#scheduleDshRecovery(kind); }, 2_000);
       slot.recoveryTimer.unref();
     });
   }
 
   async #ensureDshRuntime(existingOnly = false, kind: DshKind = "dsh"): Promise<DshRuntime | undefined> {
-    if (this.#providerFactsClosing || this.#serviceClosed) return undefined;
+    const lease = this.#managedPolicy ? this.#managedAgents.lease(kind) : undefined;
+    const currentPolicy = () => !this.#providerFactsClosing && !this.#serviceClosed && (!this.#managedPolicy || lease?.isCurrent() === true);
+    if (!currentPolicy()) return undefined;
     const slot = this.#dsh[kind];
     const current = this.#backends.find(backend => backend.kind === kind && backend.isReady());
     if (current !== undefined) return current as DshRuntime;
@@ -1653,7 +1822,7 @@ export class HostService {
         // A failed read-only probe is not a failed App operation. Retry through the
         // explicit launch path, but never repeat a launch or native Session operation.
         const runtime = await slot.starting.catch(() => undefined);
-        return runtime ?? this.#ensureDshRuntime(false, kind);
+        return currentPolicy() ? runtime ?? this.#ensureDshRuntime(false, kind) : undefined;
       }
       return slot.starting;
     }
@@ -1664,9 +1833,9 @@ export class HostService {
     const pending = (async () => {
       const runtime = await connect();
       if (runtime !== undefined) {
-        if (this.#providerFactsClosing || this.#serviceClosed) { await runtime.stop(); return undefined; }
-        await this.attachDshRuntime(runtime);
-        if (this.#providerFactsClosing || this.#serviceClosed) {
+        if (!currentPolicy()) { await runtime.stop(); return undefined; }
+        await this.attachDshRuntime(runtime, currentPolicy);
+        if (!currentPolicy()) {
           this.detachDshRuntime(runtime);
           await runtime.stop();
           return undefined;
@@ -1680,7 +1849,7 @@ export class HostService {
   }
 
   #dshDesktopSnapshot(): DshDesktopAttach | null {
-    return this.#options.dshDesktopStatus?.() ?? null;
+    return this.#disabledSources.has("dshDesktop") ? null : this.#options.dshDesktopStatus?.() ?? null;
   }
 
   /** Desktop attach tier changed: devices that understand it see the new tier and launchability. */
@@ -1689,7 +1858,7 @@ export class HostService {
   }
 
   #codexDesktopSnapshot(): CodexDesktopAttach | null {
-    return this.#options.codexDesktopStatus?.() ?? null;
+    return this.#disabledSources.has("codexDesktop") ? null : this.#options.codexDesktopStatus?.() ?? null;
   }
 
   /** Re-send the authoritative capability list after a desktop GUI state change. */
@@ -1720,6 +1889,7 @@ export class HostService {
       dshDesktop: this.#dshDesktopSnapshot(),
       hostFeatures: [
         HOST_FEATURE_DEVICE_FEATURES,
+        ...(this.#managedPolicy ? [AGENT_ENABLEMENT_FEATURE] : []),
         HOST_FEATURE_IMPORT_TARGET,
         ...(this.#options.preferAutoSessionSpawn === true ? [HOST_FEATURE_SESSION_SPAWN_AUTO] : []),
         DEVICE_FEATURE_MESSAGE_RENDER,
@@ -1728,11 +1898,11 @@ export class HostService {
         DEVICE_FEATURE_OPENCODE,
         DEVICE_FEATURE_COMPACT_BOOTSTRAP,
         DEVICE_FEATURE_CLAUDE_SEND_NOW,
-        ...(this.#options.kimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : []),
+        ...(this.#kimi || this.#options.createKimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : []),
         ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : []),
       ],
       sessionConfiguration: 1,
-      ...(features?.has(DEVICE_FEATURE_OPENCLAW) ? { deviceFeatures: [...features] } : {}),
+      ...(features && (features.has(DEVICE_FEATURE_OPENCLAW) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
     };
   }
 
@@ -1785,14 +1955,12 @@ export class HostService {
   }
 
   async start(): Promise<void> {
+    if (this.#options.agentEnablement) {
+      this.#setManagedPolicy(await this.#options.agentEnablement.read());
+      this.#unsubscribeEnablement = this.#options.agentEnablement.subscribe(snapshot => this.#applyManagedPolicy(snapshot));
+    }
     void this.#hermes?.discover().catch(() => undefined);
-    this.#claudeModsSweep = setInterval(() => { this.#claudeModsBridge.expireStale(); }, 5_000);
-    this.#claudeModsSweep.unref();
-    void this.#claudeBackend.launchable().then(launchable => {
-      if (launchable === this.#claudeLaunchable || this.#serviceClosed) return;
-      this.#claudeLaunchable = launchable;
-      this.#broadcastDeviceReady();
-    });
+    if (!this.#managedPolicy) void this.#startClaudeBridge();
     this.#modelLifecycle = "starting";
     this.refreshHostFacts();
     // Host 在 Relay 眼里就是一个普通 runtime，直接复用 v1 的身份空间。
@@ -1875,10 +2043,11 @@ export class HostService {
         hostId: this.#identity.hostId,
         ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
         ...(this.#options.codexLaunch === undefined ? {} : { onCodexLaunch: this.#options.codexLaunch }),
-        onClaudeHook: (input, signal) => this.#claudeBridge.accept(input, signal),
-        onClaudeModsHello: input => this.#claudeModsBridge.hello(input),
-        onClaudeModsPoll: input => this.#claudeModsBridge.pollRequest(input),
-        onClaudeModsEvent: (input, signal) => this.#claudeModsBridge.receiveRequestWithBoundaries(input, signal),
+        admitRuntime: () => !this.#disabledSources.has("pi") && !this.#providerFactsClosing,
+        onClaudeHook: async (input, signal) => this.#disabledSources.has("claude") || this.#providerFactsClosing ? {} : this.#claudeBridge.accept(input, signal),
+        onClaudeModsHello: input => this.#disabledSources.has("claude") || this.#providerFactsClosing ? { ok: false, error: "bridge_offline" } : this.#claudeModsBridge.hello(input),
+        onClaudeModsPoll: input => this.#disabledSources.has("claude") || this.#providerFactsClosing ? { ok: false, error: "bridge_offline" } : this.#claudeModsBridge.pollRequest(input),
+        onClaudeModsEvent: (input, signal) => this.#disabledSources.has("claude") || this.#providerFactsClosing ? "offline" : this.#claudeModsBridge.receiveRequestWithBoundaries(input, signal),
         onFileChangeBoundary: (input, signal) => this.#acceptFileChangeBoundary(input, signal),
         onRuntimeOnline: (metadata) => {
           const displaced = this.#agentFacts.displacedRuntime(metadata.runtimeId, metadata);
@@ -1903,61 +2072,216 @@ export class HostService {
         onRuntimeFrame: (_runtimeId, frame) => {
           // artifact 分片是裸字节。以前它被当成 `data` 载荷发出去，手机按 UTF-8 解读再拿去
           // 解析 JSON，于是「下载」等于「界面报一句收到无效的中继服务器消息」。
-          this.#broadcastBinary(frame);
+          this.#broadcastBinary(frame, _runtimeId);
         },
       });
       this.#loopback = loopback;
       await loopback.start();
     }
 
-    if (this.#options.codexRuntime !== undefined) {
+    if (this.#options.codexRuntime !== undefined && !this.#disabledSources.has("codex")) {
       // Codex 后端就绪（app-server 子进程由调用方管理生命周期）。启动时还没有活跃
       // thread，不广播 runtime.online——目录里不该有一条 cwd=homedir 的「空壳 Codex」；
       // 会话激活后 onMetadataChange 会补上。
       this.#options.codexRuntime.markStarted();
       this.#options.log?.(`Codex 后端已就绪（runtimeId=${this.#options.codexRuntime.runtimeId}）`);
     }
-    if (this.#options.codexDesktopRuntime !== undefined) {
+    if (this.#options.codexDesktopRuntime !== undefined && !this.#disabledSources.has("codexDesktop")) {
       this.#options.codexDesktopRuntime.markStarted();
       this.#options.log?.(`Codex 桌面后端已就绪（runtimeId=${this.#options.codexDesktopRuntime.runtimeId}）`);
     }
 
     await relay.start();
     this.#modelLifecycle = "running";
-    this.#options.kimiCodeRuntime?.start();
-    void this.#startOpenClaw();
-    // Discovery is read-only; a missing service does not block Relay or Host startup.
-    this.#openCodeBackend.start();
-    void this.#opencodeConnection.start();
+    this.#kimi?.start();
+    if (this.#managedPolicy) void this.#managedAgents.reconcile(this.#managedPolicy, true);
+    else {
+      void this.#startOpenClaw();
+      this.#openCodeBackend?.start();
+      void this.#opencodeConnection?.start();
+    }
     // HOST-PREP-05: DeepSeek session discovery (a Web handshake or a Desktop attach) no longer holds the
     // Relay: phones connect first and DeepSeek sessions follow. Recovery for a kind starts only after its
     // prestarted backend settled, so it cannot open a second connection beside one still starting.
-    for (const kind of DSH_KINDS) void this.#startDshBackend(kind).finally(() => this.#scheduleDshRecovery(kind));
+    if (!this.#managedPolicy) for (const kind of DSH_KINDS) void this.#startDshBackend(kind).finally(() => this.#scheduleDshRecovery(kind));
     this.refreshHostFacts();
     void this.refreshProviderFacts();
   }
 
-  async #startOpenClaw(): Promise<void> {
+  async #startClaudeBridge(current = (): boolean => true): Promise<void> {
+    this.#claudeModsSweep ??= setInterval(() => { this.#claudeModsBridge.expireStale(); }, 5_000);
+    this.#claudeModsSweep.unref();
+    const launchable = await this.#claudeBackend.launchable();
+    if (!current() || this.#providerFactsClosing || launchable === this.#claudeLaunchable) return;
+    this.#claudeLaunchable = launchable;
+    this.#broadcastDeviceReady();
+  }
+
+  #stopClaudeBridge(): void {
+    if (this.#claudeModsSweep !== undefined) clearInterval(this.#claudeModsSweep);
+    this.#claudeModsSweep = undefined;
+    this.#claudeModsBridge.close();
+    this.#claudeBridge.close();
+  }
+
+  async #startManagedCodex(kind: "codex" | "codexDesktop", lease: AgentLifecycleLease): Promise<void> {
+    const launchable = await this.#options.prepareManagedCodex?.(kind, lease);
+    if (!lease.isCurrent()) return;
+    if (launchable) this.#managedCodexLaunchable.add(kind);
+    this.#broadcastDeviceReady();
+  }
+
+  async #stopManagedCodex(kind: "codex" | "codexDesktop"): Promise<void> {
+    this.#managedCodexLaunchable.delete(kind);
+    const runtime = this.#backends.find(item => item.kind === kind);
+    if (runtime instanceof CodexRuntime) {
+      for (const entry of runtime.directoryEntries()) {
+        this.#notifications.end(entry.runtimeId);
+        this.#markRuntimeOffline(entry.runtimeId, "agent_disabled");
+      }
+      if (kind === "codex") this.detachCodexRuntime(runtime);
+      else this.detachCodexDesktopRuntime(runtime);
+    }
+    await this.#options.releaseManagedCodex?.(kind);
+  }
+
+  async #ensureManagedCodex(kind: "codex" | "codexDesktop"): Promise<CodexRuntime | undefined> {
+    const lease = this.#managedPolicy ? this.#managedAgents.lease(kind) : undefined;
+    if (this.#managedPolicy && !lease) return undefined;
+    const runtime = await (kind === "codex" ? this.#options.ensureCodexRuntime?.() : this.#options.ensureCodexDesktop?.());
+    if (lease?.isCurrent() === false || this.#providerFactsClosing) return undefined;
+    if (runtime && !this.#backends.includes(runtime)) {
+      if (kind === "codex") this.attachCodexRuntime(runtime);
+      else this.attachCodexDesktopRuntime(runtime);
+    }
+    return runtime;
+  }
+
+  async #startManagedDsh(kind: DshKind, lease: AgentLifecycleLease): Promise<void> {
+    const launchable = await this.#options.prepareManagedDsh?.(kind, lease);
+    if (!lease.isCurrent()) return;
+    if (launchable) this.#managedDshLaunchable.add(kind);
+    await this.#startDshBackend(kind);
+    if (!lease.isCurrent()) return;
+    this.#scheduleDshRecovery(kind);
+    this.#broadcastDeviceReady();
+  }
+
+  async #stopManagedDsh(kind: DshKind): Promise<void> {
+    this.#managedDshLaunchable.delete(kind);
+    const slot = this.#dsh[kind];
+    clearTimeout(slot.recoveryTimer); slot.recoveryTimer = undefined;
+    this.#options.releaseManagedDsh?.(kind);
+    // Relinquish the slot now. The old connect closure still self-disposes on its revoked lease.
+    slot.starting = undefined;
+    const runtime = slot.runtime;
+    if (!runtime) return;
+    for (const entry of runtime.directoryEntries()) {
+      this.#notifications.end(entry.runtimeId);
+      this.#markRuntimeOffline(entry.runtimeId, "agent_disabled");
+    }
+    this.detachDshRuntime(runtime);
+    await runtime.stop();
+  }
+
+  verifyAgentDisable(kind: AgentKind): void {
+    const backend = this.#backends.find(item => item.kind === kind);
+    const runtimes = kind === "pi" ? this.localRuntimes : backend?.directoryEntries?.() ?? [];
+    if (runtimes.some(runtime => runtime.status !== "idle") ||
+        [...this.#commandOwners.values()].some(owner => !owner.terminal && backend?.ownsRuntime(owner.runtimeId))) {
+      throw new AgentDisableConfirmationRequired("请确认停用正在工作的 Agent");
+    }
+  }
+
+  #setManagedPolicy(snapshot: AgentEnablementSnapshot): void {
+    this.#managedPolicy = snapshot;
+    this.#disabledSources = new Set(snapshot.agents.filter(row => !row.enabled).map(row => row.kind));
+  }
+
+  #applyManagedPolicy(snapshot: AgentEnablementSnapshot): void {
+    if (this.#providerFactsClosing || this.#serviceClosed) return;
+    const next = snapshot;
+    if (this.#managedPolicy && next.revision <= this.#managedPolicy.revision) return;
+    const changed = next.agents.filter(row => row.enabled !== this.#managedPolicy?.agents.find(old => old.kind === row.kind)?.enabled);
+    this.#setManagedPolicy(next);
+    if (this.#modelLifecycle === "running") void this.#managedAgents.reconcile(next, true);
+    if (changed.length > 0) {
+      for (const deviceId of this.#links.keys()) {
+        const features = this.#deviceFeatures.get(deviceId);
+        if (changed.some(({ kind }) => { const feature = negotiatedAgentFeature(kind); return !feature || features?.has(feature); })) this.#resetAgentView(deviceId);
+      }
+      this.#invalidateCatalog();
+      this.#broadcastDeviceReady();
+      void this.refreshProviderFacts();
+    }
+    for (const [id, features] of this.#deviceFeatures) {
+      if (features.has(AGENT_ENABLEMENT_FEATURE)) this.#sendToDevice(id, { type: "agent.enablement.snapshot", snapshot: { ...next, agents: [...next.agents] } });
+    }
+  }
+
+  async #handleAgentEnablement(deviceId: string, message: Extract<DeviceE2ePayload, { type: "agent.enablement.read" | "agent.enablement.write" }>): Promise<void> {
+    const controller = this.#options.agentEnablement;
+    const link = this.#links.get(deviceId);
+    const features = this.#deviceFeatures.get(deviceId);
+    const active = (): boolean => !this.#providerFactsClosing && !this.#serviceClosed && !!link?.active && link === this.#links.get(deviceId) && features === this.#deviceFeatures.get(deviceId);
+    const { requestId } = message;
+    if (!controller || !this.#managedPolicy || !features?.has(AGENT_ENABLEMENT_FEATURE) || !active()) {
+      this.#rejectAgentFeature(deviceId, { requestId }); return;
+    }
+    try {
+      if (message.type === "agent.enablement.read") {
+        const snapshot = await controller.read();
+        if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.snapshot", requestId, snapshot: { ...snapshot, agents: [...snapshot.agents] } });
+        return;
+      }
+      const { kind, enabled, expectedRevision, confirmDisable } = message;
+      if (!this.#managedPolicy.agents.some(row => row.kind === kind)) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
+      const result = await controller.set({ kind, enabled, expectedRevision, ...(confirmDisable ? { confirmDisable } : {}) }, active, source => this.verifyAgentDisable(source));
+      const snapshot = result.snapshot;
+      if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.result", requestId, status: result.status, snapshot: { ...snapshot, agents: [...snapshot.agents] } });
+    } catch (error) {
+      if (active()) this.#sendToDevice(deviceId, { type: "protocol.error", requestId,
+        code: error instanceof AgentDisableConfirmationRequired ? "agent_disable_confirmation_required" : "agent_enablement_unavailable",
+        message: error instanceof AgentDisableConfirmationRequired ? "请确认停用正在工作的 Agent" : "无法读取或保存 Agent 设置" });
+    }
+  }
+
+  async #stopManagedOpenClaw(): Promise<void> {
+    const backend = this.#openClaw;
+    if (!backend) return;
+    this.#openClaw = undefined;
+    this.#backends = this.#backends.filter(item => item !== backend);
+    for (const runtime of backend.directoryEntries()) {
+      this.#notifications.end(runtime.runtimeId);
+      this.#markRuntimeOffline(runtime.runtimeId, "agent_disabled");
+    }
+    try { await backend.stop(); }
+    finally { this.#invalidateCatalog(); this.#broadcastDeviceReady(); }
+  }
+
+  async #startOpenClaw(current = (): boolean => true): Promise<void> {
     if (this.#options.openClaw === false || this.#openClaw || this.#providerFactsClosing) return;
     try {
       const config = this.#options.openClaw ?? await loadOpenClawConfig(this.#stateDir);
-      if (!config || this.#providerFactsClosing) return;
+      if (!config || !current() || this.#providerFactsClosing) return;
       const backend = await OpenClawBackend.create(config, this.#stateDir, this.hostId, {
-        ready: () => { this.#invalidateCatalog(); this.#broadcastDeviceReady(); },
-        catalog: () => this.#invalidateCatalog(),
+        ready: () => { if (current()) { this.#invalidateCatalog(); this.#broadcastDeviceReady(); } },
+        catalog: () => { if (current()) this.#invalidateCatalog(); },
         online: runtime => {
+          if (!current()) return;
           this.#agentFacts.observe(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
           this.#notifications.attach(runtime.runtimeId, runtime.sessionId);
           this.#broadcastDeviceMessage({ type: "runtime.online", runtime });
         },
         offline: (runtimeId, reason) => {
+          if (!current()) return;
           this.#notifications.end(runtimeId); this.#markRuntimeOffline(runtimeId, reason);
           this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
         },
-        event: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),
+        event: (runtimeId, event) => { if (current()) this.#publishRuntimeEvent(runtimeId, event); },
         ...(this.#options.log ? { log: this.#options.log } : {}),
       });
-      if (this.#providerFactsClosing) { await backend.stop(); return; }
+      if (!current() || this.#providerFactsClosing) { await backend.stop(); return; }
       this.#openClaw = backend;
       this.#backends.push(backend);
       backend.start();
@@ -1983,14 +2307,16 @@ export class HostService {
     // Close publication gates before the first await: pending provider reads can
     // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
-    this.#openCodeBackend.close();
-    this.#opencodeConnection.close(); this.#unsubscribeOpenCodeStatus();
+    if (!this.#managedPolicy) this.#stopOpenCode();
     clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
-    await this.#options.kimiCodeRuntime?.stop();
-    await this.#openClaw?.stop();
-    await this.#hermes?.close().catch(() => undefined);
+    this.#unsubscribeEnablement?.();
+    this.#unsubscribeEnablement = undefined;
+    if (this.#managedPolicy) await this.#managedAgents.reconcile(this.#managedPolicy, false);
+    else await this.#openClaw?.stop();
+    if (!this.#managedPolicy) await this.#kimi?.stop();
+    if (!this.#managedPolicy) await this.#hermes?.close().catch(() => undefined);
     await this.#liveActivities.close();
     for (const kind of DSH_KINDS) { clearTimeout(this.#dsh[kind].recoveryTimer); this.#dsh[kind].recoveryTimer = undefined; }
     this.#commandOwners.close();
@@ -2007,10 +2333,7 @@ export class HostService {
     this.#toolIngestion.clear(); this.#toolInventory.dispose();
     this.#piToolContents.close();
     this.#notifications.close();
-    if (this.#claudeModsSweep !== undefined) clearInterval(this.#claudeModsSweep);
-    this.#claudeModsSweep = undefined;
-    this.#claudeModsBridge.close();
-    this.#claudeBridge.close();
+    if (!this.#managedPolicy) this.#stopClaudeBridge();
     await this.#desktopLedgerWrite;
     this.#sessionSync.close();
     this.#agentStateSubscriptions.close();
@@ -2236,14 +2559,15 @@ export class HostService {
     }
     if (message.type === "device.features") {
       const before = this.#agentView(deviceId);
-      const previousFeatures = this.#deviceFeatures.get(deviceId);
-      const hadRender = previousFeatures?.has(DEVICE_FEATURE_MESSAGE_RENDER) ?? false;
-      const hadClaudeSendNow = previousFeatures?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ?? false;
-      this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature => feature !== DEVICE_FEATURE_KIMI_CODE || this.#options.kimiCodeRuntime !== undefined)));
+      const previous = this.#deviceFeatures.get(deviceId);
+      const hadRender = previous?.has(DEVICE_FEATURE_MESSAGE_RENDER) ?? false;
+      const managementChanged = !!this.#managedPolicy && (!!previous?.has(AGENT_ENABLEMENT_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_FEATURE) ||
+        !!previous?.has(DEVICE_FEATURE_OPENCLAW) !== message.features.includes(DEVICE_FEATURE_OPENCLAW));
+      this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature => feature !== DEVICE_FEATURE_KIMI_CODE || this.#kimi !== undefined || this.#options.createKimiCodeRuntime !== undefined)));
+      const hadClaudeSendNow = previous?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ?? false;
       if (message.features.includes(DEVICE_FEATURE_COMPACT_BOOTSTRAP)) this.#cancelBootstrapReplay(deviceId);
       const after = this.#agentView(deviceId);
-      if (before === after && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER)
-        && hadClaudeSendNow === message.features.includes(DEVICE_FEATURE_CLAUDE_SEND_NOW)) return;
+      if (before === after && !managementChanged && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER) && hadClaudeSendNow === message.features.includes(DEVICE_FEATURE_CLAUDE_SEND_NOW)) return;
       this.#resetAgentView(deviceId);
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
       for (const runtime of this.#runtimesSnapshot()) {
@@ -2252,10 +2576,15 @@ export class HostService {
         }
       }
       if (allowsAgent(after, DSH_DESKTOP_KIND)) this.#dsh.dshDesktop.runtime?.announce();
-      if (allowsAgent(after, KIMI_KIND)) this.#options.kimiCodeRuntime?.announce();
+      if (allowsAgent(after, KIMI_KIND)) this.#kimi?.announce();
       return;
     }
-    if (!allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message as { requestId?: unknown; commandId?: unknown }); return; }
+    if (message.type === "agent.enablement.read" || message.type === "agent.enablement.write") {
+      void this.#handleAgentEnablement(deviceId, message);
+      return;
+    }
+    if (!((message.type === "provider.list" || message.type === "provider.switch" || message.type === "provider.subscription")
+      ? this.#providerCurrent(message.kind)() : this.#allowsDeviceRequest(deviceId, message))) { this.#rejectAgentFeature(deviceId, message as { requestId?: unknown; commandId?: unknown }); return; }
     if (message.type === "device.version.report") {
       const device = findActiveDeviceRecord(this.#store, deviceId);
       if (device !== undefined && (device.appVersion !== message.version || device.appVersionCode !== message.versionCode)) {
@@ -2412,8 +2741,9 @@ export class HostService {
       return;
     }
     if (message.type === "session.activate" && message.target.agentKind === "hermes") {
+      const epoch = this.#deviceViewEpochs.get(deviceId), link = this.#links.get(deviceId);
       this.#hermesMutation = this.#hermesMutation.then(() => {
-        if (!this.#providerFactsClosing && allowsAgentRequest(this.#agentView(deviceId), message)) return this.#handleSessionRequest(deviceId, message);
+        if (!this.#providerFactsClosing && epoch === this.#deviceViewEpochs.get(deviceId) && link === this.#links.get(deviceId) && link?.active && this.#allowsDeviceRequest(deviceId, message)) return this.#handleSessionRequest(deviceId, message);
       });
       return;
     }
@@ -2421,7 +2751,7 @@ export class HostService {
       // Serialize activation with file moves, including the gap before a spawned Pi registers.
       const epoch = this.#deviceViewEpochs.get(deviceId);
       this.#sessionMutation = this.#sessionMutation.then(() => {
-        if (epoch === this.#deviceViewEpochs.get(deviceId) && this.#links.get(deviceId)?.active !== undefined && allowsAgentRequest(this.#agentView(deviceId), message))
+        if (epoch === this.#deviceViewEpochs.get(deviceId) && this.#links.get(deviceId)?.active !== undefined && this.#allowsDeviceRequest(deviceId, message))
           return this.#handleSessionRequest(deviceId, message);
       });
       return;
@@ -2802,7 +3132,7 @@ export class HostService {
   async #collectCatalogs(epoch: number): Promise<AgentSessionSummary[]> {
     // Query ready backends concurrently so one slow backend does not stall the whole catalog.
     // 逐后端记结果：拉取失败或后端没就绪，在模型里都不能退化成「它没有会话」（ADR-0032 模块 03）。
-    const results = await Promise.all(this.#backends.map(async (backend): Promise<{
+    const results = await Promise.all(this.#backends.filter(backend => !this.#disabledSources.has(backend.kind)).map(async (backend): Promise<{
       sessions: AgentSessionSummary[];
       summary: HostCatalogBackend;
     }> => {
@@ -2890,14 +3220,17 @@ export class HostService {
     this.#catalogRefreshTimer.unref();
   }
 
-  async #configuredBackend(kind: AgentKind): Promise<AgentBackend> {
-    if (kind === "hermes") return this.#ensureHermes();
+  async #configuredBackend(kind: AgentKind, current = this.#sourceCurrent(kind)): Promise<AgentBackend> {
+    if (!current()) throw new AgentLaunchRevoked();
+    if (kind === "hermes") {
+      const backend = await this.#ensureHermes();
+      if (!current()) throw new AgentLaunchRevoked();
+      return backend;
+    }
     let backend = this.#backends.find(item => item.kind === kind);
     if ((kind === "dsh" || kind === "dshDesktop") && !backend?.isReady()) await this.#ensureDshRuntime(false, kind);
-    if (kind === "codexDesktop" && !backend?.isReady()) {
-      const runtime = await this.#options.ensureCodexDesktop?.();
-      if (runtime) this.attachCodexDesktopRuntime(runtime);
-    }
+    if ((kind === "codex" || kind === "codexDesktop") && !backend?.isReady()) await this.#ensureManagedCodex(kind);
+    if (!current()) throw new AgentLaunchRevoked();
     backend = this.#backends.find(item => item.kind === kind);
     if (!backend?.isReady() || !backend.sessionConfiguration) throw new SessionConfigurationError("configuration_unavailable", "当前后端尚未提供新建配置，请检查电脑端连接");
     return backend;
@@ -2921,10 +3254,11 @@ export class HostService {
   async #handleSessionConfiguration(deviceId: string, message: Extract<DeviceE2ePayload, {
     type: "session.configuration.read" | "session.configuration.save" | "session.launch" | "session.launch.read"
   }>): Promise<void> {
-    const epoch = this.#deviceViewEpochs.get(deviceId);
-    const current = () => this.#links.get(deviceId)?.active !== undefined && epoch === this.#deviceViewEpochs.get(deviceId);
-    if (!current() || !allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message); return; }
+    const epoch = this.#deviceViewEpochs.get(deviceId), link = this.#links.get(deviceId);
     const kind = "agentKind" in message ? message.agentKind : undefined;
+    const sourceCurrent = kind === undefined ? () => true : this.#sourceCurrent(kind);
+    const current = () => sourceCurrent() && link?.active !== undefined && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId);
+    if (!current() || !allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message); return; }
     let ledger = kind === KIMI_KIND ? this.#kimiConfigurations : kind === OPENCLAW_KIND ? this.#openClawLaunches
       : kind === "hermes" ? this.#hermesConfigurations : kind === OPENCODE_KIND ? this.#openCodeConfigurations : this.#sessionConfigurations;
     const sendLaunch = async (launchId: string) => {
@@ -2965,11 +3299,12 @@ export class HostService {
           await sendLaunch(message.launchId); return;
         }
       }
-      const backend = await this.#configuredBackend(message.agentKind);
+      const backend = await this.#configuredBackend(message.agentKind, current);
       const catalog = await backend.sessionConfiguration!(message.cwd);
       if (!current()) return;
       if (message.type === "session.configuration.read") {
         const saved = await ledger.read(message.agentKind, message.cwd, catalog.binding);
+        if (!current()) return;
         const values = { ...catalog.defaults, ...saved.values,
           permissions: { ...catalog.defaults.permissions, ...saved.values.permissions } };
         const model = catalog.models.find(item => item.value === values.model);
@@ -2993,6 +3328,7 @@ export class HostService {
       if (message.type === "session.configuration.save") {
         if (backend.kind === OPENCLAW_KIND) throw new SessionConfigurationError("configuration_unavailable", "请在 OpenClaw 中配置模型与权限");
         const saved = await ledger.save(message.agentKind, message.cwd, message.binding, message.revision, message.values);
+        if (!current()) return;
         this.#sendToDevice(deviceId, { type: "session.configuration.result", requestId: message.requestId,
           agentKind: message.agentKind, cwd: message.cwd, binding: message.binding, ...saved, catalog }); return;
       }
@@ -3000,9 +3336,10 @@ export class HostService {
       if (!begun.execute) { await sendLaunch(message.launchId); return; }
       await sendLaunch(message.launchId);
       try {
-        if (!current()) throw new KimiLaunchBlocked("agent_unsupported", "客户端连接已经改变，未创建会话");
+        const requireCurrent = () => { if (!current()) throw new AgentLaunchRevoked(); };
+        requireCurrent();
         const activated = await backend.activate({ type: "new", cwd: message.cwd }, {
-          deviceId, launchId: message.launchId, spawnMode: backend.kind === OPENCLAW_KIND ? "headless" : message.spawnMode ?? (backend.kind === "kimiCode" ? "auto" : "tui"), configuration: message.values,
+          deviceId, launchId: message.launchId, requireCurrent, spawnMode: backend.kind === OPENCLAW_KIND ? "headless" : message.spawnMode ?? (backend.kind === "kimiCode" ? "auto" : "tui"), configuration: message.values,
           ...(begun.record.nativeLaunchMarker === undefined ? {} : { nativeLaunchMarker: begun.record.nativeLaunchMarker }),
           ...(begun.record.expectedSessionId === undefined ? {} : { expectedSessionId: begun.record.expectedSessionId }),
           onCreated: async result => {
@@ -3017,10 +3354,11 @@ export class HostService {
       } catch (error) {
         // Native create may already have happened. Unknown is retained and never automatically re-created.
         await ledger.update(deviceId, message.launchId, {
-          phase: error instanceof ClaudeStartupBlocked || error instanceof KimiLaunchBlocked ? "failed" : "unknown", error: describeError(error).slice(0, 2000) });
+          phase: error instanceof ClaudeStartupBlocked || error instanceof KimiLaunchBlocked || error instanceof AgentLaunchRevoked ? "failed" : "unknown", error: describeError(error).slice(0, 2000) });
       }
       await sendLaunch(message.launchId);
     } catch (error) {
+      if (!current()) return;
       if (message.type === "session.launch") {
         // All native effects are inside the inner try. A rejected preflight has
         // no native side effect, while a stored operation remains recoverable.
@@ -3044,32 +3382,37 @@ export class HostService {
     const prior = await ledger.result(deviceId, launchId, launchId);
     if (!current() || prior && !allowsAgentIdentity(this.#agentView(deviceId), prior)) return;
     if (prior?.phase === "unknown" && !prior.sessionId && prior.agentKind) {
+      const sourceCurrent = this.#sourceCurrent(prior.agentKind);
+      const admitted = () => sourceCurrent() && current();
       if (prior.agentKind === "kimiCode") {
         try {
-          const backend = await this.#configuredBackend(prior.agentKind);
+          const backend = await this.#configuredBackend(prior.agentKind, admitted);
           const launch = await ledger.launchMarker(deviceId, launchId);
-          const sessionId = launch && await backend.recoverLaunch?.(launch.marker, launch.cwd, launch.binding);
-          if (sessionId) await ledger.update(deviceId, launchId, { sessionId, phase: "configuring", spawnMode: "headless" });
+          const sessionId = admitted() && launch && await backend.recoverLaunch?.(launch.marker, launch.cwd, launch.binding);
+          if (sessionId && admitted()) await ledger.update(deviceId, launchId, { sessionId, phase: "configuring", spawnMode: "headless" });
         } catch { /* Native absence/unavailability is not permission to repeat the create. */ }
       } else if (prior.agentKind === OPENCLAW_KIND) {
-        const backend = await this.#configuredBackend(prior.agentKind).catch(() => undefined);
+        const backend = await this.#configuredBackend(prior.agentKind, admitted).catch(() => undefined);
         if (backend instanceof OpenClawBackend && prior.cwd && current()) {
           const sessionId = await backend.recoverLaunch(deviceId, launchId, prior.cwd).catch(() => undefined);
           if (sessionId && current()) await ledger.update(deviceId, launchId, { sessionId, phase: "configuring", spawnMode: "headless" });
         }
       } else {
-        const backend = await this.#configuredBackend(prior.agentKind);
+        const backend = await this.#configuredBackend(prior.agentKind, admitted);
         const expectedSessionId = await ledger.expectedSessionId(deviceId, launchId);
         // Legacy unknown records without a reserved identity cannot safely adopt an arbitrary hello.
         const found = expectedSessionId === undefined ? undefined : backend.findLaunch?.(launchId, expectedSessionId);
-        if (found?.sessionId) await ledger.update(deviceId, launchId,
+        if (found?.sessionId && admitted()) await ledger.update(deviceId, launchId,
           { sessionId: found.sessionId, phase: "configuring", spawnMode: "tui" });
       }
     }
     const record = await ledger.recover(deviceId, launchId);
     if (!current() || !record?.sessionId) return;
     try {
-      const backend = await this.#configuredBackend(record.agentKind);
+      const sourceCurrent = this.#sourceCurrent(record.agentKind);
+      const admitted = () => current() && sourceCurrent();
+      const requireCurrent = () => { if (!admitted()) throw new AgentLaunchRevoked(); };
+      const backend = await this.#configuredBackend(record.agentKind, admitted);
       const online = backend.directoryEntries?.().some(item => item.sessionId === record.sessionId);
       if (record.phase !== "ready" || !online) {
         if (record.phase !== "ready") {
@@ -3079,7 +3422,7 @@ export class HostService {
         }
         if (!current()) return;
         const result = await backend.activate({ type: "resume", sessionId: record.sessionId }, {
-          deviceId, spawnMode: record.spawnMode ?? "tui",
+          deviceId, requireCurrent, spawnMode: record.spawnMode ?? "tui",
           ...(record.phase === "ready" ? {} : { configuration: record.values }),
         });
         if (result.sessionId !== record.sessionId) throw new Error("恢复返回了不同会话身份，已停止发送");
@@ -3099,6 +3442,7 @@ export class HostService {
     message: Extract<DeviceE2ePayload, { type: "session.list" | "session.browse" | "session.activate" | "session.archive" }>,
   ): Promise<void> {
     const requestId = message.requestId;
+    if (!this.#allowsDeviceRequest(deviceId, message)) { this.#rejectAgentFeature(deviceId, message); return; }
     const sharedOperationId = message.type === "session.activate" ? this.#beginSharedOperation("session.activate",
       message.target.agentKind ?? null, message.target.type === "resume" ? message.target.sessionId : null)
       : message.type === "session.archive" ? this.#beginSharedOperation("session.archive", message.agentKind, message.sessionId) : undefined;
@@ -3181,8 +3525,10 @@ export class HostService {
       }
       if (message.type === "session.browse") {
         // hasSessions 需要 cwd 集合：跳过逐文件读取，只扫每目录最新一个。
-        const { cwds } = await listPiSessions({ summaries: false, ...(this.#options.sessionsRoot === undefined ? {} : { root: this.#options.sessionsRoot }) });
-        const result = await browseDirectory(message.path, cwds);
+        const piCurrent = this.#sourceCurrent("pi");
+        const pi = piCurrent() ? await listPiSessions({ summaries: false, ...(this.#options.sessionsRoot === undefined ? {} : { root: this.#options.sessionsRoot }) }) : undefined;
+        let result = await browseDirectory(message.path, piCurrent() ? pi?.cwds ?? new Set() : new Set());
+        if (pi && !piCurrent()) result = { ...result, entries: result.entries.map(entry => ({ ...entry, hasSessions: false })) };
         this.#sendToDevice(deviceId, {
           type: "session.browse.result",
           requestId,
@@ -3196,6 +3542,11 @@ export class HostService {
       // - new 按 agentKind 点名后端，没这个后端就是 agent_unsupported；
       // - resume 按装配顺序（Pi → Codex）逐个问，session_not_found = 不归它管。
       const target = message.target;
+      const link = this.#links.get(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
+      const requireLaunch = (kind: AgentKind) => {
+        const sourceCurrent = this.#sourceCurrent(kind);
+        return () => { if (!sourceCurrent() || link !== this.#links.get(deviceId) || epoch !== this.#deviceViewEpochs.get(deviceId)) throw new AgentLaunchRevoked(); };
+      };
       if (target.type === "new" && target.agentKind === KIMI_KIND) throw new ActivationError("agent_unsupported", "请使用可恢复的 Kimi Code 启动请求");
       if (target.type === "resume" && isKimiId(target.sessionId) && target.agentKind !== undefined && target.agentKind !== KIMI_KIND)
         throw new ActivationError("session_not_found", "会话与 Agent 类型不一致");
@@ -3205,13 +3556,15 @@ export class HostService {
           : target.type === "resume" && isKimiId(target.sessionId) ? { spawnMode: "headless" as const } : {}),
       };
       if (target.type === "new") {
+        const requireCurrent = requireLaunch(target.agentKind);
+        requireCurrent();
         if (target.agentKind === OPENCLAW_KIND) throw new ActivationError("agent_unsupported", "请使用支持可恢复启动的 App 创建 OpenClaw 会话");
         let backend = target.agentKind === "hermes" ? await this.#ensureHermes() : this.#backends.find((candidate) => candidate.kind === target.agentKind);
+        if ((backend === undefined || !backend.isReady()) && target.agentKind === "codex") backend = await this.#ensureManagedCodex("codex");
         if ((backend === undefined || !backend.isReady()) && target.agentKind === "codexDesktop") {
           try {
-            const runtime = await this.#options.ensureCodexDesktop?.();
+            const runtime = await this.#ensureManagedCodex("codexDesktop");
             if (runtime !== undefined) {
-              this.attachCodexDesktopRuntime(runtime);
               backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
             }
           } catch (error) { throw new ActivationError("agent_unsupported", `Codex 桌面版启动或接入失败：${describeError(error)}`); }
@@ -3241,7 +3594,8 @@ export class HostService {
         if (!backend.isReady()) {
           throw new ActivationError("agent_unsupported", `${backend.kind} 后端未就绪`);
         }
-        const activated = await backend.activate({ type: "new", cwd: target.cwd }, context);
+        requireCurrent();
+        const activated = await backend.activate({ type: "new", cwd: target.cwd }, { ...context, requireCurrent });
         // 新建会话会改变目录（Codex 多一条活跃 thread、Pi 多一个会话文件）：
         // 让缓存立刻失效，否则手机在这 5s 内重新拉目录还是旧列表。
         this.#invalidateCatalog();
@@ -3250,13 +3604,13 @@ export class HostService {
       }
       const resumeKind = target.agentKind ?? (isKimiId(target.sessionId) ? KIMI_KIND : target.sessionId.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : target.sessionId.startsWith("hermes:") ? "hermes" : target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
         : target.sessionId.startsWith("dsh-desktop:") ? "dshDesktop" : target.sessionId.startsWith("dsh:") ? "dsh" : undefined);
-      if (resumeKind === KIMI_KIND && !this.#options.kimiCodeRuntime?.isReady())
-        throw new ActivationError("agent_unsupported", this.#options.kimiCodeRuntime?.reason ?? "Kimi Code Web 未连接");
+      if (resumeKind === KIMI_KIND && !this.#kimi?.isReady())
+        throw new ActivationError("agent_unsupported", this.#kimi?.reason ?? "Kimi Code Web 未连接");
       if (resumeKind === "hermes") await this.#ensureHermes();
+      if (resumeKind === "codex" && this.#backends.every(backend => backend.kind !== "codex" || !backend.isReady())) await this.#ensureManagedCodex("codex");
       if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {
         try {
-          const runtime = await this.#options.ensureCodexDesktop?.();
-          if (runtime !== undefined) this.attachCodexDesktopRuntime(runtime);
+          const runtime = await this.#ensureManagedCodex("codexDesktop");
           if (!runtime?.isReady()) throw new Error("Codex 桌面版没有完成 app-server 握手");
         } catch (error) { throw new ActivationError("agent_unsupported", `Codex 桌面版启动或接入失败：${describeError(error)}`); }
       }
@@ -3271,11 +3625,13 @@ export class HostService {
         }
       }
       for (const backend of this.#backends) {
-        if (!backend.isReady()) continue;
+        if (!backend.isReady() || !allowsAgent(this.#agentView(deviceId), backend.kind)) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
         if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND || backend.kind === OPENCLAW_KIND || backend.kind === "hermes" || backend.kind === OPENCODE_KIND)) continue;
         try {
-          const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, context);
+          const requireCurrent = requireLaunch(backend.kind);
+          requireCurrent();
+          const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, { ...context, requireCurrent });
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。
           this.#invalidateCatalog();
           this.#sendActivated(deviceId, requestId, backend.kind, activated);
@@ -3594,14 +3950,14 @@ export class HostService {
     if ((runtimeId.startsWith(OPENCLAW_PREFIX) || runtimeId.startsWith("hermes:")) || !this.#pushWakeReceipts.observe(category, eventId)) return;
     // APNS-L19: capture each phone's interest at the semantic edge. Defer the
     // reachability probe until the event has been queued for its E2E recipients.
-    const recipients = this.#store.devices.filter(device => !device.revoked && allowsRuntime(this.#agentView(device.deviceId), runtimeId)).map(device => ({ device,
+    const recipients = this.#store.devices.filter(device => !device.revoked && this.#allowsDeviceRuntime(device.deviceId, runtimeId)).map(device => ({ device,
       link: this.#links.get(device.deviceId), interest: this.#historyInterests.get(device.deviceId) }));
     queueMicrotask(() => {
       void Promise.all(recipients.map(async ({ device, link, interest }) => {
         const watching = interest === undefined || interest !== null && interest.runtimeId === runtimeId && interest.sessionId === sessionId;
         if (watching && await link?.confirmNotificationReachability()) return undefined;
         // Unpair/replacement may race the probe. Never revive an old recipient.
-        return allowsRuntime(this.#agentView(device.deviceId), runtimeId) && this.#store.devices.some(current => current.deviceId === device.deviceId && !current.revoked && current.pskRoot === device.pskRoot)
+        return this.#allowsDeviceRuntime(device.deviceId, runtimeId) && this.#store.devices.some(current => current.deviceId === device.deviceId && !current.revoked && current.pskRoot === device.pskRoot)
           ? device.deviceId : undefined;
       })).then(ids => this.#sendPushWake(category, eventId, ids.filter((id): id is string => id !== undefined)))
         .catch(error => this.#options.log?.(`APNs routing failed: ${describeError(error)}`));
@@ -3628,7 +3984,7 @@ export class HostService {
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.offline") this.#deviceMessageRendering.releaseRuntime(message.runtimeId);
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
-    const visible = (id: string) => projectAgentMessage(this.#agentView(id), message) !== undefined;
+    const visible = (id: string) => this.#visibleTo(id, message) !== undefined;
     const chatEvent = message.type === "runtime.event" && ["session.patch", "session.snapshot", "message.started", "message.delta",
       "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished"].includes(message.event.type);
     if (message.type === "runtime.event" && chatEvent) {
@@ -3673,8 +4029,9 @@ export class HostService {
   }
 
   /** 同上，但封成 `bin` 帧（裸字节载荷，例如 artifact 分片）。 */
-  #broadcastBinary(payload: Uint8Array): void {
+  #broadcastBinary(payload: Uint8Array, runtimeId: string): void {
     for (const [deviceId, link] of this.#links) {
+      if (!this.#allowsDeviceRuntime(deviceId, runtimeId)) continue;
       try {
         if (!link.sendBinary(payload)) continue;
       } catch (error) {

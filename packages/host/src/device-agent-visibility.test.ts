@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { type AgentSessionSummary, type CatalogQueryRequest, type HostCatalogState } from "@orbis/protocol";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { CompactStateModel } from "./compact-state-model.js";
-import { agentViews, allowsAgent, allowsAgentRequest, hiddenKinds, projectAgentMessage } from "./device-agent-visibility.js";
+import { agentViews, allowsAgent, allowsAgentRequest, deviceAgentView, hiddenKinds, policyAgentViews, projectAgentMessage } from "./device-agent-visibility.js";
 import { HostStateFacts } from "./host-state-facts.js";
 
 const kinds = ["pi", "dshDesktop", "kimiCode", "openclaw", "hermes"] as const;
@@ -52,6 +52,18 @@ describe("KIMI-06 negotiated device projections", () => {
       expect(facts.catalogRange({ cursor }, hiddenKinds(view)).error).toBe("snapshot_changed");
     }
     compact.close();
+  });
+
+  it("projects Host-disabled sources even for released clients without a feature declaration", () => {
+    const disabled = new Set(["dsh", "codex"] as const);
+    const view = deviceAgentView(undefined, disabled);
+    expect(hiddenKinds(view)).toEqual(expect.arrayContaining(["dsh", "codex"]));
+    expect(policyAgentViews(disabled)).toContain(view);
+    expect(policyAgentViews(disabled).length).toBeLessThanOrEqual(agentViews.length + 1);
+    expect(allowsAgentRequest(view, { type: "session.activate", target: { type: "resume", sessionId: "dsh:cached" } })).toBe(false);
+    expect(allowsAgentRequest(view, { type: "runtime.command", runtimeId: "codex:cached" })).toBe(false);
+    expect(projectAgentMessage(view, { type: "device.ready", agents: ["pi", "codex", "dsh"], runtimes: [{ runtimeId: "dsh:cached" }] }))
+      .toMatchObject({ agents: ["pi"], runtimes: [] });
   });
 
   it("rejects envelope identities without filtering the user's text", () => {

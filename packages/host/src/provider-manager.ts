@@ -324,11 +324,12 @@ export class ProviderManager {
     });
   }
   /** A query and a switch share the native-config lock, so results always belong to the requested card. */
-  querySubscription(kind: AgentKind, id: string): Promise<SubscriptionQuota> {
+  querySubscription(kind: AgentKind, id: string, requireCurrent = () => {}): Promise<SubscriptionQuota> {
     const key = `${kind}:${id}`;
     const pending = this.#subscriptionQueries.get(key);
     if (pending) return pending;
     const work = this.#run(async () => {
+      requireCurrent();
       const store = await this.#load(); const live = await this.#sync(store, kind);
       const profile = store.providers.find(p => p.kind === kind && p.id === id);
       if (!profile || store.current[kind] !== id || !subscriptionSupported(profile)) throw new ProviderError("请先启用官方供应商配置，再查询当前订阅配额");
@@ -337,8 +338,10 @@ export class ProviderManager {
         if (!claudeOfficial({ ...live, env: { ...process.env, ...(object(live.env) ? live.env : {}) } })) throw new ProviderError("当前环境变量使用了第三方或 API Key 配置，无法查询官方订阅");
         const env = object(live.env) ? live.env : {};
         const token = env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.CLAUDE_CODE_OAUTH_TOKEN;
+        requireCurrent();
         const credentials = typeof token === "string" && token.trim() ? { claudeAiOauth: { accessToken: token } }
           : await claudeSubscriptionCredentials(this.paths.claude, !!process.env.CLAUDE_CONFIG_DIR);
+        requireCurrent();
         return querySubscriptionQuota("claude", credentials);
       }
       if (kind !== "codex") throw new ProviderError("此 Agent 不支持订阅配额查询");
@@ -352,29 +355,34 @@ export class ProviderManager {
       const managedLive = !!profile.authBinding && (!liveHasTokens || sameManagedIdentity(store.managedAuth, live.auth));
       // Prefer the CLI's current login (including independent logins made since activation).
       // Only refresh a managed account if its token is missing, expired, or rejected with 401/403.
+      requireCurrent();
       const credentials = await codexSubscriptionCredentials(this.paths.codex, doc.cli_auth_credentials_store, live.auth, managedLive && liveHasTokens);
       const token = object(credentials.tokens) && typeof credentials.tokens.access_token === "string" ? credentials.tokens.access_token.trim() : "";
       if (managedLive && (!token || isJwtExpired(token))) {
-        return await this.#queryManagedCodexSubscription(store, profile.authBinding!.accountId);
+        return await this.#queryManagedCodexSubscription(store, profile.authBinding!.accountId, requireCurrent);
       }
       try {
+        requireCurrent();
         return await querySubscriptionQuota("codex", credentials);
       } catch (error) {
         if (managedLive && error instanceof ProviderError && error.message.includes("登录已失效")) {
-          return await this.#queryManagedCodexSubscription(store, profile.authBinding!.accountId);
+          return await this.#queryManagedCodexSubscription(store, profile.authBinding!.accountId, requireCurrent);
         }
         throw error;
       }
-    });
+    }).then(quota => { requireCurrent(); return quota; });
     this.#subscriptionQueries.set(key, work);
     void work.then(() => this.#subscriptionQueries.delete(key), () => this.#subscriptionQueries.delete(key));
     return work;
   }
-  async #queryManagedCodexSubscription(store: Store, accountId: string | undefined): Promise<SubscriptionQuota> {
+  async #queryManagedCodexSubscription(store: Store, accountId: string | undefined, requireCurrent: () => void): Promise<SubscriptionQuota> {
+    requireCurrent();
     const managed = await this.#oauth.auth(accountId);
+    requireCurrent();
     await atomicWrite(join(this.paths.codex, "auth.json"), json(managed.auth));
     store.managedAuth = managedAuthMarker(managed.accountId, managed.auth);
     await atomicWrite(this.#file, json(store));
+    requireCurrent();
     return querySubscriptionQuota("codex", managed.auth);
   }
   save(kind: AgentKind, id: string, name: string, config: unknown, create = false, addToLive = true, metadata: ProviderMetadata = {}): Promise<ProviderSummary[]> {

@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { agentTerminalEnvironment } from "./agent-command.js";
 
 /** Opening a private .command file needs no Terminal Apple Events/Automation consent. */
-export async function openMacAgentTerminal(input: { stateDir: string; cwd: string; command: string; args: readonly string[]; env: NodeJS.ProcessEnv; confirmStart?: boolean; unsetEnv?: readonly string[] }): Promise<void> {
+export async function openMacAgentTerminal(input: { stateDir: string; cwd: string; command: string; args: readonly string[]; env: NodeJS.ProcessEnv; confirmStart?: boolean; unsetEnv?: readonly string[]; requireCurrent?: () => void }): Promise<void> {
   const directory = join(input.stateDir, "tmp");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const file = join(directory, `agent-${randomUUID()}.command`);
@@ -22,6 +22,7 @@ export async function openMacAgentTerminal(input: { stateDir: string; cwd: strin
   await writeFile(file, script, { mode: 0o700, flag: "wx" });
   try {
     await chmod(file, 0o700);
+    input.requireCurrent?.();
     await new Promise<void>((resolve, reject) => {
       const child = spawn("/usr/bin/open", ["-a", "Terminal", file], { stdio: "ignore", cwd: input.cwd, timeout: 15_000 });
       child.once("error", reject);

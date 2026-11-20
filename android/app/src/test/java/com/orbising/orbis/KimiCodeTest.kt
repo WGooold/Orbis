@@ -25,6 +25,31 @@ class KimiCodeTest {
         assertEquals("tui", kimiSpawnMode("codex", "tui"))
     }
 
+    @Test fun `Agent settings require an explicit capability echo even with Desktop admitted`() {
+        val offer = ready("""{"hostFeatures":["device.features","agent.enablement.v1"],"dshDesktop":null}""")
+        assertTrue(AGENT_ENABLEMENT_FEATURE in requestedAgentFeatures(offer))
+        assertFalse(readyAdmitsAgentEnablement(offer))
+        val admitted = ready("""{"hostFeatures":["device.features","agent.enablement.v1"],"deviceFeatures":["agent.enablement.v1"],"dshDesktop":null}""")
+        assertTrue(readyAdmitsAgentEnablement(admitted))
+        assertTrue(requestedAgentFeatures(admitted).isEmpty())
+    }
+
+    @Test fun `managed ready preserves an explicitly empty Agent directory without OpenClaw`() {
+        val payload = """{"type":"device.ready","protocolVersion":19,"modelEpoch":"new","hostFeatures":["device.features","agent.enablement.v1"],"deviceFeatures":["agent.enablement.v1"],"runtimes":[],"agents":[],"launchableAgents":[]}"""
+        val state = RelayReducer().reduce(RemoteState(supportedAgents = setOf("pi"), launchableAgents = setOf("pi")), payload, channel = "ctl")
+        assertEquals(emptySet<String>(), state.supportedAgents)
+        assertEquals(emptySet<String>(), state.launchableAgents)
+    }
+
+    @Test fun `managed source gate uses saved choice without changing legacy fallback`() {
+        val legacy = RemoteState(sessionConfigurationSupported = true)
+        assertTrue(legacy.supportsSessionConfiguration("codex"))
+        val managed = legacy.copy(agentEnablementRevision = 1, agentEnablementRows = listOf(
+            AgentEnablementRow("codex", "Codex CLI", false), AgentEnablementRow("codexDesktop", "Codex Desktop", true)))
+        assertFalse(managed.supportsSessionConfiguration("codex"))
+        assertTrue(managed.supportsSessionConfiguration("codexDesktop"))
+    }
+
     @Test fun `OpenCode declares its feature only to a Host that advertises it`() {
         assertEquals(listOf("agent.dshDesktop", "agent.opencode"), deviceAgentFeatures(ready("""{"hostFeatures":["device.features","agent.opencode"]}""")))
         assertEquals(emptyList<String>(), deviceAgentFeatures(ready("""{"hostFeatures":["agent.opencode"]}""")))

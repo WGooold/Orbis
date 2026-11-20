@@ -14,12 +14,19 @@ vi.mock("./spawner.js", async importOriginal => ({
 vi.mock("./codex-daemon.js", async importOriginal => ({
   ...await importOriginal<typeof import("./codex-daemon.js")>(), resolveCodexCommand: terminal.codex,
 }));
+import { AgentEnablementStore } from "./agent-enablement.js";
 import { DesktopRuntime, shouldAutoEnableCodexTerminal } from "./desktop-runtime.js";
 
 describe("desktop terminal shortcuts", () => {
   let workspace: string;
+  let runtime: DesktopRuntime;
   beforeEach(async () => {
     workspace = await mkdtemp(join(tmpdir(), "orbis 工作区's "));
+    const state = join(workspace, "state");
+    await new AgentEnablementStore(state, async () => ({ pi: true, codex: true, codexDesktop: true })).read();
+    runtime = new DesktopRuntime(() => {}, state, {
+      pi: join(workspace, "pi"), codex: join(workspace, "codex"), dsh: join(workspace, "dsh"), claude: join(workspace, "claude-config"),
+    });
     vi.clearAllMocks();
     vi.stubGlobal("process", { ...process, platform: "win32" });
     terminal.pi.mockResolvedValue({ command: "C:\\Orbis Tools\\node.exe", prefixArgs: ["C:\\My Projects\\pi.js"] });
@@ -31,7 +38,7 @@ describe("desktop terminal shortcuts", () => {
     });
   });
 
-  afterEach(async () => { vi.unstubAllGlobals(); await rm(workspace, { recursive: true, force: true }); });
+  afterEach(async () => { await runtime.close(); vi.unstubAllGlobals(); await rm(workspace, { recursive: true, force: true }); });
 
   /** WIN-CONSOLE-01: the shared hidden launcher opens the window through ShellExecute. */
   function invocation(): { script: string; launcher: string; options: Record<string, unknown> } {
@@ -52,7 +59,6 @@ describe("desktop terminal shortcuts", () => {
   }
 
   it("opens Pi and Codex in the selected workspace, preserving paths and Pi integration", async () => {
-    const runtime = new DesktopRuntime(() => {});
     for (const kind of ["pi", "codex"]) {
       terminal.spawn.mockClear();
       await runtime.openAgent(kind, "tui", workspace);
@@ -74,14 +80,14 @@ describe("desktop terminal shortcuts", () => {
   });
 
   it("keeps the separate Codex account setup action", async () => {
-    await new DesktopRuntime(() => {}).openAgent("codex");
+    await runtime.openAgent("codex");
     const { script, launcher } = invocation();
     expect(script).toBe("$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null; & 'C:\\Orbis Tools\\node.exe' 'C:\\User''s tools\\codex.js' 'login'");
     expect(launcher).toContain(`$orbisConsole.WorkingDirectory = '${homedir().replaceAll("'", "''")}'`);
   });
 
   it("opens Codex Desktop as a separate GUI process without a terminal window", async () => {
-    await new DesktopRuntime(() => {}).openAgent("codexDesktop");
+    await runtime.openAgent("codexDesktop");
     const { script, options } = directInvocation();
     expect(script).toContain("Get-AppxPackage -Name OpenAI.Codex");
     expect(script).toContain("$package.PackageFamilyName + '!' + $application.Id");
@@ -94,7 +100,6 @@ describe("desktop terminal shortcuts", () => {
   it("never falls back to the user directory when an interactive workspace is missing or invalid", async () => {
     const file = join(workspace, "not-a-directory.txt");
     await writeFile(file, "not a workspace");
-    const runtime = new DesktopRuntime(() => {});
     const switchProvider = vi.spyOn(runtime, "mutateProvider");
     for (const kind of ["pi", "codex"]) {
       for (const cwd of [undefined, "", "relative-workspace", join(workspace, "missing"), file]) {
@@ -108,7 +113,6 @@ describe("desktop terminal shortcuts", () => {
   });
 
   it("rejects unknown agents and modes without launching anything", async () => {
-    const runtime = new DesktopRuntime(() => {});
     await expect(runtime.openAgent("other", "tui")).rejects.toThrow("未知 agent");
     await expect(runtime.openAgent("codex", "shell-command")).rejects.toThrow("未知打开方式");
     await expect(runtime.openAgent("codexDesktop", "tui")).rejects.toThrow("未知打开方式");
@@ -134,7 +138,7 @@ describe("desktop terminal shortcuts", () => {
       queueMicrotask(() => child.emit("error", new Error("Terminal unavailable")));
       return child;
     });
-    await expect(new DesktopRuntime(() => {}).openAgent("codex", "tui", workspace)).rejects.toThrow("Terminal unavailable");
+    await expect(runtime.openAgent("codex", "tui", workspace)).rejects.toThrow("Terminal unavailable");
   });
 
   it("does not report success when the Windows launcher exits unsuccessfully", async () => {
@@ -143,6 +147,6 @@ describe("desktop terminal shortcuts", () => {
       queueMicrotask(() => { child.emit("exit", 1); child.emit("close", 1); });
       return child;
     });
-    await expect(new DesktopRuntime(() => {}).openAgent("pi", "tui", workspace)).rejects.toThrow("无法打开终端界面，请重试");
+    await expect(runtime.openAgent("pi", "tui", workspace)).rejects.toThrow("无法打开终端界面，请重试");
   });
 });

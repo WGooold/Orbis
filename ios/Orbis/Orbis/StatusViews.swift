@@ -52,6 +52,21 @@ struct ConnectionStatusView: View {
                             }.frame(minHeight: 56).contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityIdentifier("settings-protocol")
                     }
+                    if store.activeConnection.agentEnablementAvailable {
+                        StatusSection(title: "Agent") {
+                            ForEach(store.activeConnection.agentEnablementRows) { row in
+                                Toggle(isOn: Binding(get: { row.enabled }, set: { changeAgent(row, enabled: $0) })) {
+                                    Text(row.label).font(.orbisBody(.semibold))
+                                }.toggleStyle(NeuToggleStyle())
+                                    .disabled(store.activeConnection.agentEnablementPending != nil)
+                                    .accessibilityIdentifier("agent-enablement-" + row.id)
+                            }
+                            if store.activeConnection.agentEnablementPending != nil { ProgressView().controlSize(.small) }
+                            if store.activeConnection.agentEnablementFailed {
+                                OrbisActionButton(title: L10n.tr("刷新"), symbol: "arrow.clockwise", action: store.activeConnection.refreshAgentEnablement)
+                            }
+                        }
+                    }
                     StatusSection(title: L10n.tr("语音")) {
                         OrbisMotionButton { voiceCleanupOpen = true } label: {
                             HStack(spacing: 8) {
@@ -95,6 +110,18 @@ struct ConnectionStatusView: View {
                 }).orbisSheet([.large])
             }
             .orbisBottomSheet(isPresented: $protocolOpen) { protocolSheet.orbisSheet([.medium, .large]) }
+    }
+    private func changeAgent(_ row: HostConnection.AgentEnablementRow, enabled: Bool) {
+        let owner = store.activeConnection
+        guard let revision = owner.agentEnablementRevision else { return }
+        if enabled { owner.setAgentEnabled(row.id, enabled: true, expectedRevision: revision); return }
+        overlay.showDialog(L10n.tr("停用 {0}？", row.label), message: L10n.tr("Orbis 将断开此 Agent 的接入，不会退出原生应用。"), actions: [
+            OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
+            OrbisDialogAction(title: L10n.tr("停用"), role: .destructive) {
+                guard store.activeConnection === owner else { return }
+                owner.setAgentEnabled(row.id, enabled: false, expectedRevision: revision, confirmDisable: true)
+            },
+        ])
     }
     private var connectionSheet: some View {
         VStack(spacing: 16) {

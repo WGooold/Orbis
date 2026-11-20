@@ -17,6 +17,13 @@ struct KimiCodeTests {
         #expect(kimiSpawnMode("codex") == "tui")
     }
 
+    @Test func enablementRequiresAnExplicitHostEcho() {
+        let offer: [String: Any] = ["hostFeatures": ["device.features", "agent.enablement.v1"], "dshDesktop": NSNull()]
+        #expect(deviceAgentFeatures(offer).contains("agent.enablement.v1"))
+        #expect(!readyAdmitsAgentEnablement(offer))
+        #expect(readyAdmitsAgentEnablement(offer.merging(["deviceFeatures": ["agent.enablement.v1"]]) { _, new in new }))
+    }
+
     // OpenCode requires its own Host advertisement, independently of Kimi and Desktop.
     @Test func declaresOpenCodeOnlyWhenAdvertised() {
         #expect(deviceAgentFeatures(["hostFeatures": ["device.features", "agent.opencode"]]) == ["agent.dshDesktop", "agent.opencode"])

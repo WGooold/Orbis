@@ -644,13 +644,15 @@ export class CodexRuntime implements AgentBackend {
     }
   }
 
-  async reloadProviderConfiguration(): Promise<void> {
+  async reloadProviderConfiguration(current = (): boolean => true): Promise<void> {
     this.assertProviderSwitchReady();
     const old = this.#server;
     await old.stop();
     old.onExit?.(0);
     this.#modelListCache = undefined;
+    if (!current()) return;
     const server = await CodexAppServer.create({ ...(this.#options.log ? { log: this.#options.log } : {}) });
+    if (!current()) { await server.stop(); return; }
     this.#server = server;
     this.#attachServer(server);
     this.markStarted();
@@ -1563,12 +1565,14 @@ export class CodexRuntime implements AgentBackend {
     const needsTerminalTrust = !isDesktopAppServer(this.#server) && spawnMode === "tui" && this.#server.endpoint !== undefined;
     // Prepare before creating a new thread: a rejected config write must not leave
     // an unpublished session behind. Resume discovers cwd from the native reply.
+    context?.requireCurrent?.();
     if (needsTerminalTrust && target.type === "new") await prepareCodexWorkspace(this.#server, target.cwd);
     const method = target.type === "resume" ? "thread/resume" : "thread/start";
     const selection = context?.configuration;
     const initial = selection === undefined ? {} : this.#configurationStart(selection);
     const params = target.type === "resume" ? { threadId: target.sessionId }
       : { cwd: target.cwd, ...initial, config: { ...object(initial.config), [codexWorkspaceTrustKey(target.cwd)]: "trusted" } };
+    context?.requireCurrent?.();
     let result = (await this.#server.request(method, params)) as {
       thread?: Record<string, unknown>;
       model?: unknown;
@@ -1625,7 +1629,7 @@ export class CodexRuntime implements AgentBackend {
     this.#publishMetadataEvent(thread);
     if (existing !== undefined) this.#touchSource(thread);
     // 历史由设备的有界 session.sync 请求加载，metadata 不附带无人请求的整图。
-    try { await this.#openHeadWindow(id, cwd, actualSpawnMode); }
+    try { await this.#openHeadWindow(id, cwd, actualSpawnMode, context?.requireCurrent); }
     catch (error) {
       // A failed local window must not leave a new idle subscription holding the writer lock.
       // Existing/running work keeps its native lifecycle and is never interrupted by this cleanup.
@@ -1664,7 +1668,7 @@ export class CodexRuntime implements AgentBackend {
    * 所以窗口先开、内嵌等待循环轮询 rollout，一落盘立即自动 attach。
    * endpoint 未知（测试桩 / app-server 未就绪）时静默跳过；`ORBIS_CODEX_HEAD=0` 关掉。
    */
-  async #openHeadWindow(sessionId: string, cwd: string, spawnMode?: "tui" | "headless"): Promise<void> {
+  async #openHeadWindow(sessionId: string, cwd: string, spawnMode?: "tui" | "headless", requireCurrent?: () => void): Promise<void> {
     // 桌面版那条后端自己就是「有头」：Codex 桌面版 GUI 就是它的窗口。再开一个终端 TUI
     // 会在用户那里凭空多出一个客户端，而且存活检测靠轮询 `--remote <端点>` 的 TUI 进程
     // ——GUI 永远不会出现在那份名单里，窗口“消失”后还会把会话误标成离线。
@@ -1678,6 +1682,7 @@ export class CodexRuntime implements AgentBackend {
     let window: { key: string; connection: CodexTerminalConnection } | undefined;
     try {
       window = await this.#createTerminalConnection(sessionId);
+      requireCurrent?.();
       await opener({ sessionId, cwd, endpoint: window.connection.endpoint, ...(codexCommand === undefined ? {} : { codexCommand }) });
     }
     catch (error) {

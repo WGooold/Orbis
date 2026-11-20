@@ -162,20 +162,20 @@ export class KimiRuntime implements AgentBackend {
   async activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     if (context?.spawnMode === "tui") throw new KimiLaunchBlocked("agent_unsupported", "Kimi Code 只能接入已运行的原生 Web 服务");
     const connection = this.#requireConnection();
-    if (target.type === "resume") return this.#resume(connection, connection.sessions.nativeId(target.sessionId));
+    if (target.type === "resume") return this.#resume(connection, connection.sessions.nativeId(target.sessionId), false, context?.requireCurrent);
     if (!context?.nativeLaunchMarker || context.configuration?.model !== undefined || context.configuration?.thinking !== undefined
       || Object.keys(context.configuration?.permissions ?? {}).length > 0) {
       throw new KimiLaunchBlocked("agent_unsupported", "请使用 Kimi Code 的原生模型配置和可恢复的启动请求");
     }
     if (this.#active.size >= MAX_SUBSCRIPTIONS) throw new KimiLaunchBlocked("spawn_limit_reached", "Kimi Code 会话接入已达上限");
-    const native = await connection.sessions.create(target.cwd, context.nativeLaunchMarker);
+    const native = await connection.sessions.create(target.cwd, context.nativeLaunchMarker, context.requireCurrent);
     const activation = { sessionId: connection.sessions.publicId(native.id), spawnMode: "headless" as const };
     await context.onCreated?.(activation);
     this.#assertConnection(connection);
     return this.#resume(connection, native.id, true);
   }
 
-  async #resume(connection: Connection, nativeId: string, requireModel = false): Promise<BackendActivation> {
+  async #resume(connection: Connection, nativeId: string, requireModel = false, requireCurrent?: () => void): Promise<BackendActivation> {
     let native: KimiSession;
     try { native = await connection.sessions.read(nativeId); }
     catch (error) {
@@ -184,6 +184,7 @@ export class KimiRuntime implements AgentBackend {
     }
     if (native.id !== nativeId || native.archived) throw new ActivationError("session_not_found", "请先恢复已归档的 Kimi Code 会话");
     const cwd = await connection.sessions.requireLocal(native);
+    requireCurrent?.();
     this.#assertConnection(connection);
     const id = connection.sessions.publicId(nativeId);
     let item = this.#active.get(id);

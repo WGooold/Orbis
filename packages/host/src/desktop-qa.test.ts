@@ -71,6 +71,12 @@ describe("QA-ACT-02 isolated desktop bridge", () => {
         dshWebUrl: "http://127.0.0.1:43210/?token=productiontoken1234" });
       expect(events).toContainEqual({ event: "state", state: "connected" });
       const options = create.mock.calls[0]![0];
+      const initial = await runtime.readAgentEnablement();
+      expect(initial.agents.every(row => !row.enabled)).toBe(true);
+      expect(await options.agentEnablement?.read()).toEqual(initial);
+      expect(await runtime.setAgentEnablement({ kind: "pi", enabled: true, expectedRevision: initial.revision })).toMatchObject({ status: "applied" });
+      expect(await runtime.setAgentEnablement({ kind: "codexDesktop", enabled: true, expectedRevision: 1 })).toMatchObject({ status: "applied" });
+      expect(await runtime.setAgentEnablement({ kind: "dshDesktop", enabled: true, expectedRevision: 2 })).toMatchObject({ status: "applied" });
       expect(options).toMatchObject({ relayUrl: relay.url, credential: activation.credential, lanPort: 0,
         stateDir: join(root, "host"), sessionsRoot: join(qa.home, ".pi/agent/sessions"),
         codexDesktopLaunchable: false, dshDesktopLaunchable: false, claude: { configDir: join(qa.home, ".claude") } });
