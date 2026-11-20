@@ -1,5 +1,49 @@
 import SwiftUI
 
+private struct ChatHistoryProgress: View {
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.orbisReduceMotion) private var reduceMotion
+    @Environment(\.orbisVisualActive) private var visualActive
+    @State private var settled = false
+    let loading: Bool
+    let viewport: ChatViewportController
+    private var atRest: Bool { settled || reduceMotion || !visualActive }
+
+    var body: some View {
+        let progress = loading ? 0 : viewport.historyPullProgress
+        let armed = progress >= 1
+        let palette = OrbisPalette(scheme)
+        let color = armed ? palette.accent : palette.secondary
+        HStack(spacing: 8) {
+            Group {
+                if loading { ProgressView().controlSize(.small) }
+                else {
+                    ZStack {
+                        Circle().stroke(palette.secondary.opacity(0.2), lineWidth: 2)
+                        Circle().trim(from: 0, to: progress)
+                            .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                        Image(systemName: "arrow.down").font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(color)
+                    }.padding(1)
+                }
+            }.frame(width: 18, height: 18).accessibilityHidden(true)
+            Text(loading ? L10n.tr("正在加载更早的历史…") : armed ? L10n.tr("松手加载") : L10n.tr("下拉加载历史"))
+                .font(.orbisLabel()).foregroundStyle(color)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .neuSurface(radius: OrbisRadius.control, intensity: 0.6, concentric: false)
+        .offset(y: loading ? (atRest ? 0 : -6) : (reduceMotion ? 0 : -6 * (1 - progress)))
+        .opacity(loading ? (atRest ? 1 : 0.65) : (0.65 + 0.35 * progress))
+        .onAppear {
+            withAnimation(reduceMotion || !visualActive ? nil : InteractionMotion.state) { settled = true }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(loading ? "chat-history-loading" : "chat-history-pull")
+        .allowsHitTesting(false)
+    }
+}
+
 struct ChatNoticesRegion: View, Equatable {
     let model: ChatScreenModel
     let actions: ChatSessionActions
@@ -33,10 +77,12 @@ struct ChatNoticesRegion: View, Equatable {
                 }.padding(.horizontal, 16).accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
             } else {
                 let history = model.transcript
-                if history.historyLoading || viewport.retryingHistory {
+                let loadingHistory = history.historyLoading || viewport.awaitingOlderPage
+                if loadingHistory || viewport.showingHistoryPull {
                     // Share the question/retry slot without inserting a transcript row.
                     VStack(spacing: 0) {
-                        historyProgress
+                        ChatHistoryProgress(loading: loadingHistory, viewport: viewport)
+                            .padding(.horizontal, 16).padding(.top, 6)
                         if hasNotices { runtimeNotices }
                     }
                 } else if history.hasOlder && history.historyError != nil {
@@ -60,19 +106,6 @@ struct ChatNoticesRegion: View, Equatable {
     private var runtimeNotices: some View {
         RuntimeNoticesView(model: model, actions: actions, runtimeId: actions.runtimeId,
                            supported: facts.supported).padding(.horizontal, 16)
-    }
-    private var historyProgress: some View {
-        HStack(spacing: 8) {
-            ProgressView().controlSize(.small).accessibilityHidden(true)
-            Text(L10n.tr("正在加载更早的历史…"))
-                .font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .neuSurface(radius: OrbisRadius.control, intensity: 0.6, concentric: false)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("chat-history-loading")
-        .allowsHitTesting(false)
-        .padding(.horizontal, 16).padding(.top, 6)
     }
     private func historyRetry(enabled: Bool) -> some View {
         let p = OrbisPalette(scheme)

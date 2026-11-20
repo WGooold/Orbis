@@ -477,12 +477,42 @@ struct ChatScreenModelTests {
     }
 
     private func transcript(_ target: ChatActionContext, messages: [ChatMessage], syncing: Bool = false,
-                            history: Int = 0) -> ChatTranscriptState {
+                            history: Int = 0, historyLoading: Bool = false,
+                            hasOlder: Bool = false) -> ChatTranscriptState {
         ChatTranscriptState(target: target, kind: "codex", transcript: ChatTranscript(messages: messages, turnTimings: [:]),
             hasMessages: !messages.isEmpty, canSend: true, syncing: syncing, cached: false, connection: .secured,
             streaming: [], pending: PendingSendOutbox(), pendingActions: [], uploads: [],
-            historyRevision: history, historyPageRevision: 0, historyLoading: false, historyError: nil,
-            hasOlder: false, actionFeedback: nil, rewind: [:], status: "idle")
+            historyRevision: history, historyPageRevision: 0, historyLoading: historyLoading, historyError: nil,
+            hasOlder: hasOlder, actionFeedback: nil, rewind: [:], status: "idle")
+    }
+
+    // CHAT-PAGING-03: release acknowledges synchronously, before deferred transcript publication.
+    @Test func acceptedHistoryShowsFeedbackBeforePublicationAndClearsOnCompletion() {
+        let (store, _, root) = setup()
+        defer { store.activeConnection.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let target = store.chatScreens.actions.target, viewport = ChatViewportController()
+        let rows = [message("question", role: "user")]
+        let idle = transcript(target, messages: rows, hasOlder: true)
+        let loading = transcript(target, messages: rows, historyLoading: true, hasOlder: true)
+        viewport.commit(idle)
+        viewport.distanceChanged(0)
+        #expect(viewport.canLoadHistory())
+        viewport.acceptedHistory()
+        #expect(viewport.awaitingOlderPage)
+        #expect(!viewport.canLoadHistory())
+        viewport.commit(loading)
+        #expect(viewport.awaitingOlderPage)
+        viewport.commit(idle)
+        #expect(!viewport.awaitingOlderPage)
+        #expect(viewport.canLoadHistory())
+
+        // A cache hit or identical failure can complete without a distinct loading publication.
+        viewport.acceptedHistory()
+        viewport.reconcileHistoryLoading(false)
+        #expect(!viewport.awaitingOlderPage)
+        viewport.acceptedHistory()
+        viewport.resetForMount()
+        #expect(!viewport.awaitingOlderPage)
     }
 
     // IOS-CHAT-11: the first lazy row may claim synchronously after commit;

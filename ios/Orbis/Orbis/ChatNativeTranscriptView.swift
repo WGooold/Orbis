@@ -148,6 +148,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
     var onReadingRow: (String?) -> Void
     var onDirection: (Bool) -> Void = { _ in }
     var canPageHistory: () -> Bool = { false }
+    var onHistoryProgress: (CGFloat) -> Void = { _ in }
     var onHistoryPull: () -> Void = {}
     var horizontalInset: CGFloat = 16
     var topInset: CGFloat = 4
@@ -949,6 +950,7 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         }
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            input.onHistoryProgress(0)
             input.viewport.readingSurface.cancel()
             historyPan.begin(nearTop: scrollView.contentOffset.y + scrollView.adjustedContentInset.top <= 44,
                              admitted: initialPlacementReady && input.canPageHistory())
@@ -957,15 +959,19 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
 
         func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
                                        targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+            let pan = scrollView.panGestureRecognizer
             let atTop = scrollView.contentOffset.y + scrollView.adjustedContentInset.top <= 44
-            guard historyPan.release(translation: scrollView.panGestureRecognizer.translation(in: scrollView)),
-                  atTop, input.canPageHistory(), scrollView.panGestureRecognizer.state != .cancelled else { return }
+            guard historyPan.release(translation: pan.translation(in: scrollView), nearTop: atTop,
+                                     admitted: input.canPageHistory() && pan.state != .cancelled && pan.state != .failed) else {
+                input.onHistoryProgress(0)
+                return
+            }
             // Defer the model write until UIKit has finished choosing its deceleration target.
             let owner = ownership, generation = interactionGeneration
             DispatchQueue.main.async { [weak self] in
-                guard let self, !self.stopped, self.ownership == owner, self.interactionGeneration == generation,
-                      self.input.canPageHistory() else { return }
-                self.input.onHistoryPull()
+                guard let self, !self.stopped, self.ownership == owner, self.interactionGeneration == generation else { return }
+                if self.input.canPageHistory() { self.input.onHistoryPull() }
+                self.input.onHistoryProgress(0)
             }
         }
 
@@ -986,6 +992,13 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             let panY = scrollView.panGestureRecognizer.translation(in: scrollView).y
             advanceAnchorsForUserMotion(scrollView)
             if scrollView.isDragging {
+                if scrollView.panGestureRecognizer.state == .changed, !resolving, !compensatingLayout,
+                   nativeLayoutDepth == 0, snapshotMutationDepth == 0 {
+                    let admitted = input.canPageHistory()
+                    if !admitted { historyPan.cancel() }
+                    input.onHistoryProgress(historyPan.progress(translation: scrollView.panGestureRecognizer.translation(in: scrollView),
+                        nearTop: scrollView.contentOffset.y + scrollView.adjustedContentInset.top <= 44, admitted: admitted))
+                }
                 if abs(panY - previousPanY) > 0.5 {
                     pendingDirection = panY > previousPanY
                     previousPanY = panY
@@ -1013,6 +1026,9 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
         }
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            historyPan.cancel()
+            let state = scrollView.panGestureRecognizer.state
+            if state == .cancelled || state == .failed { input.onHistoryProgress(0) }
             guard !readingSurfaceInteracting else { return }
             if !decelerate { finishInteraction() }
         }

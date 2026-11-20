@@ -42,34 +42,50 @@ internal class ChatHistoryPan {
     fun begin(nearTop: Boolean, admitted: Boolean, density: Float) {
         requiredDistance = if (admitted) (if (nearTop) 44f else 12f) * density else null
     }
+    fun progress(dx: Float, dy: Float, nearTop: Boolean, admitted: Boolean): Float {
+        val threshold = requiredDistance ?: return 0f
+        if (!admitted || !nearTop || dy <= abs(dx)) return 0f
+        return (dy / threshold).coerceAtMost(1f)
+    }
+    fun cancel() { requiredDistance = null }
     fun release(dx: Float, dy: Float, nearTop: Boolean, admitted: Boolean): Boolean {
-        val threshold = requiredDistance
-        requiredDistance = null
-        return threshold != null && admitted && nearTop && dy >= threshold && dy > abs(dx)
+        val ready = progress(dx, dy, nearTop, admitted) == 1f
+        cancel()
+        return ready
     }
 }
 
 /** Observe only physical transcript gestures. Final pass sees the list position after the drag.
  *  Never consume input, and never start a read from recomposition, rebound, or fling callbacks. */
 internal fun Modifier.chatHistoryPull(
-    owner: ChatPresentationIdentity,
+    owner: Pair<ChatPresentationIdentity, String?>,
     nearTop: () -> Boolean,
     canLoad: () -> Boolean,
     onLoad: () -> Unit,
+    onProgress: (Float) -> Unit,
 ): Modifier = pointerInput(owner) {
     val gesture = ChatHistoryPan()
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         gesture.begin(nearTop(), canLoad(), density)
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Final)
-            if (event.changes.any { it.id != down.id && it.pressed }) break
-            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-            if (!change.pressed) {
+        try {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Final)
+                if (event.changes.any { it.id != down.id && it.pressed }) break
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
                 val distance = change.position - down.position
-                if (gesture.release(distance.x, distance.y, nearTop(), canLoad())) onLoad()
-                break
+                val admitted = canLoad()
+                if (!admitted) break
+                if (!change.pressed) {
+                    // Compose represents a cancelled pointer as a consumed up.
+                    if (!change.isConsumed && gesture.release(distance.x, distance.y, nearTop(), admitted)) onLoad()
+                    break
+                }
+                onProgress(gesture.progress(distance.x, distance.y, nearTop(), admitted))
             }
+        } finally {
+            gesture.cancel()
+            onProgress(0f)
         }
     }
 }

@@ -219,6 +219,7 @@ internal object LocalizationCatalog {
         "下一个文件" to "Next file",
         "下一轮的权限" to "Permissions for the next turn",
         "下一题" to "Next question",
+        "下拉加载历史" to "Pull for earlier messages",
         "下轮使用" to "Next turn",
         "下轮已设" to "Next turn set",
         "下载" to "Downloads",
@@ -319,9 +320,9 @@ internal object LocalizationCatalog {
         "会话信息未能完整读取，请重新加载" to "Could not load all session information. Reload.",
         "会话信息未能完整读取，请重试" to "Could not load all session information. Try again.",
         "会话内容未确认，请重新加载" to "Session content is unconfirmed. Reload it.",
-        "会话内容读取失败，请重新加载" to "Session content could not be read. Reload it.",
     )
     private fun part2(): Map<String, String> = mapOf(
+        "会话内容读取失败，请重新加载" to "Session content could not be read. Reload it.",
         "会话写入归属已经失效" to "Session write ownership expired",
         "会话历史同步失败：{0}" to "Session history could not be synced: {0}",
         "会话历史无法保存，请重试。" to "Could not save session history. Try again.",
@@ -471,9 +472,9 @@ internal object LocalizationCatalog {
         "切换 {0} 到 {1}？" to "Switch {0} to {1}?",
         "切换中" to "Switching",
         "切换会让正在进行的回复短暂停顿，连上后自动继续。" to "The current response may pause briefly and resume after reconnection.",
-        "切换到 {0}" to "Switch to {0}",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "切换到 {0}" to "Switch to {0}",
         "切换到 {0} 并重连" to "Switch to {0} and reconnect",
         "切换到此文件后读取差异" to "Switch to this file to load its diff",
         "切换后，电脑会重新加载 Agent。已有会话需要重新打开。" to "Switching reloads the Agent on the computer. Existing sessions must be reopened.",
@@ -623,9 +624,9 @@ internal object LocalizationCatalog {
         "后台任务状态待核对" to "Background task status needs checking",
         "后台任务状态待核对，暂不能关闭会话。" to "Background task status is unconfirmed. This session cannot be closed yet.",
         "后台命令" to "Background commands",
-        "后台命令 {0}" to "{0} background commands",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "后台命令 {0}" to "{0} background commands",
         "后台命令 {0} 项" to "{0} background commands",
         "后端条目不是对象" to "Backend entry is not an object",
         "后端条目缺少 kind/sessions/ready/complete" to "Backend entry is missing kind/sessions/ready/complete",
@@ -775,9 +776,9 @@ internal object LocalizationCatalog {
         "工作区内可修改；越界操作仍需单次批准。" to "Allows edits within the workspace. Operations outside it still require individual approval.",
         "工作区写入" to "Workspace write",
         "工作区可写" to "Workspace write",
-        "工作目录" to "Working directory",
     )
     private fun part5(): Map<String, String> = mapOf(
+        "工作目录" to "Working directory",
         "工具" to "Tools",
         "工具执行失败" to "Tool failed",
         "工具清单代次超限" to "Tool inventory generation limit exceeded",
@@ -927,9 +928,9 @@ internal object LocalizationCatalog {
         "当前显示本机缓存。浏览节点和分支不会改变电脑端会话。" to "Showing the local cache. Browsing nodes and branches does not change the session on the computer.",
         "当前没有可复制的助手消息" to "No assistant message to copy",
         "当前没有可显示的完整内容。" to "No full content is available to display.",
-        "当前没有可用供应商" to "No providers available",
     )
     private fun part6(): Map<String, String> = mapOf(
+        "当前没有可用供应商" to "No providers available",
         "当前状态" to "Current status",
         "当前生效" to "Currently active",
         "当前电脑" to "Current computer",
@@ -1079,9 +1080,9 @@ internal object LocalizationCatalog {
         "文件范围：由外部沙箱管理；当前信息不能确定具体可读写范围。" to "File access is managed by an external sandbox. The available information does not establish its readable or writable locations.",
         "文件访问范围" to "File access scope",
         "文件请求被电脑端拒绝。" to "Computer rejected the file request.",
-        "文件读取请求未送达。" to "File read request was not delivered.",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "文件读取请求未送达。" to "File read request was not delivered.",
         "文件超过 {0} MB 上限" to "File exceeds the {0} MB limit",
         "文件超过文本差异大小上限" to "File exceeds the text diff size limit",
         "文件超过文本比较上限，仅显示变更信息。" to "File exceeds the text comparison limit. Only change information is available.",
@@ -1231,9 +1232,9 @@ internal object LocalizationCatalog {
         "权限设置尚未确认，请稍后重试" to "Permissions are unconfirmed. Try again shortly.",
         "权限设置未发送：中继服务器当前离线" to "Permission update not sent: relay is offline",
         "权限设置未发送：当前离线" to "Permission settings not sent: offline",
-        "权限设置正在保存，请稍后重试" to "Permission settings are being saved. Try again shortly.",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "权限设置正在保存，请稍后重试" to "Permission settings are being saved. Try again shortly.",
         "权限配置存在问题" to "Permission configuration has a problem",
         "权限问题：{0}" to "Permission problem: {0}",
         "材质" to "Material",
@@ -1248,6 +1249,7 @@ internal object LocalizationCatalog {
         "来自：{0}" to "From: {0}",
         "松手以确认切换" to "Release to confirm the switch",
         "松手关闭" to "Release to close",
+        "松手加载" to "Release to load",
         "查看" to "View",
         "查看{0}说明" to "About {0}",
         "查看会话信息" to "View session info",
@@ -1382,10 +1384,10 @@ internal object LocalizationCatalog {
         "浅色" to "Light",
         "测试失败，请检查地址、Key 和返回格式" to "Test failed. Check the endpoint, key, and response format.",
         "测试返回" to "Test response",
-        "浏览此会话历史并回退到指定位置" to "Browse this session's history and rewind to a point",
-        "浏览电脑文件" to "Browse computer files",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "浏览此会话历史并回退到指定位置" to "Browse this session's history and rewind to a point",
+        "浏览电脑文件" to "Browse computer files",
         "消息不能超过 100,000 个字符。" to "Messages must be 100,000 characters or fewer.",
         "消息图片" to "Message image",
         "消息已交给 Agent" to "Message passed to Agent",
@@ -1534,10 +1536,10 @@ internal object LocalizationCatalog {
         "第 {0} / {1} 题，{2}" to "Question {0} / {1}, {2}",
         "第 {0} 次" to "Attempt {0}",
         "第 {0} 轮" to "Turn {0}",
-        "等待" to "Waiting",
-        "等待{0}切换" to "Waiting for {0} switch",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "等待" to "Waiting",
+        "等待{0}切换" to "Waiting for {0} switch",
         "等待中" to "Waiting",
         "等待任务完成后归档" to "Waiting for the task to finish before archiving",
         "等待会话启动" to "Waiting for session to start",
@@ -1686,10 +1688,10 @@ internal object LocalizationCatalog {
         "请重试。" to "Try again.",
         "读取下一段差异" to "Load next diff section",
         "读取下一页" to "Load next page",
-        "读取中…" to "Loading…",
-        "读取位置已失效，请关闭后重新打开" to "Read position expired. Close and reopen.",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "读取中…" to "Loading…",
+        "读取位置已失效，请关闭后重新打开" to "Read position expired. Close and reopen.",
         "读取失败：" to "Read failed: ",
         "读取失败：{0}" to "Read failed: {0}",
         "读取差异…" to "Loading diff…",
@@ -1838,10 +1840,10 @@ internal object LocalizationCatalog {
         "配对失败（HTTP {0}{1}）" to "Pairing failed (HTTP {0}{1})",
         "配对失败，请检查中继服务器地址、配对码和网络连接" to "Pairing failed. Check the relay address, pairing code and network.",
         "配对未完成，请确认电脑上的配对窗口仍打开后重试" to "Pairing did not complete. Keep the pairing window open on your computer and try again.",
-        "配对未完成：连接在电脑确认之前断开。请确认电脑上的配对窗口还开着，再扫一次" to "Pairing incomplete: disconnected before the computer confirmed. Make sure its pairing window is open and scan again.",
-        "配对材料无效，请重新扫码" to "Invalid pairing material. Scan again.",
     )
     private fun part12(): Map<String, String> = mapOf(
+        "配对未完成：连接在电脑确认之前断开。请确认电脑上的配对窗口还开着，再扫一次" to "Pairing incomplete: disconnected before the computer confirmed. Make sure its pairing window is open and scan again.",
+        "配对材料无效，请重新扫码" to "Invalid pairing material. Scan again.",
         "配对没有完成：电脑没有回确认（配对窗口可能已关闭或过期）。" to "Pairing incomplete: the computer did not confirm. The pairing window may be closed or expired.",
         "配对状态" to "Pairing status",
         "配对电脑 hostId {0}    名称 {1}" to "Paired computer hostId {0}    Name {1}",

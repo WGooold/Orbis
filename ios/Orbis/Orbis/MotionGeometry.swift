@@ -579,9 +579,12 @@ struct ChatHistoryPan {
     private var startedNearTop: Bool?
     mutating func begin(nearTop: Bool, admitted: Bool) { startedNearTop = admitted ? nearTop : nil }
     mutating func cancel() { startedNearTop = nil }
-    mutating func release(translation: CGPoint) -> Bool {
+    func progress(translation: CGPoint, nearTop: Bool = true, admitted: Bool = true) -> CGFloat {
+        guard let startedNearTop, nearTop, admitted, translation.y > abs(translation.x) else { return 0 }
+        return min(1, translation.y / (startedNearTop ? 44 : 12))
+    }
+    mutating func release(translation: CGPoint, nearTop: Bool = true, admitted: Bool = true) -> Bool {
         defer { cancel() }
-        guard let startedNearTop else { return false }
-        return translation.y >= (startedNearTop ? 44 : 12) && translation.y > abs(translation.x)
+        return progress(translation: translation, nearTop: nearTop, admitted: admitted) == 1
     }
 }

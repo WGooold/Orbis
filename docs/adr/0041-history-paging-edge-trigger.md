@@ -62,3 +62,19 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 前台历史分页及重试期间，在聊天区顶部居中显示小进度圈和「正在加载更早的历史…」。提示沿用顶部覆盖槽，不新增列表行、不拦截滚动；成功或结束后收起，失败保留既有重试。首屏同步、后台预取及 Android 独立离线历史列表保持原有呈现。
 
 实现见 [iOS 聊天顶部](../../ios/Orbis/Orbis/ChatHeaderView.swift)及 [Android 聊天顶部组件](../../android/app/src/main/java/com/orbising/orbis/ChatQuestionReminder.kt)。自动验证：[iOS 分页等待与阅读锚点](../../.artifacts/chat-history-loading.aIPaMH/ios-device/command.log)、[Android 加载状态、提示互斥及锚点](../../.artifacts/chat-history-loading.aIPaMH/android-ui/instrumentation.log)。未部署，未做真机验收。
+
+## CHAT-PAGING-03：松手触发反馈（V04）
+
+有效手势松手后，顶部进度提示立即出现并用 `state` 动效短滑入，不改变列表布局；系统减少动画时直接显示。前台分页获准只触发一次共用操作触感，不把短拉、取消、合并请求或后台预取当成一次新动作。
+
+自动验证：[iOS 即时状态](../../.artifacts/chat-history-trigger-feedback.t9aWWx/swift/run.log)、[iOS 分页与阅读锚点](../../.artifacts/chat-history-trigger-feedback.t9aWWx/ios-device/command.log)、[Android 进场位移与锚点](../../.artifacts/chat-history-trigger-feedback.t9aWWx/android-ui-r2/instrumentation.log)。未部署；真机触感和观感待用户验证。
+
+## CHAT-PAGING-04：松手前的下拉进度（V04）
+
+有可读旧页时，顶部区域内的有效下拉沿用分页准入与原阈值，进度环随手势距离填满或退回，达到阈值时显示「松手加载」。反向退回阈值内、未达阈值松手或取消，不提交分页。达到阈值后松手，原位切到不定进度的加载状态；触感仍只在实际准入后触发。保持列表布局和后台预取不变。
+
+自动验证：[iOS 阈值与取消](../../.artifacts/chat-history-pull-progress.o8gy7V/swift-r2/run.log)、[iOS 分页与阅读锚点](../../.artifacts/chat-history-pull-progress.o8gy7V/ios-device/command.log)、[Android 按住时的进度、回拉与取消](../../.artifacts/chat-history-pull-progress.o8gy7V/android-ui-r2/instrumentation.log)。未部署；真机观感待用户验证。
+
+## CHAT-PAGING-05：Android 下拉提示柔影
+
+淡入层包含透明的外扩留白，让提示条的高光和阴影随提示一起移动、淡入，不被矩形合成边界截断。手势阈值、触感及阅读锚点不变。实现见 [Android 聊天顶部组件](../../android/app/src/main/java/com/orbising/orbis/ChatQuestionReminder.kt)，像素回归见 [聊天顶部仪器测试](../../android/app/src/androidTest/java/com/orbising/orbis/ChatQuestionReminderInstrumentedTest.kt)。[修复前失败与修复后证据](../../.artifacts/android-history-pull-shadow.c3wx6R/verification.json)；本地签名试装包已生成，未部署，真机观感待用户验证。

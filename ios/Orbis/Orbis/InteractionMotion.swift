@@ -1086,6 +1086,7 @@ private struct TrackedSendTarget<Content: View>: View {
 struct OrbisScrollDirectionObserver: UIViewRepresentable {
     let onDirection: (Bool) -> Void
     var pagingOwner: () -> Int? = { nil }
+    var onHistoryProgress: (CGFloat) -> Void = { _ in }
     var onHistoryPull: () -> Void = {}
     func makeCoordinator() -> Coordinator { Coordinator(onDirection) }
     func makeUIView(context: Context) -> UIView {
@@ -1096,6 +1097,7 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
     func updateUIView(_ view: UIView, context: Context) {
         context.coordinator.changed = onDirection
         context.coordinator.pagingOwner = pagingOwner
+        context.coordinator.onHistoryProgress = onHistoryProgress
         context.coordinator.onHistoryPull = onHistoryPull
         DispatchQueue.main.async { context.coordinator.attach(view) }
     }
@@ -1105,6 +1107,7 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
         weak var scroll: UIScrollView?
         var lastY: CGFloat = 0
         var pagingOwner: () -> Int? = { nil }
+        var onHistoryProgress: (CGFloat) -> Void = { _ in }
         var onHistoryPull: () -> Void = {}
         private var historyPan = ChatHistoryPan()
         private var owner: Int?
@@ -1135,9 +1138,19 @@ struct OrbisScrollDirectionObserver: UIViewRepresentable {
                 lastY = 0
                 owner = pagingOwner()
                 historyPan.begin(nearTop: nearTop, admitted: owner != nil)
+            } else if pan.state == .changed {
+                let admitted = owner != nil && pagingOwner() == owner
+                if !admitted { historyPan.cancel() }
+                onHistoryProgress(historyPan.progress(translation: translation, nearTop: nearTop, admitted: admitted))
             } else if pan.state == .ended {
-                if historyPan.release(translation: translation), nearTop, let owner, pagingOwner() == owner { onHistoryPull() }
-            } else if pan.state == .cancelled || pan.state == .failed { historyPan.cancel() }
+                if historyPan.release(translation: translation, nearTop: nearTop, admitted: owner != nil && pagingOwner() == owner) {
+                    onHistoryPull()
+                }
+                onHistoryProgress(0)
+            } else if pan.state == .cancelled || pan.state == .failed {
+                historyPan.cancel()
+                onHistoryProgress(0)
+            }
             if pan.state == .began || pan.state == .changed {
                 let delta = y - lastY
                 if abs(delta) > 0.5 { changed(delta > 0); lastY = y }

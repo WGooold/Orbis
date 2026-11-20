@@ -2047,6 +2047,17 @@ internal fun ChatScreen(
         }
     }
     val historyFailure = historyPagingFeedback != null || historyRead?.phase == HistoryReadPhase.FAILED
+    val historyOwner = presentationIdentity to state.deviceId
+    val currentHistoryOwner by rememberUpdatedState(historyOwner)
+    val historyPull = remember(historyOwner) { mutableFloatStateOf(0f) }
+    val showingHistoryPull by remember(historyPull) { derivedStateOf { historyPull.floatValue > 0f } }
+    DisposableEffect(historyPull, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) historyPull.floatValue = 0f
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     // Business admission also runs immediately before the load, not just at gesture start.
     fun canLoadHistory(retrying: Boolean = false): Boolean = initialPositioned && !historyOpen &&
         projection != null && sessionId != null && historyState?.hasOlder == true && historyState.oldestEntryId != null && !displayReadPending &&
@@ -2071,6 +2082,8 @@ internal fun ChatScreen(
             if (accepted.operationId != null) {
                 historyPagingFeedback = null
                 historyAnchorOperationId = accepted.operationId
+                if (!accepted.merged && historyOwner == currentHistoryOwner &&
+                    lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) actionHaptic()
             } else {
                 if (accepted.rejection != null) historyPagingFeedback = accepted.rejection
                 historyAnchorPending = false
@@ -2079,7 +2092,12 @@ internal fun ChatScreen(
         }
         return true
     }
-    val currentCanPage by rememberUpdatedState { canLoadHistory() }
+    val currentCanPage by rememberUpdatedState {
+        lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && canLoadHistory()
+    }
+    LaunchedEffect(historyPull, canLoadHistory()) {
+        if (!currentCanPage()) historyPull.floatValue = 0f
+    }
     val currentLoadPage by rememberUpdatedState { loadHistoryPage() }
     val nearHistoryTopPx = with(LocalDensity.current) { 44.dp.roundToPx() }
     LaunchedEffect(presentationIdentity, projection, state.historyReads, historyAnchorOperationId) {
@@ -2702,10 +2720,11 @@ internal fun ChatScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize()
-                    .chatHistoryPull(presentationIdentity,
+                    .chatHistoryPull(historyOwner,
                         nearTop = { listState.firstVisibleItemIndex < chatHeaderCount ||
                             (listState.firstVisibleItemIndex == chatHeaderCount && listState.firstVisibleItemScrollOffset <= nearHistoryTopPx) },
-                        canLoad = { currentCanPage() }, onLoad = { currentLoadPage() })
+                        canLoad = { currentCanPage() }, onLoad = { currentLoadPage() },
+                        onProgress = { historyPull.floatValue = it })
                     .nestedScroll(scrollIntent)
                     .semantics {
                         if (canLoadHistory()) customActions = listOf(CustomAccessibilityAction(L10n.tr("更早的消息")) {
@@ -2837,8 +2856,11 @@ internal fun ChatScreen(
                         onAbandon = if (model.canAbandonConfiguredLaunch(failedLaunch.requestId)) {
                             { model.abandonConfiguredLaunch()?.let(onAbandonLaunch); Unit }
                         } else null)
-                } else if (historyLoading) {
-                    ChatHistoryProgress(Modifier.align(Alignment.CenterHorizontally).padding(horizontal = 16.dp, vertical = 6.dp))
+                } else if (historyLoading || showingHistoryPull && canLoadHistory()) {
+                    ChatHistoryProgress(
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                        loading = historyLoading, pullProgress = historyPull,
+                    )
                 } else if (showHistoryRetry) {
                     ChatHistoryRetry(enabled = canLoadHistory(retrying = true), onRetry = { loadHistoryPage(retrying = true) },
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))

@@ -43,6 +43,25 @@ class HistoryPagingTest {
         assertEquals(true, release())
     }
 
+    // CHAT-PAGING-04: progress uses the exact release threshold, including density and direction.
+    @Test fun `drag progress can arm reverse and cancel without starting a read`() {
+        val pan = ChatHistoryPan()
+        pan.begin(nearTop = true, admitted = false, density = 2f)
+        assertEquals(0f, pan.progress(0f, 90f, nearTop = true, admitted = true))
+        pan.begin(nearTop = true, admitted = true, density = 2f)
+        assertEquals(0.25f, pan.progress(0f, 22f, nearTop = true, admitted = true))
+        assertEquals(1f, pan.progress(0f, 88f, nearTop = true, admitted = true))
+        assertEquals(0.5f, pan.progress(0f, 44f, nearTop = true, admitted = true))
+        assertEquals(0f, pan.progress(50f, 44f, nearTop = true, admitted = true))
+        assertEquals(0f, pan.progress(0f, 88f, nearTop = false, admitted = true))
+        assertEquals(false, pan.release(0f, 44f, nearTop = true, admitted = true))
+        assertEquals(0f, pan.progress(0f, 88f, nearTop = true, admitted = true))
+        pan.begin(nearTop = false, admitted = true, density = 2f)
+        assertEquals(1f, pan.progress(0f, 24f, nearTop = true, admitted = true))
+        pan.cancel()
+        assertEquals(false, pan.release(0f, 24f, nearTop = true, admitted = true))
+    }
+
     @Test fun `初始就在顶部不请求`() = runTest {
         var index by mutableStateOf(0)
         var blocked by mutableStateOf(false)

@@ -132,6 +132,30 @@ struct ChatViewportTests {
         #expect(!release(pull))
     }
 
+    // CHAT-PAGING-04: preview and release must use the same threshold and ownership gates.
+    @Test func historyPullTracksDistanceAndDisarmsOnReversalOrCancellation() {
+        var pan = ChatHistoryPan()
+        pan.begin(nearTop: true, admitted: false)
+        #expect(pan.progress(translation: .init(x: 0, y: 80)) == 0)
+        pan.begin(nearTop: true, admitted: true)
+        #expect(pan.progress(translation: .init(x: 0, y: 11)) == 0.25)
+        #expect(pan.progress(translation: .init(x: 0, y: 44)) == 1)
+        #expect(pan.progress(translation: .init(x: 0, y: 22)) == 0.5)
+        #expect(pan.progress(translation: .init(x: 30, y: 22)) == 0)
+        #expect(pan.progress(translation: .init(x: 0, y: 44), nearTop: false) == 0)
+        let reversed = pan.release(translation: .init(x: 0, y: 22))
+        #expect(!reversed)
+        #expect(pan.progress(translation: .init(x: 0, y: 44)) == 0)
+        pan.begin(nearTop: false, admitted: true)
+        #expect(pan.progress(translation: .init(x: 0, y: 12)) == 1)
+        let blocked = pan.release(translation: .init(x: 0, y: 12), admitted: false)
+        #expect(!blocked)
+        pan.begin(nearTop: true, admitted: true)
+        pan.cancel()
+        let cancelled = pan.release(translation: .init(x: 0, y: 44))
+        #expect(!cancelled)
+    }
+
     @Test func historyAcceptanceDoesNotRetireTheUsersNativeGesture() {
         var policy = ChatViewportPolicy()
         policy.interactionChanged(true, bottomDistance: 100)
