@@ -341,13 +341,6 @@ internal fun SessionDrawer(
             if (allDirectoryItems.size > 3 && searchTerm.isEmpty()) add("directory-preview-more")
         }
     }
-    val panelKeys = remember(directoryItems) {
-        directoryItems.map { branch -> buildList {
-            add("directory:${branch.branchKey}")
-            branch.sessions.forEach { add("session:${branch.hostId}:${it.sessionId}") }
-            add("more:${branch.branchKey}")
-        } }
-    }
     val canCreate = state.canCreateSessionOn(activeHostId)
     val focusManager = LocalFocusManager.current
     val haptic = LocalHapticFeedback.current
@@ -533,7 +526,7 @@ internal fun SessionDrawer(
                         } } }
                     }
                     itemsIndexed(branch.sessions, key = { _, row -> "session:$hostId:${row.sessionId}" }, contentType = { _, _ -> "session" }) { index, row ->
-                        Box { DrawerDirectorySlice { OrbisCollapse(expanded = expanded) {
+                        Box { DrawerDirectorySlice { OrbisCollapse(expanded = expanded, animateInitialExpansion = false) {
                             DrawerBranch(first = index == 0, last = false) {
                                 DrawerSessionRow(
                                     row = row,
@@ -567,7 +560,7 @@ internal fun SessionDrawer(
                     }
                     run {
                         item(key = "more:$branchKey", contentType = "more") {
-                            DrawerDirectorySlice { OrbisCollapse(expanded = expanded) {
+                            DrawerDirectorySlice { OrbisCollapse(expanded = expanded, animateInitialExpansion = false) {
                                 DrawerBranch(first = branch.sessions.isEmpty(), last = true) {
                                     Column(Modifier.fillMaxWidth()) {
                                         if (branch.hasMore) {

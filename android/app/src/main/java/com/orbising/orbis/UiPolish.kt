@@ -48,12 +48,22 @@ internal object OrbisMotion {
 
 /** Mount on first expansion; retain content identity for later clipping animations (ADR-0048). */
 @Composable
-internal fun OrbisCollapse(expanded: Boolean, clipExpanded: Boolean = true, content: @Composable () -> Unit) {
+internal fun OrbisCollapse(
+    expanded: Boolean,
+    clipExpanded: Boolean = true,
+    animateInitialExpansion: Boolean = true,
+    content: @Composable () -> Unit,
+) {
     var hasExpanded by remember { mutableStateOf(false) }
     if (expanded) SideEffect { hasExpanded = true }
-    val fraction = remember { Animatable(0f) }
+    // Lazy rows can mount already open during a scroll. Their first measure must use the
+    // natural height; only an actual expansion change should animate a mounted row.
+    val fraction = remember { Animatable(if (expanded && !animateInitialExpansion) 1f else 0f) }
     LaunchedEffect(expanded) {
-        fraction.animateTo(if (expanded) 1f else 0f, tween(InteractionMotion.duration(InteractionMotion.Collapse)))
+        val target = if (expanded) 1f else 0f
+        if (fraction.value != target) {
+            fraction.animateTo(target, tween(InteractionMotion.duration(InteractionMotion.Collapse)))
+        }
     }
     // A zero-height Layout still composes and measures its children. Do not create them
     // until requested, especially long thinking/tool text in an otherwise visible turn.

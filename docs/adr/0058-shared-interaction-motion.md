@@ -109,12 +109,15 @@
 | SC94 | 发送、配置、同步、目录、工具、文件与附件失败回到对象原位；离开对象后的有效提醒按 F3 呈现 |
 | SC95 | 命令选项读取器先认领在途协议错误，再使用连接请求前缀；失败留在菜单，过期回包保持静默 |
 | SC107 | Android 子代理展开行：平置标题行与旋转箭头；凹陷面内的父子树以状态点、缩进与细线表达层级（S59；取代 SC52 的整宽凸起按钮形态） |
+| SC115 | Android 侧边栏会话目录：已展开分支的懒加载行首帧使用自然高度；已挂载行展开、收起时保留原动效（S19 / V21） |
 
 入口：[基线](0051-ui-style-motion-and-visual-stability-freeze.md)；[根部规则](../../AGENTS.md#测试)；[iOS 动效](../../ios/Orbis/Orbis/InteractionMotion.swift) / [几何测试](../../ios/Orbis/Tests/MotionGeometryTests.swift) / [UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)；[Android 动效](../../android/app/src/main/java/com/orbising/orbis/InteractionMotion.kt) / [设备测试](../../android/app/src/androidTest/java/com/orbising/orbis/InteractionMotionInstrumentedTest.kt)；[证据](../../.artifacts/ui-regression/)。
 
 2026-11-14，SC89 / M03 / M24 / S31：iOS 回复表面只在回复增高或首次入场动画期间持有裁剪高度，其余时间采用内容自然高度，避免工具折叠与外层测量争用布局。实现见 [InteractionMotion.swift](../../ios/Orbis/Orbis/InteractionMotion.swift)；中间帧、长聊天锚点、嵌套工具组与减少动画回归见 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。修复前失败、自动验证、构建与资源清理记录见 [.artifacts/ios-tool-disclosure-20261114/verification.json](../../.artifacts/ios-tool-disclosure-20261114/verification.json)。未发布；真机观感待用户验证。
 
 2026-11-14，SC90 / SC42 / V01–V03：iOS 18+ 显式跳转使用既有尾部行身份与底部对齐，避免把懒加载的估算内容边缘作为动画目标；iOS 17 沿用原有尾部行路径。实现见 [ChatView.swift](../../ios/Orbis/Orbis/ChatView.swift)；原生可见卡片中间帧、不同距离、减少动画与更新期间跳转回归见 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。修复前反向位移、实际验证与资源清理记录见 [.artifacts/ios-jump-to-latest-20261114/verification.json](../../.artifacts/ios-jump-to-latest-20261114/verification.json)。未发布；真机观感待用户验证。
+
+2026-11-20，SC115 / S19 / V21：侧边栏会话与目录尾项复用折叠组件，已展开行重新挂载时不重播高度动画；滚动不新增整目录遍历或刷新。实现见 [SessionDrawer.kt](../../android/app/src/main/java/com/orbising/orbis/SessionDrawer.kt)、[UiPolish.kt](../../android/app/src/main/java/com/orbising/orbis/UiPolish.kt)；回归见 [SessionDrawerScrollInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/SessionDrawerScrollInstrumentedTest.kt)，[隔离对照证据](../../.artifacts/android-drawer-fling-20261120/isolated-fixed/instrumentation.log)。未发布，真机体感待验证。
 
 2026-11-05 MOT-14 / SC03 / SC08 / SC36：Android 目录后台投影与 IO 首载保持既有动效与视口行为。对应 S19 / V21、PERF-07、R48 / R57 / R65，回归见 [DrawerCatalogBackgroundInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DrawerCatalogBackgroundInstrumentedTest.kt)；实际验证与待验收项见 `.artifacts/ui-regression/20261105-drawer-background/summary.md`。
 
