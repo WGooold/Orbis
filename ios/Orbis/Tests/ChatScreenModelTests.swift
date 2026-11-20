@@ -515,6 +515,35 @@ struct ChatScreenModelTests {
         #expect(!viewport.awaitingOlderPage)
     }
 
+    // CHAT-PAGING-06: the haptic follows the full-ring edge, not page acceptance.
+    @Test func historyPullAcknowledgesArmingBeforeRelease() {
+        let (store, _, root) = setup()
+        defer { store.activeConnection.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let target = store.chatScreens.actions.target, viewport = ChatViewportController()
+        let idle = transcript(target, messages: [message("question", role: "user")], hasOlder: true)
+        viewport.commit(idle)
+        viewport.distanceChanged(0)
+
+        #expect(!viewport.historyPullChanged(0.5))
+        #expect(viewport.historyPullChanged(1))
+        #expect(viewport.historyPullProgress == 1 && !viewport.awaitingOlderPage)
+        #expect(!viewport.historyPullChanged(1))
+        #expect(!viewport.historyPullChanged(0.8))
+        #expect(viewport.historyPullChanged(1))
+        #expect(!viewport.historyPullChanged(0)) // cancelled
+        #expect(!viewport.showingHistoryPull && !viewport.awaitingOlderPage)
+        #expect(viewport.historyPullChanged(1))
+
+        viewport.acceptedHistory()
+        #expect(viewport.awaitingOlderPage && !viewport.showingHistoryPull)
+        #expect(!viewport.historyPullChanged(1))
+        viewport.commit(idle)
+        #expect(viewport.historyPullChanged(1))
+        viewport.setVisualActive(false)
+        #expect(!viewport.historyPullChanged(1))
+        #expect(!viewport.showingHistoryPull)
+    }
+
     // IOS-CHAT-11: the first lazy row may claim synchronously after commit;
     // no body pass is required to create the ticket, and a second claim cannot replay it.
     @Test func transcriptCommitRegistersAnArrivalBeforeTheLazyRowClaimsIt() throws {

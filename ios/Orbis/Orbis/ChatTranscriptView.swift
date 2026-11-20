@@ -157,7 +157,8 @@ struct ChatTranscriptView: View, Equatable {
         let _ = ChatDebugProbes.rendered(.transcript)
         conversation(state: state, revision: revision).overlay(alignment: .top) {
             ChatNoticesRegion(model: model, actions: actions, mountToken: mountToken, viewport: viewport,
-                setComposerFocused: setComposerFocused, onBack: onBack, retryHistory: { _ = loadOlder(retrying: true) }).equatable()
+                setComposerFocused: setComposerFocused, onBack: onBack,
+                retryHistory: { _ = loadOlder(retrying: true, hapticOnAcceptance: true) }).equatable()
         }
         .onReceive(acceptedSends) { beginSendFeedback(existing: $0) }
         .onDisappear {
@@ -191,7 +192,7 @@ struct ChatTranscriptView: View, Equatable {
                     accent: OrbisPalette(scheme).agent(state.kind), jump: jumpToLatest)
             }
             .modifier(ChatHistoryAccessibility(enabled: state.hasOlder && !state.historyLoading && state.historyError == nil,
-                                               load: { _ = loadOlder() }))
+                                               load: { _ = loadOlder(hapticOnAcceptance: true) }))
             .overlay(alignment: .bottom) { ChatActionFeedbackView(feedback: state.actionFeedback) }
             .onChange(of: state.historyRevision) { _, _ in
                 sendFlight.clear()
@@ -387,13 +388,13 @@ struct ChatTranscriptView: View, Equatable {
     }
 
     private func updateHistoryPull(_ progress: CGFloat) {
-        if ownsViewport { viewport.historyPullChanged(progress) }
+        if ownsViewport, viewport.historyPullChanged(progress) { OrbisHaptics.commit() }
     }
 
-    private func loadOlder(retrying: Bool = false) -> Bool {
+    private func loadOlder(retrying: Bool = false, hapticOnAcceptance: Bool = false) -> Bool {
         guard ownsViewport, viewport.canLoadHistory(retrying: retrying), actions.loadOlderHistory() else { return false }
         viewport.acceptedHistory()
-        OrbisHaptics.commit()
+        if hapticOnAcceptance { OrbisHaptics.commit() }
         return true
     }
 

@@ -78,3 +78,9 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 ## CHAT-PAGING-05：Android 下拉提示柔影
 
 淡入层包含透明的外扩留白，让提示条的高光和阴影随提示一起移动、淡入，不被矩形合成边界截断。手势阈值、触感及阅读锚点不变。实现见 [Android 聊天顶部组件](../../android/app/src/main/java/com/orbising/orbis/ChatQuestionReminder.kt)，像素回归见 [聊天顶部仪器测试](../../android/app/src/androidTest/java/com/orbising/orbis/ChatQuestionReminderInstrumentedTest.kt)。[修复前失败与修复后证据](../../.artifacts/android-history-pull-shadow.c3wx6R/verification.json)；本地签名试装包已生成，未部署，真机观感待用户验证。
+
+## CHAT-PAGING-06：进度圈填满时的触感（V04）
+
+聊天历史下拉从未满切换到「松手加载」时，沿用首页卡片左滑关闭的操作触感。保持拉满不重复反馈；回拉退回后再次拉满可重新反馈。松手仍按原阈值提交，取消不请求；手势提交与分页受理不再补震。显式重试与读屏动作沿用受理反馈。此条更新 CHAT-PAGING-03 / 04 的手势触感时机。
+
+实现见 [iOS 视口](../../ios/Orbis/Orbis/ChatPageScheduling.swift)、[iOS 聊天转录](../../ios/Orbis/Orbis/ChatTranscriptView.swift)和 [Android 分页手势](../../android/app/src/main/java/com/orbising/orbis/HistoryPaging.kt)。自动验证：[iOS 手势和视口单测](../../.artifacts/chat-history-arming-20261120/swift/run.log)、[iOS 分页与阅读锚点](../../.artifacts/chat-history-arming-20261120/ios-device/command.log)、[Android 分页单测](../../.artifacts/chat-history-arming-20261120/android-build/build.log)、[Android 按住、回拉、取消和松手的触感回调](../../.artifacts/chat-history-arming-20261120/android-ui/instrumentation.log)。未部署；真机触感待用户验证。

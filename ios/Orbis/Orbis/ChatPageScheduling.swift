@@ -222,10 +222,13 @@ final class ChatViewportController {
               !current.historyLoading, !policy.awaitingOlderPage, current.canSend || current.cached else { return false }
         return retrying ? current.historyError != nil : current.historyError == nil
     }
-    func historyPullChanged(_ progress: CGFloat) {
+    // CHAT-PAGING-06: acknowledge only the edge that fills the visible ring.
+    @discardableResult func historyPullChanged(_ progress: CGFloat) -> Bool {
+        let wasArmed = historyPullProgress >= 1
         let value = progress > 0 && canLoadHistory() ? progress : 0
         if historyPullProgress != value { historyPullProgress = value }
         if showingHistoryPull != (value > 0) { showingHistoryPull = value > 0 }
+        return value >= 1 && !wasArmed
     }
     func acceptedHistory() {
         update { $0.olderPageAccepted(bottomDistance: bottomDistance) }

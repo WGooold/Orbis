@@ -2064,7 +2064,7 @@ internal fun ChatScreen(
         !historyAnchorPending && historyRead?.phase?.active != true &&
         (if (retrying) historyFailure else !historyFailure)
 
-    fun loadHistoryPage(retrying: Boolean = false): Boolean {
+    fun loadHistoryPage(retrying: Boolean = false, hapticOnAcceptance: Boolean = false): Boolean {
         if (!canLoadHistory(retrying)) return false
         val anchor = listState.layoutInfo.visibleItemsInfo.firstOrNull { projection?.byKey?.containsKey(it.key) == true }
         historyAnchorMessageId = anchor?.key as? String
@@ -2082,7 +2082,7 @@ internal fun ChatScreen(
             if (accepted.operationId != null) {
                 historyPagingFeedback = null
                 historyAnchorOperationId = accepted.operationId
-                if (!accepted.merged && historyOwner == currentHistoryOwner &&
+                if (hapticOnAcceptance && !accepted.merged && historyOwner == currentHistoryOwner &&
                     lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) actionHaptic()
             } else {
                 if (accepted.rejection != null) historyPagingFeedback = accepted.rejection
@@ -2099,6 +2099,7 @@ internal fun ChatScreen(
         if (!currentCanPage()) historyPull.floatValue = 0f
     }
     val currentLoadPage by rememberUpdatedState { loadHistoryPage() }
+    val currentLoadPageAccessibly by rememberUpdatedState { loadHistoryPage(hapticOnAcceptance = true) }
     val nearHistoryTopPx = with(LocalDensity.current) { 44.dp.roundToPx() }
     LaunchedEffect(presentationIdentity, projection, state.historyReads, historyAnchorOperationId) {
         val operation = historyAnchorOperationId?.let(state.historyReads::get) ?: return@LaunchedEffect
@@ -2724,11 +2725,12 @@ internal fun ChatScreen(
                         nearTop = { listState.firstVisibleItemIndex < chatHeaderCount ||
                             (listState.firstVisibleItemIndex == chatHeaderCount && listState.firstVisibleItemScrollOffset <= nearHistoryTopPx) },
                         canLoad = { currentCanPage() }, onLoad = { currentLoadPage() },
-                        onProgress = { historyPull.floatValue = it })
+                        onProgress = { historyPull.floatValue = it },
+                        onArmed = { if (historyOwner == currentHistoryOwner) actionHaptic() })
                     .nestedScroll(scrollIntent)
                     .semantics {
                         if (canLoadHistory()) customActions = listOf(CustomAccessibilityAction(L10n.tr("更早的消息")) {
-                            currentLoadPage()
+                            currentLoadPageAccessibly()
                         })
                     }.testTag("chat-transcript")
                     .onGloballyPositioned { sendFlight.viewport = it.boundsInWindow() },
@@ -2862,7 +2864,8 @@ internal fun ChatScreen(
                         loading = historyLoading, pullProgress = historyPull,
                     )
                 } else if (showHistoryRetry) {
-                    ChatHistoryRetry(enabled = canLoadHistory(retrying = true), onRetry = { loadHistoryPage(retrying = true) },
+                    ChatHistoryRetry(enabled = canLoadHistory(retrying = true),
+                        onRetry = { loadHistoryPage(retrying = true, hapticOnAcceptance = true) },
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
                 } else if (!hasNotices) {
                     val readingRowId by remember(listState, projection) {
