@@ -4771,6 +4771,40 @@ final class OrbisUITests: XCTestCase {
         capture("runtime-facts", app: app)
     }
 
+    // This protects the Android-aligned one-question-at-a-time flow and ensures long answer lists scroll inside the sheet rather than dragging the sheet.
+    func testQuestionnairePagesAndInnerScrollStayInsideSheet() {
+        let app = launch("interactions", arguments: ["--preview-questionnaire", "--preview-reduce-motion"])
+        let position = app.staticTexts["questionnaire-position"]
+        XCTAssertTrue(position.waitForExistence(timeout: 8))
+        XCTAssertTrue(position.label.contains("第 1 / 2 题"))
+
+        let scroll = app.scrollViews["questionnaire-answer-scroll"]
+        let firstOption = app.buttons["questionnaire-option-preference-choice-1"]
+        let lastOption = app.buttons["questionnaire-option-preference-choice-12"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        XCTAssertTrue(firstOption.isHittable)
+        let scrollTop = scroll.frame.minY
+
+        XCTAssertTrue(lastOption.waitForExistence(timeout: 3))
+        for _ in 0..<6 where !lastOption.isHittable { scroll.swipeUp() }
+        XCTAssertTrue(lastOption.isHittable)
+        XCTAssertEqual(scroll.frame.minY, scrollTop, accuracy: 20)
+        for _ in 0..<6 where !firstOption.isHittable { scroll.swipeDown() }
+        XCTAssertTrue(firstOption.isHittable)
+        XCTAssertEqual(scroll.frame.minY, scrollTop, accuracy: 20)
+
+        firstOption.tap()
+        XCTAssertTrue(firstOption.isSelected)
+        XCTAssertTrue(app.staticTexts["questionnaire-progress"].label.contains("已回答 1 / 2"))
+        app.buttons["questionnaire-next"].tap()
+        XCTAssertTrue(position.label.contains("第 2 / 2 题"))
+        XCTAssertEqual(app.staticTexts["questionnaire-current-question"].label, "是否还需要补充说明？")
+        app.buttons["questionnaire-previous"].tap()
+        XCTAssertTrue(position.label.contains("第 1 / 2 题"))
+        XCTAssertTrue(firstOption.isSelected)
+        capture("questionnaire-page-navigation-and-scroll", app: app)
+    }
+
     func testToolExportAndInteractionDraftSwitching() {
         let tool = launch("tool")
         XCTAssertTrue(tool.buttons["展开read，已完成"].waitForExistence(timeout: 8)); tool.buttons["展开read，已完成"].tap()

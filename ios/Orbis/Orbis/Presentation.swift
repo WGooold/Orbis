@@ -680,6 +680,7 @@ struct InteractionDraftValue: Codable, Equatable {
     var answers: [String: Set<String>] = [:]
     var other: [String: String] = [:]
     var notes: [String: String] = [:]
+    var questionPage: Int? = nil
     func response(for request: InteractionRequest) -> [String: Any] {
         var result: [String: Any] = ["kind": request.kind]
         switch request.kind {

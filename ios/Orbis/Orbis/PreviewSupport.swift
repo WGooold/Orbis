@@ -1037,8 +1037,24 @@ private final class PreviewTransport: OrbisTransport {
                     rows.append(["runtimeId": runtime, "requestId": "preview-approval", "extensionId": "preview", "kind": "confirm", "title": "允许执行验证命令？", "description": "Agent 请求运行项目的测试，以检查本次修改。", "argumentSummary": "swift test --package-path ios/Orbis", "expiresAt": expires])
                 }
                 if screen == "interactions" {
-                    for (id, title, kind) in [("draft-one", "填写验证说明", "input"), ("draft-two", "确认下一步", "confirm")] {
-                        rows.append(["runtimeId": runtime, "requestId": id, "extensionId": "preview", "kind": kind, "title": title, "placeholder": "输入验证说明", "expiresAt": expires])
+                    if ProcessInfo.processInfo.arguments.contains("--preview-questionnaire") {
+                        let firstOptions: [[String: Any]] = (1...12).map { index in
+                            ["value": "choice-\(index)", "label": "长选项 \(index)", "description": "用于验证回答卡片在内容超出可视区域时仍可独立滚动。"]
+                        }
+                        let questions: [[String: Any]] = [
+                            ["id": "preference", "header": "偏好", "question": "请选择一个偏好", "options": firstOptions,
+                             "multiSelect": false, "allowOther": true, "allowNotes": true, "secret": false],
+                            ["id": "details", "header": "补充", "question": "是否还需要补充说明？", "options": [
+                                ["value": "yes", "label": "需要", "description": "继续填写补充说明。"],
+                                ["value": "no", "label": "不需要", "description": "无需填写其他内容。"],
+                             ], "multiSelect": false, "allowOther": false, "allowNotes": false, "secret": false],
+                        ]
+                        rows.append(["runtimeId": runtime, "requestId": "preview-questionnaire", "extensionId": "preview",
+                                     "kind": "questionnaire", "title": "回答问题", "expiresAt": expires, "questions": questions])
+                    } else {
+                        for (id, title, kind) in [("draft-one", "填写验证说明", "input"), ("draft-two", "确认下一步", "confirm")] {
+                            rows.append(["runtimeId": runtime, "requestId": id, "extensionId": "preview", "kind": kind, "title": title, "placeholder": "输入验证说明", "expiresAt": expires])
+                        }
                     }
                 }
                 return Dictionary(uniqueKeysWithValues: rows.map { ($0["requestId"] as! String, $0) })
