@@ -16,6 +16,9 @@
 
 class HostController : public QObject {
     Q_OBJECT
+    Q_PROPERTY(QVariantMap agentEntryOverrides READ agentEntryOverrides NOTIFY changed)
+    Q_PROPERTY(QString claudeCliIssue READ claudeCliIssue NOTIFY changed)
+    Q_PROPERTY(QVariantMap hermesCli READ hermesCli NOTIFY changed)
     Q_PROPERTY(QString state READ state NOTIFY changed)
     Q_PROPERTY(QString message READ message NOTIFY changed)
     /** 正在进行的下载：已收字节 / 总字节（-1 表示当前没有下载；总字节未知时为 0）。 */
@@ -129,6 +132,9 @@ public:
     QString version() const { return ORBIS_VERSION; }
     bool hostUpdateAvailable() const { return !m_updateVersion.isEmpty() && !m_updateInstallerUrl.isEmpty() && !m_updateChecksumUrl.isEmpty(); }
     QString hostUpdateVersion() const { return m_updateVersion; }
+    QVariantMap agentEntryOverrides() const;
+    QString claudeCliIssue() const { return m_claudeCliIssue; }
+    QVariantMap hermesCli() const { return m_hermesCli; }
     QString piEntry() const { return m_settings.value("piEntry").toString(); }
     QString codexEntry() const { return m_settings.value("codexEntry").toString(); }
     QString dshEntry() const { return m_settings.value("dshEntry").toString(); }
@@ -207,6 +213,7 @@ public:
     Q_INVOKABLE void activateInstallation(const QString &kind, const QString &id);
     Q_INVOKABLE void enableCodexTerminal();
     Q_INVOKABLE void piCommand(const QString &action);
+    Q_INVOKABLE void selectAgentEntry(const QString &kind, const QString &entry);
     Q_INVOKABLE void selectCodexEntry(const QString &entry);
     Q_INVOKABLE void cancelInstall();
     Q_INVOKABLE void loadProviders(const QString &kind);
@@ -255,6 +262,7 @@ public:
     void smokePauseForChange() { pauseForChange(); emit changed(); }
 #endif
 signals:
+    void agentEntryFinished(const QString &kind, const QString &error);
     void changed();
     void openClawChanged();
     void providersChanged();
@@ -363,6 +371,8 @@ private:
     /** 按提交顺序记录每个在途请求的可读说明，界面只展示最靠前的那条。 */
     QHash<int, QPair<QString, QString>> m_activity;
     QList<int> m_activityOrder;
+    QVariantMap m_hermesCli;
+    QString m_claudeCliIssue;
     bool m_claudeDetecting = false;
     int m_draftGeneration = 0;
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_iosAppDownloadQr, m_challenge, m_challengeEmail;

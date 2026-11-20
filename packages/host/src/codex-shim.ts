@@ -7,6 +7,7 @@ import { orbisEnvironment } from "@orbis/protocol";
 import { resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
 import { readCodexSelection } from "./codex-selection.js";
 import { codexTerminalEnvironment } from "./codex-terminal-environment.js";
+import { agentInvocation } from "./agent-command.js";
 import { CODEX_STARTUP_ARGS } from "./agent-startup.js";
 
 type LoopbackDescriptor = { url?: unknown; token?: unknown };
@@ -51,11 +52,14 @@ async function requestHostLaunch(cwd: string): Promise<{ endpoint: string; comma
 }
 
 async function spawnCodex(input: { command: CodexCommand | { command: string; prefixArgs?: readonly string[] }; args: readonly string[]; cwd: string }): Promise<number> {
-  const child = spawn(input.command.command, [...(input.command.prefixArgs ?? []), ...input.args], {
+  const env = codexTerminalEnvironment();
+  const invocation = agentInvocation({ command: input.command.command, prefixArgs: [...(input.command.prefixArgs ?? [])] }, input.args, env);
+  const child = spawn(invocation.command, invocation.args, {
     cwd: input.cwd,
     stdio: "inherit",
     windowsHide: false,
-    env: codexTerminalEnvironment(),
+    env,
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
   return await new Promise<number>((resolve, reject) => {
     child.once("error", reject);

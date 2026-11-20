@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { SessionConfigurationCatalog, SessionConfigurationValues } from "@orbis/protocol";
 import type { PiCommand } from "./spawner.js";
 import { PI_WORKSPACE_APPROVAL_ARGS } from "./agent-startup.js";
-import { agentInvocation, stopAgentProcess } from "./agent-command.js";
+import { claudeCommandForEntry, agentInvocation, stopAgentProcess } from "./agent-command.js";
 
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Obj : {};
@@ -78,7 +78,8 @@ export async function piSessionConfiguration(pi: PiCommand, cwd: string, env: No
 }
 
 export async function claudeSessionConfiguration(command: string, cwd: string, env: NodeJS.ProcessEnv, selected?: SessionConfigurationValues): Promise<SessionConfigurationCatalog> {
-  const results = await probe(command, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+  const cli = await claudeCommandForEntry(command, env);
+  const results = await probe(cli.command, [...cli.prefixArgs, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
     ...(selected?.model === undefined ? [] : ["--model", selected.model]),
     ...(selected?.thinking === undefined ? [] : ["--effort", selected.thinking]),
     ...(selected?.permissions?.mode === undefined ? [] : ["--permission-mode", selected.permissions.mode === "default" ? "manual" : selected.permissions.mode])], cwd,

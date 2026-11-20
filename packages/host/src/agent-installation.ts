@@ -2,7 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import type { AgentKind } from "@orbis/protocol";
 import { agentKind } from "./provider-manager.js";
@@ -350,7 +350,7 @@ export async function fetchNpmLatestVersion(packageName: string, signal?: AbortS
 
 export async function queryAgentStatus(kind: InstallableAgentKind, root: string, local: LocalAgent, checkLatest = false): Promise<AgentInstallStatus> {
   const installations = await listManagedAgentInstallations(kind, root);
-  const packageEntry = local.entry && installationSource(local.entry, root) !== "managed" && (kind === "pi" || kind === "dsh")
+  const packageEntry = local.entry && installationSource(local.entry, root) !== "managed" && kind !== "codexDesktop"
     ? (await resolveAgentPackage(kind, local.entry))?.entry ?? local.entry : local.entry;
   const status: AgentInstallStatus = { ...local, kind, package: agentPackages[kind], updateAvailable: false, installationSource: installationSource(packageEntry, root), installations, copies: [] };
   if (status.installationSource === "npm" && packageEntry) {
@@ -372,47 +372,7 @@ export async function queryAgentStatus(kind: InstallableAgentKind, root: string,
   return status;
 }
 
-/** Enumerate CLI copies in PATH order, including npm packages whose entry is missing.
- * Windows standalone Codex installs expose codex.exe, not an npm JS entry. */
+/** List terminal CLI copies; Desktop app presence is detected independently. */
 export async function findAgentCopies(kind: InstallableAgentKind, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): Promise<{ entry: string; version?: string }[]> {
-  if (kind === "pi" || kind === "dsh") return findExternalAgentEntries(kind, env, platform);
-  const roots = (env.PATH ?? env.Path ?? "").split(platform === "win32" ? ";" : ":").map(value => value.trim().replace(/^"|"$/g, "")).filter(Boolean);
-  const nativeCodex = platform === "win32" && (kind === "codex" || kind === "codexDesktop");
-  if (nativeCodex) {
-    // A running Host can have the PATH from before `irm ... | iex`. Keep the
-    // installer's stable junctions so its next update remains selected.
-    const home = env.USERPROFILE || homedir();
-    const current = join(env.CODEX_HOME || join(home, ".codex"), "packages", "standalone", "current");
-    if (env.CODEX_INSTALL_DIR?.trim()) roots.push(env.CODEX_INSTALL_DIR);
-    roots.push(join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "Programs", "OpenAI", "Codex", "bin"),
-      join(current, "bin"), current);
-  }
-  if (env.APPDATA) roots.push(join(env.APPDATA, "npm"));
-  const copies: { entry: string; version?: string }[] = []; const seen = new Set<string>();
-  for (const dir of roots) {
-    if (nativeCodex) {
-      // .exe precedes npm's .cmd within a Windows PATH directory. Never take
-      // Orbis's codex.cmd as a standalone entry (that would recurse into Host).
-      const entry = join(dir, "codex.exe");
-      try {
-        const actual = (await realpath(entry)).toLowerCase();
-        if (!seen.has(actual)) { seen.add(actual); copies.push({ entry }); }
-      } catch { /* No native CLI at this PATH entry. */ }
-    }
-    // POSIX PATH has <prefix>/bin; npm packages live in <prefix>/lib/node_modules.
-    const modules = platform === "win32" ? [join(dir, "node_modules")]
-      : [join(dir, "node_modules"), ...(basename(dir) === "bin" ? [globalModulesDir(dirname(dir), platform)] : [])];
-    for (const modulesDir of modules) {
-      const packageRoot = join(modulesDir, agentPackages[kind]);
-      try {
-        const actual = (await realpath(packageRoot)).toLowerCase();
-        if (seen.has(actual)) continue;
-        seen.add(actual);
-        const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8")) as { version?: string; name?: string };
-        if (manifest.name !== agentPackages[kind]) continue;
-        copies.push({ entry: join(packageRoot, agentEntries[kind]), ...(typeof manifest.version === "string" ? { version: manifest.version } : {}) });
-      } catch { /* Not installed at this PATH entry. */ }
-    }
-  }
-  return copies;
+  return findExternalAgentEntries(kind === "codexDesktop" ? "codex" : kind, env, platform);
 }

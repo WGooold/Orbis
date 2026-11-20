@@ -25,6 +25,8 @@
 #ifdef ORBIS_SMOKE_INTERACTION
 #include <QQuickItem>
 #include <QQuickItemGrabResult>
+#include <QMouseEvent>
+#include <QEnterEvent>
 #include <QTest>
 static QQuickItem *findVisualItem(QQuickItem *root, const QString &name) {
     if (root->objectName() == name) return root;
@@ -83,6 +85,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-compact", "Run the smoke test at the minimum window size"});
     parser.addOption({"screenshot", "Save the smoke-test window image", "path"});
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
+    parser.addOption({"smoke-agent-entry", "Check overview CLI recovery status, hover hint, and path dialog with isolated data"});
     parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
     parser.addOption({"smoke-exit", "Verify exit and update confirmation cancellation in the isolated smoke window"});
     parser.addOption({"smoke-exit-entry", "Quit entry used by the isolated exit regression (native or tray)", "entry", "native"});
@@ -266,6 +269,49 @@ int main(int argc, char *argv[]) {
             if (report.open(QIODevice::WriteOnly)) report.write(QJsonDocument(QJsonObject{{"bridgeReady", controller.bridgeReady()}, {"windowVisible", window->isVisible()}, {"screenshotSaved", imageOk}, {"message", controller.message()}, {"claudeInstalled", controller.claudeInstalled()}, {"agents", QJsonArray::fromVariantList(controller.agents())}}).toJson());
             if (!controller.bridgeReady() || !imageOk) { app.exit(5); return; }
 #ifdef ORBIS_SMOKE_INTERACTION
+            if (parser.isSet("smoke-agent-entry")) {
+                // HOST-CLI-DISCOVERY-01: the help belongs to the settled status dot,
+                // never a pending detection or a healthy CLI on a stopped Host.
+                controller.smokeReceive({{"event", "claudeStatus"}, {"detecting", true}});
+                QTest::qWait(80);
+                auto *pending = findVisualItem(window->contentItem(), "overviewAgentState-claude");
+                if (pending && pending->isVisible()) { app.exit(93); return; }
+                controller.smokeReceive({{"event", "claudeStatus"}, {"installed", false}, {"cliIssue", "missing"}});
+                controller.smokeAgents({QVariantMap{{"kind", "pi"}, {"installed", true}},
+                    QVariantMap{{"kind", "codex"}, {"installed", false}, {"installedButBroken", true}, {"cliIssue", "unrunnable"}}});
+                QTest::qWait(100);
+                auto *healthy = findVisualItem(window->contentItem(), "overviewAgentState-pi");
+                auto *missing = findVisualItem(window->contentItem(), "overviewAgentState-claude");
+                auto *broken = findVisualItem(window->contentItem(), "overviewAgentState-codex");
+                if (!healthy || healthy->property("canEdit").toBool() || !missing || !missing->isVisible() ||
+                    !missing->property("detail").toString().contains("未在终端") || !broken || !broken->isVisible() ||
+                    !broken->property("detail").toString().contains("无法运行")) { app.exit(94); return; }
+                auto *scroll = window->findChild<QObject *>("pageScroll");
+                auto *viewport = scroll ? qobject_cast<QQuickItem *>(scroll->property("contentItem").value<QObject *>()) : nullptr;
+                if (!viewport) { app.exit(95); return; }
+                const auto y = viewport->property("contentY").toReal() + broken->mapToItem(viewport, QPointF()).y() - viewport->height() / 2;
+                viewport->setProperty("contentY", qBound(0.0, y, qMax(0.0, viewport->property("contentHeight").toReal() - viewport->height())));
+                QTest::qWait(100);
+                const auto target = broken->mapToScene(QPointF(broken->width() - 6, broken->height() / 2)).toPoint();
+                // Offscreen Qt can omit the platform mouse-enter packet. Deliver
+                // the scene-positioned move through Qt's normal window dispatch.
+                QEnterEvent enter(target, target, window->mapToGlobal(target));
+                QCoreApplication::sendEvent(window, &enter);
+                QMouseEvent move(QEvent::MouseMove, target, window->mapToGlobal(target), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(window, &move);
+                QTest::qWait(420);
+                if (!broken->property("hintVisible").toBool()) {
+                    qWarning() << "Agent status hover failed" << target << window->size();
+                    app.exit(96); return;
+                }
+                if (!clickSmokeItem(window, "overviewAgentState-codex")) { app.exit(97); return; }
+                QTest::qWait(250);
+                auto *dialog = window->findChild<QObject *>("agentEntryDialog");
+                if (!dialog || !dialog->property("visible").toBool() || dialog->property("kind").toString() != "codex" ||
+                    !findVisualItem(window->contentItem(), "agentEntryPath")) { app.exit(98); return; }
+                app.exit(0);
+                return;
+            }
             if (parser.isSet("smoke-kimi")) {
                 // KIMI-10: the fixture advertises an inherited opt-in; render observed status on the settings page.
                 controller.smokeActivation(true);

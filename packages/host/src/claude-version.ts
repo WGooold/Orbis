@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify, stripVTControlCharacters } from "node:util";
-import { agentInvocation } from "./agent-command.js";
+import { claudeCommandForEntry, agentInvocation } from "./agent-command.js";
 import { compareAgentVersions, extractAgentVersion, parseAgentVersion } from "./agent-installation.js";
 
 /** CLAUDE-MODS-MIN-01: the official terminal Mods floor, shared by discovery, launch and hello. */
@@ -28,7 +28,7 @@ export async function readClaudeVersion(cli: string, env: NodeJS.ProcessEnv, cwd
       if (result.code !== 0) throw new Error("version command failed");
       output = `${result.stdout}\n${result.stderr ?? ""}`;
     } else {
-      const invocation = agentInvocation({ command: cli, prefixArgs: [] }, ["--version"], env);
+      const invocation = agentInvocation(await claudeCommandForEntry(cli, env), ["--version"], env);
       const result = await execute(invocation.command, invocation.args, {
         cwd, env, timeout: 5_000, maxBuffer: 32_768, windowsHide: true,
         ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { agentCommandForEntry, agentInvocation, agentPowerShellScript, resolveAgentPackage, stopAgentProcess } from "./agent-command.js";
+import { agentCommandForEntry, agentInvocation, agentPowerShellScript, findExternalAgentEntries, resolveAgentPackage, stopAgentProcess } from "./agent-command.js";
 import { findAgentCopies, queryAgentStatus } from "./agent-installation.js";
 import { dshPackageEntry, resolveDshCommand } from "./dsh-client.js";
 import { loadDshWebProtocol } from "./dsh-web-client.js";
@@ -109,6 +109,32 @@ describe("user CLI discovery", () => {
     expect(await findAgentCopies("pi", { HOME: root, PATH: `${first}:${second}` }, "darwin"))
       .toEqual([{ entry: broken }, { entry: other }]);
     await expect(agentCommandForEntry(broken)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  // HOST-CLI-DISCOVERY-01: a Homebrew cask/formula link works without shell
+  // initialization, but cannot shadow a command actually visible to the terminal.
+  it.runIf(process.platform !== "win32").each(["pi", "codex", "dsh", "claude", "hermes"] as const)("prefers PATH and falls back to a stable Homebrew %s link", async kind => {
+    const root = await fixture(); const prefix = join(root, "Homebrew Prefix");
+    const script = "#!/bin/sh\nprintf '%s\\n' '1.2.3'\n";
+    const target = await file(join(prefix, "Caskroom", kind, "1.2.3", kind), script, true);
+    const bin = join(prefix, "bin"); await mkdir(bin);
+    const link = join(bin, kind); await symlink(target, link);
+    const preferred = await file(join(root, "terminal", kind), script, true);
+    const env = { HOME: root, ORBIS_QA_HOME: root, HOMEBREW_PREFIX: prefix, PATH: dirname(preferred) };
+    expect(await findExternalAgentEntries(kind, env, "darwin")).toEqual([{ entry: preferred }, { entry: link }]);
+    expect(await findExternalAgentEntries(kind, { ...env, PATH: "/usr/bin:/bin" }, "darwin")).toEqual([{ entry: link }]);
+    const command = await agentCommandForEntry(link, env, "darwin");
+    expect(command.command).toBe(link);
+    expect((await execute(command.command, ["--version"])).stdout.trim()).toBe("1.2.3");
+  });
+
+  it.runIf(process.platform !== "win32")("does not let an unlinked npm package shadow a real PATH command", async () => {
+    const root = await fixture();
+    const npmBin = join(root, "npm", "bin"); await mkdir(npmBin, { recursive: true });
+    const candidate = await pkg(join(root, "npm", "lib", "node_modules", "@openai", "codex"), "@openai/codex", "codex");
+    const actual = await file(join(root, "terminal", "codex"), "#!/bin/sh\nexit 0\n", true);
+    expect(await findAgentCopies("codex", { HOME: root, ORBIS_QA_HOME: root, PATH: `${npmBin}:${dirname(actual)}` }, "darwin"))
+      .toEqual([{ entry: actual }, { entry: candidate, version: "1.0.0" }]);
   });
 
   it("finds Claude exe/cmd/bat/ps1 with quoted paths and native fallback locations", async () => {

@@ -4,14 +4,14 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { claudeWorkspaceTrustRoot } from "./claude-workspace-trust.js";
 import { CLAUDE_MARKETPLACE, CLAUDE_PLUGIN } from "./claude-integration-install.js";
-import { agentInvocation } from "./agent-command.js";
+import { claudeCommandForEntry, agentInvocation } from "./agent-command.js";
 
 const execute = promisify(execFile);
 
 /** Only read readiness. Never log native account data or manufacture login/consent. */
 export async function checkClaudeAuthentication(cli: string, cwd: string, env: NodeJS.ProcessEnv): Promise<void> {
   let stdout: string;
-  const invocation = agentInvocation({ command: cli, prefixArgs: [] }, ["auth", "status", "--json"], env);
+  const invocation = agentInvocation(await claudeCommandForEntry(cli, env), ["auth", "status", "--json"], env);
   try { ({ stdout } = await execute(invocation.command, invocation.args, { cwd, env, timeout: 10_000, maxBuffer: 128 * 1024,
     windowsHide: true, ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) })); }
   catch (error) {

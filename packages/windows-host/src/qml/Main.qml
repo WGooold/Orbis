@@ -46,19 +46,19 @@ ApplicationWindow {
     readonly property int onlineDevices: host.devices.filter(function(device) { return device.path === "lan" || device.path === "relay" }).length
     readonly property var overviewAgents: {
         function agent(kind) { return host.agents.find(function(a) { return a.kind === kind }) || ({}) }
-        var pi = agent("pi"), codex = agent("codex"), dsh = agent("dsh")
+        var pi = agent("pi"), codex = agent("codex"), dsh = agent("dsh"), hermes = host.hermesCli
         return [
-            {kind: "pi", name: "Pi", mark: "pi", installed: pi.installed === true, broken: pi.installedButBroken === true, data: pi},
-            {kind: "codex", name: "Codex", mark: "codex", installed: codex.installed === true, broken: codex.installedButBroken === true, data: codex},
+            {kind: "pi", name: "Pi", mark: "pi", installed: pi.installed === true, broken: pi.installedButBroken === true, cliIssue: pi.cliIssue, data: pi},
+            {kind: "codex", name: "Codex", mark: "codex", installed: codex.installed === true, broken: codex.installedButBroken === true, cliIssue: codex.cliIssue, data: codex},
             {kind: "codexDesktop", name: "Codex 桌面版", mark: "codex", installed: codex.desktopInstalled === true, broken: false},
             // A version still being read is not a verdict: only a finished probe can mark Claude broken.
-            {kind: "claude", name: "Claude Code", mark: "claude", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible && !host.claudeDetecting},
-            {kind: "dsh", name: "DeepSeek Harness", mark: "dsh", installed: dsh.installed === true, broken: dsh.installedButBroken === true, data: dsh},
+            {kind: "claude", name: "Claude Code", mark: "claude", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible && !host.claudeDetecting, cliIssue: host.claudeCliIssue},
+            {kind: "dsh", name: "DeepSeek Harness", mark: "dsh", installed: dsh.installed === true, broken: dsh.installedButBroken === true, cliIssue: dsh.cliIssue, data: dsh},
             // DSH-DESKTOP-09: only a Desktop Orbis opened can be attached, so its single action is always opening it from here.
             {kind: "dshDesktop", name: "DeepSeek 桌面版", mark: "dsh", installed: dsh.desktopInstalled === true,
              broken: window.dshDesktopBlocked(), opensToFix: true}
-        ].concat(host.openClaw.url ? [{kind: "openclaw", name: "OpenClaw", mark: "openclaw", installed: true, broken: false}] : []).concat(host.backends.some(function(b) { return b.kind === "hermes" })
-            ? [{kind: "hermes", name: "Hermes Agent", symbol: "chat_bubble", installed: true, broken: false, passive: true}]
+        ].concat(host.openClaw.url ? [{kind: "openclaw", name: "OpenClaw", mark: "openclaw", installed: true, broken: false}] : []).concat(hermes.installed === true || !!hermes.cliIssue || hermes.detecting === true || host.backends.some(function(b) { return b.kind === "hermes" })
+            ? [{kind: "hermes", name: "Hermes Agent", symbol: "chat_bubble", installed: hermes.installed === true || host.backends.some(function(b) { return b.kind === "hermes" && b.ready }), broken: hermes.cliIssue === "unrunnable", cliIssue: hermes.cliIssue, passive: true}]
             : [])
     }
     readonly property bool openClawReady: window.backendFor("openclaw")?.ready === true && host.desiredRunning
@@ -80,10 +80,28 @@ ApplicationWindow {
         if (agent.kind === "openclaw") return window.openClawReady
         return backend === undefined || backend.launchable === true || backend.ready === true
     }
+    function agentCliDetecting(kind) {
+        return kind === "claude" ? host.claudeDetecting : kind === "hermes" ? host.hermesCli.detecting === true : window.activityKinds.indexOf("agents") >= 0
+    }
+    function agentCliHint(agent) {
+        // HOST-CLI-DISCOVERY-01: no recovery hint before detection settles, or for a healthy CLI with an offline Host.
+        if (!host.bridgeReady || window.agentCliDetecting(agent.kind)) return ""
+        if (agent.cliIssue === "missing") return "未在终端或常见安装位置找到 " + agent.name + "。如果已安装，点击圆点填写 CLI 路径；否则请先安装。"
+        if (agent.cliIssue === "unrunnable") return agent.name + " 的 CLI 入口已失效或无法运行。请检查原命令，或点击圆点指定可用路径。"
+        if (agent.cliIssue === "unsupported") return agent.name + " 能运行，但此版本不支持终端接入。请更新原安装，或点击圆点指定兼容版本。"
+        return ""
+    }
+    function showAgentEntry(agent) {
+        agentEntryDialog.kind = agent.kind
+        agentEntryDialog.error = ""
+        agentEntryPath.text = host.agentEntryOverrides[agent.kind] || ""
+        agentEntryDialog.open()
+    }
     function agentPhoneState(agent, sessions) {
         if (agent.kind === "openclaw" && !window.agentReachable(agent)) return window.openClawStateText
         // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。Claude 有自己的检测。
-        if (agent.kind === "claude" ? host.claudeDetecting : window.activityKinds.indexOf("agents") >= 0) return "检测中"
+        if (!host.bridgeReady || window.agentCliDetecting(agent.kind)) return "检测中"
+        if (agent.cliIssue === "unrunnable") return "入口不可用"
         if (!agent.installed) return "未安装"
         if (agent.kind === "dshDesktop" && host.dshDesktopOpen === "waiting") return "等待退出"
         if (agent.broken) return agent.kind === "claude" ? "需升级" : agent.kind === "dshDesktop" ? window.dshDesktopShortState() : "需要修复"
@@ -910,6 +928,8 @@ ApplicationWindow {
                                         readonly property var backend: window.backendFor(modelData.kind)
                                         readonly property int sessions: window.hostOnline && backend ? backend.runtimeCount : 0
                                         readonly property bool reachable: window.agentReachable(modelData)
+                                        readonly property string cliHint: window.agentCliHint(modelData)
+                                        readonly property bool pathAction: !!cliHint || !!host.agentEntryOverrides[modelData.kind]
                                         readonly property bool installable: modelData.data !== undefined
                                         Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight + 8; spacing: 14
                                         Accessible.role: Accessible.ListItem
@@ -922,21 +942,43 @@ ApplicationWindow {
                                         }
                                         Label { text: agentRow.modelData.name; color: agentRow.modelData.installed ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
                                         Item {
-                                            objectName: "overviewAgentState-" + agentRow.modelData.kind
                                             Layout.preferredWidth: 72; Layout.preferredHeight: Theme.touchTarget
-                                            visible: agentRow.modelData.installed
-                                            ToolTip.visible: phoneStateHover.hovered; ToolTip.delay: 300
-                                            ToolTip.text: window.agentPhoneState(agentRow.modelData, agentRow.sessions)
-                                            HoverHandler { id: phoneStateHover }
+                                            visible: agentRow.modelData.installed || !!agentRow.cliHint
                                             RowLayout {
                                                 anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 4
                                                 SymbolIcon { visible: agentRow.sessions > 0; name: "chat_bubble"; color: Theme.success; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs }
                                                 MotionText { objectName: "overviewAgentSessions-" + agentRow.modelData.kind; visible: agentRow.sessions > 0; roll: true; text: String(agentRow.sessions); color: Theme.success; font.pixelSize: Theme.label; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
-                                                StatusDot {
+                                                Item {
+                                                    id: agentState
+                                                    objectName: "overviewAgentState-" + agentRow.modelData.kind
+                                                    readonly property bool hintVisible: agentHint.visible
                                                     readonly property bool preparing: window.preparing(agentRow.modelData.kind)
-                                                    color: agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking || preparing ? Theme.warning : Theme.inkFaint
-                                                    idle: !agentRow.modelData.broken && !agentRow.reachable && !window.hostLinking && !preparing
-                                                    syncing: !agentRow.modelData.broken && (window.hostLinking || preparing)
+                                                    readonly property bool canEdit: agentRow.pathAction && !host.busy && !window.agentCliDetecting(agentRow.modelData.kind)
+                                                    readonly property string detail: agentRow.cliHint || window.agentPhoneState(agentRow.modelData, agentRow.sessions)
+                                                        + (agentRow.pathAction && canEdit ? "。点击圆点管理 CLI 路径。" : "")
+                                                    Layout.preferredWidth: Theme.touchTarget; Layout.preferredHeight: Theme.touchTarget
+                                                    activeFocusOnTab: canEdit
+                                                    Accessible.role: canEdit ? Accessible.Button : Accessible.StaticText
+                                                    Accessible.name: agentRow.modelData.name + "，" + detail
+                                                    Accessible.description: canEdit && !agentRow.cliHint ? "管理手动指定的 CLI 路径" : ""
+                                                    Accessible.onPressAction: if (canEdit) window.showAgentEntry(agentRow.modelData)
+                                                    ToolTip {
+                                                        id: agentHint
+                                                        objectName: "overviewAgentHint-" + agentRow.modelData.kind
+                                                        visible: dotHover.hovered || (agentState.canEdit && agentState.activeFocus)
+                                                        delay: 300; width: Math.min(implicitWidth, 320); text: agentState.detail
+                                                    }
+                                                    HoverHandler { id: dotHover; cursorShape: agentState.canEdit ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                                                    TapHandler { enabled: agentState.canEdit; onTapped: window.showAgentEntry(agentRow.modelData) }
+                                                    Keys.onReturnPressed: if (canEdit) window.showAgentEntry(agentRow.modelData)
+                                                    Keys.onSpacePressed: if (canEdit) window.showAgentEntry(agentRow.modelData)
+                                                    Rectangle { anchors.fill: parent; radius: Theme.radiusSm; color: "transparent"; border.color: Theme.accent; visible: agentState.activeFocus && agentState.canEdit }
+                                                    StatusDot {
+                                                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                                        color: agentRow.cliHint || agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking || agentState.preparing ? Theme.warning : Theme.inkFaint
+                                                        idle: !agentRow.modelData.broken && !agentRow.reachable && (!agentRow.modelData.installed || !window.hostLinking && !agentState.preparing)
+                                                        syncing: !agentRow.cliHint && !agentRow.modelData.broken && (window.hostLinking || agentState.preparing)
+                                                    }
                                                 }
                                             }
                                         }
@@ -1498,6 +1540,40 @@ ApplicationWindow {
             onAccepted: restartDshDialog.accept(); onRejected: restartDshDialog.reject()
         }
         onAccepted: host.restartDshServer()
+    }
+    SoftDialog {
+        id: agentEntryDialog
+        objectName: "agentEntryDialog"
+        property string kind: ""
+        property string error: ""
+        title: "指定 " + window.agentName(kind) + " 路径"
+        anchors.centerIn: parent; modal: true; width: 540
+        closePolicy: window.activityKinds.indexOf("agentEntry") >= 0 ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        onOpened: agentEntryPath.forceActiveFocus()
+        Connections {
+            target: host
+            function onAgentEntryFinished(kind, error) {
+                if (!agentEntryDialog.visible || agentEntryDialog.kind !== kind) return
+                if (error) agentEntryDialog.error = error
+                else agentEntryDialog.close()
+            }
+        }
+        ColumnLayout { width: parent.width; spacing: 12
+            Hint {
+                Layout.fillWidth: true
+                readonly property string cli: agentEntryDialog.kind
+                text: "在终端运行 " + (Qt.platform.os === "windows" ? "where.exe " : "command -v ") + cli + "，粘贴返回的 CLI 绝对路径。"
+            }
+            Field { id: agentEntryPath; objectName: "agentEntryPath"; Layout.fillWidth: true; marksProviderDirty: false; placeholderText: "CLI 绝对路径"; enabled: !host.busy; onTextEdited: agentEntryDialog.error = "" }
+            Hint { visible: !!agentEntryDialog.error; text: agentEntryDialog.error; Layout.fillWidth: true; color: Theme.warning }
+            Hint { visible: host.desiredRunning; text: "应用时会短暂断开 Host。"; Layout.fillWidth: true }
+        }
+        footer: SoftDialogActions {
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "恢复自动检测"; visible: !!host.agentEntryOverrides[agentEntryDialog.kind]; enabled: host.bridgeReady && !host.busy; onClicked: { agentEntryDialog.error = ""; host.selectAgentEntry(agentEntryDialog.kind, "") } }
+            ActionButton { text: "取消"; enabled: !host.busy; onClicked: agentEntryDialog.close() }
+            ActionButton { text: "验证并保存"; primary: true; enabled: host.bridgeReady && !host.busy && !!agentEntryPath.text.trim(); loading: window.activityKinds.indexOf("agentEntry") >= 0; onClicked: { agentEntryDialog.error = ""; host.selectAgentEntry(agentEntryDialog.kind, agentEntryPath.text.trim()) } }
+        }
     }
     SoftDialog {
         id: installDialog; objectName: "agentInstallDialog"; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + " 到最新版本"; anchors.centerIn: parent; modal: true; width: 540

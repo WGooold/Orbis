@@ -9,7 +9,7 @@ import { hasDesktopSession } from "./spawner.js";
 import { claudeLaunchConfig, trustClaudeWorkspace } from "./claude-workspace-trust.js";
 import { waitForMacTerminalScriptStart } from "./macos-agent-terminal.js";
 import { CLAUDE_STARTUP_ENV } from "./agent-startup.js";
-import { agentTerminalEnvironment, agentPowerShellScript } from "./agent-command.js";
+import { claudeCommandForEntry, agentTerminalEnvironment, agentPowerShellScript } from "./agent-command.js";
 import { openWindowsConsole, windowsConsoleLaunch, type WindowsConsoleRequest } from "./windows-console.js";
 import { requireClaudeModsVersion } from "./claude-version.js";
 
@@ -130,12 +130,14 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
       await writeFile(settingsFile, startup.args[1]!, { mode: 0o600, flag: "wx" });
       args[args.indexOf("--settings") + 1] = settingsFile;
     }
+    const command = await claudeCommandForEntry(claude, launchEnv, platform);
+    const launchArgs = [...command.prefixArgs, ...args];
     const configDir = config.directory;
     const run = this.#options.run ?? spawnDetached;
     if (platform === "darwin") {
       const script = join(scripts, `claude-${request.launchId}.command`);
       const startedFile = `${script}.started`;
-      await writeFile(script, posixScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, startedFile, env: launchEnv }), { mode: 0o700, flag: "wx" });
+      await writeFile(script, posixScript({ cwd: request.cwd, claude: command.command, args: launchArgs, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, startedFile, env: launchEnv }), { mode: 0o700, flag: "wx" });
       await chmod(script, 0o700);
       try {
         terminalAttempted = true;
@@ -150,7 +152,7 @@ export class TerminalClaudeLauncher implements ClaudeLauncher {
       return;
     }
     const script = join(scripts, `claude-${request.launchId}.cmd`);
-    await writeFile(script, windowsScript({ cwd: request.cwd, claude, args, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, env: launchEnv }));
+    await writeFile(script, windowsScript({ cwd: request.cwd, claude: command.command, args: launchArgs, launchId: request.launchId, stateDir: this.#options.stateDir, configDir, settingsFile, env: launchEnv }));
     try {
       const window = windowsClaudeConsole(script, request.cwd, env);
       terminalAttempted = true;

@@ -21,8 +21,8 @@ describe("login shell environment", () => {
 
   it("adopts agent homes and manager context used by native launchers", () => {
     const target: NodeJS.ProcessEnv = { PATH: "/host", CODEX_HOME: "/explicit" };
-    mergeLoginEnvironment(target, { PATH: "/tools", CODEX_HOME: "/other", DSH_HOME: "/dsh", PI_MANAGED_INSTALL_ROOT: "/pi/install", FNM_MULTISHELL_PATH: "/fnm/session" });
-    expect(target).toMatchObject({ CODEX_HOME: "/explicit", DSH_HOME: "/dsh", PI_MANAGED_INSTALL_ROOT: "/pi/install", FNM_MULTISHELL_PATH: "/fnm/session" });
+    mergeLoginEnvironment(target, { PATH: "/tools", CODEX_HOME: "/other", DSH_HOME: "/dsh", PI_MANAGED_INSTALL_ROOT: "/pi/install", FNM_MULTISHELL_PATH: "/fnm/session", HOMEBREW_PREFIX: "/custom/brew", CODEX_INSTALL_DIR: "/custom/codex/bin" });
+    expect(target).toMatchObject({ CODEX_HOME: "/explicit", DSH_HOME: "/dsh", PI_MANAGED_INSTALL_ROOT: "/pi/install", FNM_MULTISHELL_PATH: "/fnm/session", HOMEBREW_PREFIX: "/custom/brew", CODEX_INSTALL_DIR: "/custom/codex/bin" });
   });
   it("ignores whatever the startup files print around the environment block", () => {
     const block = ["PATH=/opt/tools/bin:/usr/bin", "PI_CODING_AGENT_DIR=/Users/a/pi agent", "MULTI=a\nb"].join("\0");

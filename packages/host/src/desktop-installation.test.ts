@@ -177,6 +177,42 @@ describe("desktop Agent installation commands", () => {
     } finally { await runtime.close(); }
   });
 
+  // HOST-CLI-DISCOVERY-01: validate an off-PATH choice before saving, retain it
+  // on refresh/restart, and recover to auto discovery without rewriting the original install.
+  it.each(["pi", "codex", "dsh", "claude", "hermes"] as const)("validates, persists and clears the manual %s CLI", async kind => {
+    const { runtime, prefix, root, events } = await fixture();
+    const path = join(root, "manual agent", `${kind}.js`);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, kind === "codex"
+      ? 'console.log(process.argv.includes("--help") ? process.argv.includes("app-server") ? "--listen" : "--remote" : "2.1.322")'
+      : `console.log(${JSON.stringify(kind === "claude" ? "2.1.322 (Claude Code)" : "2.1.322")})`);
+    const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
+    vi.stubEnv(key, "");
+    vi.stubEnv("HOME", root); vi.stubEnv("USERPROFILE", root); vi.stubEnv("ORBIS_QA_HOME", root);
+    try {
+      await expect(runtime.selectAgentEntry(kind, "relative/cli")).rejects.toThrow("绝对路径");
+      await expect(runtime.selectAgentEntry(kind, join(root, "missing"))).rejects.toThrow("未找到此 CLI 文件");
+      await expect(runtime.selectAgentEntry(kind, `"${path}"`)).resolves.toEqual({ entry: path, version: "2.1.322" });
+      if (kind === "codex") expect(await readCodexSelection()).toBe(path);
+      const statuses = await runtime.detect({ agentEntryOverrides: { [kind]: path } });
+      expect(process.env[key]).toBe(path);
+      if (kind === "claude" || kind === "hermes") {
+        const event = kind === "claude" ? "claudeStatus" : "hermesCli";
+        await vi.waitFor(() => expect(events.filter(item => item.event === event).at(-1)).toMatchObject({ installed: true, version: "2.1.322" }));
+      } else expect(statuses.find(status => status.kind === kind)).toMatchObject({ installed: true, entry: path, cliIssue: "" });
+      await writeFile(path, 'process.exit(2)');
+      await expect(runtime.selectAgentEntry(kind, path)).rejects.toThrow("无法用此文件运行");
+      expect(process.env[key]).toBe(path);
+      if (kind !== "claude" && kind !== "hermes") {
+        expect((await runtime.detect()).find(status => status.kind === kind)).toMatchObject({ installed: false, entry: path, cliIssue: "unrunnable" });
+      }
+      expect(await runtime.selectAgentEntry(kind, "")).toEqual({ entry: "" });
+      if (kind === "codex") expect(await readCodexSelection()).toBeUndefined();
+      await runtime.detect({ agentEntryOverrides: { [kind]: "" } });
+      expect(process.env[key]).toBe(kind === "claude" || kind === "hermes" ? undefined : join(prefix, "node_modules", agentPackages[kind], agentEntries[kind]));
+    } finally { await runtime.close(); }
+  });
+
   // SC82: explicit user launchers win over automatic discovery, including failure reporting.
   it("uses a native Pi choice for version detection and does not silently replace a broken choice", async () => {
     const { runtime, root } = await fixture();

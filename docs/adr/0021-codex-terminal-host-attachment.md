@@ -257,3 +257,11 @@ code remain unchanged; Windows native and device GUI acceptance were not run.
 Source validation is separate from deployment: no installed Host or real
 terminal / Desktop session is replaced or restarted by this task. Installation
 and user acceptance remain pending（待用户验证）.
+
+### 2026-11-20 · HOST-CLI-DISCOVERY-01：终端 CLI 发现与手动回退
+
+Pi、Codex、DSH、Claude Code 与 Hermes 共用终端命令发现：保留用户 `PATH` 顺序及稳定启动入口，跳过 Orbis 转发命令；找不到再检查标准安装位置，适用时最后回退到 Orbis 托管版。已选入口无法运行时不静默换用其他版本。手动路径经本机 CLI 版本探测后才保存，并优先于自动发现；恢复自动检测清除手动路径。桌面应用及远端 Gateway 的可用性独立判断。
+
+概览 Agent 状态点在检测完成后才显示本地 CLI 故障原因与下一步，悬停读取、点击编辑；检测中或仅 Host 未连接时不提示手动路径。已保存的手动路径可从同一位置撤销。路径变更复用暂停与恢复流程，不改写第三方安装。
+
+实现见 [`agent-command.ts`](../../packages/host/src/agent-command.ts)、[`desktop-runtime.ts`](../../packages/host/src/desktop-runtime.ts) 和 [`Main.qml`](../../packages/windows-host/src/qml/Main.qml)。自动验证见 [`host-tests-verified.log`](../../.artifacts/host-cli-discovery-20261120/host-tests-verified.log)、[`qt-test-verified.log`](../../.artifacts/host-cli-discovery-20261120/qt-test-verified.log) 及 `--smoke-test --smoke-agent-entry`；未发布，未变更已安装的 Host。

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { agentInvocation, findExternalAgentEntries } from "./agent-command.js";
+import { claudeCommandForEntry, agentInvocation, findExternalAgentEntries } from "./agent-command.js";
 import { requireClaudeModsVersion } from "./claude-version.js";
 
 /**
@@ -26,7 +26,7 @@ export class ClaudeIntegrationError extends Error {
 
 export async function findClaudeExecutable(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform,
   home = platform === "win32" ? env.USERPROFILE || homedir() : env.HOME || homedir()): Promise<string | undefined> {
-  return (await findExternalAgentEntries("claude", env, platform, home))[0]?.entry;
+  return env.ORBIS_CLAUDE_ENTRY || (await findExternalAgentEntries("claude", env, platform, home))[0]?.entry;
 }
 
 export async function updateClaudeIntegration(input: {
@@ -100,15 +100,17 @@ async function expectSuccess(pending: Promise<ClaudeCommandResult>, message: str
   throw new ClaudeIntegrationError(detail.length === 0 ? message : `${message}：${detail}`);
 }
 
-const runClaude: ClaudeCommandRunner = (file, args, env, signal) => new Promise(resolve => {
-  const invocation = agentInvocation({ command: file, prefixArgs: [] }, args, env);
-  execFile(invocation.command, invocation.args, { env, timeout: 60_000, windowsHide: true, ...(signal === undefined ? {} : { signal }),
-    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}), maxBuffer: 1024 * 1024 },
-    (error, stdout, stderr) => {
-      const code = error === null ? 0 : typeof (error as NodeJS.ErrnoException & { code?: unknown }).code === "number" ? (error as unknown as { code: number }).code : 1;
-      resolve({ code, stdout: String(stdout), stderr: String(stderr) });
-    });
-});
+const runClaude: ClaudeCommandRunner = async (file, args, env, signal) => {
+  const invocation = agentInvocation(await claudeCommandForEntry(file, env), args, env);
+  return new Promise(resolve => {
+    execFile(invocation.command, invocation.args, { env, timeout: 60_000, windowsHide: true, ...(signal === undefined ? {} : { signal }),
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}), maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => {
+        const code = error === null ? 0 : typeof (error as NodeJS.ErrnoException & { code?: unknown }).code === "number" ? (error as unknown as { code: number }).code : 1;
+        resolve({ code, stdout: String(stdout), stderr: String(stderr) });
+      });
+  });
+};
 
 const invoked = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 if (invoked) {

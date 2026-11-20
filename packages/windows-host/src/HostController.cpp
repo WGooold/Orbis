@@ -114,7 +114,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     // Keychain or a re-signed app). It used to run here on the UI thread, before the window existed.
     if (!m_qaMode) loadStoredActivation();
     connect(&m_bridge, &QProcess::started, this, [this] {
-        command("initialize", {{"claudeIntegrationEnabled", m_automaticIntegrations && claudeIntegrationEnabled()}}, [this](const QJsonValue &result) {
+        command("initialize", {{"claudeIntegrationEnabled", m_automaticIntegrations && claudeIntegrationEnabled()},
+            {"agentEntryOverrides", QJsonObject::fromVariantMap(agentEntryOverrides())}}, [this](const QJsonValue &result) {
             const auto obj = result.toObject();
             const auto actualId = obj.value("hostId").toString();
             m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
@@ -163,7 +164,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         m_kimiCodeSupported = false;
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
         // 在途命令随内核一起没了：进度说明也必须跟着消失，否则会永久停在“正在做什么”。
-        m_activity.clear(); m_activityOrder.clear(); m_claudeDetecting = false;
+        m_activity.clear(); m_activityOrder.clear(); m_claudeDetecting = false; m_claudeCliIssue.clear(); m_hermesCli.clear(); m_agents.clear();
         // 插件登记也属于这个内核进程；它退出后不再有“正在准备”。
         m_preparations.clear();
         // The relaunched core starts paused; a change that was waiting to resume the old one no longer applies.
@@ -243,6 +244,7 @@ static QPair<QString, QString> activityFor(const QString &method, const QJsonObj
     if (method == "replaceIdentity") return { "activation", "正在重新登记这台电脑" };
     if (method == "restartDshServer") return { "dsh", "正在重启 DSH Server" };
     // Not "agents": rows read that kind as "detection in progress", which a version switch is not.
+    if (method == "selectAgentEntry") return { "agentEntry", "正在验证 Agent 路径" };
     if (method == "activateInstallation") return { "agentVersion", "正在切换 Agent 版本" };
     if (method == "claudeIntegration") return { "claude", "正在更新 Claude Code 插件" };
     if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
@@ -367,13 +369,14 @@ void HostController::receiveLine(const QJsonObject &line) {
     if (line.contains("id")) {
         int id = line.value("id").toInt();
         if (!m_pending.contains(id)) return;
-        auto callback = m_pending.take(id); auto method = m_methods.take(id); m_requestParams.remove(id);
+        auto callback = m_pending.take(id); auto method = m_methods.take(id); const auto params = m_requestParams.take(id);
         if (!isBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
         if (m_activity.remove(id)) m_activityOrder.removeAll(id);
         if (line.contains("error")) {
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
             if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
-            setMessage(line.value("error").toString());
+            if (method == "selectAgentEntry") emit agentEntryFinished(params.value("kind").toString(), line.value("error").toString());
+            else setMessage(line.value("error").toString());
             if (method == "start" && line.value("error").toString().startsWith("Relay 认证失败：unauthorized ")) invalidateActivation();
         }
         else if (callback) callback(line.value("result"));
@@ -408,7 +411,8 @@ void HostController::receiveLine(const QJsonObject &line) {
         else if (event == "agentInstalled") {
             const auto kind = line.value("kind").toString();
             if (QStringList{"pi", "codex", "dsh"}.contains(kind)) {
-                m_settings.setValue(kind + "Entry", line.value("entry").toString()); m_settings.sync();
+                m_settings.setValue(kind + "Entry", line.value("entry").toString());
+                m_settings.remove(kind + "ManualEntry"); m_settings.sync();
             }
         }
         else if (event == "status") {
@@ -463,9 +467,11 @@ void HostController::receiveLine(const QJsonObject &line) {
             m_dshDesktopOpen = line.value("state").toString("idle");
             if (line.contains("error")) setMessage(line.value("error").toString());
         }
+        else if (event == "hermesCli") { m_hermesCli = line.toVariantMap(); }
         else if (event == "claudeStatus") {
             // 检测进行中时“未安装”只代表还没测完，界面不能把它当成结论。
             m_claudeDetecting = line.value("detecting").toBool(false);
+            m_claudeCliIssue = line.value("cliIssue").toString();
             m_claudeInstalled = line.value("installed").toBool();
             m_claudeCompatible = line.value("compatible").toBool(m_claudeInstalled);
             m_claudeVersion = line.value("version").toString();
@@ -788,7 +794,17 @@ void HostController::refreshRegistrationPolicy() {
         reply->deleteLater();
     });
 }
-QJsonObject HostController::agentSettings() const { return {{"piEntry", piEntry()}, {"codexEntry", codexEntry()}, {"dshEntry", dshEntry()}, {"dshWebUrl", dshWebUrl()}}; }
+static const QStringList manualCliKinds{"pi", "codex", "dsh", "claude", "hermes"};
+QVariantMap HostController::agentEntryOverrides() const {
+    QVariantMap entries;
+    for (const auto &kind : manualCliKinds) entries.insert(kind, m_settings.value(kind + "ManualEntry").toString());
+    return entries;
+}
+QJsonObject HostController::agentSettings() const {
+    return {{"piEntry", piEntry()}, {"codexEntry", codexEntry()}, {"dshEntry", dshEntry()}, {"dshWebUrl", dshWebUrl()},
+        {"agentEntryOverrides", QJsonObject::fromVariantMap(agentEntryOverrides())}};
+}
+
 void HostController::startHost() {
     // HOST-LIVE-02: late change continuations must not claim a restart while
     // command() rejects new work for exit; cleanup failure must remain recoverable.
@@ -876,6 +892,22 @@ void HostController::enableCodexTerminal() {
         m_agents = value.toArray().toVariantList(); emit changed();
         setMessage("终端接入已修复。请重新打开终端。");
     });
+}
+void HostController::selectAgentEntry(const QString &kind, const QString &entry) {
+    if (!m_bridgeReady || busy() || !manualCliKinds.contains(kind)) return;
+    pauseForChange();
+    command("selectAgentEntry", {{"kind", kind}, {"entry", entry}}, [this, kind](const QJsonValue &value) {
+        const auto selected = value.toObject().value("entry");
+        if (!selected.isString()) { emit agentEntryFinished(kind, "无法确认所选路径"); return; }
+        if (selected.toString().isEmpty()) {
+            m_settings.remove(kind + "ManualEntry");
+            m_settings.remove(kind + "Entry");
+        } else m_settings.setValue(kind + "ManualEntry", selected.toString());
+        m_settings.sync();
+        emit agentEntryFinished(kind, {});
+        detectAgents();
+    });
+    if (m_resumePending) afterQueuedCommands([this] { resumeAfterChange(); });
 }
 void HostController::selectCodexEntry(const QString &entry) {
     command("selectCodexEntry", {{"entry", entry}}, [this](const QJsonValue &value) {

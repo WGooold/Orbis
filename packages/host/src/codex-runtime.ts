@@ -22,6 +22,7 @@
  * 唯一性约定：codex 的 itemId 全局唯一（UUID），直接当 entryId / messageId 用，
  * 和 Pi 的会话 id 空间天然不撞（§7.5）。
  */
+import { agentPowerShellScript } from "./agent-command.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { open, readdir, readFile } from "node:fs/promises";
@@ -5274,9 +5275,12 @@ export function codexHeadWindowLaunch(input: {
   codexCommand?: CodexCommand;
 }): WindowsConsoleRequest {
   const quote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
+  const args = [...CODEX_STARTUP_ARGS, "resume", input.sessionId, "--remote", input.endpoint];
   const codexInvocation = input.codexCommand === undefined
-    ? "codex"
-    : `& ${[input.codexCommand.command, ...input.codexCommand.prefixArgs].map(quote).join(" ")}`;
+    ? `codex ${CODEX_STARTUP_ARGS.map(quote).join(" ")} resume ${quote(input.sessionId)} --remote ${quote(input.endpoint)}`
+    : /\.(?:cmd|bat|ps1)$/iu.test(input.codexCommand.command)
+      ? agentPowerShellScript(input.codexCommand, args)
+      : `& ${[input.codexCommand.command, ...input.codexCommand.prefixArgs, ...CODEX_STARTUP_ARGS].map(quote).join(" ")} resume ${quote(input.sessionId)} --remote ${quote(input.endpoint)}`;
   const script = [
     "$env:CODEX_INTERNAL_ORIGINATOR_OVERRIDE = $null;",
     `if (${input.codexCommand === undefined ? "-not (Get-Command codex -ErrorAction SilentlyContinue)" : "$false"}) {`,
@@ -5286,7 +5290,7 @@ export function codexHeadWindowLaunch(input: {
     `};`,
     `do { Start-Sleep -Milliseconds 500 }`,
     `until (Get-ChildItem "$env:USERPROFILE\\.codex\\sessions" -Recurse -Filter '*${input.sessionId}*' -ErrorAction SilentlyContinue)`,
-    `; ${codexInvocation} ${CODEX_STARTUP_ARGS.map(quote).join(" ")} resume ${quote(input.sessionId)} --remote ${quote(input.endpoint)}`,
+    `; ${codexInvocation}`,
     // codex 退出（正常退出 / 崩 / 连接断）= 这条会话不在电脑上了，窗口不该留。
     // 必须显式 `exit 0`：默认终端是 Windows Terminal 时，closeOnExit 缺省只在退出码为 0
     // 时关窗格，拿 codex 的退出码（`exit` 不带参数会沿用 $LASTEXITCODE）会留下一个死窗格。

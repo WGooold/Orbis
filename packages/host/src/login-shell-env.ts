@@ -11,12 +11,12 @@ import { execFile, spawn } from "node:child_process";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { userInfo } from "node:os";
-import { AGENT_LAUNCH_ENV_KEYS, cliPathDirs } from "./agent-command.js";
+import { AGENT_LAUNCH_ENV_KEYS, CLI_DISCOVERY_ENV_KEYS, cliPathDirs } from "./agent-command.js";
 
 const MARKER = "__ORBIS_LOGIN_ENV__";
 
 /** 只合并这些：其余变量（代理、语言等）Host 自己的行为不依赖，也不该被用户 shell 随意改写。 */
-const ADOPTED = [...AGENT_LAUNCH_ENV_KEYS.filter(key => key !== "PATH"), "CLAUDE_CONFIG_DIR", "CODEX_INSTALL_DIR", "npm_config_prefix", "NPM_CONFIG_PREFIX"] as const;
+const ADOPTED = [...AGENT_LAUNCH_ENV_KEYS.filter(key => key !== "PATH"), "CLAUDE_CONFIG_DIR", ...CLI_DISCOVERY_ENV_KEYS] as const;
 
 /** Append newly installed Windows locations without replacing the Host's explicit PATH order. */
 export function mergeWindowsEnvironment(target: NodeJS.ProcessEnv, registered: Record<string, string>): void {
@@ -126,7 +126,7 @@ export async function adoptLoginShellEnvironment(log?: (line: string) => void, p
   if (platform !== "darwin") return false;
   const login = await readLoginShellEnvironment();
   if (login === undefined) {
-    log?.("未能读取登录 shell 的环境，Agent 检测只使用系统默认 PATH");
+    log?.("未能读取登录 shell 的环境，Agent 检测使用现有 PATH 和常见安装位置");
     return false;
   }
   mergeLoginEnvironment(process.env, login);

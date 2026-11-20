@@ -33,3 +33,7 @@ export async function saveCodexSelection(entry: string): Promise<void> {
     await rename(temporary, path);
   } finally { await rm(temporary, { force: true }); }
 }
+
+export async function clearCodexSelection(): Promise<void> {
+  await rm(codexSelectionPath(), { force: true });
+}

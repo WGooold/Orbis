@@ -19,13 +19,14 @@
  * - 就绪判定：app-server 就绪后 stderr 打 banner 并提供 `healthz` HTTP 端点，
  *   轮询到 200 才连 WebSocket，避免连接被拒。
  */
+import { access } from "node:fs/promises";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { platform } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
 
-import { findAgentCopies } from "./agent-installation.js";
+import { agentInvocation, findExternalAgentEntries, stopAgentProcess } from "./agent-command.js";
 import { readCodexSelection } from "./codex-selection.js";
 import { codexTerminalEnvironment } from "./codex-terminal-environment.js";
 
@@ -168,9 +169,11 @@ export class CodexAppServer {
         // CODEX-SHARED-HISTORY-01: native source categories do not isolate Desktop
         // history. Reuse the selected CLI instead of downloading a second runtime.
         // Unload only after the final subscriber leaves AND the turn is idle.
-        const child = spawnFn(command, [...prefixArgs, "app-server",
-          "-c", "thread_unload_delay_secs=0", "--listen", server.#endpoint], {
-          stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: codexTerminalEnvironment(),
+        const env = codexTerminalEnvironment();
+        const invocation = agentInvocation({ command, prefixArgs }, ["app-server", "-c", "thread_unload_delay_secs=0", "--listen", server.#endpoint], env);
+        const child = spawnFn(invocation.command, invocation.args, {
+          stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env,
+          ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         });
         server.#child = child;
         server.#attachChildLogging(child);
@@ -390,7 +393,7 @@ export class CodexAppServer {
       child.once("close", finish);
       // Wait for process and stdio closure; keep the fallback referenced while stop() awaits it.
       timer = setTimeout(finish, 1_000);
-      child.kill();
+      void stopAgentProcess(child, process.env, process.platform === "win32" && windowsScriptCommand(this.#codexCommand?.command));
     });
   }
 
@@ -479,13 +482,16 @@ function wsTransport(url: string, timeoutMs: number): Promise<CodexTransport> {
 
 async function desktopTransport(options: CodexAppServerOptions): Promise<CodexTransport> {
   const { command, prefixArgs } = await resolveCodexCommand();
-  const child = (options.spawnImpl ?? ((cmd, args) => spawn(cmd, args, {
+  const invocation = agentInvocation({ command, prefixArgs }, ["app-server", "proxy"]);
+  const child = (options.spawnImpl ?? spawn)(invocation.command, invocation.args, {
     stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
-  })))(command, [...prefixArgs, "app-server", "proxy"]);
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  });
+  const tree = process.platform === "win32" && windowsScriptCommand(command);
   const stdin = child.stdin;
   const stdout = child.stdout;
   if (stdin === null || stdout === null) {
-    child.kill();
+    void stopAgentProcess(child, process.env, tree);
     throw new Error("Codex desktop proxy 未提供 stdio 通道");
   }
   child.stderr?.on("data", (chunk: Buffer) => options.log?.(`[codex:proxy] ${chunk.toString("utf8").trim().slice(0, 300)}`));
@@ -529,7 +535,7 @@ async function desktopTransport(options: CodexAppServerOptions): Promise<CodexTr
     close: async () => {
       if (closed) return;
       try { stdin.end(); } catch { /* 进程可能已先退出。 */ }
-      if (child.exitCode === null) child.kill();
+      void stopAgentProcess(child, process.env, tree);
       await new Promise<void>(resolve => {
         if (child.exitCode !== null) { resolve(); return; }
         child.once("exit", () => resolve());
@@ -587,22 +593,13 @@ export function codexCommandForEntry(entry: string): CodexCommand {
     : { command: entry, prefixArgs: [] };
 }
 
-/**
- * Windows 按 PATH 顺序解析 npm JS 与官方独立 exe，再检查安装器默认位置；
- * 所选入口与 Host 检测、版本验证、终端 shim 共用，保留默认副本损坏时的错误。
- * 非 Windows 没有已选入口时仍使用 PATH 上的 `codex`。
- */
+function windowsScriptCommand(command?: string): boolean { return /\.(?:cmd|bat|ps1)$/iu.test(command ?? ""); }
+
+/** Use the same discovery for app-server, version checks and terminal attachment. */
 export async function resolveCodexCommand(env: Record<string, string | undefined> = process.env, targetPlatform: NodeJS.Platform = platform()): Promise<CodexCommand> {
-  if (env === process.env && !env.ORBIS_CODEX_ENTRY) {
-    const selected = await readCodexSelection();
-    if (selected) env = { ...env, ORBIS_CODEX_ENTRY: selected };
-  }
-  if (!env.ORBIS_CODEX_ENTRY && targetPlatform !== "win32") return { command: "codex", prefixArgs: [] };
-  const entry = env.ORBIS_CODEX_ENTRY || (await findAgentCopies("codex", env, targetPlatform))[0]?.entry;
-  if (entry === undefined) {
-    throw new Error("未找到 Codex CLI，请使用官方安装程序或 npm 安装 Codex。");
-  }
-  const { access } = await import("node:fs/promises");
+  const entry = env.ORBIS_CODEX_ENTRY || (env === process.env ? await readCodexSelection() : undefined)
+    || (await findExternalAgentEntries("codex", env, targetPlatform))[0]?.entry;
+  if (entry === undefined) throw new Error("未找到 Codex CLI。已安装时，可从概览页的 Codex 状态圆点手动指定路径。");
   await access(entry);
   return codexCommandForEntry(entry);
 }

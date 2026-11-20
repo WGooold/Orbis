@@ -45,7 +45,9 @@ input.on("line", line => {
       const p = request.params ?? {};
       let result: unknown = {};
       switch (request.method) {
-        case "initialize": result = await runtime.initialize({ claudeIntegrationEnabled: p.claudeIntegrationEnabled !== false }); break;
+        case "initialize": result = await runtime.initialize({ claudeIntegrationEnabled: p.claudeIntegrationEnabled !== false,
+          ...(p.agentEntryOverrides && typeof p.agentEntryOverrides === "object"
+            ? { agentEntryOverrides: p.agentEntryOverrides as NonNullable<DesktopSettings["agentEntryOverrides"]> } : {}) }); break;
         case "detect": result = await runtime.detect(p, p.checkLatest === true); break;
         case "state.read": {
           const domains = p.domains;
@@ -69,6 +71,7 @@ input.on("line", line => {
         case "updateAgent": result = await runtime.updateAgent(String(p.kind)); break;
         case "installAll": result = await runtime.installAll(String(p.action)); break;
         case "activateInstallation": result = await runtime.activateInstallation(String(p.kind), String(p.id)); break;
+        case "selectAgentEntry": result = await runtime.selectAgentEntry(p.kind, p.entry); break;
         case "selectCodexEntry": result = await runtime.selectCodexEntry(String(p.entry)); break;
         case "enableCodexTerminal": result = await runtime.enableCodexTerminal(String(p.runtimeRoot)); break;
         case "piIntegration": await runtime.setPiIntegration(p.enabled === true); break;

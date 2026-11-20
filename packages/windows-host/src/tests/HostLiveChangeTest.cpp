@@ -34,6 +34,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (method === "start") { out({ event: "state", state: "connecting" }); out({ event: "state", state: "connected" }); }
   if (method === "stop") out({ event: "state", state: "stopped" });
   if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
+  if (method === "selectAgentEntry") return out({ id, result: { entry: params.entry, version: "2.1.322" } });
   if (method === "detect") return out({ id, result: [] });
   if (method === "updateAgent") return out({ id, result: { entry: "/fixture/pi", version: "9.9.9" } });
   out({ id, result: {} });
@@ -75,6 +76,35 @@ private slots:
         m_host->m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
     }
     void cleanup() { m_host.reset(); m_root.reset(); }
+
+    // HOST-CLI-DISCOVERY-01: a rejected path keeps the previous choice; a
+    // successful path/reset survives the pause → change → resume boundary.
+    void manualEntryIsSavedOnlyOnVerifiedReply() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        QSignalSpy result(&host, &HostController::agentEntryFinished);
+        host.selectAgentEntry("codex", "/fixture/custom cli/codex");
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"stop", "selectAgentEntry", "start"}));
+        QCOMPARE(host.agentEntryOverrides().value("codex").toString(), QString("/fixture/custom cli/codex"));
+        QCOMPARE(result.count(), 1);
+        QVERIFY(result.first().at(1).toString().isEmpty());
+        const auto overrides = host.agentSettings().value("agentEntryOverrides").toObject();
+        QCOMPARE(overrides.value("codex").toString(), QString("/fixture/custom cli/codex"));
+        QFile marker(root() + "/packages/host/dist/fail-selectAgentEntry");
+        QVERIFY(marker.open(QIODevice::WriteOnly)); marker.close();
+        host.selectAgentEntry("codex", "/fixture/broken");
+        settle(host);
+        QCOMPARE(result.count(), 2);
+        QCOMPARE(result.last().at(0).toString(), QString("codex"));
+        QVERIFY(result.last().at(1).toString().contains("failed"));
+        QCOMPARE(host.agentEntryOverrides().value("codex").toString(), QString("/fixture/custom cli/codex"));
+        QVERIFY(marker.remove());
+        host.selectAgentEntry("codex", "");
+        settle(host);
+        QVERIFY(host.agentEntryOverrides().value("codex").toString().isEmpty());
+        QVERIFY(host.desiredRunning());
+    }
 
     // OPENCLAW-04: only a successful save reconnects a running Host; a paused Host stays paused.
     void openClawSettingsReconnectOnlyAfterSuccessfulSave() {

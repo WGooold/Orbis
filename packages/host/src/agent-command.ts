@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { promisify } from "node:util";
 import { agentInstallRoot } from "./agent-root.js";
 
-export type ExternalAgentKind = "pi" | "dsh" | "claude" | "hermes";
+export type ExternalAgentKind = "pi" | "codex" | "dsh" | "claude" | "hermes";
 export type AgentCommand = {
   command: string;
   prefixArgs: string[];
@@ -28,9 +28,9 @@ export function agentTerminalEnvironment(env: NodeJS.ProcessEnv): Record<string,
 }
 const packages: Record<ExternalAgentKind, string[]> = {
   pi: ["@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"],
-  dsh: ["@deepseek-ai/dsh"], claude: ["@anthropic-ai/claude-code"], hermes: [],
+  codex: ["@openai/codex"], dsh: ["@deepseek-ai/dsh"], claude: ["@anthropic-ai/claude-code"], hermes: [],
 };
-const legacyBins: Record<ExternalAgentKind, string> = { pi: "dist/bundle/cli.js", dsh: "lib/bin.js", claude: "cli.js", hermes: "" };
+const legacyBins: Record<ExternalAgentKind, string> = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", dsh: "lib/bin.js", claude: "cli.js", hermes: "" };
 const execute = promisify(execFile);
 
 export function cliPathDirs(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string[] {
@@ -42,34 +42,76 @@ function homePath(value: string, home: string): string {
   return value === "~" ? home : /^~[/\\]/u.test(value) ? join(home, value.slice(2)) : value;
 }
 
+export const CLI_DISCOVERY_ENV_KEYS = ["CODEX_INSTALL_DIR", "HOMEBREW_PREFIX", "npm_config_prefix", "NPM_CONFIG_PREFIX",
+  "XDG_DATA_HOME", "PIPX_BIN_DIR", "CARGO_HOME", "GOBIN", "GOPATH", "SCOOP", "SCOOP_GLOBAL", "ChocolateyInstall"] as const;
+
+/** HOST-CLI-DISCOVERY-01: mirror the user's PATH before checking stable installer locations. */
 export function cliSearchDirs(kind: ExternalAgentKind, env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home: string): string[] {
   const roots = cliPathDirs(env, platform);
+  const add = (value: string | undefined, ...parts: string[]) => {
+    if (value?.trim()) roots.push(join(homePath(value.trim().replace(/^"(.*)"$/u, "$1"), home), ...parts));
+  };
+  const local = env.LOCALAPPDATA || join(home, "AppData", "Local");
   if (kind === "pi") {
-    roots.push(join(homePath(env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"), home), "bin"));
-    if (env.PI_MANAGED_INSTALL_ROOT) roots.push(join(dirname(homePath(env.PI_MANAGED_INSTALL_ROOT, home)), "bin"));
+    add(env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"), "bin");
+    if (env.PI_MANAGED_INSTALL_ROOT) add(dirname(homePath(env.PI_MANAGED_INSTALL_ROOT, home)), "bin");
   }
-  roots.push(join(home, ".local", "bin"));
-  if (kind === "claude") roots.push(join(home, ".claude", "local"));
-  for (const dir of [env.PNPM_HOME, env.NVM_SYMLINK, env.FNM_MULTISHELL_PATH]) if (dir) roots.push(dir);
-  for (const dir of [env.VOLTA_HOME || join(home, ".volta"), env.BUN_INSTALL || join(home, ".bun")]) roots.push(join(dir, "bin"));
-  const prefix = env.npm_config_prefix ?? env.NPM_CONFIG_PREFIX;
-  if (prefix) roots.push(platform === "win32" ? prefix : join(prefix, "bin"));
+  if (kind === "codex") {
+    add(env.CODEX_INSTALL_DIR);
+    if (platform === "win32") add(local, "Programs", "OpenAI", "Codex", "bin");
+  }
+  add(home, ".local", "bin");
+  add(home, "bin");
+  if (kind === "codex") {
+    const codexHome = env.CODEX_HOME || join(home, ".codex");
+    add(codexHome, "packages", "standalone", "current", "bin");
+    add(codexHome, "packages", "standalone", "current");
+  }
+  if (kind === "claude") add(home, ".claude", "local");
+  for (const dir of [env.PNPM_HOME, env.NVM_SYMLINK, env.FNM_MULTISHELL_PATH, env.PIPX_BIN_DIR, env.GOBIN]) add(dir);
+  add(env.VOLTA_HOME || join(home, ".volta"), "bin");
+  add(env.BUN_INSTALL || join(home, ".bun"), "bin");
+  add(env.CARGO_HOME || join(home, ".cargo"), "bin");
+  for (const dir of cliPathDirs({ PATH: env.GOPATH || join(home, "go") }, platform)) add(dir, "bin");
+  add(env.npm_config_prefix ?? env.NPM_CONFIG_PREFIX, ...(platform === "win32" ? [] : ["bin"]));
+  add(env.HOMEBREW_PREFIX, "bin");
   if (platform === "win32") {
-    if (env.APPDATA) roots.push(join(env.APPDATA, "npm"));
-    roots.push(join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "Microsoft", "WinGet", "Links"));
+    add(env.APPDATA || join(home, "AppData", "Roaming"), "npm");
+    add(local, "pnpm");
+    add(local, "Microsoft", "WinGet", "Links");
+    add(local, "Microsoft", "WindowsApps");
+    add(env.SCOOP || join(home, "scoop"), "shims");
+    add(env.SCOOP_GLOBAL || (env.ProgramData && join(env.ProgramData, "scoop")), "shims");
+    add(env.ChocolateyInstall || (env.ProgramData && join(env.ProgramData, "chocolatey")), "bin");
+  } else {
+    if (platform === "darwin") add(home, "Library", "pnpm");
+    else add(env.XDG_DATA_HOME || join(home, ".local", "share"), "pnpm");
+    if (!env.ORBIS_QA_HOME) {
+      if (platform === "darwin") roots.push("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin");
+      else if (platform === "linux") roots.push("/home/linuxbrew/.linuxbrew/bin", join(home, ".linuxbrew", "bin"), "/usr/local/bin", "/snap/bin");
+      roots.push("/usr/bin", "/bin");
+    }
   }
-  return [...new Set(roots)];
+  const unique = new Map<string, string>();
+  for (const root of roots) {
+    const path = homePath(root, home);
+    if (!isAbsolute(path)) continue; // No implicit workspace-relative executable lookup.
+    const key = platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+    if (!unique.has(key)) unique.set(key, path);
+  }
+  return [...unique.values()];
 }
 
 function cliNames(kind: ExternalAgentKind, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
   if (platform !== "win32") return [kind];
-  const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").toLowerCase().split(";")
+  const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").toLowerCase().split(";").map(value => value.trim())
     .filter(value => [".com", ".exe", ".bat", ".cmd", ".ps1"].includes(value));
   return [...new Set([...extensions, ".exe", ".cmd", ".bat", ".ps1"])].map(extension => kind + extension);
 }
 
 async function header(path: string): Promise<string> {
   try {
+    if (!(await stat(path)).isFile()) return "";
     const file = await open(path, "r");
     try { const buffer = Buffer.alloc(16_384); const { bytesRead } = await file.read(buffer); return buffer.toString("utf8", 0, bytesRead); }
     finally { await file.close(); }
@@ -78,6 +120,12 @@ async function header(path: string): Promise<string> {
 
 export async function isOrbisPiCommand(path: string): Promise<boolean> {
   return (await header(path.trim().replace(/^"(.*)"$/u, "$1"))).includes("orbis-pi-command");
+}
+
+export async function isAgentForwarder(kind: ExternalAgentKind, entry: string): Promise<boolean> {
+  if (kind === "pi") return isOrbisPiCommand(entry);
+  return kind === "codex" && /(?:^|[\\/])codex\.(?:cmd|bat|ps1)$/iu.test(entry)
+    && (await header(entry)).includes("ORBIS_CODEX_RUNTIME=");
 }
 
 async function executable(path: string, platform: NodeJS.Platform): Promise<boolean> {
@@ -136,7 +184,7 @@ export async function resolveAgentPackage(kind: ExternalAgentKind, entry: string
   return;
 }
 
-/** PATH order wins. A broken selected package is retained so detection reports it. */
+/** Scan PATH-equivalent launchers first; package-only installs are a fallback, not shell commands. */
 export async function findExternalAgentEntries(kind: ExternalAgentKind, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform,
   home = platform === "win32" ? env.USERPROFILE || homedir() : env.HOME || homedir()): Promise<PackageBin[]> {
   const result: PackageBin[] = []; const seen = new Set<string>();
@@ -145,33 +193,49 @@ export async function findExternalAgentEntries(kind: ExternalAgentKind, env: Nod
     const key = platform === "win32" ? actual.toLowerCase() : actual;
     if (!seen.has(key)) { seen.add(key); result.push(copy); }
   };
-  for (const directory of cliSearchDirs(kind, env, platform, home)) {
-    let launcher: string | undefined;
-    for (const name of cliNames(kind, env, platform)) {
-      const candidate = resolve(directory, name);
-      if (kind === "pi" && await isOrbisPiCommand(candidate)) continue;
-      // Preserve broken symlinks as broken defaults instead of silently switching versions.
-      const link = await lstat(candidate).then(value => value.isSymbolicLink()).catch(() => false);
-      if (await executable(candidate, platform) || link) { launcher = candidate; break; }
-    }
-    if (launcher) {
-      const bin = await resolveAgentPackage(kind, launcher, env, platform);
-      await add({ entry: launcher, ...(bin?.version === undefined ? {} : { version: bin.version }) }, bin?.entry);
-      continue;
-    }
-    if (kind === "claude") continue;
+  const directories = cliSearchDirs(kind, env, platform, home);
+  const names = cliNames(kind, env, platform);
+  const packageDirs: string[] = [];
+  const addPackages = async (directory: string) => {
+    if (kind === "claude" || !packages[kind].length) return;
     const modules = [join(directory, "node_modules"), ...(platform !== "win32" && basename(directory) === "bin" ? [join(dirname(directory), "lib", "node_modules")] : [])];
     for (const root of modules) for (const name of packages[kind]) {
       const bin = await packageBin(kind, join(root, name));
       if (bin) await add(bin);
       else {
-        // Old standalone Host configuration and partially installed npm packages may have no manifest.
         const entry = join(root, name, legacyBins[kind]);
         if (!await access(join(root, name, "package.json")).then(() => true, () => false)
           && await stat(entry).then(value => value.isFile()).catch(() => false)) await add({ entry });
       }
     }
-  }
+  };
+  const scan = async (directory: string) => {
+    let launcher: string | undefined;
+    for (const name of names) {
+      const candidate = resolve(directory, name);
+      const info = await lstat(candidate).catch(() => undefined);
+      // Preserve broken launch links as broken defaults. Skip non-executable files and local forwarding shims.
+      if (!info) continue;
+      const brokenLink = info.isSymbolicLink() && !await stat(candidate).then(() => true, () => false);
+      if ((!brokenLink && !await executable(candidate, platform)) || await isAgentForwarder(kind, candidate)) continue;
+      launcher = candidate;
+      const bin = await resolveAgentPackage(kind, launcher, env, platform);
+      // Avoid placing a cmd parent around the app-server when the npm target is known.
+      const entry = kind === "codex" && platform === "win32" && bin && /\.[cm]?js$/iu.test(bin.entry) ? bin.entry : launcher;
+      await add({ entry, ...(bin?.version === undefined ? {} : { version: bin.version }) }, bin?.entry);
+      break;
+    }
+    if (!launcher || kind === "codex") packageDirs.push(directory);
+  };
+  const pathDirs = new Set(cliPathDirs(env, platform).map(dir => resolve(homePath(dir, home))));
+  const onPath = directories.filter(dir => pathDirs.has(resolve(dir)));
+  const fallback = directories.filter(dir => !pathDirs.has(resolve(dir)));
+  for (const directory of onPath) await scan(directory);
+  // Legacy npm layouts can lack the launcher. Keep them behind real PATH
+  // commands but ahead of paths the user did not put on PATH.
+  for (const directory of packageDirs.splice(0)) await addPackages(directory);
+  for (const directory of fallback) await scan(directory);
+  for (const directory of packageDirs) await addPackages(directory);
   return result;
 }
 
@@ -199,6 +263,11 @@ export async function agentCommandForEntry(entry: string, env: NodeJS.ProcessEnv
   for (const dir of dirs) if (await executable(join(dir, name), platform)) return { command: join(dir, name), prefixArgs: [entry] };
   if (runtime === "bun") throw new Error("找不到此 CLI 启动脚本需要的 Bun，请检查启动路径");
   return { command: process.execPath, prefixArgs: [entry] };
+}
+
+/** Claude's native entry can also be an explicitly selected npm JS bin. */
+export async function claudeCommandForEntry(entry: string, env: NodeJS.ProcessEnv, platform = process.platform): Promise<AgentCommand> {
+  return /\.[cm]?js$/iu.test(entry) ? agentCommandForEntry(entry, env, platform) : { command: entry, prefixArgs: [] };
 }
 
 /** Convert only local Windows script entries to their interpreter; arguments remain data. */

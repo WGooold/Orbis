@@ -12,7 +12,7 @@ import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
-import { readCodexSelection, saveCodexSelection } from "./codex-selection.js";
+import { clearCodexSelection, readCodexSelection, saveCodexSelection } from "./codex-selection.js";
 import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
 import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
 import { readDesktopRecoveryReason } from "./codex-desktop-recovery.js";
@@ -53,7 +53,7 @@ import { codexOfficial, type CodexPreferences } from "./provider-codex.js";
 import { checkProviderEndpoint, fetchProviderModels } from "./provider-network.js";
 import { ProviderUsageCache, type UsageSnapshot } from "./provider-usage-cache.js";
 import { usageTemplate } from "./provider-usage-templates.js";
-import { agentCommandForEntry, agentInvocation, agentPowerShellScript, resolveAgentPackage } from "./agent-command.js";
+import { agentCommandForEntry, agentInvocation, agentPowerShellScript, findExternalAgentEntries, isAgentForwarder, resolveAgentPackage } from "./agent-command.js";
 import type { DesktopQaConfiguration } from "./desktop-qa.js";
 
 const execute = promisify(execFile);
@@ -79,6 +79,7 @@ const providerPresets = [...existingProviderPresets, ...claudeProviderPresets];
 
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
+  agentEntryOverrides?: Partial<Record<DesktopCliKind, string>>;
   kimiCodeEnabled?: boolean;
   kimiCodeSource?: KimiSource;
   dshEnabled?: boolean; dshEntry?: string; dshWebUrl?: string;
@@ -89,6 +90,9 @@ export type DesktopSettings = {
   lanPort?: number;
 };
 export type DesktopEvent = { event: string; [key: string]: unknown };
+type DesktopCliKind = "pi" | "codex" | "dsh" | "claude" | "hermes";
+const desktopCliKinds = ["pi", "codex", "dsh", "claude", "hermes"] as const;
+
 type AgentInstallResult = { entry: string; version: string; restarted?: boolean; restartWarning?: string };
 
 export function validateDesktopRelay(value: unknown): string {
@@ -178,6 +182,9 @@ export class DesktopRuntime {
   #installationCommitted = false;
   #batchCancelled = false;
   #selectionError = false;
+  #manualEntries: Partial<Record<DesktopCliKind, string>> = {};
+  #entrySettings: Partial<Record<"piEntry" | "codexEntry" | "dshEntry", string>> = {};
+  #hermesDetection = 0;
   #detected = new Map<string, AgentInstallStatus>();
   readonly #providers: ProviderManager;
   readonly #usage: ProviderUsageCache;
@@ -207,13 +214,14 @@ export class DesktopRuntime {
     });
   }
 
-  async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {}): Promise<unknown> {
+  async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled" | "agentEntryOverrides"> = {}): Promise<unknown> {
     // 先于一切 Agent 检测：从程序坞打开的 Host 只有 launchd 的最小 PATH。
     // 登录环境是例外：之后的每一次 Agent 检测和启动都依赖它，必须先就位。
     if (!this.#qa) {
       await adoptLoginShellEnvironment(line => this.log(line));
       await adoptWindowsEnvironment();
     }
+    this.#applyAgentOverrides(settings.agentEntryOverrides);
     // DMG / portable installs have no installer hook. Registration runs in the background (HOST-PREP-04):
     // it may run four `claude` commands, and the desktop must not look frozen meanwhile.
     this.#ensureClaudeIntegration(settings);
@@ -254,57 +262,58 @@ export class DesktopRuntime {
   }
 
   #managedRoot(): string { return agentInstallRoot(); }
-  async #environment(settings?: Partial<DesktopSettings>): Promise<void> {
+  #applyAgentOverrides(overrides?: DesktopSettings["agentEntryOverrides"]): void {
+    if (overrides === undefined || overrides === null || typeof overrides !== "object") return;
+    for (const kind of desktopCliKinds) {
+      const entry = overrides[kind];
+      if (typeof entry !== "string") continue;
+      if (entry) this.#manualEntries[kind] = entry; else delete this.#manualEntries[kind];
+      if (kind === "claude" || kind === "hermes") {
+        const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
+        if (entry) process.env[key] = entry; else delete process.env[key];
+      }
+    }
+  }
+
+  async #environment(settings?: Partial<DesktopSettings>) {
     if (!this.#qa && settings?.dshWebUrl?.trim()) process.env.ORBIS_DSH_WEB_URL = validateDshWebUrl(settings.dshWebUrl.trim()); else delete process.env.ORBIS_DSH_WEB_URL;
+    this.#applyAgentOverrides(settings?.agentEntryOverrides);
     const managed = this.#managedRoot();
     let selectedCodex: string | undefined;
     try { selectedCodex = await readCodexSelection(); this.#selectionError = false; }
     catch { this.#selectionError = true; this.log("Codex 版本选择记录不可读，请在 Agent 页修复终端接入"); }
-    for (const kind of ["pi", "codex", "dsh"] as const) {
-      const configured = settings?.[`${kind}Entry`];
+    const kinds = ["pi", "codex", "dsh"] as const;
+    // Check user launchers before appending the private installation directory to PATH.
+    const discoveryEnv = { ...process.env, PATH: (process.env.PATH ?? process.env.Path ?? "").split(delimiter).filter(dir => dir !== managed).join(delimiter) };
+    const copiesByKind = await Promise.all(kinds.map(async kind => {
+      const key = `${kind}Entry` as const;
+      if (typeof settings?.[key] === "string") this.#entrySettings[key] = settings[key];
+      const configured = this.#entrySettings[key];
+      const userCopies = await findAgentCopies(kind, discoveryEnv);
       let active: string | undefined;
       try { active = await activeManagedEntry(kind, managed); }
       catch { this.log(`${kind} 安装记录不可读，请检查文件权限和 installations.json`); }
-      // 入口由 Orbis 自己维护（安装、激活和终端共享记录写回），不再由用户指定；
-      // 记录随时可能先于目录失效，所以按优先级挑第一个仍然存在的入口，
-      // 全部失效时交给下面的自动检测，而不是把一个死路径当成“已安装但无法运行”。
-      const shared = kind === "codex" ? selectedCodex : undefined;
-      const ordered = configured && installationSource(configured, managed) !== "managed"
-        ? [configured, active, shared]
-        : [active, shared, configured];
-      // 用户自己装的 Pi 优先：终端里敲 `pi` 跑的是它，扩展登记的也是它的配置，Host 不能另用一份。
-      // Host 自己的安装只在用户没有 Pi 时才派上用场。
-      if (kind === "pi") {
-        const userEntry = (await findAgentCopies("pi", process.env))[0]?.entry;
-        if (configured && installationSource(configured, managed) !== "managed") ordered.splice(1, 0, userEntry);
-        else ordered.unshift(userEntry);
-      }
-      // An explicit external choice must report its own failure, not silently
-      // select another installation. Managed records may still expire after cleanup.
-      const entry = kind !== "codex" && configured && installationSource(configured, managed) !== "managed" ? configured : await firstExisting(ordered);
+      // Explicit external paths remain authoritative even if broken. Otherwise prefer
+      // the user's launcher, then fall back to a managed or legacy selected copy.
+      const entry = this.#manualEntries[kind] || (configured && installationSource(configured, managed) !== "managed" ? configured
+        : userCopies[0]?.entry ?? await firstExisting([active, configured, kind === "codex" ? selectedCodex : undefined]));
+      return { kind, entry, userCopies };
+    }));
+    for (const { kind, entry } of copiesByKind) {
       const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
       if (entry) process.env[key] = entry; else delete process.env[key];
-      if (kind === "codex" && entry && entry !== selectedCodex) await this.#syncCodexSelection(entry);
+      if (kind === "codex" && entry && entry !== selectedCodex && !this.#selectionError) await this.#syncCodexSelection(entry);
     }
-    const searchPath = process.env.PATH ?? process.env.Path ?? "";
-    const legacyNpm = process.env.APPDATA ? join(process.env.APPDATA, "npm") : "";
-    const roots = searchPath.split(delimiter);
-    if (legacyNpm && !roots.includes(legacyNpm)) roots.push(legacyNpm);
-    if (!roots.includes(managed)) roots.push(managed);
-    // Host 的运行时目录不是 Agent 安装位置：只认用户自己装的和用户在 Host 里主动安装的副本。
-    process.env.PATH = roots.join(delimiter);
-    // Detection, updates and session startup must target the same copy, including a broken default.
-    for (const kind of ["pi", "codex", "dsh"] as const) {
-      const key = `ORBIS_${kind.toUpperCase()}_ENTRY`;
-      if (!process.env[key]) {
-        const entry = (await findAgentCopies(kind, process.env))[0]?.entry;
-        if (entry) process.env[key] = entry;
-      }
+    const roots = discoveryEnv.PATH.split(delimiter);
+    if (process.env.APPDATA) {
+      const legacyNpm = join(process.env.APPDATA, "npm");
+      if (!roots.includes(legacyNpm)) roots.push(legacyNpm);
     }
-    if (process.env.ORBIS_CODEX_ENTRY && !selectedCodex && !this.#selectionError) await this.#syncCodexSelection(process.env.ORBIS_CODEX_ENTRY);
+    process.env.PATH = [...roots, managed].join(delimiter);
     process.env.ORBIS_ENABLED = "true";
     process.env.ORBIS_RELAY_URL = "ws://127.0.0.1";
     process.env.ORBIS_RUNTIME_CREDENTIAL = "loopback-only";
+    return copiesByKind;
   }
 
   async #syncCodexSelection(entry: string): Promise<void> {
@@ -326,23 +335,17 @@ export class DesktopRuntime {
 
   async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
     if (!this.#qa) await adoptWindowsEnvironment();
-    await this.#environment(settings);
+    const resolved = await this.#environment(settings);
     this.#scheduleClaudeDetection();
+    void this.#detectHermes().catch(() => this.log("检测 Hermes Agent 失败"));
     if (checkLatest) this.#scheduleClaudeLatestCheck();
     const managed = this.#managedRoot();
-    return Promise.all((["pi", "codex", "dsh"] as const).map(async (kind) => {
-      const copies = await findAgentCopies(kind, process.env);
-      const entry = process.env[`ORBIS_${kind.toUpperCase()}_ENTRY`] ?? copies[0]?.entry;
+    return Promise.all(resolved.map(async ({ kind, entry, userCopies }) => {
       const local: LocalAgent = { installed: false, installedButBroken: false, ...(entry ? { entry } : {}) };
       try {
         if (entry) {
-          const cli = kind === "codex" ? codexCommandForEntry(entry) : await agentCommandForEntry(entry);
-          const invocation = agentInvocation(cli, ["--version"]);
-          const { stdout, stderr } = await execute(invocation.command, invocation.args, { timeout: 10_000, windowsHide: true, maxBuffer: 64_000,
-            ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) });
-          const version = extractAgentVersion(stdout + "\n" + stderr);
-          if (!version) throw new Error("no version");
-          local.installed = true; local.version = version;
+          local.version = await this.#probeAgentVersion(kind, entry);
+          local.installed = true;
         }
       } catch {
         local.installedButBroken = true;
@@ -361,7 +364,7 @@ export class DesktopRuntime {
           if (recommended === previous.latestVersion) delete status.compatibilityNote;
         }
       }
-      status.copies = copies;
+      status.copies = userCopies;
       if (kind === "pi") {
         let managedEntry: string | undefined;
         try { managedEntry = await activeManagedEntry("pi", managed); } catch { managedEntry = undefined; }
@@ -390,10 +393,12 @@ export class DesktopRuntime {
         if (local.installed && entry) {
           try {
             const command = codexCommandForEntry(entry);
-            const [cli, server] = await Promise.all([
-              execute(command.command, [...command.prefixArgs, "--help"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 }),
-              execute(command.command, [...command.prefixArgs, "app-server", "--help"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 }),
-            ]);
+            const help = (args: string[]) => {
+              const invocation = agentInvocation(command, args);
+              return execute(invocation.command, invocation.args, { timeout: 10_000, windowsHide: true, maxBuffer: 64_000,
+                ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) });
+            };
+            const [cli, server] = await Promise.all([help(["--help"]), help(["app-server", "--help"])]);
             status.terminalCompatible = /--remote\b/u.test(cli.stdout + cli.stderr) && /--listen\b/u.test(server.stdout + server.stderr);
           } catch { status.terminalCompatible = false; }
         }
@@ -404,9 +409,11 @@ export class DesktopRuntime {
           await this.#autoEnableCodexTerminal(runtimeRoot, entry);
         }
       }
+      const cliIssue = !local.installed ? (local.installedButBroken ? "unrunnable" : "missing")
+        : kind === "codex" && status.terminalCompatible === false ? "unsupported" : "";
       this.#detected.set(kind, status);
       this.#service?.refreshHostFacts();
-      return { ...status, path: local.entry, connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : kind === "dsh" ? this.#dshRuntime?.isReady() ?? false : this.#codexRuntime?.isReady() ?? false };
+      return { ...status, cliIssue, path: local.entry, connected: kind === "pi" ? (this.#service?.localRuntimes.length ?? 0) > 0 : kind === "dsh" ? this.#dshRuntime?.isReady() ?? false : this.#codexRuntime?.isReady() ?? false };
     }));
   }
 
@@ -442,7 +449,7 @@ export class DesktopRuntime {
     // Claude uses its native installer and settings, outside the managed npm Agents.
     const cli = await findClaudeExecutable(process.env);
     const status = { event: "claudeStatus", installed: cli !== undefined, minimumVersion: CLAUDE_MIN_VERSION };
-    if (!cli) { this.#emitClaudeStatus({ ...status, compatible: false }); return; }
+    if (!cli) { this.#emitClaudeStatus({ ...status, compatible: false, cliIssue: "missing" }); return; }
     // 已找到可执行文件，但版本还没读回来：仍是“检测中”，不能先报一个“不兼容”。
     this.#emitClaudeStatus({ ...status, compatible: false, detecting: true });
     try {
@@ -450,8 +457,24 @@ export class DesktopRuntime {
       const error = claudeVersionRequirement(version);
       this.#emitClaudeStatus({ ...status, version, compatible: error === undefined, ...(error ? { error } : {}) });
     } catch (error) {
-      this.#emitClaudeStatus({ ...status, compatible: false, error: error instanceof Error ? error.message : String(error) });
+      this.#emitClaudeStatus({ ...status, compatible: false, cliIssue: "unrunnable", error: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  async #detectHermes(): Promise<void> {
+    if (this.#qa) return;
+    const generation = ++this.#hermesDetection;
+    const emit = (facts: Omit<DesktopEvent, "event">) => {
+      if (generation === this.#hermesDetection) this.#emit({ event: "hermesCli", ...facts });
+    };
+    const env = { ...process.env };
+    emit({ detecting: true });
+    const entry = env.ORBIS_HERMES_ENTRY || (await findExternalAgentEntries("hermes", env))[0]?.entry;
+    if (!entry) { emit({ installed: false, cliIssue: "missing" }); return; }
+    try {
+      const version = await this.#probeAgentVersion("hermes", entry, env);
+      emit({ installed: true, version });
+    } catch { emit({ installed: false, cliIssue: "unrunnable" }); }
   }
 
   /**
@@ -1042,7 +1065,7 @@ export class DesktopRuntime {
       }
       const current = this.#detected.get(kind);
       const entry = process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] || current?.entry;
-      const packageEntry = entry && (selected === "pi" || selected === "dsh")
+      const packageEntry = entry && !(selected === "codex" && /\.[cm]?js$/iu.test(entry))
         ? (await resolveAgentPackage(selected, entry))?.entry ?? entry : entry;
       const result: AgentInstallResult = await installAgentPackage(selected, version, managed, signal, progress => {
         // The desktop operation completes only after the persistent backend has adopted the new version.
@@ -1053,6 +1076,8 @@ export class DesktopRuntime {
       if (mode === "current" && entry && packageEntry !== entry) result.entry = entry;
       this.#installationCommitted = true;
       if (selected === "codex") await this.#syncCodexSelection(result.entry);
+      this.#entrySettings[`${selected}Entry`] = result.entry;
+      delete this.#manualEntries[selected];
       process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = result.entry;
       this.#emit({ event: "agentInstalled", kind: selected, entry: result.entry, version: result.version });
       if (selected === "dsh") {
@@ -1136,6 +1161,8 @@ export class DesktopRuntime {
       await this.#checkExistingHost();
       const result = await activateManagedAgent(selected, id, this.#managedRoot(), signal);
       if (selected === "codex") await this.#syncCodexSelection(result.entry);
+      this.#entrySettings[`${selected}Entry`] = result.entry;
+      delete this.#manualEntries[selected];
       process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = result.entry;
       this.#emit({ event: "agentInstalled", kind: selected, entry: result.entry, version: result.version });
       return result;
@@ -1144,19 +1171,55 @@ export class DesktopRuntime {
     finally { this.#installation = undefined; this.#installationTask = undefined; }
   }
 
-  async selectCodexEntry(entry: string): Promise<{ entry: string; version: string }> {
-    if (this.#desired || this.#installation) throw new Error("请先暂停 Host，再切换 Codex 版本");
-    await this.#checkExistingHost();
-    const copies = await findAgentCopies("codex", process.env);
-    if (!copies.some(copy => copy.entry === entry)) throw new Error("Codex 入口未在当前安装中找到");
-    const cli = codexCommandForEntry(entry);
-    const { stdout, stderr } = await execute(cli.command, [...cli.prefixArgs, "--version"], { timeout: 10_000, windowsHide: true, maxBuffer: 64_000 });
+  async #probeAgentVersion(kind: DesktopCliKind, entry: string, env = process.env): Promise<string> {
+    if (kind === "claude") return readClaudeVersion(entry, env);
+    const cli = kind === "codex" ? codexCommandForEntry(entry) : await agentCommandForEntry(entry, env);
+    const invocation = agentInvocation(cli, ["--version"], env);
+    const { stdout, stderr } = await execute(invocation.command, invocation.args, { env, timeout: 10_000, windowsHide: true, maxBuffer: 64_000,
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) });
     const version = extractAgentVersion(stdout + "\n" + stderr);
-    if (!version) throw new Error("Codex 入口无法运行");
-    await saveCodexSelection(entry);
-    process.env.ORBIS_CODEX_ENTRY = entry;
-    this.#emit({ event: "agentInstalled", kind: "codex", entry, version });
+    if (!version) throw new Error("CLI 未返回可识别的版本");
+    return version;
+  }
+
+  async selectAgentEntry(kind: unknown, input: unknown): Promise<{ entry: string; version?: string }> {
+    if (!desktopCliKinds.includes(kind as DesktopCliKind)) throw new Error("未知 Agent");
+    const selected = kind as DesktopCliKind;
+    if (this.#desired || this.#installation) throw new Error("请先暂停 Host，再更改 Agent 路径");
+    await this.#checkExistingHost();
+    if (typeof input !== "string") throw new Error("请输入 CLI 的绝对路径");
+    const entry = input.trim().replace(/^(["'])(.*)\1$/u, "$2");
+    if (input === "") {
+      if (selected === "codex") await clearCodexSelection();
+      if (selected === "claude") await Promise.all([this.#claudeDetection, this.#claudeIntegrationTask]);
+      this.#applyAgentOverrides({ [selected]: "" });
+      if (selected === "pi" || selected === "codex" || selected === "dsh") delete this.#entrySettings[`${selected}Entry`];
+      delete process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`];
+      return { entry: "" };
+    }
+    if (!isAbsolute(entry) || /[\0\r\n]/u.test(entry)) throw new Error("请输入 CLI 的绝对路径");
+    if (!await firstExisting([entry])) throw new Error("未找到此 CLI 文件，请检查路径");
+    if (await isAgentForwarder(selected, entry)) throw new Error("这是 Orbis 的转发命令，请填写 Agent 原本的安装路径");
+    let version: string;
+    try { version = await this.#probeAgentVersion(selected, entry); }
+    catch { throw new Error("无法用此文件运行 CLI，请检查路径和运行环境"); }
+    if (selected === "codex") {
+      await saveCodexSelection(entry);
+      this.#selectionError = false;
+    }
+    if (selected === "claude") await Promise.all([this.#claudeDetection, this.#claudeIntegrationTask]);
+    this.#applyAgentOverrides({ [selected]: entry });
+    process.env[`ORBIS_${selected.toUpperCase()}_ENTRY`] = entry;
     return { entry, version };
+  }
+
+  async selectCodexEntry(entry: string): Promise<{ entry: string; version?: string }> {
+    if (!(await findAgentCopies("codex", process.env)).some(copy => copy.entry === entry)) throw new Error("Codex 入口未在当前安装中找到");
+    const result = await this.selectAgentEntry("codex", entry);
+    this.#applyAgentOverrides({ codex: "" });
+    this.#entrySettings.codexEntry = result.entry;
+    this.#emit({ event: "agentInstalled", kind: "codex", ...result });
+    return result;
   }
 
   async enableCodexTerminal(runtimeRoot: string): Promise<AgentInstallStatus[]> {

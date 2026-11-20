@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -55,11 +55,13 @@ describe("Windows standalone and npm Codex command discovery", () => {
     const { root, env } = await fixture();
     const nativeDir = join(root, "Native Codex"); const npmDir = join(root, "npm");
     const binary = await native(nativeDir); const script = await npm(npmDir);
+    await writeFile(join(npmDir, "codex.cmd"), '@echo off\r\nnode "%~dp0node_modules/@openai/codex/bin/codex.js" %*');
     env.Path = (nativeFirst ? [nativeDir, npmDir] : [npmDir, nativeDir]).map(dir => `"${dir}"`).join(";");
     delete env.PATH;
-    expect((await findAgentCopies("codex", env, "win32")).map(copy => copy.entry)).toEqual(nativeFirst ? [binary, script] : [script, binary]);
+    const canonicalScript = await realpath(script);
+    expect((await findAgentCopies("codex", env, "win32")).map(copy => copy.entry)).toEqual(nativeFirst ? [binary, canonicalScript] : [canonicalScript, binary]);
     expect(await resolveCodexCommand(env, "win32")).toEqual(nativeFirst
-      ? { command: binary, prefixArgs: [] } : { command: process.execPath, prefixArgs: [script] });
+      ? { command: binary, prefixArgs: [] } : { command: process.execPath, prefixArgs: [canonicalScript] });
   });
 
   // Windows resolves .exe ahead of npm's .cmd in a shared directory.
@@ -94,6 +96,16 @@ describe("Windows standalone and npm Codex command discovery", () => {
     const entry = await npm(root); await rm(entry); await native(visible);
     expect((await findAgentCopies("codex", env, "win32"))[0]?.entry).toBe(entry);
     await expect(resolveCodexCommand(env, "win32")).rejects.toThrow();
+  });
+
+  it("keeps a user package-manager launcher with no resolvable npm target", async () => {
+    const { root, env } = await fixture();
+    env.SCOOP = join(root, "scoop");
+    const dir = join(env.SCOOP, "shims");
+    await mkdir(dir, { recursive: true });
+    const entry = join(dir, "codex.cmd");
+    await writeFile(entry, "@echo off\r\nrem package-manager launcher\r\n");
+    expect(await resolveCodexCommand(env, "win32")).toEqual({ command: entry, prefixArgs: [] });
   });
 
   // Falling back from Orbis's own PATH shim must never launch that shim recursively.

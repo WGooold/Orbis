@@ -190,7 +190,7 @@ describe("desktop Host lifecycle", () => {
     try {
       await runtime.initialize({ claudeIntegrationEnabled: false });
       expect(events).toContainEqual({ event: "claudeStatus", installed: executable !== undefined, minimumVersion: "2.1.287",
-        compatible: executable !== undefined, updateAvailable: false, ...(executable ? { version: "2.1.322" } : {}) });
+        compatible: executable !== undefined, updateAvailable: false, ...(executable ? { version: "2.1.322" } : { cliIssue: "missing" }) });
     } finally { find.mockRestore(); await runtime.close(); await rm(root, { recursive: true, force: true }); }
   });
 

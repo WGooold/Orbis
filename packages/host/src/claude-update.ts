@@ -1,4 +1,4 @@
-import { agentInvocation } from "./agent-command.js";
+import { claudeCommandForEntry, agentInvocation } from "./agent-command.js";
 import { compareAgentVersions, parseAgentVersion, runAgentInstaller } from "./agent-installation.js";
 import { findClaudeExecutable } from "./claude-integration-install.js";
 import { readClaudeVersion } from "./claude-version.js";
@@ -23,7 +23,7 @@ export async function fetchClaudeLatestVersion(signal?: AbortSignal): Promise<st
 // Keep the selected launcher and its installation owner. Override only this
 // invocation's update channel; never rewrite settings or create a second copy.
 const runUpdate: UpdateRunner = async (cli, env, signal) => {
-  const invocation = agentInvocation({ command: cli, prefixArgs: [] }, ["--settings", '{"autoUpdatesChannel":"latest"}', "update"], env);
+  const invocation = agentInvocation(await claudeCommandForEntry(cli, env), ["--settings", '{"autoUpdatesChannel":"latest"}', "update"], env);
   try {
     await runAgentInstaller(invocation.command, invocation.args, {
       env, signal, timeout: 10 * 60_000,
