@@ -151,6 +151,26 @@ re-enabling the wrapper, but retains guidance for a GUI already running in
 native mode. The recovery marker is cleared only when a bridge becomes ready;
 a live endpoint takes precedence over a stale marker.
 
+### Revision 2026-11-20: Windows staged bootstrap (`CODEX-DESKTOP-BOOTSTRAP-01`)
+
+The Start-menu launcher can start the staged `.js` outside the installed ESM
+package. If Node parses it as CommonJS, the old static import fails before the
+CLI selection or recovery code can run. The native launcher's filename and
+relative lookup stay unchanged. The staged script uses dynamic `import()` and
+does not depend on module syntax detection or a staged package manifest.
+
+The installer refreshes an existing registered staged entry before the next
+Start-menu launch, preserving its saved Host endpoint. It does not enable a
+missing override or replace a foreign one. If staging fails, Host attempts
+native activation instead of registering an incomplete wrapper; the installer
+suspends only the entry it was repairing. Neither path closes a running GUI.
+
+Regression: [launcher tests](../../packages/host/src/codex-desktop-launcher.test.ts)
+and the [Windows packaging smoke](../../scripts/windows/windows-host-build.ps1).
+The original and fixed Node results are in
+`.artifacts/codex-desktop-bootstrap-20261120/`. No deployment; Windows installer
+and GUI acceptance remain separate from these results.
+
 ### Withdrawn: proxy through the desktop daemon
 
 The 2026-10-04 decision above is withdrawn as impossible on Windows, not merely unimplemented. Verified against Codex desktop `26.930.3930.0` with `codex-cli 0.160.0`: the GUI spawns its own app-server as a private stdio child (`%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe app-server …`, no `--listen`) that no other process can attach to, while `codex app-server proxy` addresses only the managed daemon that `codex app-server daemon bootstrap` describes as "durable local app-server management for SSH-driven use"; on that build the proxy's `initialize` receives no answer and the daemon closes the control socket. The proxy transport remains in the code only as the non-Windows fallback.

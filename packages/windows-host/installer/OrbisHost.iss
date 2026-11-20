@@ -94,6 +94,12 @@ var
 begin
   if CurStep <> ssPostInstall then Exit;
   RuntimeRoot := ExpandConstant('{app}\runtime');
+  { CODEX-DESKTOP-BOOTSTRAP-01: repair a registered legacy bootstrap before the user opens Codex from Start. }
+  ExitCode := -1;
+  if not Exec(RuntimeRoot + '\node\node.exe',
+    '"' + RuntimeRoot + '\packages\host\dist\codex-desktop-launcher.js" --repair-windows-entry',
+    '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
+    Log('Could not refresh the registered Orbis Codex Desktop bootstrap.');
   ExitCode := -1;
   if not Exec(RuntimeRoot + '\node\node.exe',
     '"' + RuntimeRoot + '\packages\host\dist\pi-integration-install.js" "' + RuntimeRoot + '\packages\pi-extension"',

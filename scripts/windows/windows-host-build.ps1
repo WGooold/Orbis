@@ -72,21 +72,59 @@ try {
             $probeRunner = Join-Path $probeDir 'launcher-argv-smoke.mjs'
             $probeSource = @'
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 const [launcher, dump] = process.argv.slice(2);
 const info = JSON.stringify({ name: "codex_desktop", title: "Codex Desktop", version: "0" });
 const result = spawnSync(launcher, ["app-server", "--startup-client-info", info], {
   env: { ...process.env, ORBIS_CODEX_WRAPPER_NODE: process.execPath, ORBIS_CODEX_WRAPPER_SCRIPT: dump },
-  encoding: "utf8",
+  encoding: "utf8", timeout: 15_000, windowsHide: true,
 });
 const expected = JSON.stringify(["app-server", "--startup-client-info", info]);
-if (result.status !== 0 || result.stdout.trim() !== expected) {
-  console.error(`launcher argv smoke failed: status=${result.status} stdout=${result.stdout.trim()} stderr=${result.stderr.trim()}`);
+if (result.status !== 0 || result.stdout?.trim() !== expected) {
+  console.error(`launcher argv smoke failed: status=${result.status} error=${result.error ?? ""} stdout=${result.stdout} stderr=${result.stderr}`);
   process.exit(1);
+}
+
+// CODEX-DESKTOP-BOOTSTRAP-01: as from the Start menu, use the actual PE and
+// bundled Node with no wrapper overrides and no package scope at the staged .js.
+const runtime = dirname(dirname(launcher));
+const installedHost = join(runtime, "packages", "host", "dist");
+const { stageCodexWrapper } = await import(pathToFileURL(join(installedHost, "codex-desktop-launcher.js")).href);
+const root = mkdtempSync(join(tmpdir(), "orbis-codex-bootstrap-"));
+try {
+  const fixture = join(root, "Host install's fixture");
+  mkdirSync(fixture);
+  writeFileSync(join(fixture, "package.json"), '{"type":"module"}');
+  const script = join(fixture, "entry.js");
+  // Load the actual packaged implementation and its imports, but do not run
+  // real Codex or let its recovery path write to the user's registry.
+  writeFileSync(script, [
+    `import ${JSON.stringify(pathToFileURL(join(installedHost, "codex-desktop-wrapper.js")).href)};`,
+    'export function main(argv) { process.stdout.write(JSON.stringify({ argv, endpoint: process.env.ORBIS_CODEX_DESKTOP_ENDPOINT })); }',
+  ].join("\n"));
+  const endpoint = join(root, "custom state", "codex-desktop-endpoint.json");
+  const staged = stageCodexWrapper({ launcher, node: join(runtime, "node", "node.exe"), script }, join(root, "Orbis wrapper"), endpoint, "win32");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^(NODE_OPTIONS|CODEX_CLI_PATH|ORBIS_CODEX_)/i.test(key)) delete env[key];
+  }
+  env.NODE_OPTIONS = "--no-experimental-detect-module";
+  const argv = ["app-server", "--print-startup-config", "--startup-client-info", info];
+  const shell = spawnSync(staged.launcher, argv, { env, encoding: "utf8", timeout: 15_000, windowsHide: true });
+  if (shell.status !== 0 || shell.stdout?.trim() !== JSON.stringify({ argv, endpoint }) || shell.stderr?.trim() !== "") {
+    throw new Error(`staged launcher smoke failed: status=${shell.status} error=${shell.error ?? ""} stdout=${shell.stdout} stderr=${shell.stderr}`);
+  }
+  console.log("Verified the staged Codex Desktop launcher without JS syntax detection or Host overrides.");
+} finally {
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 '@
             Set-Content -LiteralPath $probeRunner -Encoding ascii -Value $probeSource
             node $probeRunner (Join-Path $launcherBin 'codex-launcher.exe') $probeDump
-            if ($LASTEXITCODE -ne 0) { throw 'Codex desktop wrapper launcher lost argument quoting' }
+            if ($LASTEXITCODE -ne 0) { throw 'Codex desktop wrapper launch smoke failed' }
             Copy-Item -LiteralPath "$repoRoot\LICENSE" -Destination $stage
             Copy-Item -LiteralPath "$repoRoot\packages\windows-host\README.md" -Destination "$stage\README.md"
             Copy-Item -LiteralPath "$repoRoot\packages\windows-host\THIRD-PARTY-NOTICES.md" -Destination $stage
