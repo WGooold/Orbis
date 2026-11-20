@@ -35,12 +35,13 @@ export function clearDesktopRecovery(endpointFile: string): void {
 
 /** Do not terminate Desktop or Host. Restore only the Orbis-owned entry for the next GUI launch. */
 export async function recoverNativeDesktop(endpointFile: string, error: unknown,
-  suspend: () => Promise<void> = suspendCodexDesktopEntry): Promise<string> {
+  suspend: () => Promise<void> = suspendCodexDesktopEntry, cause: "cli" | "wrapper" = "cli"): Promise<string> {
   let restored = true;
   try { await suspend(); } catch { restored = false; }
+  const failure = cause === "wrapper" ? "Orbis 未能准备好 Codex 包装器" : "Orbis 未找到可运行的匹配 CLI";
   const reason = restored
-    ? "Orbis 未找到可运行的匹配 CLI，已暂停桌面接入。请自行完全退出并从开始菜单重新打开 Codex，完成后再从 Orbis 接入；无需重启 Host。"
-    : "Orbis 未找到可运行的匹配 CLI，且未能恢复原生启动入口。请检查用户环境变量 CODEX_CLI_PATH 中的 Orbis 入口；无需重启 Host。";
+    ? `${failure}，已暂停桌面接入。请自行完全退出并从开始菜单重新打开 Codex，完成后再从 Orbis 接入；无需重启 Host。`
+    : `${failure}，且未能恢复原生启动入口。请检查用户环境变量 CODEX_CLI_PATH 中的 Orbis 入口；无需重启 Host。`;
   writeRecovery(endpointFile, { phase: "native", reason, detail: String(error).slice(0, 4000) });
   return reason;
 }

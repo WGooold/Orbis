@@ -8,22 +8,24 @@ import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const activation = vi.hoisted(() => ({ launch: vi.fn(), ensureEntry: vi.fn(), suspend: vi.fn(), candidates: vi.fn(), select: vi.fn() }));
-const filesystem = vi.hoisted(() => ({ chmod: vi.fn() }));
+const activation = vi.hoisted(() => ({ launch: vi.fn(), ensureEntry: vi.fn(), readEntry: vi.fn(), suspend: vi.fn(), candidates: vi.fn(), select: vi.fn() }));
+const filesystem = vi.hoisted(() => ({ chmod: vi.fn(), rename: vi.fn() }));
 vi.mock("node:fs", async original => {
   const actual = await original<typeof import("node:fs")>();
-  return { ...actual, chmodSync: filesystem.chmod.mockImplementation(actual.chmodSync) };
+  return { ...actual, chmodSync: filesystem.chmod.mockImplementation(actual.chmodSync), renameSync: filesystem.rename.mockImplementation(actual.renameSync) };
 });
 vi.mock("./codex-desktop-app.js", () => ({ launchCodexDesktopApp: activation.launch }));
-vi.mock("./codex-shim-install.js", async original => ({ ...await original<typeof import("./codex-shim-install.js")>(), ensureCodexDesktopEntry: activation.ensureEntry, suspendCodexDesktopEntry: activation.suspend }));
+vi.mock("./codex-shim-install.js", async original => ({ ...await original<typeof import("./codex-shim-install.js")>(),
+  ensureCodexDesktopEntry: activation.ensureEntry, readWindowsCodexDesktopEntry: activation.readEntry, suspendCodexDesktopEntry: activation.suspend }));
 vi.mock("./codex-desktop-cli.js", () => ({ windowsDesktopCliCandidates: activation.candidates }));
 vi.mock("./codex-desktop-startup.js", async original => ({ ...await original<typeof import("./codex-desktop-startup.js")>(), selectStartupCli: activation.select }));
 
-import { codexWrapperRoot, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
+import { codexWrapperRoot, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, repairWindowsCodexDesktopEntry, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
 import { readDesktopRecoveryReason, recoverNativeDesktop } from "./codex-desktop-recovery.js";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); });
@@ -152,9 +154,9 @@ describe("staged Codex wrapper runtime", () => {
     await expect(readFile(staged.node, "utf8")).resolves.toBe("node-bytes");
     // 脚本位置是转发到安装目录里那份实现的 stub：模块与 node_modules 都还住在那儿。
     const stub = await readFile(staged.script, "utf8");
-    expect(stub).toContain("import { main } from");
+    expect(stub).toContain("void import(");
     expect(stub).toContain("wrapper.js");
-    expect(stub).toContain("await main(process.argv.slice(2));");
+    expect(stub).toContain("main(process.argv.slice(2))");
 
     // 早就存在且没变的本份不重拷（node.exe 有 80MB+），改了才刷新。
     const beforeLauncher = (await stat(staged.launcher)).mtimeMs;
@@ -176,34 +178,100 @@ describe("staged Codex wrapper runtime", () => {
   // app-server 起不来（应用退到内存兜底，表现是“组织设置无法安全加载”）。
   it("is idempotent when handed an already staged wrapper", async () => {
     const wrapper = await source();
-  for (const platform of ["win32", "darwin"] as const) {
-    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-idempotent-"));
-    const staged = stageCodexWrapper(wrapper, root, undefined, platform);
-    const again = stageCodexWrapper(staged, root, undefined, platform);
-    expect(again).toEqual(staged);
-    const stub = await readFile(staged.script, "utf8");
-    expect(stub).toContain("wrapper.js");
-    expect(stub).not.toContain(staged.script.replaceAll("\\", "/"));
-    expect(stub).not.toContain(staged.script.replaceAll("/", "\\"));
-  }
+    for (const platform of ["win32", "darwin"] as const) {
+      const root = await testDirectory(join(tmpdir(), "orbis-wrapper-idempotent-"));
+      const staged = stageCodexWrapper(wrapper, root, undefined, platform);
+      const again = stageCodexWrapper(staged, root, undefined, platform);
+      expect(again).toEqual(staged);
+      const stub = await readFile(staged.script, "utf8");
+      expect(stub).toContain("wrapper.js");
+      expect(stub).not.toContain(staged.script.replaceAll("\\", "/"));
+      expect(stub).not.toContain(staged.script.replaceAll("/", "\\"));
+    }
   });
 
-  it("keeps the custom Host endpoint available when Shell activation does not inherit Host environment", async () => {
+  // CODEX-DESKTOP-BOOTSTRAP-01: the Start-menu launcher runs the staged .js
+  // outside the installed ESM package, with no Host environment overrides.
+  it("loads the Windows staged entry without a package manifest or Node syntax detection", async () => {
     const wrapper = await source();
     const root = await testDirectory(join(tmpdir(), "orbis-wrapper-shell-"));
     const endpointPath = join(root, "状态目录's", "codex-desktop-endpoint.json");
-    await writeFile(wrapper.script, "export function main() { console.log(process.env.ORBIS_CODEX_DESKTOP_ENDPOINT); }");
-    await writeFile(join(root, "package.json"), '{"type":"module"}');
-    const staged = stageCodexWrapper(wrapper, root, endpointPath);
-    const env = { ...process.env };
+    await writeFile(join(dirname(wrapper.script), "package.json"), '{"type":"module"}');
+    await writeFile(wrapper.script, "export function main(args) { console.log(JSON.stringify({ args, endpoint: process.env.ORBIS_CODEX_DESKTOP_ENDPOINT })); }");
+    const staged = stageCodexWrapper(wrapper, root, endpointPath, "win32");
+    const env: NodeJS.ProcessEnv = { ...process.env, NODE_OPTIONS: "--no-experimental-detect-module" };
     delete env.ORBIS_CODEX_DESKTOP_ENDPOINT;
     const run = promisify(execFile);
-    await expect(run(process.execPath, [staged.script], { env })).resolves.toMatchObject({ stdout: endpointPath + "\n" });
+    const args = ["app-server", "--print-startup-config", "--startup-client-info", '{"name":"codex_desktop","title":"Codex Desktop"}'];
+    const output = (endpoint: string) => JSON.stringify({ args, endpoint }) + "\n";
+    await expect(run(process.execPath, [staged.script, ...args], { env })).resolves.toMatchObject({ stdout: output(endpointPath), stderr: "" });
     // A caller's explicit endpoint still wins over the staged default.
-    await expect(run(process.execPath, [staged.script], { env: { ...env, ORBIS_CODEX_DESKTOP_ENDPOINT: "explicit-endpoint" } })).resolves.toMatchObject({ stdout: "explicit-endpoint\n" });
+    await expect(run(process.execPath, [staged.script, ...args], { env: { ...env, ORBIS_CODEX_DESKTOP_ENDPOINT: "explicit-endpoint" } })).resolves.toMatchObject({ stdout: output("explicit-endpoint") });
     const changed = join(root, "next-state", "codex-desktop-endpoint.json");
-    stageCodexWrapper(wrapper, root, changed);
-    await expect(run(process.execPath, [staged.script], { env })).resolves.toMatchObject({ stdout: changed + "\n" });
+    stageCodexWrapper(wrapper, root, changed, "win32");
+    await expect(run(process.execPath, [staged.script, ...args], { env })).resolves.toMatchObject({ stdout: output(changed) });
+  });
+
+  it("repairs a registered legacy Windows bootstrap on upgrade without changing its endpoint or registry entry", async () => {
+    const wrapper = await source();
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-upgrade-"));
+    const endpoint = join(root, "state directory's", "endpoint.json");
+    const staged = stageCodexWrapper(wrapper, root, endpoint, "win32");
+    await writeFile(staged.script, [
+      'import { main } from "file:///previous-install/codex-desktop-wrapper.js";',
+      `process.env.ORBIS_CODEX_DESKTOP_ENDPOINT ??= ${JSON.stringify(endpoint)};`,
+      "await main(process.argv.slice(2));",
+    ].join("\n"));
+    activation.readEntry.mockResolvedValue(staged.launcher);
+    await repairWindowsCodexDesktopEntry(wrapper, root);
+    expect(await readFile(staged.script, "utf8")).toContain(`void import(${JSON.stringify(pathToFileURL(wrapper.script).href)})`);
+    expect(await readFile(staged.script, "utf8")).toContain(`ORBIS_CODEX_DESKTOP_ENDPOINT ??= ${JSON.stringify(endpoint)};`);
+    expect(activation.ensureEntry).not.toHaveBeenCalled();
+    expect(activation.suspend).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "C:\\custom\\codex.exe"])("does not enable or replace the user override during install: %s", async current => {
+    const wrapper = await source();
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-not-registered-"));
+    activation.readEntry.mockResolvedValue(current);
+    await repairWindowsCodexDesktopEntry(wrapper, root);
+    expect(existsSync(join(root, "bin"))).toBe(false);
+    expect(activation.ensureEntry).not.toHaveBeenCalled();
+    expect(activation.suspend).not.toHaveBeenCalled();
+  });
+
+  it("suspends exactly the registered wrapper if the installer cannot replace a broken stub", async () => {
+    const wrapper = await source();
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-upgrade-denied-"));
+    const staged = stageCodexWrapper(wrapper, root, undefined, "win32");
+    await writeFile(staged.script, "broken legacy stub");
+    activation.readEntry.mockResolvedValue(staged.launcher);
+    activation.suspend.mockResolvedValue(undefined);
+    filesystem.rename.mockImplementationOnce(() => { throw new Error("cannot replace bootstrap"); });
+    await expect(repairWindowsCodexDesktopEntry(wrapper, root)).rejects.toThrow("cannot replace bootstrap");
+    expect(activation.suspend).toHaveBeenCalledWith(staged.launcher);
+    expect(activation.ensureEntry).not.toHaveBeenCalled();
+    await expect(readFile(staged.script, "utf8")).resolves.toBe("broken legacy stub");
+  });
+
+  it("opens native Desktop rather than enabling an incomplete Windows bootstrap", async () => {
+    const wrapper = await source();
+    const root = await testDirectory(join(tmpdir(), "orbis-wrapper-stage-denied-"));
+    const endpoint = join(root, "state", "endpoint.json");
+    const launcher = join(root, "bin", "codex-launcher.exe");
+    vi.stubEnv("CODEX_CLI_PATH", launcher);
+    activation.suspend.mockReset().mockResolvedValue(undefined);
+    activation.launch.mockReset().mockResolvedValue(undefined);
+    filesystem.rename.mockImplementationOnce(() => { throw new Error("cannot publish bootstrap"); });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      await expect(launchCodexDesktopThroughWrapper(wrapper, endpoint, root)).resolves.toBe(true);
+    } finally { Object.defineProperty(process, "platform", platform); }
+    expect(activation.ensureEntry).not.toHaveBeenCalled();
+    expect(activation.suspend).toHaveBeenCalledExactlyOnceWith(launcher);
+    expect(activation.launch.mock.calls[0]?.[0].CODEX_CLI_PATH).toBeUndefined();
+    expect(readDesktopRecoveryReason(endpoint)).toContain("未能准备好 Codex 包装器");
   });
 
   it("waits for the user wrapper entry before activating the registered application", async () => {
@@ -260,6 +328,9 @@ describe("staged Codex wrapper runtime", () => {
 // macOS 不分发 launcher：暂存时生成 sh 脚本，桌面版经 CODEX_CLI_PATH 直接执行它。
 describe("staged Codex wrapper runtime on macOS", () => {
   const run = promisify(execFile);
+  // Never let the running Codex session's own launcher overrides escape into a fixture.
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: "/usr/bin:/bin" };
+  for (const key of ["NODE_OPTIONS", "CODEX_CLI_PATH", "ORBIS_CODEX_WRAPPER_NODE", "ORBIS_CODEX_WRAPPER_SCRIPT", "ORBIS_CODEX_DESKTOP_ENDPOINT", "ORBIS_CODEX_REAL"]) delete env[key];
 
   it("generates an executable launcher that hands the desktop argv to the wrapper", async () => {
     const dir = await testDirectory(join(tmpdir(), "orbis wrapper's source-"));
@@ -280,7 +351,7 @@ describe("staged Codex wrapper runtime on macOS", () => {
 
     if (process.platform !== "win32") {
       expect((await stat(staged.launcher)).mode & 0o111).not.toBe(0);
-      await expect(run(staged.launcher, ["app-server", "--analytics-default-enabled", "it's"], { env: { PATH: "/usr/bin:/bin" } })).resolves
+      await expect(run(staged.launcher, ["app-server", "--analytics-default-enabled", "it's"], { env })).resolves
         .toMatchObject({ stdout: `${JSON.stringify(["app-server", "--analytics-default-enabled", "it's"])}\n` });
     }
   });
@@ -291,8 +362,8 @@ describe("staged Codex wrapper runtime on macOS", () => {
     await writeFile(real, "#!/bin/sh\necho real \"$@\"\n", { mode: 0o755 });
     const root = await testDirectory(join(tmpdir(), "orbis-wrapper-fallback-root-"));
     const staged = stageCodexWrapper({ launcher: "", node: join(dir, "missing-node"), script: join(dir, "missing.js") }, root, undefined, "darwin");
-    await expect(run(staged.launcher, ["--version"], { env: { PATH: "/usr/bin:/bin", ORBIS_CODEX_REAL: real } })).resolves.toMatchObject({ stdout: "real --version\n" });
-    await expect(run(staged.launcher, ["--version"], { env: { PATH: "/usr/bin:/bin" } })).rejects.toMatchObject({ code: 127 });
+    await expect(run(staged.launcher, ["--version"], { env: { ...env, ORBIS_CODEX_REAL: real } })).resolves.toMatchObject({ stdout: "real --version\n" });
+    await expect(run(staged.launcher, ["--version"], { env })).rejects.toMatchObject({ code: 127 });
   });
 
   it("resolves the wrapper without a shipped launcher binary", async () => {

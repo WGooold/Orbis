@@ -35,6 +35,10 @@ describe("Codex user PATH registration", () => {
     await expect(suspendCodexDesktopEntry()).rejects.toThrow("不是 Orbis");
     expect(current).toBe("C:\\custom\\codex.exe");
     expect(registry.exec.mock.calls.filter(call => call[1][0] === "delete")).toHaveLength(0);
+    // CODEX-DESKTOP-BOOTSTRAP-01: an installer may suspend only the entry it tried to repair.
+    current = "C:\\Local\\Orbis\\other-wrapper\\bin\\codex-launcher.exe";
+    await expect(suspendCodexDesktopEntry("C:\\Local\\Orbis\\wrapper\\bin\\codex-launcher.exe")).rejects.toThrow("已改变");
+    expect(registry.exec.mock.calls.filter(call => call[1][0] === "delete")).toHaveLength(0);
     registry.exec.mockReset().mockImplementation((_program, _args, _options, callback: (error: Error) => void) => callback(new Error("access denied")));
     await expect(suspendCodexDesktopEntry()).rejects.toThrow("access denied");
     expect(registry.exec).toHaveBeenCalledOnce();
