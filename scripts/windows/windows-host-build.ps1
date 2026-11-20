@@ -40,7 +40,9 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed' }
         cmake --build $buildDir --parallel 2
         if ($LASTEXITCODE -ne 0) { throw 'Qt build failed' }
-        ctest --test-dir $buildDir --output-on-failure
+        # Keep the failing test's own output: the default 1024-byte cap truncated the report to
+        # nothing for installer-update, which hid the Windows-only failure twice.
+        ctest --test-dir $buildDir --output-on-failure --test-output-size-failed 200000
         $nativeTestExit = $LASTEXITCODE
         $diagnosticLog = Join-Path $buildDir 'diagnostic-log.txt'
         if (Test-Path -LiteralPath $diagnosticLog) { Get-Content -LiteralPath $diagnosticLog }
@@ -107,7 +109,7 @@ if (result.status !== 0 || result.stdout.trim() !== expected) {
             # Bind installer cleanup support to this exact executable; stale markers after a downgrade
             # must not send an unknown option to an older Qt app (which may show an error dialog).
             [IO.File]::WriteAllText((Join-Path $stage 'installer-update-v1.sha256'), (Get-FileHash -LiteralPath "$stage\OrbisHost.exe" -Algorithm SHA256).Hash.ToLowerInvariant() + "`n", [Text.Encoding]::ASCII)
-            $archive = Join-Path $releaseRoot 'OrbisHost-0.1.22-windows-x64.zip'
+            $archive = Join-Path $releaseRoot 'OrbisHost-0.1.24-windows-x64.zip'
             Compress-Archive -LiteralPath $stage -DestinationPath $archive
             [IO.File]::WriteAllText("$archive.sha256", (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $archive) + "`n", [Text.Encoding]::ASCII)
             if ($InnoCompiler) {
@@ -127,7 +129,7 @@ if (result.status !== 0 || result.stdout.trim() !== expected) {
                 } finally {
                     if ($installerDrive) { & "$env:SystemRoot\System32\subst.exe" $installerDrive /D }
                 }
-                $installer = Join-Path $releaseRoot 'OrbisHost-0.1.22-windows-x64-setup.exe'
+                $installer = Join-Path $releaseRoot 'OrbisHost-0.1.24-windows-x64-setup.exe'
                 [IO.File]::WriteAllText("$installer.sha256", (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $installer) + "`n", [Text.Encoding]::ASCII)
             }
             Write-Output "Portable release: $archive"

@@ -346,6 +346,8 @@ export function claudeToolResultText(tool: string | undefined, value: unknown): 
     const { title, url } = raw as Record<string, unknown>;
     const target = safeCitationUrl(typeof url === "string" ? url : undefined);
     if (!target) return undefined;
+    // The trailing ranges strip bidi controls; the leading ones strip C0 whitespace.
+    // eslint-disable-next-line no-control-regex
     const label = typeof title === "string" ? title.replace(/[\u0000-\u0020\u007f\u202a-\u202e\u2066-\u2069]+/gu, " ").trim().slice(0, 256) : "";
     return { url: target.href, label: label || target.hostname };
   };

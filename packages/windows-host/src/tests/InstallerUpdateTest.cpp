@@ -40,6 +40,8 @@ class InstallerUpdateTest : public QObject {
         return {"--runtime-root", root, "--data-dir", root + "/data", "--host-state-dir", root + "/host", "--smoke-test"};
     }
 private slots:
+    // Shared CI runners stall on antivirus scans and cold starts: a 10s ceiling made the
+    // closed-Host case fail once and pass on the next identical run.
     void closedHost_data() {
         QTest::addColumn<bool>("failure");
         QTest::newRow("verified-cleanup") << false;
@@ -53,7 +55,7 @@ private slots:
         QProcess child;
         child.start(QStringLiteral(ORBIS_HOST_EXECUTABLE), arguments(root.path()) + QStringList{"--prepare-update-confirmed"});
         QVERIFY(child.waitForStarted());
-        QVERIFY2(child.waitForFinished(10000), qPrintable(QString::fromUtf8(child.readAllStandardError())));
+        QVERIFY2(child.waitForFinished(30000), qPrintable(QString::fromUtf8(child.readAllStandardError())));
         QCOMPARE(child.exitStatus(), QProcess::NormalExit);
         QCOMPARE(child.exitCode(), failure ? 20 : 0);
         const auto dist = root.path() + "/packages/host/dist";
@@ -71,7 +73,7 @@ private slots:
         QSignalSpy connections(&old, &QLocalServer::newConnection);
         QProcess child;
         child.start(QStringLiteral(ORBIS_HOST_EXECUTABLE), arguments(root.path()) + QStringList{"--prepare-update-confirmed"});
-        QVERIFY(child.waitForStarted()); QVERIFY(child.waitForFinished(10000));
+        QVERIFY(child.waitForStarted()); QVERIFY(child.waitForFinished(30000));
         QCOMPARE(child.exitCode(), 1);
         QCoreApplication::processEvents(); QCOMPARE(connections.size(), 0);
         QVERIFY(!QFile::exists(root.path() + "/packages/host/dist/cleanup-request.json"));
@@ -82,13 +84,13 @@ private slots:
         QTemporaryDir root; fixture(root.path(), false);
         QProcess host; host.start(QStringLiteral(ORBIS_HOST_EXECUTABLE), arguments(root.path()));
         QVERIFY(host.waitForStarted());
-        QTRY_VERIFY2_WITH_TIMEOUT(QFile::exists(root.path() + "/packages/host/dist/bridge-started"), qPrintable(QString::fromUtf8(host.readAllStandardError())), 7000);
+        QTRY_VERIFY2_WITH_TIMEOUT(QFile::exists(root.path() + "/packages/host/dist/bridge-started"), qPrintable(QString::fromUtf8(host.readAllStandardError())), 20000);
         QProcess installer;
         installer.start(QStringLiteral(ORBIS_HOST_EXECUTABLE), arguments(root.path()) + QStringList{"--prepare-update-confirmed"});
         QVERIFY(installer.waitForStarted());
-        QVERIFY2(installer.waitForFinished(7000), qPrintable(QString::fromUtf8(host.readAllStandardError())));
+        QVERIFY2(installer.waitForFinished(20000), qPrintable(QString::fromUtf8(host.readAllStandardError())));
         QCOMPARE(installer.exitCode(), 0);
-        if (host.state() != QProcess::NotRunning) QVERIFY(host.waitForFinished(3000));
+        if (host.state() != QProcess::NotRunning) QVERIFY(host.waitForFinished(10000));
         QCOMPARE(host.exitCode(), 0);
         QFile request(root.path() + "/packages/host/dist/cleanup-request.json"); QVERIFY(request.open(QIODevice::ReadOnly));
         QVERIFY(QJsonDocument::fromJson(request.readAll()).object().value("bridgePid").toDouble() > 0);

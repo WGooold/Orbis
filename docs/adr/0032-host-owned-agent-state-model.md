@@ -178,3 +178,11 @@ Host 承担投影存储、领域协调、范围缓存与恢复调度，以预算
 ## 2026-11-01 输入生命周期补充
 
 输入受理、投递、执行和落地按 [ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md) 分别确认；未知结果保留身份并核对，验收状态以对应证据为准。
+
+## 2026-11-19 作废基线要丢掉源身份（CODEX-SOURCE-02）
+
+§5「patch 永远不是恢复基线」保持不变，但一条已作废的基线不能只把 `ready` 改成 false 保留下来：`epoch` / `seq` 仍是旧的，之后每块补丁都会以 `patch_baseline_mismatch`（旧基线仍 ready）或 `handshake_base_mismatch`（旧基线已 not-ready）被拒；`accept` 只在「旧 epoch 与补丁 epoch 相同」时才允许握手，所以一旦落后就再也进不了握手分支。一条会话因此永久停更，设备侧没有错误、只有不再变化的内容。
+
+`AgentConversationState.invalidateBaseline` 现在连同 `epoch` / `seq` 一起丢掉当前投影（页面缓存与字节记账同步回收），下一块补丁按「还没有基线」的握手接收，流恢复；旧 epoch 记进独立的 `#retired`（与当前投影同预算），迟到事件仍以 `retired_source_epoch` 被拒。`offline` 保留原语义：断线只丢可恢复性，已读到的行仍供按 id 取回原文。握手本身仍不是基线，重建基线仍要一次快照；作废后下一块补丁以未就绪握手到达，两端据此各自强制重新同步（iOS `syncSession(force:)`、Android `requestRecovery`），因此不需要 Host 主动索取快照。
+
+实现与回归：[agent-conversation-state.ts](../../packages/host/src/agent-conversation-state.ts)、[agent-conversation-state.test.ts](../../packages/host/src/agent-conversation-state.test.ts)、[host-service.test.ts](../../packages/host/src/host-service.test.ts)。自动验证：会话投影 22 项、Host 端到端 95 项（Kimi 握手用例为同树其它改动引入的既有失败）、Codex 运行时 231 项，`tsc -b` 与 ESLint 通过；变异检验把作废改回「只置 ready=false」时新增的 3 项全部失败。证据与未覆盖边界见 [.artifacts/20261119-codex-source-02/](../../.artifacts/20261119-codex-source-02/)。当前运行的 Host 仍是本次修改前的安装包，现场计数需重装后复测。
