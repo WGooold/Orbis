@@ -19,16 +19,16 @@ struct ArtifactChunk: Equatable {
         data.append(runtime); data.append(transfer); data.append(bytes)
         return data
     }
-    static func decode(_ data: Data) throws -> ArtifactChunk {
-        let data = Array(data)
+    static func decode(_ frame: Data) throws -> ArtifactChunk {
+        let data = Array(frame.prefix(24 + 2 * 256))
         guard data.count >= 24, Array(data[0..<6]) == [0x50, 0x49, 0x52, 0x33, UInt8(orbisProtocolVersion), 1], data[10] == 0, data[11] == 0 else { throw transferError(L10n.tr("文件分片格式无效")) }
         func read(_ offset: Int, _ length: Int) -> UInt64 { data[offset..<(offset + length)].reduce(0) { ($0 << 8) | UInt64($1) } }
         let r = Int(read(6, 2)), t = Int(read(8, 2)), count = Int(read(20, 4)), offset = read(12, 8)
         guard (1...256).contains(r), (1...256).contains(t), (1...1_048_576).contains(count),
-              data.count == 24 + r + t + count, offset <= 9_007_199_254_740_991,
+              frame.count == 24 + r + t + count, offset <= 9_007_199_254_740_991,
               let runtime = String(bytes: data[24..<(24 + r)], encoding: .utf8), !runtime.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let transfer = String(bytes: data[(24 + r)..<(24 + r + t)], encoding: .utf8), !transfer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw transferError(L10n.tr("文件分片长度无效")) }
-        return ArtifactChunk(runtimeId: runtime, transferId: transfer, offset: Int64(offset), bytes: Data(data[(24 + r + t)...]))
+        return ArtifactChunk(runtimeId: runtime, transferId: transfer, offset: Int64(offset), bytes: frame.dropFirst(24 + r + t))
     }
 }
 
@@ -139,6 +139,7 @@ struct FileTransfer: Codable, Identifiable, Equatable {
 
 @MainActor
 final class FileTransfers: ObservableObject {
+    let browserPreview = ChatFilePreview()
     /// SC93/SC94: the transfer reader owns these exact authenticated reply types, including late replies.
     nonisolated static let ownedReplyTypes: Set<String> = ["_artifact.chunk", "artifact.started", "artifact.failed", "artifact.read.failed",
         "file.upload.ready", "file.upload.read", "file.upload.progress", "file.upload.finished", "file.upload.failed"]
@@ -160,6 +161,24 @@ final class FileTransfers: ObservableObject {
     var didSettleUpload: ((String, String?, String?) -> Void)?
     @Published private(set) var preparing = false
     @Published var error: String?
+    /// Upload preparation errors stay scoped to the chat runtime that initiated them so download
+    /// errors on DownloadsView never leak into unrelated chat composers.
+    struct UploadFeedback: Equatable {
+        let sessionId: String?
+        let message: String
+    }
+    @Published private(set) var uploadErrors: [String: UploadFeedback] = [:]
+    func uploadError(for runtime: RuntimeSummary) -> String? {
+        guard let error = uploadErrors[runtime.runtimeId], error.sessionId == runtime.sessionId else { return nil }
+        return error.message
+    }
+    func setUploadError(_ message: String, for runtime: RuntimeSummary) {
+        uploadErrors[runtime.runtimeId] = .init(sessionId: runtime.sessionId, message: FeedbackText.reason(message))
+    }
+    func clearUploadError(for runtime: RuntimeSummary) {
+        if uploadError(for: runtime) != nil { uploadErrors[runtime.runtimeId] = nil }
+    }
+    func clearUploadErrors() { if !uploadErrors.isEmpty { uploadErrors = [:] } }
     var send: ([String: Any]) -> Bool = { _ in false }
     var sendBinary: (Data) -> Bool = { _ in false }
     var canUploadImport: (ExternalImportTarget, String) -> Bool = { _, _ in false }
@@ -191,6 +210,7 @@ final class FileTransfers: ObservableObject {
     /// Match Android's reduced receive window while the user is interacting.
     func setInteractive(_ value: Bool) {
         interactive = value
+        browserPreview.interactive = value
         for download in downloads.values { download.scheduler.interactive = value }
     }
 
@@ -263,6 +283,7 @@ final class FileTransfers: ObservableObject {
     func setConnection(_ host: HostPairing?, connected: Bool) {
         let changed = pairing.map(Self.pairingKey) != host.map(Self.pairingKey)
         if !connected || changed {
+            browserPreview.resetConnection()
             for id in diskWorkers.keys { invalidateDisk(id) }
             for index in tasks.indices where ["queued", "downloading", "uploading", "verifying"].contains(tasks[index].status) {
                 tasks[index].status = "paused"; tasks[index].transferId = nil; tasks[index].commandId = nil; tasks[index].requestId = nil
@@ -270,6 +291,7 @@ final class FileTransfers: ObservableObject {
             timeouts.values.forEach { $0.cancel() }; timeouts = [:]
             downloads = [:]; pullTimer?.cancel(); pullTimer = nil
             preparingGeneration = UUID(); preparing = false
+            clearUploadErrors()
             save()
         }
         pairing = host; self.connected = connected
@@ -279,6 +301,7 @@ final class FileTransfers: ObservableObject {
     @discardableResult
     func download(path: String? = nil, artifact: RemoteArtifact? = nil, displayName: String? = nil) -> Bool {
         guard let pairing, connected, path?.isEmpty == false || artifact != nil else { error = L10n.tr("连接电脑后可下载文件。"); return false }
+        error = nil
         var task = FileTransfer(id: UUID().uuidString, hostKey: hostKey, hostId: pairing.hostId, runtimeId: pairing.hostId,
             sessionId: nil, direction: "download", name: artifact?.fileName ?? displayName ?? (messageFileReferenceId(path) == nil ? directoryTitle(path ?? L10n.tr("文件")) : L10n.tr("电脑文件")), sourcePath: path, artifactId: artifact?.artifactId)
         task.size = artifact?.size ?? 0; task.sha256 = artifact?.sha256
@@ -360,6 +383,7 @@ final class FileTransfers: ObservableObject {
             return false
         }
         let key = hostKey, generation = UUID()
+        uploadErrors[runtime.runtimeId] = nil
         preparing = true; preparingGeneration = generation
         var staged: [(String, TransferDiskWorker, UUID)] = []
         for _ in urls.prefix(10) {
@@ -390,7 +414,10 @@ final class FileTransfers: ObservableObject {
                     let cleanup = UUID(); disk.setGeneration(cleanup); try? await disk.remove(generation: cleanup)
                     self.diskWorkers[id] = nil; self.diskGenerations[id] = nil
                 }
-                if self.preparingGeneration == generation { self.preparing = false; self.error = error.localizedDescription }
+                if self.preparingGeneration == generation {
+                    self.preparing = false
+                    self.setUploadError(error.localizedDescription, for: runtime)
+                }
             }
         }
         return true
@@ -456,9 +483,12 @@ final class FileTransfers: ObservableObject {
             if self?.diskGenerations[task.id] == generation { self?.diskWorkers[task.id] = nil; self?.diskGenerations[task.id] = nil }
         }
     }
-    func consume(_ object: [String: Any]) {
+    func consume(_ object: [String: Any], allowPreviewChunk: Bool = false) {
         let type = object["type"] as? String ?? ""
-        if type == "_artifact.chunk", let data = object["data"] as? Data { receiveChunk(data); return }
+        if type == "_artifact.chunk", let data = object["data"] as? Data {
+            if let chunk = try? ArtifactChunk.decode(data), !allowPreviewChunk || !browserPreview.consume(chunk) { receiveChunk(chunk) }
+            return
+        }
         if type == "runtime.event", let event = object["event"] as? [String: Any] { consume(event); return }
         if type == "artifact.started", let commandId = object["commandId"] as? String,
            let index = tasks.firstIndex(where: { $0.commandId == commandId && $0.hostKey == hostKey && $0.status == "queued" }),
@@ -569,14 +599,14 @@ final class FileTransfers: ObservableObject {
             if download.scheduler.complete { downloads[id] = nil; completeDownload(id) }
         }
     }
-    private func receiveChunk(_ data: Data) {
-        guard let chunk = try? ArtifactChunk.decode(data), let index = tasks.firstIndex(where: {
+    private func receiveChunk(_ chunk: ArtifactChunk) {
+        guard let index = tasks.firstIndex(where: {
             $0.transferId == chunk.transferId && $0.hostKey == hostKey && $0.status == "downloading" && chunk.runtimeId == $0.hostId
         }), let download = downloads[tasks[index].id], download.scheduler.accepts(offset: chunk.offset, length: chunk.bytes.count) else { return }
         let task = tasks[index]
         guard chunk.offset >= task.received, Int64(chunk.bytes.count) <= task.size - chunk.offset,
               download.pending[chunk.offset] == nil, download.pendingBytes + chunk.bytes.count <= PullScheduler.maximumWindow else { return }
-        download.pending[chunk.offset] = chunk.bytes; download.pendingBytes += chunk.bytes.count
+        download.pending[chunk.offset] = Data(chunk.bytes); download.pendingBytes += chunk.bytes.count
         if chunk.offset != task.received { download.scheduler.onChunk(offset: chunk.offset, length: chunk.bytes.count, durableOffsetAfterWrite: task.received) }
         flushDownload(task.id)
     }

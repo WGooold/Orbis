@@ -63,13 +63,17 @@ internal fun SessionConfigurationValues.payload(): JsonObject = buildJsonObject 
 /** ADR-0090: opt in only after authenticated Host readiness; preserve old Hosts' windowed default. */
 internal fun RemoteState.sessionSpawnMode(explicit: String?): String = explicit ?: if (prefersAutoSessionSpawn) "auto" else "tui"
 
-internal fun RemoteState.sessionActivationRequest(id: String, target: JsonObject, spawnMode: String? = null): JsonObject = buildJsonObject {
+internal fun RemoteState.sessionActivationRequest(id: String, target: JsonObject, spawnMode: String? = null, codexLaunchMode: String? = null): JsonObject = buildJsonObject {
     put("type", "session.activate"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id)
     put("target", target); put("spawnMode", sessionSpawnMode(spawnMode))
+    if (unifiedCodexHistory && codexLaunchMode != null) put("codexLaunchMode", codexLaunchMode)
 }
 
-internal fun RemoteState.configuredSessionLaunchRequest(id: String, config: SessionConfigurationSnapshot, spawnMode: String? = null): JsonObject =
-    configuredLaunchPayload(id, config, sessionConfiguration.values, kimiSpawnMode(config.agentKind, sessionSpawnMode(spawnMode)))
+internal fun RemoteState.configuredSessionLaunchRequest(id: String, config: SessionConfigurationSnapshot, spawnMode: String? = null): JsonObject {
+    val payload = configuredLaunchPayload(id, config, sessionConfiguration.values, kimiSpawnMode(config.agentKind, sessionSpawnMode(spawnMode)))
+    val mode = when (config.agentKind) { "codex" -> "terminal"; "codexDesktop" -> "desktop"; else -> null }
+    return if (unifiedCodexHistory && mode != null) JsonObject(payload + ("codexLaunchMode" to JsonPrimitive(mode))) else payload
+}
 
 /** LAUNCH-WAIT-01: only the matching local journal can release a configured launch. */
 internal fun LaunchState.canAbandonConfiguredLaunch(journalLaunchId: String?): Boolean =

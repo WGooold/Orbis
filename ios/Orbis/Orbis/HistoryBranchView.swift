@@ -62,8 +62,18 @@ struct HistoryBranchView: View {
                 OrbisIconButton(symbol: "xmark", label: L10n.tr("清除搜索"), size: 28) { query = "" }
                     .opacity(query.isEmpty ? 0 : 1).disabled(query.isEmpty).accessibilityHidden(query.isEmpty)
             }.padding(.leading, 14).padding(.trailing, 6).frame(minHeight: 56).orbisField(focused: searchFocused).padding(.horizontal, 20)
+            let treeError = store.selectedRuntimeId.flatMap { store.activeConnection.menuErrors["\($0)\u{0}tree"] }
             if store.isViewingCachedSession { OrbisStatusWithInfo(title: L10n.tr("本机缓存"), message: L10n.tr("当前显示本机缓存。浏览节点和分支不会改变电脑端会话。")).padding(.horizontal, 20) }
-            if options.isEmpty && (optionCatalog?.count ?? 0) > 0 {
+            if options.isEmpty, let treeError {
+                VStack(spacing: 12) {
+                    OrbisNotice(text: treeError, error: true).accessibilityIdentifier("history-tree-error")
+                    OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") {
+                        let actions = ChatSessionActions(store: store, target: target)
+                        if actions.isCurrent, target.runtimeId != nil { actions.loadMenuOptions("tree") }
+                    }
+                }.padding(.horizontal, 24).padding(.top, 12)
+                Spacer(minLength: 0)
+            } else if options.isEmpty && (optionCatalog?.count ?? 0) > 0 {
                 ProgressView(L10n.tr("读取中…")).padding(24)
                 OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") {
                     let actions = ChatSessionActions(store: store, target: target)
@@ -102,7 +112,10 @@ struct HistoryBranchView: View {
                         }
                 }
             }
-            if let selected { preview(selected) }
+            if let selected {
+                preview(selected)
+                    .anchorPreference(key: FeedbackBottomAnchorKey.self, value: .bounds) { [.init(scope: .history, bounds: $0)] }
+            }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .onChange(of: store.historyRevision) { _, _ in onBack() }
             .onChange(of: store.pendingActionIds) { _, ids in if ids.isEmpty { actionPending = false } }

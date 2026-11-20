@@ -91,6 +91,20 @@ function desktopHarness(mode: "desktop" | "external" = "desktop", endpoint?: str
 }
 
 describe("Codex desktop attachment", () => {
+  // CODEX-UNIFIED-01: reading an unloaded session is not a reason to adopt it or start Terminal.
+  it("includes saved history from a desktop-only connection without consulting the ownership ledger", async () => {
+    const h = desktopHarness();
+    h.native.add("before-pairing");
+    h.native.add("archived-before-pairing"); h.archived.add("archived-before-pairing");
+    h.native.add("child"); h.subagents.add("child");
+    h.native.add("ephemeral"); h.ephemeral.add("ephemeral");
+    expect(await h.runtime.catalog()).toEqual([]);
+    expect(await h.runtime.unifiedCatalog(false)).toMatchObject({ complete: true, sessions: [{ sessionId: "before-pairing" }] });
+    expect(await h.runtime.unifiedCatalog(true)).toMatchObject({ complete: true, sessions: [{ sessionId: "archived-before-pairing", archived: true }] });
+    expect(h.runtime.directoryEntries()).toEqual([]);
+    expect(h.calls.every(call => call === "thread/list")).toBe(true);
+  });
+
   it("uses the official proxy's newline-delimited stdio protocol", async () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();

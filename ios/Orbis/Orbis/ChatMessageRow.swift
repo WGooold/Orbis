@@ -359,6 +359,7 @@ private struct ChatToolGroup: View {
 }
 
 private struct MessageContentView: View {
+    @Environment(\.openChatFilePreview) private var openFilePreview
     @Environment(\.orbisFileActions) private var fileActions
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.colorScheme) private var scheme
@@ -374,7 +375,8 @@ private struct MessageContentView: View {
                 ToolSummaryView(summary: summary, readContext: readContext, persistenceKey: "summary:" + message.messageId)
             }
             ForEach(Array(message.content.enumerated()), id: \.offset) { index, content in
-                let key = content.toolCallId.map { "call:" + $0 } ?? "\(message.messageId):block:\(index):\(content.type)"
+                let blockKey = "\(message.messageId):block:\(index):\(content.type)"
+                let key = content.toolCallId.map { "call:" + $0 } ?? blockKey
                 switch content.type {
                 case "thinking":
                     CompactDisclosure(title: L10n.tr("思考过程"), symbol: "sparkles", persistenceKey: key) {
@@ -401,26 +403,19 @@ private struct MessageContentView: View {
                     }
                 case "render":
                     if let reference = content.fileAction {
-                        OrbisMotionButton {
+                        fileCard(name: content.file?.fileName ?? content.renderLabel, label: content.renderLabel,
+                                 block: blockKey, source: .reference(reference), identifier: "message-file-reference") {
                             if fileActions?.download(path: reference, displayName: content.file?.fileName) == true { downloadFlight?.launch() }
-                        } label: {
-                            HStack(spacing: 8) {
-                                OrbisActionSymbol(systemName: "arrow.down.doc")
-                                FileNameText(name: content.renderLabel)
-                            }.font(.orbisLabel()).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 12)
-                        }.buttonStyle(NeuButtonStyle()).accessibilityIdentifier("message-file-reference")
+                        }
                     } else {
                         Text(content.renderLabel).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
                             .textSelection(.enabled).accessibilityIdentifier("message-content-placeholder")
                     }
                 case "artifact":
                     if let file = content.artifact {
-                        OrbisMotionButton { if fileActions?.download(artifact: file) == true { downloadFlight?.launch() } } label: {
-                            HStack(spacing: 8) {
-                                OrbisActionSymbol(systemName: "arrow.down.doc")
-                                FileNameText(name: file.fileName)
-                            }.font(.orbisLabel()).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 12)
-                        }.buttonStyle(NeuButtonStyle())
+                        fileCard(name: file.fileName, label: file.fileName, block: blockKey, source: .artifact(file.artifactId), identifier: "message-artifact") {
+                            if fileActions?.download(artifact: file) == true { downloadFlight?.launch() }
+                        }
                     }
                 default:
                     if let text = content.text, !text.isEmpty {
@@ -432,6 +427,25 @@ private struct MessageContentView: View {
             if message.content.contains(where: { $0.truncated == true }) { TruncatedMessageContent(message: message, readContext: readContext) }
             if message.content.isEmpty && message.toolSummary == nil { Text("…").foregroundStyle(OrbisPalette(scheme).secondary) }
         }.foregroundStyle(message.isError == true ? OrbisPalette(scheme).error : OrbisPalette(scheme).text)
+    }
+
+    @ViewBuilder private func fileCard(name: String, label: String, block: String, source: ChatFilePreview.Source,
+                                       identifier: String, action: @escaping () -> Void) -> some View {
+        if let actions = readContext, let openFilePreview, ChatFilePreview.Format(fileName: name) != nil {
+            let key = ChatFilePreview.Key(session: actions.target.identity, block: block, source: source, name: name)
+            ChatFilePreviewCard(preview: actions.connection.transfers.browserPreview, key: key, canOpen: { actions.isCurrent }) {
+                fileDownloadButton(label, identifier: identifier, action: action)
+            }.environment(\.openChatFilePreview, openFilePreview).id(key)
+        } else { fileDownloadButton(label, identifier: identifier, action: action) }
+    }
+
+    private func fileDownloadButton(_ label: String, identifier: String, action: @escaping () -> Void) -> some View {
+        OrbisMotionButton(action: action) {
+            HStack(spacing: 8) {
+                OrbisActionSymbol(systemName: "arrow.down.doc")
+                FileNameText(name: label)
+            }.font(.orbisLabel()).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 12)
+        }.buttonStyle(NeuButtonStyle()).accessibilityIdentifier(identifier)
     }
 }
 

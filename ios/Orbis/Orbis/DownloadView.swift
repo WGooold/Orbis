@@ -128,62 +128,168 @@ struct DownloadsView: View {
     }
 }
 
+/// FILE-BROWSER-01: direct path navigation and multi-file downloads share one browser state.
 private struct DownloadBrowserView: View {
     @EnvironmentObject private var store: OrbisStore
     @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     let onDismiss: () -> Void
-    @State private var selected: BrowseEntry?
+    @State private var selected: Set<String> = []
+    @State private var pathInput = ""
+    @State private var previousBrowseRequestId: String?
+    @State private var awaitingBrowseResult = false
+    @FocusState private var pathFocused: Bool
+
+    private var selectedFiles: [BrowseEntry] {
+        (store.browse?.entries ?? []).filter { !$0.isDir && selected.contains($0.id) }
+    }
+    private var trimmedPath: String { pathInput.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var sortedEntries: [BrowseEntry] {
+        (store.browse?.entries ?? []).sorted {
+            ($0.isDir ? 0 : 1, $0.name) < ($1.isDir ? 0 : 1, $1.name)
+        }
+    }
+
+    private func browse(_ path: String?) {
+        previousBrowseRequestId = store.browse?.requestId
+        awaitingBrowseResult = true
+        store.browseDirectory(path)
+    }
+
+    private func jumpToPath() {
+        guard !trimmedPath.isEmpty, store.connection == .secured, store.browse?.loading != true else { return }
+        pathFocused = false
+        selected.removeAll()
+        browse(trimmedPath)
+    }
+
+    private func downloadSelected() {
+        guard !selectedFiles.isEmpty else { return }
+        for entry in selectedFiles {
+            transfers.download(path: remoteBrowsePath(parent: store.browse?.path, name: entry.name))
+        }
+        onDismiss()
+    }
+
+    @ViewBuilder
+    private func browserEntry(_ entry: BrowseEntry) -> some View {
+        let isSelected = !entry.isDir && selected.contains(entry.id)
+        OrbisMotionButton {
+            if entry.isDir {
+                selected.removeAll()
+                browse(remoteBrowsePath(parent: store.browse?.path, name: entry.name))
+            } else if !selected.insert(entry.id).inserted {
+                selected.remove(entry.id)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                OrbisActionSymbol(systemName: entry.isDir ? "folder" : "doc")
+                    .foregroundStyle(OrbisPalette(scheme).accent)
+                Group {
+                    if entry.isDir { Text(entry.name).lineLimit(1) }
+                    else { FileNameText(name: entry.name) }
+                }
+                .font(.orbisBody())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if entry.isDir { OrbisActionSymbol(systemName: "chevron.right").imageScale(.small) }
+                else { OrbisActionSymbol(systemName: "checkmark.circle.fill").opacity(isSelected ? 1 : 0) }
+            }
+            .padding(14)
+            .frame(minHeight: 52)
+        }
+        .buttonStyle(NeuButtonStyle(selected: isSelected))
+    }
+
+    private var pathEntry: some View {
+        HStack(spacing: 10) {
+            TextField(L10n.tr("电脑路径"), text: $pathInput)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .font(.orbisCaption(mono: true)).focused($pathFocused).orbisInput(focused: pathFocused)
+                .submitLabel(.go).onSubmit(jumpToPath)
+                .accessibilityIdentifier("download-browser-path")
+            OrbisIconButton(symbol: "magnifyingglass", label: L10n.tr("跳转"), action: jumpToPath)
+                .disabled(trimmedPath.isEmpty || store.connection != .secured || store.browse?.loading == true)
+                .accessibilityIdentifier("download-browser-jump")
+        }
+        .padding(.horizontal, 24)
+    }
+
+    private var browserContents: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                HStack {
+                    Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
+                        .font(.orbisCaption(mono: true))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ZStack {
+                        if store.browse?.loading == true { ProgressView().controlSize(.small) }
+                        else {
+                            OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) {
+                                browse(store.browse?.path)
+                            }
+                        }
+                    }
+                    .frame(width: 48, height: 48)
+                }
+                if store.browse?.path?.isEmpty == false {
+                    OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") {
+                        selected.removeAll()
+                        browse(store.browse?.parent)
+                    }
+                    .disabled(store.browse?.loading == true)
+                }
+                if let error = store.browse?.error {
+                    OrbisNotice(text: error, error: true)
+                    OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") {
+                        browse(store.browse?.path)
+                    }
+                } else if store.browse?.loading == false {
+                    ForEach(sortedEntries) { browserEntry($0) }
+                    if store.browse?.entries.isEmpty == true {
+                        Text(L10n.tr("此目录没有可浏览的文件或子目录"))
+                            .font(.orbisLabel())
+                            .foregroundStyle(OrbisPalette(scheme).secondary)
+                            .padding(24)
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 10)
+        }
+        .disabled(store.connection != .secured)
+    }
+
+    private var downloadFooter: some View {
+        OrbisActionButton(
+            title: selectedFiles.count > 1 ? L10n.tr("下载所选 {0} 个文件", selectedFiles.count) : L10n.tr("下载到手机"),
+            symbol: "arrow.down.to.line",
+            action: downloadSelected
+        )
+        .disabled(selectedFiles.isEmpty || store.browse?.loading != false || store.browse?.error != nil || store.connection != .secured)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 24)
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             OrbisPageHeader(title: L10n.tr("浏览电脑文件"), closes: true, back: onDismiss) { EmptyView() }
-            ScrollView {
-                VStack(spacing: 14) {
-                    HStack {
-                        Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录")).font(.orbisCaption(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
-                        ZStack {
-                            if store.browse?.loading == true { ProgressView().controlSize(.small) }
-                            else { OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) { store.browseDirectory(store.browse?.path) } }
-                        }.frame(width: 48, height: 48)
-                    }
-                    if store.browse?.path?.isEmpty == false {
-                        OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") { selected = nil; store.browseDirectory(store.browse?.parent) }.disabled(store.browse?.loading == true)
-                    }
-                    if let error = store.browse?.error {
-                        OrbisNotice(text: error, error: true)
-                        OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { store.browseDirectory(store.browse?.path) }
-                    } else if store.browse?.loading == false {
-                        ForEach((store.browse?.entries ?? []).sorted { ($0.isDir ? 0 : 1, $0.name) < ($1.isDir ? 0 : 1, $1.name) }) { entry in
-                            OrbisMotionButton {
-                                if entry.isDir { selected = nil; store.browseDirectory(remoteBrowsePath(parent: store.browse?.path, name: entry.name)) }
-                                else { selected = entry }
-                            } label: {
-                                HStack(spacing: 10) {
-                                    OrbisActionSymbol(systemName: entry.isDir ? "folder" : "doc").foregroundStyle(OrbisPalette(scheme).accent)
-                                    Group {
-                                        if entry.isDir { Text(entry.name).lineLimit(1) } else { FileNameText(name: entry.name) }
-                                    }.font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
-                                    // Files reserve the check slot, so selecting one never shifts its name.
-                                    if entry.isDir { OrbisActionSymbol(systemName: "chevron.right").imageScale(.small) }
-                                    else { OrbisActionSymbol(systemName: "checkmark.circle.fill").opacity(selected?.id == entry.id ? 1 : 0) }
-                                }.padding(14).frame(minHeight: 52)
-                            }.buttonStyle(NeuButtonStyle(selected: selected?.id == entry.id))
-                        }
-                        if store.browse?.entries.isEmpty == true { Text(L10n.tr("此目录没有可浏览的文件或子目录")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(24) }
-                    }
-                }.padding(.horizontal, 24).padding(.vertical, 10)
-            }.disabled(store.connection != .secured)
-            OrbisActionButton(title: L10n.tr("下载到手机"), symbol: "arrow.down.to.line") {
-                if let selected {
-                    transfers.download(path: remoteBrowsePath(parent: store.browse?.path, name: selected.name)); onDismiss()
-                }
-            }.disabled(selected == nil || store.browse?.loading != false || store.browse?.error != nil || store.connection != .secured)
-                .padding(.horizontal, 24).padding(.bottom, 24)
-        }.background(OrbisPalette(scheme).base.ignoresSafeArea())
-            .onAppear { store.browseDirectory() }
-            .onChange(of: store.selectedHostId) { _, _ in onDismiss() }
-            .onChange(of: store.browse?.requestId) { _, _ in selected = nil }
+            pathEntry
+            browserContents
+            downloadFooter
+        }
+        .background(OrbisPalette(scheme).base.ignoresSafeArea())
+        .onAppear { browse(store.downloadBrowserPath()) }
+        .onChange(of: store.browse?.path, initial: true) { _, path in pathInput = path ?? "" }
+        .onChange(of: store.browse?.loading) { _, loading in
+            if awaitingBrowseResult, loading == false, let browse = store.browse,
+               browse.requestId != previousBrowseRequestId, browse.error == nil {
+                store.rememberDownloadBrowserPath(browse.path)
+                awaitingBrowseResult = false
+            }
+        }
+        .onChange(of: store.selectedHostId) { _, _ in onDismiss() }
+        .onChange(of: store.browse?.requestId) { _, _ in selected.removeAll() }
     }
 }
 

@@ -64,19 +64,33 @@ class ProviderDialInstrumentedTest {
     }
     /** S36 / SC57: refresh is not hidden once a reading exists; each tap reaches a new query and failures stay visible. */
     @Test fun quotaRefreshStaysAvailableAfterTheFirstReading() {
-        val reading=SubscriptionQuota(1_000,listOf(SubscriptionWindow("five_hour",82.0,null),SubscriptionWindow("seven_day",35.0,null)))
-        val state=mutableStateOf(ready().copy(subscriptionQuotas=mapOf("codex" to ProviderQuotaSnapshot("codex-local",reading))))
+        val provider = profiles("codex").first()
+        val reading = SubscriptionQuota(1_000, listOf(SubscriptionWindow("five_hour", 82.0, null), SubscriptionWindow("seven_day", 35.0, null)))
+        val state = mutableStateOf(ready().copy(subscriptionQuotas = mapOf("codex" to ProviderQuotaSnapshot(provider.id, reading))))
         show(state)
         repeat(2) { compose.onNodeWithTag("provider-query").assertIsEnabled().performClick() }
-        compose.runOnIdle { assertEquals(listOf("codex-local","codex-local"),queries.map { it.id }) }
-        compose.runOnIdle { state.value=state.value.copy(agentProviders=state.value.agentProviders.copy(hostId="dial-host",
-            quotaRequestId="query",quotaProviderId="codex-local",quotaKind="codex")) }
+        compose.runOnIdle {
+            assertEquals(listOf(provider.id, provider.id), queries.map { it.id })
+            state.value = state.value.beginSubscriptionQuery(provider, "query")
+        }
         compose.onNodeWithTag("provider-query").assertIsNotEnabled()
         compose.onAllNodesWithText("查询中").assertCountEquals(2)
-        compose.runOnIdle { state.value=state.value.copy(agentProviders=state.value.agentProviders.copy(quotaRequestId=null),
-            subscriptionQuotas=mapOf("codex" to ProviderQuotaSnapshot("codex-local",reading,"登录过期"))) }
-        compose.onNodeWithTag("provider-quota-error").assertTextEquals("登录过期")
-        compose.onNodeWithTag("provider-query").assertIsEnabled()
+        compose.runOnIdle { state.value = state.value.failSubscriptionQuery("query", "登录过期，请重新登录电脑端") }
+        compose.onNodeWithText("登录过期，请重新登录电脑端").assertIsDisplayed()
+        val error = compose.onNodeWithTag("provider-quota-error").fetchSemanticsNode().boundsInRoot
+        for (name in listOf("five_hour", "seven_day")) {
+            val quota = compose.onNodeWithTag("provider-quota-$name").fetchSemanticsNode().boundsInRoot
+            assertTrue("$name ($quota) must sit above the error ($error)", quota.bottom <= error.top)
+        }
+        compose.onNodeWithText("82%").assertIsDisplayed()
+        compose.onNodeWithText("35%").assertIsDisplayed()
+        progress("provider-arc", 1f)
+        compose.onNodeWithTag("provider-quota-error").assertDoesNotExist()
+        progress("provider-arc", 0f)
+        compose.onNodeWithTag("provider-quota-error").assertIsDisplayed()
+        compose.onNodeWithTag("provider-query").assertIsEnabled().performClick()
+        compose.runOnIdle { state.value = state.value.beginSubscriptionQuery(provider, "retry") }
+        compose.onNodeWithTag("provider-quota-error").assertDoesNotExist()
     }
     @Test fun hostChangesAndDisconnectionCannotConfirmAStalePreview() {
         val state=mutableStateOf(ready());show(state)

@@ -127,6 +127,7 @@ private class E2eSession(val options: E2eConnectOptions) {
     var channel: E2eChannel? = null
     var bootstrapReady = false
     var importChannel: Any? = null
+    var allowsFilePreview = false
     val pending = ArrayDeque<JsonObject>()
     val lock = Any()
     /** 入站片的重组缓冲（issue 03）。每次重握手都换一套序号空间，所以那时要 clear()。 */
@@ -300,7 +301,7 @@ class RelayClient internal constructor(
                 synchronized(connection.lock) {
                     connection.channel = null
                     connection.handshake = null
-                    connection.bootstrapReady = false; connection.importChannel = null
+                    connection.bootstrapReady = false; connection.importChannel = null; connection.allowsFilePreview = false
                 }
                 if (activePath != "lan") activePath = null
                 notifyE2eState(hasE2eChannel())
@@ -481,7 +482,7 @@ class RelayClient internal constructor(
                             val old = webSocket; webSocket = null
                             relaySwitchPhase = "retiring"
                             e2e?.let { state -> synchronized(state.lock) {
-                                state.channel = null; state.handshake = null; state.bootstrapReady = false; state.importChannel = null
+                                state.channel = null; state.handshake = null; state.bootstrapReady = false; state.importChannel = null; state.allowsFilePreview = false
                                 state.pending.clear(); state.reassembler.clear()
                             } }
                             notifyE2eState(hasE2eChannel())
@@ -890,7 +891,7 @@ class RelayClient internal constructor(
         synchronized(state.lock) {
             state.handshake = handshake
             state.channel = null
-            state.bootstrapReady = false; state.importChannel = null
+            state.bootstrapReady = false; state.importChannel = null; state.allowsFilePreview = false
             state.hostProtocolVersion = proposedVersion
             if (!preservePending) state.pending.clear()
         }
@@ -1036,6 +1037,7 @@ class RelayClient internal constructor(
                     }
                     if (envelope.hdr.ch == "ctl") synchronized(state.lock) {
                         state.importChannel = if (announcesImportTarget(message)) state.importChannel ?: Any() else null
+                        state.allowsFilePreview = announcesFilePreview(message, state.options.deviceId)
                     }
                     if (!state.bootstrapReady) {
                         require(envelope.hdr.ch == "ctl") { "Host bootstrap must arrive on ctl" }
@@ -1166,6 +1168,15 @@ class RelayClient internal constructor(
         put("protocolVersion", PROTOCOL_VERSION)
         put("uploadId", uploadId)
     }, channel)
+
+    /** Preview control belongs to this authenticated socket; never carry it into a new handshake's queue. */
+    internal fun sendFilePreviewControl(payload: JsonObject): Boolean = synchronized(relayLock) {
+        val direct = lan
+        if (activePath == "lan" && direct?.isReady == true) return direct.sendFilePreview(payload)
+        val state = e2e ?: return false
+        if (!synchronized(state.lock) { state.bootstrapReady && state.allowsFilePreview }) return false
+        sealAndSend(state, payload)
+    }
 
     fun sendDeviceMessage(payload: kotlinx.serialization.json.JsonObject): Boolean {
         val state = e2e ?: return false

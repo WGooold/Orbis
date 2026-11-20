@@ -77,7 +77,8 @@ internal fun RemoteState.sessionModelPresentation(runtimeId: String): SessionMod
 
 @Composable
 internal fun SessionModelConfigurationSheet(state: RemoteState, runtimeId: String, onClose: () -> Unit,
-    setting: String?, onSettingChange: (String?) -> Unit, onSelect: (String, String) -> String?, onVerify: () -> Unit) {
+    setting: String?, onSettingChange: (String?) -> Unit, onSelect: (String, String) -> String?, onVerify: () -> Unit,
+    onRetryOptions: ((String) -> Unit)? = null) {
     val runtime = state.runtimes[runtimeId] ?: return
     val presentation = state.sessionModelPresentation(runtimeId)
     val commands = state.capabilities[runtimeId]?.commands.orEmpty()
@@ -115,7 +116,15 @@ internal fun SessionModelConfigurationSheet(state: RemoteState, runtimeId: Strin
             if (presentation.indicator == L10n.tr("未确认")) {
                 NeumorphTextButton(L10n.tr("核对配置"), enabled = state.e2eReady, dismissOnClick = false, onClick = onVerify)
             }
-            setting?.let { state.menuOptionErrors[runtimeId + ":" + it] }?.let { InlineFeedbackError(it) }
+            val optionError = setting?.let { state.menuOptionErrors[runtimeId + ":" + it] }
+            optionError?.let { error ->
+                InlineFeedbackError(
+                    error,
+                    modifier = Modifier.testTag("session-config-menu-error"),
+                    actionLabel = if (setting != null && onRetryOptions != null) L10n.tr("重试") else null,
+                    onAction = if (setting != null && onRetryOptions != null) { { onRetryOptions(setting) } } else null,
+                )
+            }
             if (command == null) {
                 val settings = listOf("model", "thinking") + if (isOpenCode && commands.any { it.name == "agent" && it.argument?.kind == "select" }) listOf("agent") else emptyList()
                 for (name in settings) {
@@ -132,7 +141,7 @@ internal fun SessionModelConfigurationSheet(state: RemoteState, runtimeId: Strin
                 }
             } else {
                 NeumorphTextButton(L10n.tr("返回"), dismissOnClick = false, onClick = { onSettingChange(null) })
-                if (command.argument?.options.isNullOrEmpty()) {
+                if (command.argument?.options.isNullOrEmpty() && optionError == null) {
                     Text(L10n.tr(if ((command.argument?.optionCatalog?.count ?: 0) > 0) "加载中…" else "暂无可用选项"),
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

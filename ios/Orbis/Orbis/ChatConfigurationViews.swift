@@ -109,8 +109,19 @@ struct SessionModelConfigurationView: View {
                         OrbisActionButton(title: L10n.tr("核对配置")) { actions.refreshAgent() }.disabled(!store.canSend)
                     }
                     if let command {
+                        let menuError = target.owner.menuErrors["\(runtime.runtimeId)\u{0}\(command.name)"]
                         OrbisActionButton(title: L10n.tr("返回")) { setting = nil }
-                        if command.argument?.options?.isEmpty != false {
+                        if let menuError {
+                            HStack(alignment: .center, spacing: 8) {
+                                Label(menuError, systemImage: "exclamationmark.circle")
+                                    .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                OrbisTextButton(title: L10n.tr("重试")) { actions.loadMenuOptions(command.name) }
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                            .accessibilityElement(children: .contain)
+                            .accessibilityIdentifier("session-config-menu-error")
+                        } else if command.argument?.options?.isEmpty != false {
                             Text(L10n.tr((command.argument?.optionCatalog?.count ?? 0) > 0 ? "加载中…" : "暂无可用选项")).font(.orbisLabel())
                         }
                         ForEach(command.argument?.options ?? []) { option in

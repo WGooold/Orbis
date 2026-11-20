@@ -56,6 +56,18 @@ class FeedbackTest {
         assertEquals(existing, corrected.sessionOperationErrors)
         assertEquals("关闭失败", initial.sessionFailure("chat", "关闭失败").sessionOperationErrors["chat"])
     }
+    // FEEDBACK-POSITION-01: offline batch close never attributes stale IDs to the selected composer.
+    @Test fun `offline close failures only mark surviving requested cards`() {
+        val current = RuntimeSummary("open", "Open", "/repo", "idle", "s1")
+        val target = RuntimeSummary("target", "Target", "/repo", "idle", "s2")
+        val initial = RemoteState(selectedRuntimeId = current.runtimeId,
+            runtimes = mapOf(current.runtimeId to current, target.runtimeId to target))
+        assertSame(initial, initial.closeTargetFailures(setOf("gone"), "close failed"))
+        val failed = initial.closeTargetFailures(setOf("target", "gone"), "close failed")
+        assertEquals(mapOf("target" to "close failed"), failed.sessionOperationErrors)
+        assertTrue(failed.conversations.isEmpty())
+        assertNull(failed.sessionListError)
+    }
     // SC98: opaque codes are diagnostic-only, while filenames, paths and natural language remain useful feedback.
     @Test fun `failure copy preserves filenames paths and ordinary transport words`() {
         val fallback = "请重试"

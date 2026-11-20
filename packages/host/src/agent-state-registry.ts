@@ -89,6 +89,10 @@ export function commitPreparedRegistryTransaction(
   });
 }
 
+/** Internal authorization from a correlated, current producer's replacement preview. */
+export type VerifiedConversationBaseline = { readonly scope: StateScope; readonly epoch: string; readonly seq: number };
+const conversationDomains = new Set<StateDomain>(["history", "live", "artifacts", "tools"]);
+
 export type TransactionResult =
   | { readonly ok: true; readonly results: ReadonlyArray<Extract<CommitResult, { ok: true }>> }
   | { readonly ok: false; readonly code: CommitCode; readonly detail?: string; readonly index: number };
@@ -109,7 +113,7 @@ export type RegistryOptions = {
   readonly now?: () => number;
   readonly maxValueBytes?: number;
   readonly maxEntries?: number;
-  /** 拒绝超过上限的新代次，不能靠遗忘旧代次来接受迟到数据。重建模型可释放这些有界 tombstone。 */
+  /** 普通写入在退役记录触顶后冻结换代；经当前所有者核对的会话快照可以继续。 */
   readonly maxRetiredEpochsPerEntry?: number;
 };
 
@@ -155,7 +159,8 @@ export class AgentStateRegistry {
    *
    * 这里没有异步回调或 IO，暂存中的 Map 不会泄漏到其它读取者；原有单领域 API 仍然可用。
    */
-  commitTransaction(changes: readonly RegistryMutation[], onCommitted?: () => void): TransactionResult {
+  commitTransaction(changes: readonly RegistryMutation[], onCommitted?: () => void,
+    baseline?: VerifiedConversationBaseline): TransactionResult {
     const previous = this.#entries;
     this.#entries = new Map([...previous].map(([key, entry]) => [key, { ...entry }]));
     const notifications: RegistryChange[] = [];
@@ -164,6 +169,7 @@ export class AgentStateRegistry {
     let index = 0;
     try {
       for (const change of changes) {
+        if (baseline !== undefined) this.#makeRoomForVerifiedBaseline(change, baseline);
         const result = change.kind === "value"
           ? this.commitValue(change.scope, change.domain, change.fact)
           : change.kind === "collection"
@@ -208,7 +214,7 @@ export class AgentStateRegistry {
     if (invalid !== undefined) return { ok: false, code: "invalid_fact", detail: invalid };
     const key = entryKey(scope, domain);
     const existing = this.#entries.get(key);
-    const rejected = this.#reject(scope, domain, key, existing, fact);
+    const rejected = this.#reject(scope, domain, existing, fact);
     if (rejected !== undefined) return rejected;
     const previous = existing?.state.value ?? null;
     const next = fact.availability === "ready" ? fact.value ?? null : previous;
@@ -228,7 +234,7 @@ export class AgentStateRegistry {
     }
     const key = entryKey(scope, domain);
     const existing = this.#entries.get(key);
-    const rejected = this.#reject(scope, domain, key, existing, fact);
+    const rejected = this.#reject(scope, domain, existing, fact);
     if (rejected !== undefined) return rejected;
     const previous = (existing?.state.value ?? null) as Record<string, unknown> | null;
     const next = fact.availability !== "ready"
@@ -257,7 +263,7 @@ export class AgentStateRegistry {
     }
     const key = entryKey(scope, domain);
     const existing = this.#entries.get(key);
-    const rejected = this.#reject(scope, domain, key, existing, fact);
+    const rejected = this.#reject(scope, domain, existing, fact);
     if (rejected !== undefined) return rejected;
     const previous = (existing?.state.value ?? null) as Record<string, unknown> | null;
     const next = { ...(previous ?? {}) };
@@ -322,10 +328,28 @@ export class AgentStateRegistry {
     };
   }
 
+  isRetiredSourceEpoch(scope: StateScope, domain: StateDomain, epoch: string): boolean {
+    return this.#entries.get(entryKey(scope, domain))?.retiredEpochs.has(epoch) === true;
+  }
+
+  #makeRoomForVerifiedBaseline(change: RegistryMutation, baseline: VerifiedConversationBaseline): void {
+    const { scope, domain, fact } = change;
+    if (baseline.scope.kind !== "agent" || change.kind === "remove" || !conversationDomains.has(domain) ||
+      scopeId(scope) !== scopeId(baseline.scope) || fact.source.sourceEpoch !== baseline.epoch ||
+      fact.source.sourceRevision !== baseline.seq || fact.availability !== "ready" || fact.completeness !== "complete") return;
+    const key = entryKey(scope, domain), existing = this.#entries.get(key);
+    if (!existing || existing.state.source.sourceEpoch === baseline.epoch || existing.retiredEpochs.has(baseline.epoch) ||
+      existing.retiredEpochs.size < this.#maxRetiredEpochsPerEntry || existing.retiredEpochs.size === 0) return;
+    // Only the prepared transaction may make room. Its normal commit will add
+    // the replaced epoch, keeping the fence full even for epochs no longer listed.
+    const retiredEpochs = new Set(existing.retiredEpochs);
+    retiredEpochs.delete(retiredEpochs.values().next().value!);
+    this.#entries.set(key, { ...existing, retiredEpochs });
+  }
+
   #reject(
     scope: StateScope,
     domain: StateDomain,
-    key: string,
     existing: Entry | undefined,
     fact: DomainFact,
   ): CommitResult | undefined {

@@ -15,7 +15,7 @@ internal class DrawerCatalogCache(private val titles: SessionTitleCache = Sessio
         if (this.language == language && (previous === state ||
                 previous != null && state != null &&
                 previous.hostId == state.hostId && previous.hostName == state.hostName && previous.kimiCodeSupported == state.kimiCodeSupported &&
-                previous.sessions === state.sessions && previous.runtimes === state.runtimes &&
+                previous.unifiedCodexHistory == state.unifiedCodexHistory && previous.sessions === state.sessions && previous.runtimes === state.runtimes &&
                 previous.sessionGraphs === state.sessionGraphs &&
                 previous.conversations === state.conversations && previous.ledger === state.ledger)) {
             // Keep the latest snapshot rather than retaining an old, unrelated UI state.
@@ -25,7 +25,7 @@ internal class DrawerCatalogCache(private val titles: SessionTitleCache = Sessio
         if (previous?.hostId != state?.hostId) titles.clear()
         if (this.language == language && previous != null && state != null &&
             previous.hostId == state.hostId && previous.hostName == state.hostName && previous.kimiCodeSupported == state.kimiCodeSupported &&
-            previous.sessions === state.sessions && previous.runtimes === state.runtimes &&
+            previous.unifiedCodexHistory == state.unifiedCodexHistory && previous.sessions === state.sessions && previous.runtimes === state.runtimes &&
             (previous.ledger === state.ledger || OperationKinds.archiveOverrides(previous.ledger) == OperationKinds.archiveOverrides(state.ledger)) &&
             !catalogTranscriptChanged(previous, state, titles, counts = true)) {
             source = state

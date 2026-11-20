@@ -185,6 +185,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val resolved = synchronized(lock) { hostId?.takeIf { connections.containsKey(it) } }
             ?: pairingOrder.value.firstOrNull()?.hostId
         if (activeHostId.value != resolved) {
+            active()?.browserPreview?.close()
             active()?.clearFeedbackScope()
             active()?.setFeedbackVisible(false)
         }
@@ -204,6 +205,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val connection = synchronized(lock) { connections.remove(id) }
         observationJobs.remove(id)?.cancel()
         connection?.shutdown()
+        getApplication<Application>().getSharedPreferences("orbis_download_browser", android.content.Context.MODE_PRIVATE)
+            .edit().remove(id).apply()
         val pairing = pairingOrder.value.firstOrNull { it.hostId == id }
         pairings.remove(id)
         hostStates.update { it - id }
@@ -355,11 +358,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     /** Switches to [hostId] and opens its runtime (or activates the Session) in one step. */
-    fun openSession(hostId: String, sessionId: String) {
+    fun openSession(hostId: String, sessionId: String, codexLaunchMode: String? = null) {
         val connection = connectionFor(hostId) ?: return
         setActiveHost(hostId)
-        val runtime = connection.state.value.runtimes.values.firstOrNull { it.sessionId == sessionId }
-        if (runtime != null) connection.selectRuntime(runtime.runtimeId) else connection.activateSession(sessionId)
+        val runtime = if (codexLaunchMode == null) connection.state.value.runtimes.values.singleOrNull { it.directorySessionId == sessionId } else null
+        if (runtime != null) connection.selectRuntime(runtime.runtimeId) else connection.activateSession(sessionId, codexLaunchMode)
     }
 
     fun openOfflineSession(hostId: String, sessionId: String) {
@@ -433,6 +436,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun setSessionArchived(sessionId: String, archived: Boolean) =
         active()?.setSessionArchived(sessionId, archived)
 
+    fun downloadBrowserPath(): String? = active()?.downloadBrowserPath()
+    fun rememberDownloadBrowserPath(path: String?) = active()?.rememberDownloadBrowserPath(path)
     fun browseSessions(path: String? = null) = active()?.browseSessions(path)
 
     fun browseInto(name: String) = active()?.browseInto(name)
@@ -496,6 +501,10 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun saveDraft(runtimeId: String, value: String) = active()?.saveDraft(runtimeId, value)
 
     fun clearDraft(runtimeId: String) = active()?.clearDraft(runtimeId)
+
+    fun setComposerError(runtimeId: String, message: String) = active()?.setComposerError(runtimeId, message)
+
+    fun clearComposerError(runtimeId: String) = active()?.clearComposerError(runtimeId)
 
     fun setSessionArchivedOn(hostId: String, sessionId: String, archived: Boolean) =
         connectionFor(hostId)?.setSessionArchived(sessionId, archived)
@@ -571,6 +580,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun requestFullEntry(runtimeId: String, entryId: String) =
         active()?.requestFullEntry(runtimeId, entryId)
 
+    internal fun filePreviewConnection(hostId: String?): HostConnection? = active()?.takeIf { it.hostId == hostId }
+
     fun downloadArtifact(artifact: RemoteArtifact): Boolean = active()?.downloadArtifact(artifact) == true
 
     fun downloadFile(path: String): Boolean = active()?.downloadFile(path) == true
@@ -596,7 +607,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearError() = active()?.clearError()
     fun setTransferFeedbackScope(downloads: Boolean, uploadIds: Set<String> = emptySet()) = active()?.setTransferFeedbackScope(downloads, uploadIds)
-    fun setFeedbackVisible(visible: Boolean) { feedbackForeground = visible; active()?.setFeedbackVisible(visible) }
+    fun setFeedbackVisible(visible: Boolean) {
+        feedbackForeground = visible
+        active()?.setFeedbackVisible(visible)
+        if (!visible) active()?.browserPreview?.close()
+    }
     fun dismissToast(key: String) = active()?.dismissToast(key)
     fun showShortFeedback(message: String, key: String, action: FeedbackAction? = null) = active()?.showShortFeedback(message, key, action)
     fun retryFeedbackConnection() = active()?.retryFeedbackConnection()

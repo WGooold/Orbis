@@ -77,6 +77,10 @@ internal fun RemoteState.downloadFailure(commandId: String?, message: String): R
         pendingDownloads = pendingDownloads - commandId)
 }
 
+/** A stale close request has no visible owner; never put it on the currently open chat. */
+internal fun RemoteState.closeTargetFailures(runtimeIds: Set<String>, message: String): RemoteState =
+    runtimeIds.asSequence().filter(runtimes::containsKey).fold(this) { state, id -> state.sessionFailure(id, message) }
+
 internal fun RemoteState.sessionFailure(objectId: String, message: String): RemoteState =
     copy(sessionOperationErrors = sessionOperationErrors + (objectId to message))
 

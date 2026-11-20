@@ -21,7 +21,7 @@ enum SessionHistoryRangeStatus: String, Codable {
 }
 
 struct SessionHistoryPage {
-    let graph: CachedSessionGraph
+    var graph: CachedSessionGraph
     let entries: [CachedSessionGraph.Entry]
     let display: [String: CachedSessionGraph.Display]
     let turnTimings: [SessionTurnTiming]
@@ -35,8 +35,8 @@ struct SessionHistoryPage {
 }
 
 struct SessionHistoryCommit {
-    let graph: CachedSessionGraph
-    let page: SessionHistoryPage
+    var graph: CachedSessionGraph
+    var page: SessionHistoryPage
     let committedEntries: [CachedSessionGraph.Entry]
     let committedDisplay: [String: CachedSessionGraph.Display]
     let turnTimings: [SessionTurnTiming]
@@ -156,14 +156,15 @@ actor SessionHistoryWorker {
         database = opened; return opened
     }
     func workCounters() throws -> SessionHistoryWork { try db().work }
-    func ingest(host: HostPairing, sessionId: String, event: Data, wrapped: Bool = false, activate: Bool, generation: UUID,
+    func ingest(host: HostPairing, sessionId: String, cacheId: String? = nil, event: Data, wrapped: Bool = false, activate: Bool, generation: UUID,
                 lease: SessionHistoryWriteLease? = nil, expectedEpoch: String? = nil, limit: Int = 256) throws -> SessionHistoryCommit {
         let key = hostKeyPrefix(host)
         try fence.check(key, generation: generation)
         try lease?.check()
         let database = try db()
-        try database.migrateLegacy(host: host, sessionId: sessionId)
-        return try database.ingest(key: key, sessionId: sessionId, event: event, wrapped: wrapped, activate: activate,
+        let storage = cacheId ?? sessionId
+        if cacheId == nil { try database.migrateLegacy(host: host, sessionId: sessionId) }
+        var result = try database.ingest(key: key, sessionId: storage, event: event, wrapped: wrapped, activate: activate,
             expectedEpoch: expectedEpoch, limit: limit, beforeCommit: {
                 self.beforeCommit?()
                 try self.fence.perform(key, generation: generation) {
@@ -171,16 +172,23 @@ actor SessionHistoryWorker {
                     else { try database.commit() }
                 }
             })
+        result.graph.sessionId = sessionId
+        result.page.graph.sessionId = sessionId
+        return result
     }
-    func page(host: HostPairing, sessionId: String, leafId: String? = nil, beforeEntryId: String? = nil,
+    func page(host: HostPairing, sessionId: String, cacheId: String? = nil, leafId: String? = nil, beforeEntryId: String? = nil,
               afterEntryId: String? = nil, limit: Int = 30) throws -> SessionHistoryPage {
-        let database = try db(); try database.migrateLegacy(host: host, sessionId: sessionId)
-        return try database.readTransaction { try database.page(key: hostKeyPrefix(host), sessionId: sessionId,
+        let database = try db()
+        if cacheId == nil { try database.migrateLegacy(host: host, sessionId: sessionId) }
+        var page = try database.readTransaction { try database.page(key: hostKeyPrefix(host), sessionId: cacheId ?? sessionId,
             leafId: leafId, before: beforeEntryId, after: afterEntryId, limit: limit) }
+        page.graph.sessionId = sessionId
+        return page
     }
-    func entry(host: HostPairing, sessionId: String, entryId: String) throws -> CachedSessionGraph.Entry? {
-        let database = try db(); try database.migrateLegacy(host: host, sessionId: sessionId)
-        return try database.entry(key: hostKeyPrefix(host), sessionId: sessionId, id: entryId)?.0
+    func entry(host: HostPairing, sessionId: String, cacheId: String? = nil, entryId: String) throws -> CachedSessionGraph.Entry? {
+        let database = try db()
+        if cacheId == nil { try database.migrateLegacy(host: host, sessionId: sessionId) }
+        return try database.entry(key: hostKeyPrefix(host), sessionId: cacheId ?? sessionId, id: entryId)?.0
     }
     /// Only canonical ancestors proven to precede the authoritative display window are
     /// excluded. Unknown IDs, including transient live-message IDs, are preserved.
@@ -199,9 +207,10 @@ actor SessionHistoryWorker {
         let database = try db(); try database.migrateLegacyDirectory(host: host)
         return try database.summaries(key: hostKeyPrefix(host))
     }
-    func branches(host: HostPairing, sessionId: String, limit: Int = 128) throws -> [SessionHistoryBranch] {
-        let database = try db(); try database.migrateLegacy(host: host, sessionId: sessionId)
-        return try database.branches(key: hostKeyPrefix(host), sessionId: sessionId, limit: limit)
+    func branches(host: HostPairing, sessionId: String, cacheId: String? = nil, limit: Int = 128) throws -> [SessionHistoryBranch] {
+        let database = try db()
+        if cacheId == nil { try database.migrateLegacy(host: host, sessionId: sessionId) }
+        return try database.branches(key: hostKeyPrefix(host), sessionId: cacheId ?? sessionId, limit: limit)
     }
     func remove(host: HostPairing) throws {
         fence.invalidate(hostKeyPrefix(host))

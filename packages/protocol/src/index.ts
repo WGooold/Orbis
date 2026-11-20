@@ -8,6 +8,8 @@ export * from "./turn-configuration.js";
 import { SessionConfigurationReadSchema, SessionConfigurationSaveSchema, ConfiguredSessionLaunchSchema, SessionLaunchReadSchema,
   SessionConfigurationResultSchema, SessionLaunchResultSchema } from "./session-configuration.js";
 export * from "./session-configuration.js";
+import { CodexLaunchModeSchema } from "./codex-history.js";
+export * from "./codex-history.js";
 export { orbisEnvironment } from "./product-environment.js";
 export { parseQaActivation, type QaActivation } from "./qa-activation.js";
 import {
@@ -50,6 +52,12 @@ export const PROTOCOL_VERSION = 19 as const;
  */
 export const PROTOCOL_VERSION_ERROR_CODE = "protocol_version";
 export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
+/** ADR-0093: independent of the ordinary download window and file size. */
+export const FILE_PREVIEW_BYTES = 2 * 1024 * 1024;
+/** Keep prepared documents small enough for mobile memory-only browser entry points. */
+export const FILE_PREVIEW_DOCUMENT_BYTES = 1024 * 1024;
+export const FILE_PREVIEW_CHUNK_BYTES = 128 * 1024;
+export const HOST_FEATURE_FILE_PREVIEW = "file.preview-v1";
 
 /**
  * 手机上传到电脑的单文件上限。
@@ -216,6 +224,8 @@ export const RuntimeMetadataSchema = z.strictObject({
   cwd: z.string().min(1).max(4096),
   status: RuntimeStatusSchema,
   sessionId: z.string().min(1).max(256).optional(),
+  /** Catalog identity is not a command/approval/history transport address. */
+  codexCatalogId: z.string().regex(/^codex-history:[a-f0-9]{64}$/u).optional(),
   sessionGraphSync: z.boolean().optional(),
   sessionLeafId: z.string().max(256).nullable().optional(),
   // Machine identity of the Pi host. Needs no user setup, so the APP can tell Pi processes
@@ -1094,12 +1104,13 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
 export type RuntimeEvent = z.infer<typeof RuntimeEventSchema>;
 
 const downloadOffset = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional();
+const previewMaxBytes = z.number().int().positive().max(FILE_PREVIEW_BYTES).optional();
 
 export const RuntimeCommandSchema = z.discriminatedUnion("type", [
   TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema,
   ToolContentReadRequestSchema, ToolContentCancelSchema, ToolInventoryReadRequestSchema, ToolInventoryOpenRequestSchema,
-  z.strictObject({ type: z.literal("file.download"), path: z.string().min(1), offset: downloadOffset }),
-  z.strictObject({ type: z.literal("artifact.download"), artifactId: z.string().uuid(), offset: downloadOffset }),
+  z.strictObject({ type: z.literal("file.download"), path: z.string().min(1), offset: downloadOffset, maxBytes: previewMaxBytes }),
+  z.strictObject({ type: z.literal("artifact.download"), artifactId: z.string().uuid(), offset: downloadOffset, maxBytes: previewMaxBytes }),
   z.strictObject({
     type: z.literal("artifact.cancel"),
     transferId: TransferIdSchema,
@@ -1337,6 +1348,7 @@ export const DeviceE2ePayloadSchema = z.discriminatedUnion("type", [
       z.strictObject({ type: z.literal("new"), agentKind: AgentKindSchema, cwd: z.string().min(1).max(4096) }),
     ]),
     spawnMode: SpawnModeSchema.optional(),
+    codexLaunchMode: CodexLaunchModeSchema.optional(),
   }),
   // ── 统一 Agent 状态模型（ADR-0032）：读一个作用域的当前投影。负载形状在 agent-state.ts。
   AgentStateRequestSchema.safeExtend({ protocolVersion: z.literal(PROTOCOL_VERSION) }),
@@ -1458,6 +1470,19 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
     status: z.enum(["pending", "accepted", "failed", "unconfirmed", "unknown"]) }),
   z.strictObject({ type: z.literal("runtime.online"), runtime: RuntimeMetadataSchema }),
   z.strictObject({ type: z.literal("runtime.offline"), runtimeId: z.string(), reason: z.string() }),
+  // Preview replies are unsequenced Host/device control messages, not conversation events.
+  z.strictObject({
+    type: z.literal("file.preview.started"), protocolVersion: z.literal(PROTOCOL_VERSION),
+    runtimeId: z.string().min(1), commandId: z.string().min(1).max(128), transferId: TransferIdSchema,
+    artifactId: z.string().uuid(), referenceId: z.string().min(1).optional(),
+    format: z.enum(["html", "svg"]), size: z.number().int().positive().max(FILE_PREVIEW_DOCUMENT_BYTES),
+    sha256: z.string().regex(HASH_PATTERN),
+  }),
+  z.strictObject({
+    type: z.literal("file.preview.failed"), protocolVersion: z.literal(PROTOCOL_VERSION),
+    runtimeId: z.string().min(1), commandId: z.string().min(1).max(128),
+    reason: z.enum(["unavailable", "too_large", "unsupported", "busy", "invalid_request", "transfer_failed"]),
+  }),
   /** Host 服务不了这次范围请求：读盘失败、越界、或 artifact 身份在传输中变了。 */
   z.strictObject({
     type: z.literal("artifact.read.failed"),
@@ -1559,6 +1584,7 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
     agentKind: AgentKindSchema,
     /** L2 新建时 Host 生成的新会话 id，手机后续拿它对账 runtime.online。 */
     sessionId: z.string().min(1).max(256).optional(),
+    codexCatalogId: z.string().regex(/^codex-history:[a-f0-9]{64}$/u).optional(),
     /** 实际生效的拉起形态（auto 降级后是 "headless"，手机据此标注「此会话无头」，§8.3）。 */
     spawnMode: z.enum(["tui", "headless"]),
     pid: z.number().int().positive().optional(),

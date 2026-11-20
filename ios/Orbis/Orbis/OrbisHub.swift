@@ -199,6 +199,7 @@ final class OrbisStore: ObservableObject {
         guard connections[hostId] != nil else { return }
         if selectedHostId != hostId { activeConnection.setHistoryWindowVisible(false); activeConnection.hostState.setCatalogVisible(false) }
         if selectedHostId != hostId {
+            activeConnection.transfers.browserPreview.close()
             activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer()
             activeConnection.clearFeedbackScope(preservingConnectionConditions: true); activeConnection.setFeedbackForeground(false)
             connections[hostId]?.clearFeedbackScope(preservingConnectionConditions: true)
@@ -243,6 +244,9 @@ final class OrbisStore: ObservableObject {
         if let selectedHostId { preferences?.set(selectedHostId, forKey: "orbis.selectedHostId") }
         else { preferences?.removeObject(forKey: "orbis.selectedHostId") }
         refreshScreenPublications()
+    }
+    func clearPairingError() {
+        if pairingError != nil { pairingError = nil }
     }
     func pair(from rawQR: String) {
         guard !isPairing else { return }
@@ -391,7 +395,7 @@ final class OrbisStore: ObservableObject {
         activeConnection.setHistoryWindowVisible(visible)
     }
     func loadOlderHistory() -> Bool { activeConnection.loadOlderHistory() }
-    func activate(_ session: SessionSummary) { activeConnection.activate(session) }
+    func activate(_ session: SessionSummary, codexLaunchMode: CodexLaunchMode? = nil) { activeConnection.activate(session, codexLaunchMode: codexLaunchMode) }
     func producesMessage(_ command: SlashCommand) -> Bool { activeConnection.selectedRuntime.map { activeConnection.producesMessage(command, runtime: $0) } ?? false }
     var launching: HostConnection.LaunchState? { activeConnection.launching }
     var isLaunchPage: Bool { activeConnection.isLaunchPage }

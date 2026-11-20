@@ -41,7 +41,7 @@ type Options = {
     Partial<Pick<DeviceLink, "sessionSyncRejection">>) | undefined;
   dispatch: (runtimeId: string, commandId: string, command: SessionSyncRequest) => "handled" | "offline" | "unsupported";
   encodeEvent: (runtimeId: string, event: RuntimeEvent, deviceId: string) => Buffer;
-  acceptSnapshot?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" }>) => boolean | "baseline-required";
+  acceptSnapshot?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" }>, verifiedPreview: boolean) => boolean | "baseline-required";
   needsBaseline?: (runtimeId: string, command: SessionSyncRequest) => boolean;
   sendEvent: (deviceId: string, runtimeId: string, event: RuntimeEvent) => void;
   error: (deviceId: string, commandId: string, code: string, message?: string) => void;
@@ -136,7 +136,7 @@ export class SessionSyncTasks {
   }
 
   /** True means consumed. Unsolicited/obsolete snapshots never enter a device broadcast queue. */
-  handleEvent(runtimeId: string, event: RuntimeEvent): boolean {
+  handleEvent(runtimeId: string, event: RuntimeEvent, currentProducer = false): boolean {
     const id = event.type === "session.snapshot" ? event.syncId
       : event.type === "command.result" || event.type === "runtime.error" ? event.commandId : undefined;
     const task = id === undefined ? undefined : this.#backend.get(id);
@@ -145,11 +145,12 @@ export class SessionSyncTasks {
     }
     if (event.type === "session.snapshot") {
       if (task.stage !== "processing") return true;
-      if (task.baseline && event.range !== "preview") {
+      const expectedRange = task.baseline ? "preview" : task.command.range;
+      if (event.sessionId !== task.command.sessionId || task.baseline && event.range !== "preview") {
         this.#fail(task, "session_sync_model_rejected");
         return true;
       }
-      const acceptance = this.#options.acceptSnapshot?.(runtimeId, event);
+      const acceptance = this.#options.acceptSnapshot?.(runtimeId, event, currentProducer && expectedRange === "preview" && event.range === "preview");
       if (acceptance === "baseline-required") {
         if (!task.baseline && task.command.range !== "preview") {
           this.#restartWithBaseline(task, runtimeId, "range_source_epoch_mismatch");

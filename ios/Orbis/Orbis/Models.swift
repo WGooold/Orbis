@@ -148,6 +148,8 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
     /// Host execution activity; kept separate from the phase used by send/stop logic.
     var compactionPhase: String? = nil
     var backgroundTasks: BackgroundTaskInventory? = nil
+    var codexCatalogId: String? = nil
+    var directorySessionId: String? { codexCatalogId ?? sessionId }
     var id: String { runtimeId }
     var presentationStatus: String {
         if compactionPhase == "running" && ["idle", "running"].contains(status) { return "compacting" }
@@ -420,7 +422,14 @@ struct SessionSummary: Codable, Hashable, Identifiable {
     var archived: Bool?
     var modelProvider: String? = nil
     var hostname: String? = nil
+    var codexLaunchModes: [CodexLaunchMode]? = nil
     var id: String { sessionId }
+}
+
+enum CodexLaunchMode: String, Codable, CaseIterable {
+    case desktop, terminal
+    var agentKind: String { self == .desktop ? "codexDesktop" : "codex" }
+    var title: String { L10n.tr(self == .desktop ? "桌面启动" : "终端启动") }
 }
 
 struct MessageFileReference: Codable, Hashable {
@@ -849,5 +858,35 @@ enum FeedbackText {
         }
         display = display.trimmingCharacters(in: .whitespacesAndNewlines)
         return display.isEmpty ? L10n.tr("操作未完成，请重试") : display
+    }
+}
+
+/// FILE-BROWSER-01: persists the last successfully opened downloads folder per paired Host.
+struct DownloadBrowserPathStore {
+    private static let preferenceKey = "orbis.downloadBrowserPaths.v1"
+    private let preferences: UserDefaults?
+
+    init(preferences: UserDefaults?) {
+        self.preferences = preferences
+    }
+
+    func path(hostId: String) -> String? {
+        values[hostId].flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    func remember(_ path: String?, hostId: String) {
+        var next = values
+        next[hostId] = path ?? ""
+        preferences?.set(next, forKey: Self.preferenceKey)
+    }
+
+    func remove(hostId: String) {
+        var next = values
+        next.removeValue(forKey: hostId)
+        preferences?.set(next, forKey: Self.preferenceKey)
+    }
+
+    private var values: [String: String] {
+        preferences?.dictionary(forKey: Self.preferenceKey) as? [String: String] ?? [:]
     }
 }

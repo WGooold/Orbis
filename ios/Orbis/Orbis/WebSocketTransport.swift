@@ -132,6 +132,7 @@ protocol OrbisTransport: AnyObject {
     func disconnect()
     @discardableResult func send(_ object: [String: Any]) -> Bool
     var allowsExternalImports: Bool { get }
+    @discardableResult func sendFilePreviewControl(_ object: [String: Any]) -> Bool
     @discardableResult func sendBinary(_ data: Data) -> Bool
     func setRelayTransportMode(_ mode: RelayTransportMode)
 }
@@ -142,6 +143,7 @@ extension OrbisTransport {
     var relayTransportKind: RelayTransportKind? { nil }
     var relayTransportMode: RelayTransportMode { .auto }
     var allowsExternalImports: Bool { true } // Injected transports are also gated by the Store's authenticated ready.
+    func sendFilePreviewControl(_ object: [String: Any]) -> Bool { send(object) }
     @discardableResult func sendBinary(_ data: Data) -> Bool { false }
     func setRelayTransportMode(_ mode: RelayTransportMode) {}
 }
@@ -238,6 +240,7 @@ final class RelayTransport: NSObject, OrbisTransport {
     var relayTransportMode: RelayTransportMode { desiredRelayMode }
     private var bootstrapReady = false
     private var relayAllowsExternalImports = false
+    private var relayAllowsFilePreview = false
     var allowsExternalImports: Bool {
         if activePath == "lan", let lan, lan.isReady { return lan.allowsExternalImports }
         return bootstrapReady && relayAllowsExternalImports
@@ -371,7 +374,7 @@ final class RelayTransport: NSObject, OrbisTransport {
     }
 
     private func resetChannel() {
-        bootstrapReady = false; relayAllowsExternalImports = false
+        bootstrapReady = false; relayAllowsExternalImports = false; relayAllowsFilePreview = false
         socket?.setBusinessReady(false)
         outboundGeneration = UUID()
         channel = nil
@@ -388,6 +391,12 @@ final class RelayTransport: NSObject, OrbisTransport {
     func send(_ object: [String: Any]) -> Bool {
         if activePath == "lan", let lan, lan.isReady { return lan.send(object) }
         return sendRelay(object)
+    }
+
+    // A replacement path must receive its own authenticated capability before a bounded command.
+    func sendFilePreviewControl(_ object: [String: Any]) -> Bool {
+        if activePath == "lan", let lan, lan.isReady { return lan.allowsFilePreview && lan.send(object) }
+        return relayAllowsFilePreview && sendRelay(object)
     }
 
     private func sendRelay(_ object: [String: Any]) -> Bool {
@@ -710,6 +719,7 @@ final class RelayTransport: NSObject, OrbisTransport {
                 guard let message else { return }
                 if message["type"] as? String == "device.ready", header.ch == "ctl" {
                     relayAllowsExternalImports = Self.externalImportCapability(message)
+                    relayAllowsFilePreview = Self.filePreviewCapability(message, deviceID: fromId)
                 }
                 if header.ch != "ctl" || !handlePathControl(message) { deliver(payload, channel: header.ch, message: message) }
             case "bin": deliver(payload, channel: header.ch, binary: true)
@@ -722,6 +732,11 @@ final class RelayTransport: NSObject, OrbisTransport {
     fileprivate static func externalImportCapability(_ ready: [String: Any]) -> Bool {
         ready["protocolVersion"] as? Int == orbisProtocolVersion &&
             (ready["hostFeatures"] as? [String])?.contains("external-import.target-v1") == true
+    }
+
+    fileprivate static func filePreviewCapability(_ ready: [String: Any], deviceID: String) -> Bool {
+        sessionInteger(ready["protocolVersion"]) == Int64(orbisProtocolVersion) && ready["deviceId"] as? String == deviceID &&
+            (ready["hostFeatures"] as? [String])?.contains(ChatFilePreview.feature) == true
     }
 
     private func activateRelay() {
@@ -951,6 +966,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
     var state: ((Bool) -> Void)?
     var isReady: Bool { channel != nil }
     private(set) var allowsExternalImports = false
+    private(set) var allowsFilePreview = false
     private let urls: [URL]
     private let hostId: String
     private let deviceId: String
@@ -997,7 +1013,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         timeout?.cancel(); timeout = nil
         heartbeat?.cancel(); heartbeat = nil
         let old = socket; socket = nil
-        channel = nil; allowsExternalImports = false; handshake = nil; queue = []; queuedBytes = 0; sending = false; decoder = InboundFrameDecoder()
+        channel = nil; allowsExternalImports = false; allowsFilePreview = false; handshake = nil; queue = []; queuedBytes = 0; sending = false; decoder = InboundFrameDecoder()
         old?.cancel(with: .goingAway, reason: nil)
         session?.invalidateAndCancel(); session = nil
     }
@@ -1138,6 +1154,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
             case "data":
                 if let message, message["type"] as? String == "device.ready", header.ch == "ctl" {
                     allowsExternalImports = RelayTransport.externalImportCapability(message)
+                    allowsFilePreview = RelayTransport.filePreviewCapability(message, deviceID: deviceId)
                 }
                 receive?(bytes, header.ch, false, message)
             case "bin": receive?(bytes, header.ch, true, nil)
@@ -1162,7 +1179,7 @@ final class LANTransport: NSObject, URLSessionWebSocketDelegate {
         guard socket === task, !closed else { return }
         let wasReady = isReady
         outboundGeneration = UUID()
-        socket = nil; channel = nil; allowsExternalImports = false; handshake = nil; decoder = InboundFrameDecoder()
+        socket = nil; channel = nil; allowsExternalImports = false; allowsFilePreview = false; handshake = nil; decoder = InboundFrameDecoder()
         queue = []; queuedBytes = 0; sending = false
         timeout?.cancel(); timeout = nil
         heartbeat?.cancel(); heartbeat = nil

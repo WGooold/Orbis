@@ -99,6 +99,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         (enabledAgentKinds == null || agentVariants(it).any(enabledAgentKinds::contains)) && when (it) { "opencode" -> showOpenCode; "hermes" -> supported?.contains("hermes") == true; "openclaw" -> state.canLaunchOpenClaw(); KIMI_CODE_KIND -> state.kimiCodeSupported; else -> true }
     }
     val allDisabled = enabledAgentKinds?.isEmpty() == true
+    fun launchLabel(kind: String): String = if (state.unifiedCodexHistory && agentFamily(kind) == "codex") {
+        codexModeTitle(if (kind == "codexDesktop") "desktop" else "terminal")
+    } else agentVariantTitle(kind)
     val canStart = canUseSelectedAgent && cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) &&
         (kind != "openclaw" || state.canLaunchOpenClaw() && config?.snapshot != null && config.error == null) &&
         (kind != KIMI_CODE_KIND || state.kimiCodeSupported && config?.snapshot != null) &&
@@ -150,7 +153,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                             role = Role.Button,
                         ) { agentMenu = family } else Modifier)
                         .semantics {
-                            if (hasVariants) stateDescription = agentVariantTitle(kind)
+                            if (hasVariants) stateDescription = launchLabel(kind)
                         }, verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)) {
                         Text(if (family == "codex") "Codex" else agentBrand(kind).title,
@@ -180,8 +183,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                             onLongClick = if (chooseCodexVersion) ({ agentMenu = agent }) else null,
                         ).semantics {
                             this.selected = selected
-                            if (chooseCodexVersion) stateDescription = if (agent == "codex") L10n.tr("选择 Codex 终端版或桌面版")
-                                else variants.joinToString(" / ") { agentVariantTitle(it) }
+                            if (chooseCodexVersion) stateDescription = if (agent == "codex" && state.unifiedCodexHistory) L10n.tr("启动方式")
+                                else if (agent == "codex") L10n.tr("选择 Codex 终端版或桌面版")
+                                else variants.joinToString(" / ") { launchLabel(it) }
                         }) {
                             Box(Modifier.align(Alignment.Center).size(36.dp), contentAlignment = Alignment.Center) {
                                 if (selected) AgentIconRecess(Modifier.fillMaxSize(), CircleShape)
@@ -190,7 +194,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                             }
                             if (variants.size > 1) NeumorphMenu(agentMenu == agent, { agentMenu = null }) {
                                 variants.filter { enabledAgentKinds?.contains(it) != false }.forEach { value ->
-                                    NeumorphMenuItem(text = { Text(agentVariantTitle(value)) },
+                                    NeumorphMenuItem(text = { Text(launchLabel(value)) },
                                         onClick = { kind = value; agentMenu = null }, enabled = supported?.contains(value) != false)
                                 }
                             }

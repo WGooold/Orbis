@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AgentKindSchema } from "./agent-kind.js";
+import { CodexLaunchModeSchema } from "./codex-history.js";
 
 // S51 / SC73: all native option values stay opaque to mobile clients.
 const id = z.string().min(1).max(1024);
@@ -34,6 +35,8 @@ export const SessionConfigurationSaveSchema = z.strictObject({ type: z.literal("
 export const ConfiguredSessionLaunchSchema = z.strictObject({
   type: z.literal("session.launch"), requestId: id, launchId: id, ...selected,
   spawnMode: z.enum(["tui", "headless", "auto"]).optional(),
+  /** agentKind binds the native configuration and the durable recovery lane. */
+  codexLaunchMode: CodexLaunchModeSchema.optional(),
 });
 export const SessionLaunchReadSchema = z.strictObject({ type: z.literal("session.launch.read"), requestId: id, launchId: id });
 export const SessionConfigurationResultSchema = z.strictObject({

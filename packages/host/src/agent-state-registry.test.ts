@@ -332,6 +332,30 @@ describe("AgentStateRegistry 来源水位与显式结束", () => {
     expect(registry.read(agent(), "execution")?.value).toBe("e2");
   });
 
+  // CODEX-SOURCE-04: making room for a verified preview is scope-local and
+  // rolls back with the rest of the transaction, including the retirement fence.
+  it("keeps retirement records when a verified replacement transaction fails", () => {
+    const registry = new AgentStateRegistry({ maxRetiredEpochsPerEntry: 1 });
+    const scope = agent(), other = agent("other");
+    const fact = (epoch: string) => ({ ...ready, source: source({ sourceEpoch: epoch }), value: epoch });
+    for (const target of [scope, other]) {
+      expect(registry.commitValue(target, "history", fact("e1")).ok).toBe(true);
+      expect(registry.commitValue(target, "history", fact("e2")).ok).toBe(true);
+    }
+    const previous = registry.read(scope, "history");
+    const replacement = (target: StateScope) => ({ kind: "value" as const, scope: target, domain: "history" as const, fact: fact("e3") });
+    const verified = { scope, epoch: "e3", seq: 1 };
+    expect(registry.commitTransaction([replacement(scope), replacement(other)], undefined, verified))
+      .toMatchObject({ ok: false, code: "source_epoch_limit", index: 1 });
+    expect(registry.read(scope, "history")).toEqual(previous);
+    expect(registry.isRetiredSourceEpoch(scope, "history", "e1")).toBe(true);
+    expect(registry.commitValue(scope, "history", fact("e3"))).toMatchObject({ ok: false, code: "source_epoch_limit" });
+    expect(registry.commitTransaction([replacement(scope)], undefined, verified).ok).toBe(true);
+    expect(registry.isRetiredSourceEpoch(scope, "history", "e2")).toBe(true);
+    expect(registry.commitValue(scope, "history", fact("e1"))).toMatchObject({ ok: false, code: "source_epoch_limit" });
+    expect(registry.read(other, "history")?.value).toBe("e2");
+  });
+
   it("未核对的结束报告不能删除最后已知集合", () => {
     const registry = new AgentStateRegistry({ now: clock() });
     registry.commitCollection(agent(), "interactions", { ...ready, source: source(), items: { a: {} } });

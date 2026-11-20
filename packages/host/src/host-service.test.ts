@@ -9,7 +9,7 @@
  * 假手机同时是**手机侧行为的参考实现**：它按 `device.path` 的宣布切换出站路径、
  * 自动回声 `ping` 探针。Android 侧要做的也是这两件事。
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer, connect, type Socket } from "node:net";
@@ -41,8 +41,10 @@ import {
   DEVICE_FEATURE_MESSAGE_RENDER,
   DEVICE_FEATURE_COMPACT_BOOTSTRAP,
   DEVICE_FEATURE_CLAUDE_SEND_NOW,
+  CODEX_UNIFIED_HISTORY,
   PROTOCOL_VERSION,
   HOST_FEATURE_IMPORT_TARGET,
+  HOST_FEATURE_FILE_PREVIEW, FILE_PREVIEW_BYTES, FILE_PREVIEW_CHUNK_BYTES,
   RelayToDeviceMessageSchema,
   ToolInventorySource, createToolSummary, createToolContentPage,
   selectSessionSyncSnapshot,
@@ -68,6 +70,7 @@ import * as pushRelayConfig from "./config.js";
 import type { ActivePathChange } from "./device-link.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { codexHistoryId } from "./codex-history-catalog.js";
 import { KimiRuntime } from "./kimi-runtime.js";
 import { KimiWebClient } from "./kimi-web-client.js";
 import { DshRuntime } from "./dsh-runtime.js";
@@ -1870,6 +1873,66 @@ describe("host end-to-end over relay", () => {
     }
   });
 
+  // FILE-PREVIEW-01 / SC116, SC118: exercise actual E2E envelopes and the existing receiver-driven path.
+  it.each(["relay", "lan"] as const)("serves selected static preview ranges over %s on bulk only", async path => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-preview-wire-"));
+    relay = await startRelay(stateDir);
+    const artifactId = randomUUID();
+    const file = join(stateDir, "report.html");
+    const original = `<h1>Preview fixture</h1><pre>${"x".repeat(FILE_PREVIEW_CHUNK_BYTES)}</pre>`;
+    await writeFile(file, original);
+    await writeFile(join(stateDir, "artifacts.json"), JSON.stringify({ version: 1, artifacts: [{
+      artifactId, path: file, runtimeId: "fixture", seenAt: Date.now(), fileName: "report.html", mimeType: "text/html",
+      size: Buffer.byteLength(original), sha256: createHash("sha256").update(original).digest("hex"),
+    }] }));
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      adminToken: "owner-secret", stateDir, reconnect: false, lan: path === "lan", lanPort: 0, probeIntervalMs: 0 });
+    await host.start();
+    const lanPort = host.lan?.port;
+    if (path === "lan" && lanPort === undefined) throw new Error("LAN fixture did not start");
+    const lan = path === "lan" && lanPort !== undefined ? [{ host: "127.0.0.1", port: lanPort }] : [];
+    const paired = await pairDevice({ relay, host, lan });
+    device = paired.device;
+    if (path === "lan") await device.openLanPath(`ws://127.0.0.1:${lan[0]!.port}/v1/lan`);
+    await device.openChannel(path, paired.pskRoot, host.hostId, host.hostId);
+    expect(await device.receiveMessage()).toMatchObject({ type: "device.ready", hostFeatures: expect.arrayContaining([HOST_FEATURE_FILE_PREVIEW]) });
+    expect(await device.receiveMessage()).toMatchObject({ type: "device.path", path });
+    await expect(device.nextIncoming(100)).rejects.toThrow("超时");
+    const request = (message: Record<string, unknown>) => device!.sendData(JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...message }));
+    device.sendCommand(host.hostId, "ordinary-before", { type: "artifact.download", artifactId });
+    const before = await device.receiveMessage();
+    expect(before).toMatchObject({ type: "runtime.event", sequence: expect.any(Number), event: { type: "artifact.started" } });
+    device.sendCommand(host.hostId, "preview:fixture", { type: "artifact.download", artifactId, maxBytes: FILE_PREVIEW_BYTES });
+    const offer = await device.nextIncoming();
+    if (!("payload" in offer)) throw new Error("preview offer not received");
+    expect(offer.channel).toBe("ctl"); expect(offer.kind).toBe(path);
+    const ready = RelayToDeviceMessageSchema.parse(JSON.parse(offer.payload.toString()));
+    expect(ready).toMatchObject({ type: "file.preview.started", commandId: "preview:fixture", artifactId, format: "html" });
+    if (ready.type !== "file.preview.started") throw new Error("preview rejected");
+    await expect(device.nextIncoming(100)).rejects.toThrow("超时");
+    const chunks: Uint8Array[] = [];
+    for (let offset = 0; offset < ready.size; offset += FILE_PREVIEW_CHUNK_BYTES) {
+      const length = Math.min(FILE_PREVIEW_CHUNK_BYTES, ready.size - offset);
+      request({ type: "artifact.read", transferId: ready.transferId, requestId: `range:${offset}`, offset, length });
+      const incoming = await device.nextIncoming();
+      if (!("payload" in incoming)) throw new Error("preview chunk not received");
+      expect(incoming.channel).toBe("bulk"); expect(incoming.kind).toBe(path);
+      const chunk = decodeArtifactChunkFrame(incoming.payload);
+      expect(chunk).toMatchObject({ runtimeId: host.hostId, transferId: ready.transferId, offset });
+      expect(chunk.data.byteLength).toBe(length);
+      chunks.push(chunk.data);
+    }
+    const prepared = Buffer.concat(chunks);
+    expect(createHash("sha256").update(prepared).digest("hex")).toBe(ready.sha256);
+    expect(prepared.toString()).toContain("<h1>Preview fixture</h1>");
+    request({ type: "artifact.done", transferId: ready.transferId });
+    request({ type: "artifact.read", transferId: ready.transferId, requestId: "after-done", offset: 0, length: 1 });
+    expect(await device.receiveMessage()).toMatchObject({ type: "artifact.read.failed", reason: "unknown_transfer" });
+    device.sendCommand(host.hostId, "ordinary", { type: "artifact.download", artifactId });
+    expect(await device.receiveMessage()).toMatchObject({ type: "runtime.event", sequence: (before.sequence as number) + 1,
+      event: { type: "artifact.started", commandId: "ordinary", artifact: { artifactId, size: Buffer.byteLength(original) } } });
+  }, 30_000);
+
   it("pull 模式：设备按范围索取，Host 只回被请求的那一段", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-"));
     relay = await startRelay(stateDir);
@@ -3628,6 +3691,186 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     target.sendPayload(Buffer.from(JSON.stringify(message), "utf8"));
   };
 
+  // CODEX-UNIFIED-01/02/03: the encrypted device view, not just the adapter's
+  // raw list, must expose unopened history and select exactly one native route.
+  it("negotiates desktop-only Codex history, binds resume and archive to the same thread, and rolls back the view", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-codex-unified-"));
+    relay = await startRelayLocal(stateDir);
+    const historyHome = join(stateDir, "codex");
+    const id = "before-pairing";
+    const thread = { id, cwd: stateDir, name: "Before pairing", createdAt: 1_780_000_000, updatedAt: 1_780_000_001,
+      modelProvider: "fixture", status: { type: "notLoaded" } };
+    let archived = false, loaded = false;
+    const rpc = vi.fn(async (method: string, params?: { threadId?: string; archived?: boolean }) => {
+      const saved = { ...thread, path: join(historyHome, archived ? "archived_sessions" : "sessions", "rollout-fixture.jsonl") };
+      if (method === "thread/list") return { data: (params?.archived === true) === archived ? [saved] : [], nextCursor: null };
+      if (method === "thread/loaded/list") return { data: loaded ? [id] : [] };
+      if (method === "thread/read") return { thread: saved };
+      if (method === "thread/resume") { loaded = true; return { thread: { ...saved, turns: [], status: { type: "idle" } } }; }
+      if (method === "thread/archive" || method === "thread/unarchive") { archived = method === "thread/archive"; loaded = false; return {}; }
+      if (method === "config/read") return { config: { model_provider: "fixture" } };
+      return { data: [] };
+    });
+    const desktop = new CodexRuntime({ server: { mode: "desktop", historyHome, request: rpc, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+      onEvent: () => {} });
+    const ensureCodexRuntime = vi.fn();
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "pi"), reconnect: false, lan: false, codexDesktopRuntime: desktop, ensureCodexRuntime });
+    await host.start();
+    const connected = await readyDeviceCapturing({ host, relay }); device = connected.device;
+    const send = (message: Record<string, unknown>) => sendRequest(device!, { ...message, protocolVersion: PROTOCOL_VERSION });
+    const next = async (matches: (row: Record<string, unknown>) => boolean) => {
+      for (let i = 0; i < 55; i++) { const row = await device!.receiveMessage() as Record<string, unknown>; if (matches(row)) return row; }
+      throw new Error("Expected correlated Codex response");
+    };
+    const reply = (requestId: string) => next(row => row.requestId === requestId);
+    const idOnWire = codexHistoryId(host.hostId, `local:${historyHome}`, id);
+    const query = (requestId: string, archived: boolean) => send({ type: "session.catalog.query", requestId, format: "v1", limit: 1, cursor: null,
+      query: { text: "before", agentKind: "codex", provider: "provider:fixture", archived } });
+    expect(connected.ready.hostFeatures).toContain(CODEX_UNIFIED_HISTORY);
+    expect(connected.ready.deviceFeatures ?? []).not.toContain(CODEX_UNIFIED_HISTORY);
+    send({ type: "session.list", requestId: "legacy" });
+    expect(await reply("legacy")).toMatchObject({ sessions: [] });
+    send({ type: "device.features", features: [CODEX_UNIFIED_HISTORY] });
+    expect(await next(row => row.type === "device.ready")).toMatchObject({ deviceFeatures: [CODEX_UNIFIED_HISTORY], runtimes: [] });
+    send({ type: "session.catalog.capabilities.request", requestId: "capabilities" }); await reply("capabilities");
+    send({ type: "agent.state.range.request", requestId: "range", scope: "host", domain: "catalog", limit: 1 });
+    expect(await reply("range")).toMatchObject({ page: { sessions: [{ sessionId: idOnWire, agentKind: "codex", codexLaunchModes: ["desktop"] }] } });
+    query("query", false);
+    expect(await reply("query")).toMatchObject({ page: { totalSessions: 1, sessions: [{ sessionId: idOnWire }] } });
+    expect(rpc.mock.calls.some(([method]) => method === "thread/resume" || method === "thread/start")).toBe(false);
+    expect(ensureCodexRuntime).not.toHaveBeenCalled();
+    expect(existsSync(join(stateDir, "codex-desktop-threads.json"))).toBe(false);
+    send({ type: "session.archive", requestId: "archive", agentKind: "codex", sessionId: idOnWire, archived: true });
+    expect(await reply("archive")).toMatchObject({ type: "session.archive.changed", sessionId: idOnWire, archived: true });
+    query("archived", true);
+    expect(await reply("archived")).toMatchObject({ page: { sessions: [{ sessionId: idOnWire, archived: true }] } });
+    send({ type: "session.archive", requestId: "unarchive", agentKind: "codex", sessionId: idOnWire, archived: false });
+    await reply("unarchive");
+    const resume = (requestId: string, codexLaunchMode?: string) => send({ type: "session.activate", requestId,
+      target: { type: "resume", agentKind: "codex", sessionId: idOnWire }, spawnMode: "headless", codexLaunchMode });
+    resume("wrong-mode", "terminal");
+    expect(await reply("wrong-mode")).toMatchObject({ type: "protocol.error", code: "agent_unsupported" });
+    expect(ensureCodexRuntime).not.toHaveBeenCalled();
+    send({ type: "session.activate", requestId: "new-wrong-mode", spawnMode: "headless", codexLaunchMode: "terminal",
+      target: { type: "new", agentKind: "codexDesktop", cwd: stateDir } });
+    expect(await reply("new-wrong-mode")).toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+    expect(rpc.mock.calls.some(([method]) => method === "thread/start")).toBe(false);
+    resume("resume", "desktop");
+    expect(await next(row => row.type === "runtime.online")).toMatchObject({ runtime: { sessionId: `codex-desktop:${id}`, codexCatalogId: idOnWire } });
+    expect(await reply("resume")).toMatchObject({ type: "session.activated", sessionId: `codex-desktop:${id}`, codexCatalogId: idOnWire });
+    resume("resume-again");
+    expect(await reply("resume-again")).toMatchObject({ type: "session.activated", codexCatalogId: idOnWire });
+    expect(rpc.mock.calls.filter(([method]) => method === "thread/resume").map(([, params]) => params)).toEqual([{ threadId: id }]);
+    send({ type: "device.features", features: [] });
+    const downgrade = await next(row => row.type === "device.ready");
+    expect(JSON.stringify(downgrade)).not.toContain("codexCatalogId");
+    send({ type: "session.list", requestId: "downgrade" });
+    expect(await reply("downgrade")).toMatchObject({ sessions: [{ agentKind: "codexDesktop", sessionId: `codex-desktop:${id}` }] });
+  });
+
+  // CODEX-SOURCE-04: the real Host/Relay must replace a capped Desktop checkpoint
+  // and its tool inventory together, including a history request racing native reconciliation.
+  it("recovers latest messages, history and live updates after the Desktop epoch budget is full", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-codex-epoch-cap-"));
+    relay = await startRelayLocal(stateDir);
+    const thread = { id: "capped", cwd: stateDir, status: { type: "idle" }, turns: [] };
+    const sessionId = `codex-desktop:${thread.id}`;
+    const route = { threadId: thread.id, turnId: "active" };
+    const turns = (version: number) => [
+      { id: "older", status: "completed", items: [{ type: "agentMessage", id: "ancestor", text: "older message" },
+        { type: "agentMessage", id: "tail", text: `verified version ${version}` }] },
+      { id: route.turnId, status: "inProgress", startedAt: 1, items: [{ id: "cmd", type: "commandExecution", status: "inProgress", command: "fixture" }] },
+    ];
+    let version = 0;
+    let pendingRead: ((reply: unknown) => void) | undefined;
+    const request = vi.fn(async (method: string) => {
+      if (method === "thread/resume") return { thread };
+      if (method === "thread/loaded/list") return { data: [thread.id] };
+      if (method === "thread/turns/list") return version === 65
+        ? new Promise(resolve => { pendingRead = resolve; }) : { data: turns(version) };
+      return { data: [] };
+    });
+    const server = { mode: "desktop", request, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer;
+    const codex = new CodexRuntime({ server, rolloutRoot: join(stateDir, "rollouts"), onEvent: () => {} });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, codexDesktopRuntime: codex });
+    try {
+      await host.start();
+      codex.seedDesktopThreads([thread.id]);
+      await codex.activate({ type: "resume", sessionId });
+      const runtimeId = codex.runtimeIdFor(thread.id);
+      device = await readyDeviceLocal({ host, relay });
+      const receive = async <Event extends RuntimeEvent>(label: string, matches: (event: RuntimeEvent) => event is Event): Promise<Event> => {
+        const deadline = Date.now() + 2_000;
+        for (let index = 0; index < 80; index++) {
+          const incoming = await device!.nextIncoming(Math.max(1, deadline - Date.now()))
+            .catch(cause => { throw new Error(`No Desktop session event: ${label}`, { cause }); });
+          if (!("payload" in incoming)) throw new Error("Expected a secured Desktop session event");
+          const message = JSON.parse(incoming.payload.toString()) as { type: string; runtimeId?: string; event?: RuntimeEvent };
+          if (message.type === "protocol.error") throw new Error(JSON.stringify(message));
+          if (message.runtimeId === runtimeId && message.event && matches(message.event)) return message.event;
+        }
+        throw new Error(`No Desktop session event: ${label}`);
+      };
+      type Snapshot = Extract<RuntimeEvent, { type: "session.snapshot" }>;
+      type Patch = Extract<RuntimeEvent, { type: "session.patch" }>;
+      const boundaryAfter = (priorEpoch: string) => receive("unverified source boundary", (event): event is Patch =>
+        event.type === "session.patch" && !event.source.ready && event.source.epoch !== priorEpoch);
+      const load = async (id: string, range: "preview" | "history") => {
+        device!.sendCommand(runtimeId, id, { type: "session.sync", sessionId, syncId: id, range, maxEntries: 1,
+          ...(range === "history" ? { beforeEntryId: "tail", targetLeafId: "tail" } : {}) });
+        const reply = await receive(id, (event): event is Snapshot => event.type === "session.snapshot" && event.syncId === id);
+        device!.sendCommand(runtimeId, `${id}-ack`, { type: "session.snapshot.ack", syncId: id, result: "applied" });
+        return reply;
+      };
+      let previous = await load("preview-0", "preview");
+      expect(previous).toMatchObject({ selection: "snapshot", live: { toolInventory: { totalCount: 1 } } });
+      for (version = 1; version <= 64; version++) {
+        const priorEpoch = previous.source!.epoch;
+        server.onNotification?.("thread/reverted", { threadId: thread.id });
+        await boundaryAfter(priorEpoch);
+        previous = await load(`preview-${version}`, "preview");
+        expect(previous).toMatchObject({ source: { ready: true }, hasOlder: true, entries: [{ entryId: "tail" }], live: { toolInventory: { totalCount: 1 } } });
+        expect(previous.source!.epoch).not.toBe(priorEpoch);
+      }
+
+      // This time history is the first request. Its private replacement preview
+      // must wait for the native read, then continue the original page request.
+      const dispatch = vi.spyOn(codex, "dispatchCommand");
+      server.onNotification?.("thread/reverted", { threadId: thread.id });
+      const boundary = await boundaryAfter(previous.source!.epoch);
+      expect(host.readDiagnostics({ category: "recovery", sessionId }).records).toEqual(expect.arrayContaining([
+        expect.objectContaining({ detail: expect.objectContaining({ reason: "registry_source_epoch_limit:history" }) }),
+      ]));
+      const history = load("after-limit-history", "history");
+      // Attach a rejection handler while the native fixture deliberately waits.
+      void history.catch(() => undefined);
+      await vi.waitFor(() => expect(dispatch).toHaveBeenCalledWith(runtimeId, expect.any(String), expect.objectContaining({ range: "preview" })));
+      expect(pendingRead).toBeDefined();
+      pendingRead!({ data: turns(version) });
+      expect(await history).toMatchObject({ range: "history", source: { epoch: boundary.source.epoch, ready: true },
+        entries: [{ entryId: "ancestor" }] });
+      const latest = await load("after-limit-preview", "preview");
+      expect(latest).toMatchObject({ source: { epoch: boundary.source.epoch, ready: true }, live: { toolInventory: { totalCount: 1 } },
+        entries: [{ entryId: "tail", data: { message: { content: [{ text: "verified version 65" }] } } }] });
+
+      server.onNotification?.("item/completed", { ...route, item: { type: "agentMessage", id: "progress", text: "new message" } });
+      const live = await receive("live progress", (event): event is Patch => event.type === "session.patch" &&
+        event.live.messages.some(item => item.message.messageId === "progress"));
+      expect(live).toMatchObject({ source: { epoch: latest.source!.epoch, ready: true }, baseSeq: latest.source!.seq,
+        head: { leafId: "tail" }, live: { messages: [{ message: { messageId: "progress", content: [{ text: "new message" }] } }] } });
+      // The reply initially waits behind the running tool, then both become canonical.
+      server.onNotification?.("item/completed", { ...route, item: { type: "commandExecution", id: "cmd", command: "fixture", status: "completed" } });
+      const patch = await receive("committed progress", (event): event is Patch => event.type === "session.patch" && event.head.leafId === "progress");
+      expect(patch).toMatchObject({ source: { epoch: latest.source!.epoch, ready: true }, baseSeq: live.seq,
+        entries: [{ entryId: "cmd", parentId: "tail" }, { entryId: "cmd:result", parentId: "cmd" }, { entryId: "progress", parentId: "cmd:result" }] });
+    } finally {
+      pendingRead?.({ data: turns(version) });
+      await codex.stop();
+    }
+  });
+
   // S51 / SC73: the durable snapshot precedes native create; lost receipts and
   // failed configuration recover the same native identity without a second start.
   it.each(["codex", "codexDesktop"] as const)("recovers configured %s launch by exact identity after a lost receipt and configuration refusal", async kind => {
@@ -3921,6 +4164,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(initial.hostFeatures).toEqual([
       "device.features",
       HOST_FEATURE_IMPORT_TARGET,
+      HOST_FEATURE_FILE_PREVIEW,
       "message.content-render.v1",
       "agent.openclaw",
       "agent.hermes",

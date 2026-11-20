@@ -48,7 +48,10 @@ struct ChatSessionActions: Equatable {
     @MainActor func refreshWorkingBranch() { if isCurrent { connection.refreshWorkingBranch() } }
     @MainActor func refresh() { if isCurrent { connection.refresh() } }
     @MainActor func retryLaunch() { if isCurrent { connection.retryLaunch() } }
-    @MainActor func activate(_ session: SessionSummary) { if isCurrent { connection.activate(session) } }
+    @MainActor func codexResumeModes(_ session: SessionSummary) -> [CodexLaunchMode] { isCurrent ? connection.codexResumeModes(session) : [] }
+    @MainActor func activate(_ session: SessionSummary, codexLaunchMode: CodexLaunchMode? = nil) {
+        if isCurrent { connection.activate(session, codexLaunchMode: codexLaunchMode) }
+    }
     @MainActor func loadOlderHistory() -> Bool { isCurrent && connection.loadOlderHistory() }
     @MainActor func moveHistory(to option: RuntimeOption, fallbackText: String? = nil) -> Bool {
         isCurrent && connection.moveHistory(to: option, fallbackText: fallbackText)
@@ -94,7 +97,9 @@ struct ChatSessionActions: Equatable {
         }
         return connection.transfers.upload(urls: Array(urls.prefix(capacity)), runtime: runtime, temporarySourceDirectories: temporarySourceDirectories)
     }
-    @MainActor func uploadFailed(_ message: String) { if isCurrent { connection.transfers.error = message } }
+    @MainActor func uploadFailed(_ message: String) {
+        if isCurrent, let runtime { connection.transfers.setUploadError(message, for: runtime) }
+    }
     @MainActor func restartUpload(_ id: String) { if isCurrent { connection.transfers.restart(id) } }
     @MainActor func detachUploads(_ ids: Set<String>) { if isCurrent { connection.transfers.detach(ids) } }
     @MainActor func releaseUploads(_ ids: Set<String>) { if isCurrent { connection.transfers.release(ids) } }

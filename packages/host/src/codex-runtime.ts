@@ -29,17 +29,18 @@ import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, ToolInventorySource, WireTruncator, projectWireLive } from "@orbis/protocol";
+import { displayBatchFor, NotificationSource, SessionSyncPreparer, SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, ToolInventorySource,
+  WireTruncator, projectWireLive, toolContentLocatorId } from "@orbis/protocol";
 import { orbisEnvironment, messageInputDecision, canDispatchMessage, inputMutationError, configurationMutationError, type RuntimeInputState } from "@orbis/protocol";
 import { ToolContentCapture, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { CodexToolContentReader } from "./codex-tool-content-reader.js";
 import { CodexAgentTasks, codexChildThread } from "./codex-agent-tasks.js";
 import { CodexTaskRegistry } from "./codex-task-registry.js";
 import { readCodexTurnConfiguration } from "./codex-turn-configuration.js";
-import { codexToolContents, codexToolContentText, codexToolSummary, isCodexToolItem as isToolItem } from "./codex-tool-projection.js";
+import { codexToolContents, codexToolContentText, codexToolSummary, isCodexToolItem as isToolItem,
+  type CodexToolProjectionContext } from "./codex-tool-projection.js";
 
 import type {
-  AgentKind,
   AgentSessionSummary,
   ChatMessage,
   RemoteContent,
@@ -62,6 +63,7 @@ import type {
   SessionSourceEpoch,
   ToolSummary,
   ToolContentLocator,
+  ToolContentReadRequest,
   SessionConfigurationCatalog,
   SessionConfigurationValues,
   SpawnMode,
@@ -416,6 +418,8 @@ export class CodexRuntime implements AgentBackend {
   #desktopClientRecovering = false;
   /** Host 自己的 thread/start|resume|fork 在途计数：>0 时收到的广播先宽限，不当成 TUI 切换。 */
   #activating = 0;
+  // Unknown native homes are isolated per connection, including after a replacement.
+  #catalogConnection = randomUUID();
   #watcher: NodeJS.Timeout | undefined;
   /**
    * 元数据（cwd/状态/审批）变了就喊一声：Host 借它重播 runtime.online，
@@ -441,7 +445,6 @@ export class CodexRuntime implements AgentBackend {
   #toolStore: ToolContentStore | undefined;
   #toolCapture: ToolContentCapture | undefined;
   #toolHostId = "local";
-  readonly #captureEpochs = new Map<string, string>();
   readonly #toolInventories = new Map<string, ToolInventorySource>();
 
   setToolContentStore(store: ToolContentStore, hostId: string): void {
@@ -455,30 +458,54 @@ export class CodexRuntime implements AgentBackend {
       sessionId: this.#publicSessionId(thread.id) }, toolCallId }, part };
   }
 
+  #toolCaptureFor(): ToolContentCapture | undefined { return this.#toolCapture; }
+
+  /** Current capture source watermark by tool part; kept separate from its stored content identity. */
+  readonly #toolCaptureReadEpochs = new Map<string, { epoch: string; expiresAt: number }>();
+  #toolCaptureReadKey(request: ToolContentReadRequest): string | undefined {
+    return request.read === null ? undefined : JSON.stringify([toolContentLocatorId(request.locator), request.read.readId]);
+  }
+  #toolCaptureReadEpoch(request: ToolContentReadRequest): string | undefined {
+    const now = Date.now();
+    for (const [key, record] of this.#toolCaptureReadEpochs) if (record.expiresAt <= now) this.#toolCaptureReadEpochs.delete(key);
+    const key = this.#toolCaptureReadKey(request);
+    return key === undefined ? undefined : this.#toolCaptureReadEpochs.get(key)?.epoch;
+  }
+  #rememberToolCaptureRead(request: ToolContentReadRequest, epoch: string, readId: string): void {
+    const now = Date.now(), key = JSON.stringify([toolContentLocatorId(request.locator), readId]);
+    for (const [entry, record] of this.#toolCaptureReadEpochs) if (record.expiresAt <= now) this.#toolCaptureReadEpochs.delete(entry);
+    this.#toolCaptureReadEpochs.delete(key); this.#toolCaptureReadEpochs.set(key, { epoch, expiresAt: now + 30_000 });
+    while (this.#toolCaptureReadEpochs.size > 128) this.#toolCaptureReadEpochs.delete(this.#toolCaptureReadEpochs.keys().next().value!);
+  }
+
   // ADR-0045 §1/§4：先采集到有界私有存储，再产生不含原文的 live、事件和历史投影。
   #projectToolItem(thread: ThreadState, item: Record<string, unknown>, phase: ToolSummary["phase"], turnId?: string,
-    capture = false): Record<string, unknown> {
+    captureNotification = false): Record<string, unknown> {
     if (!isToolItem(item) || item.orbisToolSummary !== undefined) return item;
     this.#noteItem(thread, item);
-    const agent = this.#toolLocator(thread, String(item.id), "arguments").tool.agent;
-    if (this.#captureEpochs.get(thread.id) !== thread.sourceEpoch) {
-      this.#toolCapture?.invalidate(agent.sessionId); this.#captureEpochs.set(thread.id, thread.sourceEpoch);
-    }
-    if (capture && this.#toolCapture && typeof item.id === "string") {
-      if (phase !== "finished" && phase !== "cancelled" && !this.#toolCapture.has(this.#toolLocator(thread, item.id, "output")))
-        this.#toolCapture.replace(this.#toolLocator(thread, item.id, "output"), "text", "", false);
-      for (const part of codexToolContents(item)) {
-        try { this.#toolCapture.replace(this.#toolLocator(thread, item.id, part.part), part.format,
-          codexToolContentText(part), phase === "finished" || phase === "cancelled"); }
+    const output = this.#toolLocator(thread, String(item.id), "output");
+    const final = phase === "finished" || phase === "cancelled";
+    const streamsOutput = item.type === "commandExecution" || item.type === "fileChange" || item.type === "mcpToolCall";
+    const parts = [...codexToolContents(item)];
+    const capture = captureNotification ? this.#toolCaptureFor() : undefined;
+    if (capture && typeof item.id === "string") {
+      if (streamsOutput && !final && !capture.has(output)) capture.replace(output, "text", "", false);
+      for (const part of parts) {
+        try { capture.replace(this.#toolLocator(thread, item.id, part.part), part.format, codexToolContentText(part), final); }
         catch { /* An unrepresentable part stays unavailable; it never becomes an empty successful result. */ }
       }
-      if (phase === "finished" || phase === "cancelled") this.#toolCapture.finish(this.#toolLocator(thread, item.id, "output"));
+      if (final) capture.finish(output);
     }
-    const contentSources = this.#toolStore ? Object.fromEntries([...codexToolContents(item)].map(part => [part.part,
-      { availability: "readable", readCapability: phase === "finished" ? "whole-source" : "range" }])) : undefined;
-    if (contentSources && !contentSources.output && this.#toolCapture?.has(this.#toolLocator(thread, String(item.id), "output")))
+    const contentSources: CodexToolProjectionContext["contentSources"] =
+      this.#toolStore ? Object.fromEntries(parts.map(part => [part.part,
+        { availability: "readable", readCapability: final ? "whole-source" : "range" }])) : undefined;
+    // A completed row describes the source's read capability, not the state of
+    // the temporary cache. For streamed-only output, the private read checks
+    // availability; cache expiry or retirement cannot rewrite canonical history.
+    if (contentSources && streamsOutput && !contentSources.output) {
       contentSources.output = { availability: "readable", readCapability: "range" };
-    const summary = codexToolSummary({ agent, phase, order: thread.itemOrder.indexOf(String(item.id)),
+    }
+    const summary = codexToolSummary({ agent: output.tool.agent, phase, order: thread.itemOrder.indexOf(String(item.id)),
       ...(turnId === undefined ? {} : { turnId }), entryId: String(item.id) + ":result",
       ...(contentSources === undefined ? {} : { contentSources }) }, item);
     return { id: item.id, type: item.type, orbisToolSummary: summary };
@@ -492,14 +519,20 @@ export class CodexRuntime implements AgentBackend {
         throw new ToolContentReadError("scope_mismatch");
       }
       if (!thread.sourceReady) throw new ToolContentReadError("content_unavailable");
-      const committedEntry = thread.entries.find(entry => entry.entryId === request.locator.tool.toolCallId + ":result");
+      const toolCallId = request.locator.tool.toolCallId;
+      const committedEntry = thread.entries.find(entry => entry.entryId === toolCallId + ":result");
+      const knownTool = committedEntry !== undefined || thread.liveTools.has(toolCallId) || thread.completedItems.has(toolCallId);
+      if (!knownTool) throw new ToolContentReadError("content_unavailable");
       const committedSummary = object(object(committedEntry?.data.message).toolSummary) as unknown as ToolSummary | undefined;
       const capturedOutput = request.locator.part === "output" && committedSummary?.contents?.some(part => part.part === "output" && part.readCapability === "range");
-      if ((!committedEntry || capturedOutput) && this.#toolCapture?.has(request.locator) && this.#captureEpochs.get(thread.id) === thread.sourceEpoch) {
+      const pinnedCaptureEpoch = this.#toolCaptureReadEpoch(request);
+      if (pinnedCaptureEpoch !== undefined && pinnedCaptureEpoch !== thread.sourceEpoch) throw new ToolContentReadError("content_version_invalid");
+      if ((!committedEntry || capturedOutput) && this.#toolCapture?.has(request.locator)) {
         const epoch = thread.sourceEpoch;
         try {
           const page = await this.#toolCapture.read(owner, request, signal);
-          if (thread.sourceEpoch !== epoch || this.#threads.get(thread.id) !== thread) throw new ToolContentReadError("content_version_invalid");
+          if (!thread.sourceReady || thread.sourceEpoch !== epoch || this.#threads.get(thread.id) !== thread) throw new ToolContentReadError("content_version_invalid");
+          this.#rememberToolCaptureRead(request, epoch, page.read.readId);
           return page;
         } catch (error) {
           if (request.read !== null || !(error instanceof ToolContentReadError) ||
@@ -606,7 +639,7 @@ export class CodexRuntime implements AgentBackend {
       for (const reader of this.#toolContentReaders.values()) void reader.dispose();
       this.#toolContentReaders.clear();
       for (const thread of this.#threads.values()) this.#toolCapture?.invalidate(this.#publicSessionId(thread.id));
-      this.#captureEpochs.clear();
+      this.#toolCaptureReadEpochs.clear();
       this.#toolInventories.clear();
       this.#threads.clear();
       this.#generatedImages.clear();
@@ -654,6 +687,7 @@ export class CodexRuntime implements AgentBackend {
     const server = await CodexAppServer.create({ ...(this.#options.log ? { log: this.#options.log } : {}) });
     if (!current()) { await server.stop(); return; }
     this.#server = server;
+    this.#catalogConnection = randomUUID();
     this.#attachServer(server);
     this.markStarted();
   }
@@ -667,7 +701,7 @@ export class CodexRuntime implements AgentBackend {
     if (this.#desktopClientWatcher !== undefined) clearInterval(this.#desktopClientWatcher);
     this.#desktopClientWatcher = undefined;
     await this.#toolCapture?.dispose(); this.#toolCapture = undefined;
-    this.#toolInventories.clear(); this.#captureEpochs.clear();
+    this.#toolInventories.clear(); this.#toolCaptureReadEpochs.clear();
     await this.#server.stop();
     this.#server.onExit?.(0);
     await Promise.all(this.#terminalConnectionClosures);
@@ -704,6 +738,8 @@ export class CodexRuntime implements AgentBackend {
   #nativeSessionId(sessionId: string): string {
     return isDesktopAppServer(this.#server) ? sessionId.slice(CODEX_DESKTOP_RUNTIME_ID.length + 1) : sessionId;
   }
+
+  nativeHistoryId(sessionId: string): string { return this.#nativeSessionId(sessionId); }
 
   /** 新建 ThreadState（三处构造点共用，避免漏字段）。 */
   #newThreadState(id: string, cwd: string, overrides?: Partial<Pick<ThreadState, "name" | "model" | "effort">>): ThreadState {
@@ -1299,7 +1335,7 @@ export class CodexRuntime implements AgentBackend {
 
   // ── AgentBackend 统一端口（spec §7.4 的适配器收口） ─────────────────────────
 
-  get kind(): AgentKind {
+  get kind(): "codex" | "codexDesktop" {
     return isDesktopAppServer(this.#server) ? "codexDesktop" : "codex";
   }
 
@@ -1310,6 +1346,14 @@ export class CodexRuntime implements AgentBackend {
   /** 裸 `codex` 与 `codex:<threadId>` 都归本后端。 */
   ownsRuntime(runtimeId: string): boolean {
     return runtimeId === this.runtimeId || runtimeId.startsWith(`${this.runtimeId}:`);
+  }
+
+  /** Host-local authority check; never inferred from the snapshot's own source fields. */
+  conversationSource(runtimeId: string, sessionId: string): SessionSourceEpoch | undefined {
+    if (!this.#started || !this.ownsRuntime(runtimeId)) return;
+    const id = this.#threadIdOf(runtimeId), thread = id === undefined ? undefined : this.#threads.get(id);
+    if (!thread || thread.closing || thread.tuiAttachPending || this.#publicSessionId(thread.id) !== sessionId) return;
+    return { epoch: thread.sourceEpoch, seq: thread.sourceSeq, ready: thread.sourceReady };
   }
 
   async readSessionEntry(runtimeId: string, sessionId: string, entryId: string): Promise<RemoteSessionEntry | undefined> {
@@ -1325,9 +1369,20 @@ export class CodexRuntime implements AgentBackend {
 
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
     if (!this.ownsRuntime(runtimeId)) return "offline";
+    const id = this.#threadIdOf(runtimeId), thread = id === undefined ? undefined : this.#threads.get(id);
+    if (command.type === "session.sync" && command.range === "preview" && thread && !thread.sourceReady && thread.reconcilePromise) {
+      // A recovery request can arrive as soon as the unknown boundary is sent.
+      // Await the native reconciliation already in flight instead of returning
+      // an unusable preview of the old graph, or starting another read.
+      void this.#waitForReconcile(thread).then(() => {
+        if (this.#threads.get(thread.id) !== thread || thread.closing) throw new Error("session_not_found");
+        this.handleCommand(command, commandId, thread.id);
+      }).catch(error => this.#commandResult(thread.id, commandId, false, describeError(error)));
+      return "handled";
+    }
     // 没有任何活跃 thread 时仍要走 handleCommand：不认识的命令照样回
     // unsupported_command（后端在线但做不到 ≠ runtime 掉线）。
-    return this.handleCommand(command, commandId, this.#threadIdOf(runtimeId)) ? "handled" : "unsupported";
+    return this.handleCommand(command, commandId, id) ? "handled" : "unsupported";
   }
 
   // ── 会话目录与激活 ───────────────────────────────────────────────────────────
@@ -1415,68 +1470,108 @@ export class CodexRuntime implements AgentBackend {
 
   /** Persistent thread catalog, with a rollout fallback when app-server discovery fails. */
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
-    if (isDesktopAppServer(this.#server)) {
-      const entries = await this.catalogNative(archived);
-      return entries.filter(entry => this.#desktopKnown.has(entry.sessionId)).map(entry => ({
-        ...entry, sessionId: this.#publicSessionId(entry.sessionId), agentKind: "codexDesktop",
-      }));
-    }
-    return (await this.catalogNative(archived)).filter(entry => !this.#desktopKnown.has(entry.sessionId));
+    return (await this.catalogViews(archived, false)).legacy;
   }
 
-  private async catalogNative(archived = false): Promise<AgentSessionSummary[]> {
-    const limit = 200;
-    let live: AgentSessionSummary[] = [];
+  get historyStore(): string {
+    const home = this.#server.historyHome;
+    return home === undefined ? `connection:${this.#catalogConnection}` : `local:${home}`;
+  }
+
+  get sharedHistoryVerified(): boolean { return this.#server.historyHome !== undefined; }
+
+  /** Same first native page for both clients; only legacy applies the ownership ledger. */
+  async catalogViews(archived: boolean, includeUnified: boolean): Promise<{
+    legacy: AgentSessionSummary[]; unified: { sessions: AgentSessionSummary[]; complete: boolean };
+  }> {
+    const server = this.#server;
+    const store = this.historyStore;
+    const limit = 200, maxPages = includeUnified ? 8 : 1;
+    const seen = new Set<string>();
+    const pages: AgentSessionSummary[][] = [];
+    let complete = false, malformed = false;
+    let cursor: string | undefined;
     try {
-      const result = (await this.#server.request("thread/list", { limit, modelProviders: [], ...(archived ? { archived: true } : {}) })) as {
-        data?: Array<Record<string, unknown>>;
-      };
-      live = (result.data ?? []).flatMap((thread): AgentSessionSummary[] => {
-        if (thread.ephemeral === true || isCodexSubagentSource(thread.source, thread.parentThreadId)) return [];
-        const id = thread.id;
-        const cwd = thread.cwd;
-        const createdAt = toMillis(thread.createdAt);
-        const modifiedAt = toMillis(thread.updatedAt);
-        const name = codexSessionName(thread.name);
-        const modelProvider = codexProviderId(thread.modelProvider);
-        if (typeof id !== "string" || typeof cwd !== "string" || createdAt === undefined || modifiedAt === undefined) {
-          return [];
+      for (let page = 0; page < maxPages; page++) {
+        const params = { limit, modelProviders: [], ...(archived ? { archived: true } : {}), ...(cursor === undefined ? {} : { cursor }) };
+        const result = object(await (page === 0 ? server.request("thread/list", params)
+          : server.request("thread/list", params, 5_000, { maxResponseBytes: 4 * 1024 * 1024 })));
+        if (!Array.isArray(result.data)) throw new Error("thread/list 响应缺少 data");
+        pages.push(result.data.flatMap((raw): AgentSessionSummary[] => {
+          const thread = object(raw);
+          if (thread.ephemeral === true || isCodexSubagentSource(thread.source, thread.parentThreadId)) return [];
+          const id = thread.id;
+          const cwd = thread.cwd;
+          const createdAt = toMillis(thread.createdAt);
+          const modifiedAt = toMillis(thread.updatedAt);
+          const name = codexSessionName(thread.name);
+          const modelProvider = codexProviderId(thread.modelProvider);
+          if (typeof id !== "string" || id.length === 0 || id.length > 128 || id.includes(":") ||
+            typeof cwd !== "string" || cwd.length > 4096 || createdAt === undefined || modifiedAt === undefined) {
+            malformed = true;
+            return [];
+          }
+          return [{
+            sessionId: id,
+            cwd,
+            hostname: localHostname(),
+            ...(name === undefined ? {} : { name }),
+            ...(typeof thread.preview === "string" && thread.preview.length > 0
+              ? { firstMessage: thread.preview.slice(0, 4_000) }
+              : {}),
+            createdAt,
+            modifiedAt,
+            messageCount: Array.isArray(thread.turns) ? thread.turns.length : 0,
+            agentKind: "codex",
+            archived,
+            ...(modelProvider === undefined ? {} : { modelProvider }),
+          }];
+        }));
+        if (typeof result.nextCursor !== "string" || !result.nextCursor) {
+          complete = !malformed && (result.nextCursor === null || (result.nextCursor === undefined && result.data.length < limit));
+          break;
         }
-        return [{
-          sessionId: id,
-          cwd,
-          hostname: localHostname(),
-          ...(name === undefined ? {} : { name }),
-          ...(typeof thread.preview === "string" && thread.preview.length > 0
-            ? { firstMessage: thread.preview.slice(0, 4_000) }
-            : {}),
-          createdAt,
-          modifiedAt,
-          messageCount: Array.isArray(thread.turns) ? thread.turns.length : 0,
-          agentKind: "codex",
-          archived,
-          ...(modelProvider === undefined ? {} : { modelProvider }),
-        }];
-      });
+        if (seen.has(result.nextCursor)) break;
+        seen.add(result.nextCursor); cursor = result.nextCursor;
+      }
     } catch (error) {
       // app-server 暂时没就绪（启动中/已退出）不拖垮整个目录：磁盘 rollout 还在。
       this.#options.log?.(`thread/list 失败，目录只含磁盘 rollout：${describeError(error)}`);
     }
-    const liveIds = new Set(live.map((entry) => entry.sessionId));
-    const disk = await this.#diskCatalog(archived, liveIds);
+    const firstPage = pages[0] ?? [];
+    const disk = await this.#diskCatalog(archived, new Set(firstPage.map(entry => entry.sessionId)));
+    if (this.#server !== server || this.historyStore !== store) throw new Error("Codex 历史连接已变化");
     const diskById = new Map(disk.map((entry) => [entry.sessionId, entry]));
-    return [
+    const merge = (live: AgentSessionSummary[], useDisk: boolean) => {
+      const liveIds = new Set(live.map(row => row.sessionId));
+      return [
       ...live.map((entry) => {
-        const modelProvider = entry.modelProvider ?? diskById.get(entry.sessionId)?.modelProvider;
+        const modelProvider = entry.modelProvider ?? (useDisk ? diskById.get(entry.sessionId)?.modelProvider : undefined);
         return modelProvider === undefined ? entry : { ...entry, modelProvider };
       }),
-      ...disk.filter((entry) => !liveIds.has(entry.sessionId)),
-    ];
+        ...(useDisk ? disk.filter(entry => !liveIds.has(entry.sessionId)) : []),
+      ];
+    };
+    const legacy = merge(firstPage, true).flatMap(entry => isDesktopAppServer(server)
+      ? this.#desktopKnown.has(entry.sessionId) ? [{ ...entry, sessionId: this.#publicSessionId(entry.sessionId), agentKind: "codexDesktop" as const }] : []
+      : this.#desktopKnown.has(entry.sessionId) ? [] : [entry]);
+    // A local fallback must belong to this server. An old/remote server without
+    // handshake evidence can contribute its own RPC rows, but not the Host's disk.
+    const unified = includeUnified ? merge(pages.flat(), !complete && this.sharedHistoryVerified) : [];
+    return { legacy, unified: { sessions: unified, complete } };
+  }
+
+  async unifiedCatalog(archived = false): Promise<{ sessions: AgentSessionSummary[]; complete: boolean }> {
+    return (await this.catalogViews(archived, true)).unified;
+  }
+
+  #rolloutRoot(): string {
+    return this.#options.rolloutRoot ?? join(this.#server.historyHome ?? join(homedir(), ".codex"), "sessions");
   }
 
   /** 扫磁盘 rollout 目录。同名会话（fork/重复）取 modifiedAt 最新的那份。 */
   async #diskCatalog(archived: boolean, liveIds: ReadonlySet<string>): Promise<AgentSessionSummary[]> {
-    const sessionsRoot = this.#options.rolloutRoot ?? join(homedir(), ".codex", "sessions");
+    const sessionsRoot = this.#rolloutRoot();
     const root = archived ? join(dirname(sessionsRoot), "archived_sessions") : sessionsRoot;
     let names: string[];
     try {
@@ -1487,15 +1582,18 @@ export class CodexRuntime implements AgentBackend {
       return []; // 没装 codex / 目录不存在：磁盘目录为空，不是错误。
     }
     const byId = new Map<string, AgentSessionSummary>();
-    await Promise.all(names.map(async (name) => {
-      const rollout = await readRolloutSummary(join(root, name));
-      if (rollout === undefined) return;
-      const { entry, desktopMetadataOnly } = rollout;
-      // The terminal and desktop share rollouts. Do not reintroduce a desktop
-      // draft (including one in an old ownership ledger) via disk-only history.
-      if (desktopMetadataOnly && !liveIds.has(entry.sessionId) && !this.#threads.has(entry.sessionId)) return;
-      const existing = byId.get(entry.sessionId);
-      if (existing === undefined || existing.modifiedAt < entry.modifiedAt) byId.set(entry.sessionId, entry);
+    let index = 0;
+    await Promise.all(Array.from({ length: Math.min(names.length, 16) }, async () => {
+      for (let name = names[index++]; name !== undefined; name = names[index++]) {
+        const rollout = await readRolloutSummary(join(root, name));
+        if (rollout === undefined) continue;
+        const { entry, desktopMetadataOnly } = rollout;
+        // The terminal and desktop share rollouts. Do not reintroduce a desktop
+        // draft (including one in an old ownership ledger) via disk-only history.
+        if (desktopMetadataOnly && !liveIds.has(entry.sessionId) && !this.#threads.has(entry.sessionId)) continue;
+        const existing = byId.get(entry.sessionId);
+        if (existing === undefined || existing.modifiedAt < entry.modifiedAt) byId.set(entry.sessionId, entry);
+      }
     }));
     // 目录是发给手机的单条 E2E 消息：历史太久会把它撑到兆级（中继可能拒收大帧），
     // 只保留最近的 200 条（与 thread/list 的 limit 语义一致）。
@@ -1511,14 +1609,18 @@ export class CodexRuntime implements AgentBackend {
     } else if (this.#desktopKnown.has(sessionId)) {
       throw new SessionArchiveError("session_not_found", "此会话属于 Codex 桌面版");
     }
-    sessionId = this.#nativeSessionId(sessionId);
+    return this.setNativeArchived(this.#nativeSessionId(sessionId), archived);
+  }
+
+  async setNativeArchived(sessionId: string, archived: boolean, requireCurrent?: () => void): Promise<void> {
     const thread = this.#threads.get(sessionId);
     if (thread !== undefined && (this.#statusOf(thread) !== "idle" || thread.queue.length > 0)) {
       throw new SessionArchiveError("session_busy", "请等待 Codex 完成当前任务后再归档");
     }
     // Read the native path, including archived sessions, to make a repeated desired-state request safe.
-    const before = await this.#server.request("thread/read", { threadId: sessionId }) as {
-      thread?: { path?: string; status?: { type?: string } };
+    const server = this.#server;
+    const before = await server.request("thread/read", { threadId: sessionId }) as {
+      thread?: { id?: string; path?: string; status?: { type?: string } };
     };
     if (before.thread?.status?.type === "active") {
       throw new SessionArchiveError("session_busy", "请等待 Codex 完成当前任务后再归档");
@@ -1526,8 +1628,10 @@ export class CodexRuntime implements AgentBackend {
     const path = before.thread?.path;
     if (path === undefined) throw new SessionArchiveError("session_not_found", "会话尚未保存，无法归档");
     const wasArchived = path.split(/[\\/]/).includes("archived_sessions");
+    if (requireCurrent && before.thread?.id !== sessionId) throw new SessionArchiveError("session_not_found", "无法核对 Codex 原生会话");
+    requireCurrent?.();
     if (wasArchived !== archived) {
-      await this.#server.request(archived ? "thread/archive" : "thread/unarchive", { threadId: sessionId });
+      await server.request(archived ? "thread/archive" : "thread/unarchive", { threadId: sessionId });
     }
     if (archived) this.#deactivateThread(sessionId, "会话已归档");
   }
@@ -1545,16 +1649,52 @@ export class CodexRuntime implements AgentBackend {
       : target.sessionId.includes(":") || this.#desktopKnown.has(target.sessionId))) {
       throw new ActivationError("session_not_found", "不属于 Codex 的会话");
     }
+    return this.activateNative(target.type === "resume" ? { type: "resume", sessionId: this.#nativeSessionId(target.sessionId) } : target, context);
+  }
+
+  /** Called only after Host selects an authorized native catalog route. */
+  async activateNative(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     // 在途计数：activate 的 thread/start|resume 广播可能先于 RPC 响应到达，此刻
     // thread 还没进 #threads。计数 >0 时切换检测先宽限，避免把自家广播当 TUI 切换。
     this.#activating += 1;
     try {
-      return await this.#activateInner(target.type === "resume"
-        ? { type: "resume", sessionId: this.#nativeSessionId(target.sessionId) } : target,
-      context, this.#activationSpawnMode(context?.spawnMode));
+      return await this.#activateInner(target, context, this.#activationSpawnMode(context?.spawnMode));
     } finally {
       this.#activating -= 1;
     }
+  }
+
+  servingActivation(threadId: string): BackendActivation | undefined {
+    const thread = this.#threads.get(threadId);
+    return this.#started && thread && !thread.closing && !thread.tuiAttachPending
+      ? { sessionId: this.#publicSessionId(threadId), spawnMode: this.#headWindows.has(threadId) ? "tui" : "headless" } : undefined;
+  }
+
+  legacySessionIdFor(threadId: string): string { return this.#publicSessionId(threadId); }
+
+  catalogIdentityFor(runtime: { runtimeId: string; sessionId?: string }): string | undefined {
+    if (!runtime.sessionId) return undefined;
+    const threadId = this.#nativeSessionId(runtime.sessionId);
+    return this.runtimeIdFor(threadId) === runtime.runtimeId && this.#threads.has(threadId) ? threadId : undefined;
+  }
+
+  /** Verify a saved session on the chosen server before any resume touches it. */
+  async assertResumableHistory(threadId: string): Promise<void> {
+    const result = object(await this.#server.request("thread/read", { threadId, includeTurns: false }, 5_000));
+    const snapshot = object(result.thread);
+    if (snapshot.id !== threadId || typeof snapshot.path !== "string" || snapshot.ephemeral === true ||
+      snapshot.path.split(/[\\/]/).includes("archived_sessions") || isCodexSubagentSource(snapshot.source, snapshot.parentThreadId)) {
+      throw new ActivationError("session_not_found", "无法核对未归档的 Codex 原生会话");
+    }
+  }
+
+  async confirmsNotLoaded(threadId: string): Promise<boolean> {
+    const server = this.#server;
+    try {
+      const result = object(await server.request("thread/loaded/list", {}, 5_000));
+      return this.#started && server === this.#server && Array.isArray(result.data) && result.data.every(id => typeof id === "string" && id !== threadId)
+        && (result.nextCursor === undefined || result.nextCursor === null);
+    } catch { return false; }
   }
 
   async #activateInner(target: AgentActivateTarget, context: AgentActivateContext | undefined,
@@ -1584,6 +1724,7 @@ export class CodexRuntime implements AgentBackend {
     if (typeof id !== "string" || typeof cwd !== "string") {
       throw new Error(`app-server 的 ${method} 响应缺少 thread.id/cwd`);
     }
+    if (target.type === "resume" && target.sessionId !== id) throw new ActivationError("session_not_found", "Codex 未恢复请求中的原生会话");
     if (isCodexSubagentSource(threadJson?.source, threadJson?.parentThreadId)) {
       throw new ActivationError("session_not_found", "不属于 Codex 的用户会话");
     }
@@ -1802,7 +1943,7 @@ export class CodexRuntime implements AgentBackend {
     thread.pendingStops.clear();
     this.#cancelSourcePublish(thread);
     this.#toolCapture?.invalidate(this.#publicSessionId(threadId));
-    this.#toolInventories.delete(threadId); this.#captureEpochs.delete(threadId);
+    this.#toolInventories.delete(threadId);
     const toolReader = this.#toolContentReaders.get(threadId);
     this.#toolContentReaders.delete(threadId); if (toolReader) void toolReader.dispose();
     const metadata = this.threadMetadata(thread);
@@ -2050,8 +2191,27 @@ export class CodexRuntime implements AgentBackend {
       thread.persistedMessageMappings = prior.persistedMessageMappings;
       return false;
     }
-    const rewritten = prior.entries.some((old, index) =>
-      !isDeepStrictEqual(thread.entries[index], old));
+    const rewritten = prior.entries.some((old, index) => !isDeepStrictEqual(thread.entries[index], old));
+    const normalizeToolSummary = (message: unknown): unknown => {
+      if (message === null || typeof message !== "object") return message;
+      const value = structuredClone(message) as Record<string, unknown>;
+      const normalize = (summary: unknown): void => {
+        if (summary === null || typeof summary !== "object") return;
+        delete (summary as Record<string, unknown>).order;
+      };
+      for (const part of (Array.isArray(value.content) ? value.content : [])) {
+        if (part && typeof part === "object") normalize((part as Record<string, unknown>).summary);
+      }
+      normalize(value.toolSummary);
+      return value;
+    };
+    const priorById = new Map(prior.entries.map(entry => [entry.entryId, entry]));
+    const nativeContentChanged = thread.entries.some(entry => {
+      const old = priorById.get(entry.entryId);
+      if (!old) return false;
+      return !isDeepStrictEqual(normalizeToolSummary(object(old.data).message), normalizeToolSummary(object(entry.data).message));
+    });
+    if (rewritten && nativeContentChanged) this.#toolCapture?.invalidate(this.#publicSessionId(thread.id));
     if (rewritten && !epochStarted) {
       // A missed revert or corrected native item invalidates the old cache generation.
       // Announce the boundary before ready; delayed pages/patches cannot restore old edges.
@@ -2110,7 +2270,7 @@ export class CodexRuntime implements AgentBackend {
    */
   async #replayFromRollout(thread: ThreadState, retainedTurns: Set<string>): Promise<void> {
     const generation = thread.reconcileGeneration;
-    const root = this.#options.rolloutRoot ?? join(homedir(), ".codex", "sessions");
+    const root = this.#rolloutRoot();
     let paths: string[];
     try {
       paths = thread.rolloutPath === undefined
@@ -2955,6 +3115,10 @@ export class CodexRuntime implements AgentBackend {
       if (epochStarted) this.#beginSourceReconcile(thread);
       const turns = await this.#listAllTurns(thread.id);
       if (!this.#isCurrentReconcile(thread, generation)) return;
+      if (!epochStarted && this.#nativeReadLagsStream(thread, turns)) {
+        await this.#drainReconcileNotifications(thread);
+        return;
+      }
       // Lost notifications invalidate the read, not the committed graph. Compare the
       // fresh projection with that graph so a pure append keeps its epoch.
       thread.sourceReady = false;
@@ -2987,19 +3151,21 @@ export class CodexRuntime implements AgentBackend {
     });
   }
 
-  /** A running turn's persisted view can lag observed message and compaction starts. */
+  /** A running turn's persisted view can lag observed items, including completions. */
   #nativeReadLagsStream(thread: ThreadState, turns: unknown[]): boolean {
-    if (!thread.sourceReady) return false;
+    if (!thread.sourceReady || thread.turnId === undefined) return false;
     const activeTurn = turns.map(object).find(turn => turn.id === thread.turnId);
     if ((activeTurn?.status !== "inProgress" && activeTurn?.status !== "in_progress") || !Array.isArray(activeTurn.items)) return false;
-    const items = activeTurn.items.map(object);
+    const itemIds = new Set(activeTurn.items.map(item => object(item).id));
+    if (thread.itemOrder.some(id => !itemIds.has(id) && (thread.entryTurns.get(id) === thread.turnId ||
+      thread.completedItems.get(id)?.turnId === thread.turnId))) return true;
     const streamingId = thread.streamingMessageId;
-    if (streamingId !== undefined && thread.liveMessages.has(streamingId) && !items.some(item => item.id === streamingId)) return true;
+    if (streamingId !== undefined && thread.liveMessages.has(streamingId) && !itemIds.has(streamingId)) return true;
     // Codex 0.167 emits item/started for contextCompaction before persisting it. Replaying
     // that active snapshot would clear its running fact and retire its id, dropping the
     // eventual completion too. A terminal turn or explicit revert still replaces it.
     const owner = thread.compactionOwner;
-    return owner?.turnId === activeTurn.id && owner?.itemId !== undefined && !items.some(item => item.id === owner.itemId);
+    return owner?.turnId === activeTurn.id && owner?.itemId !== undefined && !itemIds.has(owner.itemId);
   }
 
   /** One native read per thread repairs notifications missing before the Host transport. */
@@ -3022,7 +3188,7 @@ export class CodexRuntime implements AgentBackend {
         if (!this.#isCurrentReconcile(thread, generation)) return;
         if (this.#nativeReadLagsStream(thread, turns)) {
           // turns/list can lag the notification stream while this same turn is running.
-          // A missing live item is not a deletion: replay would erase its observed state
+          // A missing observed item is not a deletion: replay would erase its state
           // and retire the id, dropping subsequent deltas or completion. Defer this read and
           // consume buffered notifications against the verified source. A terminal/new turn
           // or an explicit revert still replaces it through the normal authoritative replay.
@@ -3475,7 +3641,7 @@ export class CodexRuntime implements AgentBackend {
     if (oldThreadId !== undefined && oldThreadId !== threadId) {
       this.#deactivateThread(oldThreadId, "Codex TUI 已切换到其他会话", false, true);
     }
-    if (this.#desktopKnown.has(threadId)) return;
+    if (this.#desktopKnown.has(threadId) && !this.#threads.has(threadId)) return;
     const existing = this.#threads.get(threadId);
     const otherKey = this.#windowKeyByThread.get(threadId);
     // The same native thread can be displayed in two TUIs. Do not take another
@@ -3881,13 +4047,13 @@ export class CodexRuntime implements AgentBackend {
       case "item/commandExecution/outputDelta":
       case "item/fileChange/outputDelta": {
         if (typeof record.itemId !== "string" || typeof record.delta !== "string") return;
-        this.#toolCapture?.append(this.#toolLocator(thread, record.itemId, "output"), record.delta);
+        this.#toolCaptureFor()?.append(this.#toolLocator(thread, record.itemId, "output"), record.delta);
         return;
       }
       case "item/mcpToolCall/progress":
       {
         if (typeof record.itemId !== "string" || typeof record.message !== "string") return;
-        this.#toolCapture?.append(this.#toolLocator(thread, record.itemId, "output"), record.message);
+        this.#toolCaptureFor()?.append(this.#toolLocator(thread, record.itemId, "output"), record.message);
         return;
       }
       case "item/reasoning/textDelta":

@@ -781,10 +781,12 @@ data class LaunchState(
     /** 用户仍停在这个启动页：成功后切到真实会话；离开后不再把用户拉回。 */
     val following: Boolean = true,
     val spawnModeOverride: String? = null,
+    val codexLaunchMode: String? = null,
 ) {
     val status: String get() = if (failure != null) "error" else if (unconfirmed) "launch_unconfirmed" else "starting"
     /** 启动期间聊天页的占位 Runtime：草稿与消息归属它。 */
-    fun runtime() = RuntimeSummary(placeholder, title, cwd, status, resumed ?: placeholder, agentKind = agentKind)
+    fun runtime() = RuntimeSummary(placeholder, title, cwd, status, resumed ?: placeholder, agentKind = agentKind,
+        codexCatalogId = resumed?.takeIf(::isCodexCatalogId))
 }
 
 /** 当前聊天页是不是启动中的会话。 */
@@ -792,7 +794,7 @@ internal val RemoteState.launchPage: LaunchState? get() = launching?.takeIf { it
 
 /** `launch` 先记入账本（尚未写入），opId 即请求的 requestId；同时立即进入启动页。 */
 internal fun RemoteState.createLaunch(
-    requestId: String, target: Map<String, String>, title: String, now: Long, spawnModeOverride: String? = null,
+    requestId: String, target: Map<String, String>, title: String, now: Long, spawnModeOverride: String? = null, codexLaunchMode: String? = null,
 ): Pair<RemoteState, LedgerCreation<LedgerPayload>> {
     val placeholder = "launch:$requestId"
     val (next, creation) = ledger.create(requestId, OperationKinds.LAUNCH, placeholder, policy = OperationKinds.launchPolicy,
@@ -800,7 +802,7 @@ internal fun RemoteState.createLaunch(
     if (creation !is LedgerCreation.Created) return this to creation
     val resumed = target["sessionId"]?.takeIf { target["type"] == "resume" }
     val launch = LaunchState(requestId, placeholder, target, title, target["cwd"] ?: resumed?.let { sessions[it]?.cwd }.orEmpty(),
-        target["agentKind"], resumed, spawnModeOverride = spawnModeOverride)
+        target["agentKind"], resumed, spawnModeOverride = spawnModeOverride, codexLaunchMode = codexLaunchMode)
     return copy(ledger = next, launching = launch, selectedRuntimeId = placeholder, selectedOfflineSessionId = null) to creation
 }
 

@@ -18,7 +18,13 @@ struct PairingEntryView: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisHeader {
-                if let onCancel { OrbisIconButton(symbol: "xmark", label: L10n.tr("取消添加电脑"), action: onCancel) }
+                if let onCancel {
+                    OrbisIconButton(symbol: "xmark", label: L10n.tr("取消添加电脑")) {
+                        validationError = nil
+                        store.clearPairingError()
+                        onCancel()
+                    }
+                }
             } title: {
                 Text("Orbis").font(.orbisTitle())
             } trailing: { ExternalImportInboxButton() }
@@ -63,6 +69,7 @@ struct PairingEntryView: View {
                 }.scrollDismissesKeyboard(.interactively)
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
+            .onDisappear { if !store.isPairing { store.clearPairingError() } }
             .sheet(isPresented: $scannerOpen) {
                 PairingScannerView { raw in scannerOpen = false; submit(raw) }.orbisSheet([.large])
             }

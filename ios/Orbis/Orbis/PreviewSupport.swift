@@ -511,6 +511,22 @@ func makePreviewStore(screen: String) -> OrbisStore {
             store.executeSlash("model", args: "model-a")
         }
     }
+    if ProcessInfo.processInfo.arguments.contains("--preview-f4-banner") ||
+       ProcessInfo.processInfo.arguments.contains("--preview-f3-toast") {
+        let showBanner = ProcessInfo.processInfo.arguments.contains("--preview-f4-banner")
+        let showToast = ProcessInfo.processInfo.arguments.contains("--preview-f3-toast")
+        Task { @MainActor in
+            // `device.ready` clears recovered banners. Inject only after it publishes the preview runtime.
+            for _ in 0..<100 where store.selectedRuntime == nil { try? await Task.sleep(for: .milliseconds(50)) }
+            guard store.selectedRuntime != nil else { return }
+            if showBanner {
+                store.presentFeedback(.banner, L10n.tr("这台手机的配对已失效"), condition: .pairing, action: .pair)
+            }
+            if showToast {
+                store.presentFeedback(.toast, L10n.tr("草稿已保留"), action: .restoreDraft)
+            }
+        }
+    }
     if PreviewHistoryPrependProbe.enabled { PreviewHistoryPrependProbe.shared.bind(store.chatScreens) }
     return store
 }
@@ -1134,12 +1150,18 @@ private final class PreviewTransport: OrbisTransport {
             receive?(snapshot, "ctl")
         } else if object["type"] as? String == "provider.subscription", let kind = object["kind"] as? String {
             let used = quotaReads; quotaReads += 1
+            let failQuota = ProcessInfo.processInfo.arguments.contains("--preview-quota-error") && used == 1
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(900))
-                self?.receive?(["type": "provider.subscription.result", "requestId": object["requestId"]!, "kind": kind, "id": object["id"]!,
-                    "quota": ["checkedAt": 1793232000000, "windows": [
-                        ["name": "five_hour", "remainingPercent": (kind == "codex" ? 82 : 64) - used, "resetsAt": 1793242000000],
-                        ["name": "seven_day", "remainingPercent": kind == "codex" ? 35 : 18, "resetsAt": 1793432000000]]]], "ctl")
+                try? await Task.sleep(for: .milliseconds(failQuota ? 150 : 900))
+                if failQuota {
+                    self?.receive?(["type": "provider.subscription.result", "requestId": object["requestId"]!, "kind": kind, "id": object["id"]!,
+                        "error": "登录已过期，请重新登录电脑端"], "ctl")
+                } else {
+                    self?.receive?(["type": "provider.subscription.result", "requestId": object["requestId"]!, "kind": kind, "id": object["id"]!,
+                        "quota": ["checkedAt": 1793232000000, "windows": [
+                            ["name": "five_hour", "remainingPercent": (kind == "codex" ? 82 : 64) - used, "resetsAt": 1793242000000],
+                            ["name": "seven_day", "remainingPercent": kind == "codex" ? 35 : 18, "resetsAt": 1793432000000]]]], "ctl")
+                }
             }
         } else if object["type"] as? String == "provider.switch", let kind = object["kind"] as? String, let id = object["id"] as? String {
             if kind == "pi" {
@@ -1315,7 +1337,8 @@ private final class PreviewTransport: OrbisTransport {
                      "official": id == "official", "subscriptionSupported": id == "official" && ["codex", "claude"].contains(kind)]
                 }
                 return ["agentKind": kind, "availability": "ready", "current": enabledProviders[kind]?.sorted().first as Any,
-                        "modelProvider": "openai", "profiles": profiles, "profilesTruncated": false,
+                        "modelProvider": "openai", "profiles": profiles,
+                        "profilesTruncated": ProcessInfo.processInfo.arguments.contains("--preview-provider-problem"),
                         "authenticated": true, "switching": false, "usage": ["availability": "unknown", "detail": NSNull()],
                         "authentication": ["availability": "ready", "method": "api_key", "credentialPresent": true, "bindingReady": true, "verified": NSNull()],
                         "health": ["availability": "unknown", "circuits": []]]
@@ -1480,12 +1503,14 @@ private final class PreviewTransport: OrbisTransport {
             }
             return transcript
         }
-        return [message("m1", role: "user", text: "把 iOS 的 UI 和交互体验对齐到 Android，一个页面一个页面做。"),
+        let base = [message("m1", role: "user", text: "把 iOS 的 UI 和交互体验对齐到 Android，一个页面一个页面做。"),
          ["messageId": "m2", "role": "assistant", "timestamp": 1793232000001, "content": [
             ["type": "thinking", "text": "先确认两端已有的页面和交互，再逐页对齐视觉、导航和状态反馈。"],
             ["type": "text", "text": "已经梳理了两端的页面结构。接下来按顺序处理：\n\n- 配对与扫码\n- 会话主页和目录\n- 聊天、历史与分支\n\n统一浅色、深色配色和控件的按压反馈。"]]],
          message("m3", role: "user", text: "聊天输入和滚动也要保持一致。"),
          message("m4", role: "assistant", text: "阅读旧消息时会保留当前位置，点击右下角按钮可以跳回最新消息。\n\n```swift\nlet followsLatest = isNearBottom\nif followsLatest {\n    scrollToLatest()\n}\n```\n\n**草稿按电脑和会话隔离**，返回目录后仍会保留。")]
+        let historyPrefix = (screen == "approval" && ProcessInfo.processInfo.arguments.contains("--preview-long-transcript")) ? recycleHistory : []
+        return historyPrefix + base
             // M16: a file the reply produced, to download from the chat.
             + (ProcessInfo.processInfo.arguments.contains("--preview-chat-artifact") ? [["messageId": "m5", "role": "assistant", "timestamp": 1793232000002,
                 "content": [["type": "artifact", "artifact": ["artifactId": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "fileName": "report.pdf",

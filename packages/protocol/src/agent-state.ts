@@ -3,6 +3,7 @@ export { AgentKindSchema, type AgentKind } from "./agent-kind.js";
 import { z } from "zod";
 import { ModelSelectionValuesSchema, TurnConfigurationSchema } from "./turn-configuration.js";
 import { HostProviderAuthenticationSchema, HostProviderUsageSchema, HostProviderHealthSchema, HostProviderRoutingSchema } from "./host-model-domains.js";
+import { CodexLaunchModeSchema } from "./codex-history.js";
 
 /**
  * ADR-0032 的共享 Agent 状态模型（第 1 批：schema、身份与领域 envelope）。
@@ -287,6 +288,8 @@ export const AgentCatalogSessionSchema = z.strictObject({
   modifiedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), messageCount: z.number().int().nonnegative().max(100_000),
   agentKind: AgentKindSchema, hostname: z.string().min(1).max(256), archived: z.boolean().optional(),
   modelProvider: z.string().min(1).max(128).optional(),
+  /** Only in the negotiated catalog; an empty list is a retained, presently offline row. */
+  codexLaunchModes: z.array(CodexLaunchModeSchema).max(2).optional(),
 });
 export type AgentCatalogSession = z.infer<typeof AgentCatalogSessionSchema>;
 

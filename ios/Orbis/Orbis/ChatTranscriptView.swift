@@ -187,13 +187,20 @@ struct ChatTranscriptView: View, Equatable {
                 }
             }
             .orbisAnchor(sendFlight.viewport)
-            .overlay(alignment: .bottomTrailing) {
-                ChatJumpToLatestView(viewport: viewport, hasRows: !state.transcript.rows.isEmpty,
-                    accent: OrbisPalette(scheme).agent(state.kind), jump: jumpToLatest)
+            .overlay(alignment: .bottom) {
+                ChatBottomOverlayRegion(
+                    model: model,
+                    actions: actions,
+                    runtimeId: actions.runtimeId,
+                    viewport: viewport,
+                    hasRows: !state.transcript.rows.isEmpty,
+                    showWorkspace: !state.cached,
+                    accent: OrbisPalette(scheme).agent(state.kind),
+                    jump: jumpToLatest
+                ).equatable()
             }
             .modifier(ChatHistoryAccessibility(enabled: state.hasOlder && !state.historyLoading && state.historyError == nil,
                                                load: { _ = loadOlder(hapticOnAcceptance: true) }))
-            .overlay(alignment: .bottom) { ChatActionFeedbackView(feedback: state.actionFeedback) }
             .onChange(of: state.historyRevision) { _, _ in
                 sendFlight.clear()
                 nativeInteractions.reset()
@@ -633,21 +640,30 @@ private struct LegacyScrollInteraction: UIViewRepresentable {
     }
 }
 
-private struct ChatActionFeedbackView: View {
-    let feedback: String?
-    @Environment(\.colorScheme) private var scheme
-    @Environment(\.orbisReduceMotion) private var reduced
-    @Environment(\.chatVisualActivity) private var activity
+/// Coordinates bottom transcript overlays (JumpToLatest above InteractionWorkspace) in one vertical
+/// stack and reports their combined bounds so F3 toasts sit cleanly above both without overlap.
+private struct ChatBottomOverlayRegion: View, Equatable {
+    let model: ChatScreenModel
+    let actions: ChatSessionActions
+    let runtimeId: String
+    let viewport: ChatViewportController
+    let hasRows: Bool
+    let showWorkspace: Bool
+    let accent: Color
+    let jump: () -> Void
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.runtimeId == rhs.runtimeId &&
+            lhs.hasRows == rhs.hasRows && lhs.showWorkspace == rhs.showWorkspace && lhs.accent == rhs.accent
+    }
     var body: some View {
-        Group {
-            if let feedback {
-                Label(feedback, systemImage: "checkmark").font(.orbisCaption(.medium))
-                    .foregroundStyle(OrbisPalette(scheme).success)
-                    .padding(.horizontal, 14).frame(minHeight: 32)
-                    .neuSurface(radius: 16, intensity: 0.5, concentric: false)
-                    .padding(.bottom, 12).transition(.opacity)
+        VStack(alignment: .trailing, spacing: 0) {
+            ChatJumpToLatestView(viewport: viewport, hasRows: hasRows, accent: accent, jump: jump)
+            if showWorkspace {
+                InteractionWorkspaceView(model: model, actions: actions, runtimeId: runtimeId).equatable()
             }
-        }.animation(reduced || activity?.active == false ? nil : .orbisFade, value: feedback)
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .anchorPreference(key: FeedbackBottomAnchorKey.self, value: .bounds) { [.init(scope: .chat, bounds: $0)] }
     }
 }
 

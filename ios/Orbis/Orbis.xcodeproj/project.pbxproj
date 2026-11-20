@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F09300010000000000000003 /* ChatFilePreviewRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000003; };
+		F09300010000000000000002 /* ChatFilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000002; };
+		F09300010000000000000001 /* ChatFilePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000001; };
 		F08900010000000000000001 /* AGENT-ICON-NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = F08910010000000000000001; };
         F08600010000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F08610010000000000000001; };
         F08600010000000000000002 /* ExternalImportStore.swift in Share Extension Sources */ = {isa = PBXBuildFile; fileRef = F08510010000000000000001; };
@@ -117,6 +120,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		F09310010000000000000003 /* ChatFilePreviewRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/ChatFilePreviewRendererTests.swift; sourceTree = SOURCE_ROOT; };
+		F09310010000000000000002 /* ChatFilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFilePreviewView.swift; sourceTree = "<group>"; };
+		F09310010000000000000001 /* ChatFilePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFilePreview.swift; sourceTree = "<group>"; };
 		F08910010000000000000001 /* AGENT-ICON-NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "AGENT-ICON-NOTICES.txt"; sourceTree = SOURCE_ROOT; };
         F08610010000000000000001 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
         F08610010000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -311,10 +317,12 @@
 				A0011001000000000000002B /* ToolInventory.swift */,
 				A0011001000000000000002A /* ToolContent.swift */,
                 B00110010000000000000001,
-                C06410010000000000000001,
+                C06410010000000000000001, F09310010000000000000003,
                 A07110010000000000000002,
                 A07110010000000000000003,
 				A00110010000000000000029 /* DownloadView.swift */,
+				F09310010000000000000001 /* ChatFilePreview.swift */,
+				F09310010000000000000002 /* ChatFilePreviewView.swift */,
 				A00110010000000000000028 /* FileTransfers.swift */,
 				A00110010000000000000027 /* InteractionView.swift */,
 				A00110010000000000000026 /* PreviewSupport.swift */,
@@ -560,6 +568,8 @@
 				A0010001000000000000002B /* ToolInventory.swift in Sources */,
 				A0010001000000000000002A /* ToolContent.swift in Sources */,
 				A00100010000000000000029 /* DownloadView.swift in Sources */,
+				F09300010000000000000001 /* ChatFilePreview.swift in Sources */,
+				F09300010000000000000002 /* ChatFilePreviewView.swift in Sources */,
 				A00100010000000000000028 /* FileTransfers.swift in Sources */,
 				A00100010000000000000027 /* InteractionView.swift in Sources */,
 				A00100010000000000000026 /* PreviewSupport.swift in Sources */,
@@ -599,7 +609,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
         B00140010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00100010000000000000001); runOnlyForDeploymentPostprocessing = 0; };
-        C06440010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C06400010000000000000001, A07100010000000000000002, C01400010000000000000001 /* ChatNativeSnapshotTests.swift in Sources */, C01400010000000000000002 /* ChatMountPreparationTests.swift in Sources */, C01400010000000000000003 /* OrbisSheetPresentationTests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+        C06440010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (F09300010000000000000003 /* ChatFilePreviewRendererTests.swift in Sources */, C06400010000000000000001, A07100010000000000000002, C01400010000000000000001 /* ChatNativeSnapshotTests.swift in Sources */, C01400010000000000000002 /* ChatMountPreparationTests.swift in Sources */, C01400010000000000000003 /* OrbisSheetPresentationTests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXVariantGroup section */

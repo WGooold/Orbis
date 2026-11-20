@@ -139,6 +139,18 @@ internal class HostConnection(
 
     val hostId: String get() = pairing.hostId
     private val relay = RelayClient()
+    val browserPreview = ChatFilePreview(scope, hostId, relay::sendFilePreviewControl, ::filePreviewPressure)
+
+    fun openFilePreview(runtimeId: String, sessionId: String?, key: ChatFilePreview.Key) {
+        val state = mutableState.value
+        if (state.selectedRuntimeId == runtimeId && state.runtimes[runtimeId]?.sessionId == sessionId &&
+            state.runtimes[runtimeId] != null && state.selectedOfflineSessionId == null) browserPreview.open(key)
+    }
+
+    private fun filePreviewPressure(): Boolean = mutableState.value.let { state ->
+        state.sessionSyncCommands.isNotEmpty() || state.sessionSyncRequests.isNotEmpty() ||
+            state.pendingSends.isNotEmpty() || state.runtimes.values.any { it.status == "running" }
+    }
     private val configuredLaunchJournal = stores.configuredLaunchJournal(hostId, scope)
     private val configuredLaunchId: String? get() = configuredLaunchJournal.launchId
 
@@ -1156,6 +1168,7 @@ internal class HostConnection(
     /** ADR-0049 §6.4 `archive`：卡片立即移到目标列表；回执、断线、期限与核对全部交给账本（替代原 30 秒超时）。 */
     fun setSessionArchived(sessionId: String, archived: Boolean) {
         val state = mutableState.value
+        if (isCodexCatalogId(sessionId) && !state.unifiedCodexHistory) return
         val entry = state.sessions[sessionId] ?: return
         val agentKind = entry.agentKind ?: return
         if (isKimiCode(agentKind, sessionId) && !state.kimiCodeSupported) return
@@ -1185,6 +1198,17 @@ internal class HostConnection(
             return
         }
         updateState { it.ledgerWritten(requestId, System.currentTimeMillis()) }
+    }
+
+    private val downloadBrowserPreferences by lazy {
+        application.getSharedPreferences("orbis_download_browser", android.content.Context.MODE_PRIVATE)
+    }
+
+    /** The last successfully opened directory is scoped to this paired computer. */
+    fun downloadBrowserPath(): String? = downloadBrowserPreferences.getString(hostId, null)?.takeIf(String::isNotEmpty)
+
+    fun rememberDownloadBrowserPath(path: String?) {
+        downloadBrowserPreferences.edit().putString(hostId, path.orEmpty()).apply()
     }
 
     /** 新建会话与下载共用的只读浏览。path 为空返回盘符 / 根。 */
@@ -1240,8 +1264,16 @@ internal class HostConnection(
     }
 
     /** L1：继续已有会话——cwd 与 agentKind 都来自会话记录，手机只需要 sessionId。 */
-    fun activateSession(sessionId: String) {
+    fun activateSession(sessionId: String, requestedMode: String? = null) {
         val state = mutableState.value
+        val unified = isCodexCatalogId(sessionId)
+        if (unified && !state.unifiedCodexHistory) return
+        if (unified && requestedMode == null) {
+            state.runtimes.values.singleOrNull { it.codexCatalogId == sessionId }?.let { selectRuntime(it.runtimeId); return }
+        }
+        val modes = if (unified) state.codexResumeModes(sessionId) else emptyList()
+        val mode = requestedMode ?: modes.singleOrNull()
+        if (unified && mode !in modes) return
         val kimi = isKimiCode(state.sessions[sessionId]?.agentKind, sessionId)
         if (kimi && !state.kimiCodeSupported) return
         if (sessionId.startsWith("openclaw:") && !mutableState.value.openClawNegotiated) return
@@ -1256,8 +1288,8 @@ internal class HostConnection(
         activateTarget(buildJsonObject {
             put("type", "resume")
             put("sessionId", sessionId)
-            (if (kimi) KIMI_CODE_KIND else state.sessions[sessionId]?.agentKind)?.let { put("agentKind", it) }
-        }, if (kimi) "headless" else null)
+            (if (unified) "codex" else if (kimi) KIMI_CODE_KIND else state.sessions[sessionId]?.agentKind)?.let { put("agentKind", it) }
+        }, if (unified) "auto" else if (kimi) "headless" else null, mode)
     }
 
     private fun validateNewSessionTarget(expectedHostId: String?): Boolean {
@@ -1284,9 +1316,10 @@ internal class HostConnection(
         }, spawnMode)
     }
 
-    private fun activateTarget(target: JsonObject, spawnMode: String? = null): Boolean {
-        val kind = (target["agentKind"] as? JsonPrimitive)?.contentOrNull
-        if (kind != null && !mutableState.value.allowsAgentSource(kind)) return false
+    private fun activateTarget(target: JsonObject, spawnMode: String? = null, codexLaunchMode: String? = null): Boolean {
+        val state = mutableState.value
+        val kind = codexLaunchMode?.let(::codexModeKind) ?: (target["agentKind"] as? JsonPrimitive)?.contentOrNull
+        if (kind != null && !state.allowsAgentSource(kind) || codexLaunchMode != null && !state.unifiedCodexHistory) return false
         lastSessionRestorer.cancel()
         val requestId = UUID.randomUUID().toString()
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”，草稿和消息先归属启动请求。
@@ -1296,7 +1329,7 @@ internal class HostConnection(
             ?: fields["cwd"]?.trimEnd('/', '\\')?.substringAfterLast('/')?.substringAfterLast('\\')?.ifBlank { null } ?: L10n.tr("新会话")
         val sent = sendSessionPayload(
             requestId = requestId,
-            payload = mutableState.value.sessionActivationRequest(requestId, target, spawnMode),
+            payload = state.sessionActivationRequest(requestId, target, spawnMode, codexLaunchMode),
             register = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests + requestId,
                 sessionActivateTargets = if (target["type"]?.jsonPrimitive?.contentOrNull == "resume") {
@@ -1304,7 +1337,7 @@ internal class HostConnection(
                 } else emptyMap(),
                 activatedSessionToOpen = null,
                 sessionConfiguration = if (fields["type"] == "new") it.sessionConfiguration.copy(launchError = null, waitingForLaunchJournal = false) else it.sessionConfiguration,
-            ).createLaunch(requestId, fields, title, System.currentTimeMillis(), spawnModeOverride = spawnMode).first },
+            ).createLaunch(requestId, fields, title, System.currentTimeMillis(), spawnModeOverride = spawnMode, codexLaunchMode = codexLaunchMode).first },
             rollback = { it.copy(
                 sessionActivateRequests = it.sessionActivateRequests - requestId,
                 sessionActivateTargets = it.sessionActivateTargets - requestId,
@@ -1350,14 +1383,16 @@ internal class HostConnection(
         updateState { it.copy(launching = null, sessionActivateRequests = it.sessionActivateRequests - launch.requestId) }
         val kind = launch.target["agentKind"] ?: launch.target["sessionId"]?.takeIf { isKimiCode(null, it) }?.let { KIMI_CODE_KIND }
         if (kind == KIMI_CODE_KIND && (!mutableState.value.kimiCodeSupported || launch.target["type"] == "new")) return
-        activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } }, if (kind == KIMI_CODE_KIND) "headless" else launch.spawnModeOverride)
+        activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } },
+            if (kind == KIMI_CODE_KIND) "headless" else launch.spawnModeOverride, launch.codexLaunchMode)
     }
 
     fun loadAgentProviders(kind: String) {
         if (kind !in setOf("pi", "codex", "dsh", "claude") || mutableState.value.agentProviders.requestId != null ||
             mutableState.value.agentProviders.pendingRemovals.isNotEmpty()) return
-        updateState { it.copy(agentProviders = AgentProvidersState(kind = kind, hostId = it.hostId,
-            providers = it.agentProviders.providers.takeIf { _ -> it.agentProviders.kind == kind }.orEmpty(), loading = true)) }
+        updateState { it.copy(agentProviders = it.agentProviders.copy(kind = kind, hostId = it.hostId,
+            providers = it.agentProviders.providers.takeIf { _ -> it.agentProviders.kind == kind }.orEmpty(),
+            loading = true, error = null, notice = null)) }
         refreshProviderModel()
     }
 
@@ -1381,7 +1416,10 @@ internal class HostConnection(
             put("type", "provider.subscription"); put("protocolVersion", PROTOCOL_VERSION)
             put("requestId", request); put("kind", provider.kind); put("id", provider.id)
         })
-        if (!sent) updateState { it.failSubscriptionQuery(request, L10n.tr("配额查询未发送，请重新连接")) }
+        if (!sent) {
+            updateState { it.failSubscriptionQuery(request, L10n.tr("配额查询未发送，请重新连接")) }
+            return
+        }
         scope.launch {
             delay(45_000)
             updateState { state -> if (state.hostId == expectedHostId && state.agentProviders.quotaRequestId == request)
@@ -1492,6 +1530,7 @@ internal class HostConnection(
      * which still has to serve the other Host connections.
      */
     fun shutdown() {
+        browserPreview.resetConnection()
         closeToolDetail()
         closeChangeViewer()
         shouldConnect = false
@@ -1536,6 +1575,7 @@ internal class HostConnection(
 
     /** Runtime is the interaction window; its current session follows its metadata. */
     fun selectRuntime(runtimeId: String?) {
+        if (mutableState.value.selectedRuntimeId != runtimeId) browserPreview.close()
         lastSessionRestorer.cancel()
         closeToolDetail()
         closeChangeViewer()
@@ -1750,6 +1790,7 @@ internal class HostConnection(
         val operation = mutableState.value.historyReads[operationId] ?: return acceptance
         if (automatic != null) synchronized(automaticHistoryLock) { automaticHistoryProgress[automatic.scopeId] = automatic }
         val kind = mutableState.value.runtimes[key]?.agentKind ?: mutableState.value.sessions[operation.sessionId]?.agentKind
+        val cacheId = mutableState.value.runtimes[key]?.codexCatalogId ?: operation.sessionId
         val probe = HistoryLoadProbe.start(kind ?: "offline", operation.sessionId, operation.beforeEntryId, "history",
             leafId = operation.leafId, cacheEpoch = operation.cacheEpoch)
         // Registration precedes execution, so even an immediately completed cache read has an owner.
@@ -1757,14 +1798,14 @@ internal class HostConnection(
             try {
                 probe?.mark("worker_started")
                 if (device != pairedDevice || !mutableState.value.ownsHistoryRead(operationId)) return@launch
-                if (prepareSessionCache(pairedDevice, operation.sessionId, kind)) return@launch
+                if (prepareSessionCache(pairedDevice, operation.sessionId, kind, cacheId.takeIf { it != operation.sessionId })) return@launch
                 currentCoroutineContext().ensureActive()
                 probe?.mark("cache_read_begin")
                 val (page, cacheEpoch) = synchronized(sessionGraphStore) {
-                    sessionGraphStore.readBranch(pairedDevice, operation.sessionId,
+                    sessionGraphStore.readBranch(pairedDevice, cacheId,
                         leafId = operation.leafId, beforeEntryId = operation.beforeEntryId,
                         maxEntries = automatic?.nextMaxEntries ?: historyPageSize) to
-                        sessionGraphStore.cacheEpoch(pairedDevice, operation.sessionId)
+                        sessionGraphStore.cacheEpoch(pairedDevice, cacheId)
                 }
                 currentCoroutineContext().ensureActive()
                 probe?.mark("cache_read_end", "entries=${page.entries.size} status=${page.status}")
@@ -1917,9 +1958,10 @@ internal class HostConnection(
     }
     private fun sendSessionSync(pairedDevice: DeviceCredential, commandId: String, pending: PendingSessionSync) {
         sendHistoryInterest()
-        val agentKind = mutableState.value.runtimes[pending.runtimeId]?.agentKind
+        val runtime = mutableState.value.runtimes[pending.runtimeId]
+        val agentKind = runtime?.agentKind
             ?: mutableState.value.sessions[pending.sessionId]?.agentKind
-        if (prepareSessionCache(pairedDevice, pending.sessionId, agentKind)) return
+        if (prepareSessionCache(pairedDevice, pending.sessionId, agentKind, runtime?.codexCatalogId)) return
         val operationId = pending.historyOperationId ?: UUID.randomUUID().toString()
         updateState { current ->
             if (device != pairedDevice || !shouldConnect || pending.connectionGeneration != generation ||
@@ -1945,7 +1987,7 @@ internal class HostConnection(
             try {
                 currentCoroutineContext().ensureActive()
                 val loaded = loadLocalGraphForRuntime(pairedDevice, runtime)
-                val hasLocal = loaded != null || hasAnyLocalSessionData(pairedDevice, runtime.sessionId)
+                val hasLocal = loaded != null || hasAnyLocalSessionData(pairedDevice, runtime.directorySessionId)
                 currentCoroutineContext().ensureActive()
                 updateState { current ->
                     if (device != pairedDevice) current
@@ -2009,6 +2051,18 @@ internal class HostConnection(
 
     fun clearDraft(runtimeId: String) {
         saveDraft(runtimeId, "")
+    }
+
+    fun setComposerError(runtimeId: String, message: String) {
+        updateState { it.composerFailure(runtimeId, message) }
+    }
+
+    fun clearComposerError(runtimeId: String) {
+        updateState { state ->
+            val current = state.conversations[runtimeId]
+            if (current?.operationError == null) state
+            else state.copy(conversations = state.conversations + (runtimeId to current.copy(operationError = null)))
+        }
     }
 
     /**
@@ -2366,14 +2420,15 @@ internal class HostConnection(
     fun closeRuntimes(runtimeIds: Set<String>): Set<String> {
         val state = mutableState.value
         if (!state.e2eReady) {
-            updateState { it.conversationFailure(it.selectedRuntimeId, L10n.tr("关闭会话未发送：请先连接电脑。")) }
+            val message = L10n.tr("关闭会话未发送：请先连接电脑。")
+            updateState { current -> current.closeTargetFailures(runtimeIds, message) }
             return emptySet()
         }
         return runtimeIds.filterTo(mutableSetOf()) { runtimeId ->
             if (runtimeId !in state.runtimes) return@filterTo false
             if (!state.canCloseRuntime(runtimeId)) {
                 refreshAgentModel(runtimeId, force = true)
-                updateState { it.conversationFailure(it.selectedRuntimeId, L10n.tr("部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。")) }
+                updateState { it.sessionFailure(runtimeId, L10n.tr("部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。")) }
                 return@filterTo false
             }
             submitQuit(runtimeId)
@@ -2966,6 +3021,7 @@ internal class HostConnection(
         reconnectJob?.cancel()
         relayEventJob?.cancel()
         val currentGeneration = ++generation
+        browserPreview.resetConnection()
         val filteredReady = java.util.concurrent.atomic.AtomicReference<String?>(null)
         var stopReconnectOnClose = false
         // Relay closes immediately after protocol.error; the async reducer may run after onClosed.
@@ -3006,11 +3062,17 @@ internal class HostConnection(
                 val interactiveChannel = interactive.channel
                 var incomingMessage = runCatching { messageJson.parseToJsonElement(payload).jsonObject }.getOrNull()
                 if (interactiveChannel != null && incomingMessage != null && consumeExternalImport(incomingMessage)) continue
+                if (interactiveChannel == "ctl" && currentGeneration == generation && incomingMessage != null && browserPreview.consume(incomingMessage)) continue
                 if (interactiveChannel != null && incomingMessage != null && currentGeneration == generation &&
                     supportedProtocolVersion(incomingMessage["protocolVersion"]) != null) {
                     when ((incomingMessage["type"] as? JsonPrimitive)?.contentOrNull) {
-                        "device.ready" -> voiceProviderGeneration = if ((incomingMessage["hostFeatures"] as? JsonArray)
-                            ?.any { (it as? JsonPrimitive)?.contentOrNull == "voice.cleanup.provider.v1" } == true) currentGeneration else -1
+                        "device.ready" -> {
+                            val features = (incomingMessage["hostFeatures"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+                            voiceProviderGeneration = if ("voice.cleanup.provider.v1" in features) currentGeneration else -1
+                            if (interactiveChannel == "ctl" && incomingMessage["deviceId"] == JsonPrimitive(credential.deviceId)) {
+                                browserPreview.authenticated(announcesFilePreview(incomingMessage, credential.deviceId))
+                            }
+                        }
                         "voice.cleanup.provider.result" -> {
                             val id = (incomingMessage["requestId"] as? JsonPrimitive)?.contentOrNull
                             if (id != null) voiceProviderPending[id]?.takeIf { it.generation == currentGeneration }?.reply?.complete(incomingMessage)
@@ -3184,7 +3246,8 @@ internal class HostConnection(
                                 previous.ownsSessionPatch(runtimeId, patch)
                             ) {
                                 runCatching {
-                                    prepareSessionCache(pairedDevice, patch.sessionId, mutableState.value.runtimes[runtimeId]?.agentKind)
+                                    val owner = previous.runtimes[runtimeId]
+                                    prepareSessionCache(pairedDevice, patch.sessionId, owner?.agentKind, owner?.codexCatalogId)
                                     ingestSessionPatch(sessionGraphStore, pairedDevice, runtimeId, patch,
                                         currentState = { mutableState.value },
                                         connectionCurrent = { currentGeneration == generation && device == pairedDevice && shouldConnect })
@@ -3427,7 +3490,10 @@ internal class HostConnection(
             scope.launch {
                 relayStateLock.withLock {
                     if (currentGeneration != generation) return@launch
-                    if (ready) handshakeStalled = false else expectedMessageDisplayVersion = null
+                    if (ready) handshakeStalled = false else {
+                        expectedMessageDisplayVersion = null
+                        browserPreview.resetConnection()
+                    }
                     updateState { current ->
                         (if (ready) current else current.markReconnecting()).copy(
                             e2eReady = ready,
@@ -3491,6 +3557,7 @@ internal class HostConnection(
             onClosed = closed@{ reason ->
                 lanes.close()
                 if (currentGeneration != generation) return@closed
+                browserPreview.resetConnection()
                 if (protocolVersionMismatch.get() || reason == "protocol_version_mismatch") {
                     pairingAwaitingAccept = false
                     shouldConnect = false
@@ -3813,7 +3880,8 @@ internal class HostConnection(
         commandId: String,
         snapshot: SessionGraphSnapshot,
     ): PersistedSessionSnapshotResult {
-        prepareSessionCache(pairedDevice, snapshot.sessionId, mutableState.value.runtimes[runtimeId]?.agentKind)
+        val runtime = mutableState.value.runtimes[runtimeId]
+        prepareSessionCache(pairedDevice, snapshot.sessionId, runtime?.agentKind, runtime?.codexCatalogId)
         val committed = ingestSessionSnapshot(
             sessionGraphStore, pairedDevice, runtimeId, commandId, snapshot,
             currentState = { mutableState.value },
@@ -3838,17 +3906,18 @@ internal class HostConnection(
         runtime: RuntimeSummary,
     ): SessionGraph? {
         val sessionId = runtime.sessionId ?: return null
-        prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
+        val storage = runtime.codexCatalogId ?: sessionId
+        prepareSessionCache(pairedDevice, sessionId, runtime.agentKind, runtime.codexCatalogId)
         return synchronized(sessionGraphStore) {
-            val observedLeaf = sessionGraphStore.latestLeaf(pairedDevice, sessionId)
-            var graph = SessionGraph(sessionId, cacheEpoch = sessionGraphStore.cacheEpoch(pairedDevice, sessionId))
+            val observedLeaf = sessionGraphStore.latestLeaf(pairedDevice, storage)
+            var graph = SessionGraph(sessionId, cacheEpoch = sessionGraphStore.cacheEpoch(pairedDevice, storage))
             for (leaf in listOfNotNull(runtime.sessionLeafId, observedLeaf).distinct()) {
-                val range = sessionGraphStore.readBranch(pairedDevice, sessionId, leaf, maxEntries = previewPageSize)
+                val range = sessionGraphStore.readBranch(pairedDevice, storage, leaf, maxEntries = previewPageSize)
                 graph = graph.merge(SessionGraphSnapshot(sessionId, "local", SessionBranchCursor(leaf), "prepend", range.entries))
             }
             graph = graph.merge(SessionGraphSnapshot(sessionId, "local", SessionBranchCursor(), "prepend", emptyList(),
-                turnTimings = sessionGraphStore.readTurnTimings(pairedDevice, sessionId)))
-            graph = sessionGraphStore.withCacheVersions(pairedDevice, graph)
+                turnTimings = sessionGraphStore.readTurnTimings(pairedDevice, storage)))
+            graph = sessionGraphStore.withCacheVersions(pairedDevice, graph.copy(sessionId = storage)).copy(sessionId = sessionId)
             graph.takeIf { it.entries.isNotEmpty() || it.cacheEpoch != null && runtime.sessionLeafId == null }?.let {
                 if (it.cursor.leafId == null) it.copy(cursor = SessionBranchCursor(observedLeaf)) else it
             }
@@ -3884,10 +3953,11 @@ internal class HostConnection(
     }
 
     /** Runs before any old canonical content can be seeded or validated in memory. */
-    private fun prepareSessionCache(pairedDevice: DeviceCredential, sessionId: String, agentKind: String?): Boolean {
+    private fun prepareSessionCache(pairedDevice: DeviceCredential, sessionId: String, agentKind: String?, cacheId: String? = null): Boolean {
         // 显示投影版本换代与 Codex 格式重建一样，都要先清掉旧缓存再让内容重新进来。
-        val codexRebuilt = sessionGraphStore.prepareSession(pairedDevice, sessionId, agentKind)
-        val displayRebuilt = sessionGraphStore.prepareDisplayCache(pairedDevice, sessionId, expectedMessageDisplayVersion.takeIf { mutableState.value.e2eReady })
+        val storage = cacheId ?: sessionId
+        val codexRebuilt = sessionGraphStore.prepareSession(pairedDevice, storage, agentKind)
+        val displayRebuilt = sessionGraphStore.prepareDisplayCache(pairedDevice, storage, expectedMessageDisplayVersion.takeIf { mutableState.value.e2eReady })
         if (codexRebuilt || displayRebuilt) {
             // 这条日志是"一直在重新同步"的判据：重复出现说明重建判据没有收敛。
             Log.i(RELOAD_TRACE_TAG, "session.cache_rebuild sessionId=$sessionId codex=$codexRebuilt display=$displayRebuilt")
@@ -3932,7 +4002,7 @@ internal class HostConnection(
                 next = next.copy(agentProviders = next.agentProviders.stopOperation(L10n.tr("连接已断开，请刷新以确认操作结果")))
             }
             if ((!next.e2eReady || next.connection != RelayConnection.ONLINE) && next.agentProviders.quotaRequestId != null) {
-                next = next.copy(agentProviders = next.agentProviders.copy(quotaRequestId = null, quota = null, quotaError = L10n.tr("连接已断开，请重新查询配额")))
+                next = next.interruptSubscriptionQuery()
             }
             // ADR-0049：每次状态变化都用源端事实核对本地待确认发送。
             val (reconciled, syncs) = next.reconcilePendingSends(System.currentTimeMillis())
@@ -3964,8 +4034,10 @@ internal class HostConnection(
         mutableState.value.launchDraftMove?.let { (from, to) ->
             device?.let { paired ->
                 val text = draftStore.load(paired, from)
-                if (text.isNotBlank() && draftStore.load(paired, to).isBlank()) draftStore.save(paired, to, text)
-                draftStore.save(paired, from, "")
+                if (draftIdentity(paired, from) != draftIdentity(paired, to) && text.isNotBlank() && draftStore.load(paired, to).isBlank()) {
+                    draftStore.save(paired, to, text)
+                    draftStore.save(paired, from, "")
+                }
             }
             updateState { it.copy(launchDraftMove = null) }
         }
@@ -4073,13 +4145,13 @@ internal class HostConnection(
         for (requested in runtimes.sortedBy { it.runtimeId != mutableState.value.selectedRuntimeId }) {
             if (device != pairedDevice || !shouldConnect || generation != connectionGeneration ||
                 mutableState.value.connection != RelayConnection.ONLINE) return
-            val runtime = mutableState.value.runtimes[requested.runtimeId]?.takeIf { it.sessionId == requested.sessionId }
+            val runtime = mutableState.value.runtimes[requested.runtimeId]?.takeIf { it.sessionId == requested.sessionId && it.codexCatalogId == requested.codexCatalogId }
                 ?: continue
             val sessionId = runtime.sessionId ?: continue
             if (runtime.runtimeId != mutableState.value.selectedRuntimeId) {
                 continue
             }
-            prepareSessionCache(pairedDevice, sessionId, runtime.agentKind)
+            prepareSessionCache(pairedDevice, sessionId, runtime.agentKind, runtime.codexCatalogId)
             val initial = mutableState.value
             // A trusted baseline needs a source check, not another local decrypt/projection pass.
             val conditional = initial.requestedSessionRecovery(runtime.runtimeId, generation, UUID.randomUUID().toString())
@@ -4292,6 +4364,7 @@ internal class HostConnection(
 
     private fun processArtifactChunk(payload: ByteArray) {
         val frame = decodeArtifactChunkFrame(payload)
+        if (browserPreview.consume(frame)) return
         val state = mutableState.value
         val task = state.downloads.values.firstOrNull {
             // The frame runtimeId is the Host serving the download. The task runtimeId is

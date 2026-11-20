@@ -20,6 +20,7 @@ internal fun deviceAgentFeatures(ready: JsonObject): List<String> {
         AGENT_ENABLEMENT_FEATURE,
         "state.compact-bootstrap.v1",
         "claude.send-now.v1",
+        CODEX_UNIFIED_HISTORY,
     ).filter { it in advertised }
 }
 

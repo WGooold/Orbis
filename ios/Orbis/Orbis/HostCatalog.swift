@@ -163,14 +163,23 @@ actor SessionCatalogPreparationWorker {
     private let beforeWork: (@Sendable () -> Void)?
     init(beforeWork: (@Sendable () -> Void)? = nil) { self.beforeWork = beforeWork }
     func merge(current: [SessionSummary], incoming: [SessionSummary], completeKinds: Set<String>,
-               retained: Set<String>, cacheLoaded: Bool, identity: RuntimeSummary? = nil, replacing: Bool = false) -> PreparedSessionCatalog {
+               retained: Set<String>, cacheLoaded: Bool, identity: RuntimeSummary? = nil, replacing: Bool = false,
+               unifiedCodex: Bool = false, keepOtherCodexView: Bool = false) -> PreparedSessionCatalog {
         beforeWork?()
         func prepare(_ sessions: [SessionSummary]) -> PreparedSessionCatalog {
             PreparedSessionCatalog(sessions: sessions,
                 index: Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first }),
                 changed: sessions != current)
         }
-        if replacing { return prepare(incoming.sorted { $0.modifiedAt > $1.modifiedAt }) }
+        func otherCodexView(_ row: SessionSummary) -> Bool {
+            let canonical = row.sessionId.hasPrefix("codex-history:")
+            return keepOtherCodexView && (canonical || ["codex", "codexDesktop"].contains(row.agentKind ?? "")) && canonical != unifiedCodex
+        }
+        if replacing {
+            // Keep rollback data; the directory worker will present only the negotiated view.
+            return prepare(Array(Dictionary((current.filter(otherCodexView) + incoming).map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new }).values)
+                .sorted { $0.modifiedAt > $1.modifiedAt })
+        }
         if let runtime = identity, let id = runtime.sessionId {
             var sessions = current
             let index = sessions.firstIndex { $0.sessionId == id }
@@ -179,9 +188,13 @@ actor SessionCatalogPreparationWorker {
             if !runtime.cwd.isEmpty { entry.cwd = runtime.cwd }
             entry.agentKind = runtime.agentKind; entry.hostname = runtime.hostname ?? entry.hostname
             if let index { sessions[index] = entry } else { sessions.append(entry) }
+            if let catalogId = runtime.codexCatalogId, !sessions.contains(where: { $0.sessionId == catalogId }) {
+                sessions.append(SessionSummary(sessionId: catalogId, name: entry.name, cwd: entry.cwd, createdAt: 0, modifiedAt: 0,
+                    messageCount: 0, agentKind: "codex", hostname: entry.hostname, codexLaunchModes: []))
+            }
             return prepare(sessions)
         }
-        var merged = Dictionary(current.filter { !completeKinds.contains($0.agentKind ?? "") || retained.contains($0.sessionId) || !cacheLoaded }
+        var merged = Dictionary(current.filter { otherCodexView($0) || !completeKinds.contains($0.agentKind ?? "") || retained.contains($0.sessionId) || !cacheLoaded }
             .map { ($0.sessionId, $0) }, uniquingKeysWith: { _, last in last })
         for item in incoming { merged[item.sessionId] = item }
         let sessions = merged.values.sorted { $0.modifiedAt > $1.modifiedAt }

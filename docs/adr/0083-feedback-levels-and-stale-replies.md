@@ -205,6 +205,21 @@ iOS 原位与连接集成用例为 `StoreTests.rejectedStopAndOfflineCloseStayOn
 
 部署：未部署，未生成安装候选，未运行设备交互。共享 QA MCP 本次连接失败，未登记。用户验收：待用户验证。
 
+
+### 6.8 FEEDBACK-POSITION-01：提示位置与对象归属
+
+F4 在页头上方占独立位置，进入配对页时让位于配对原位反馈；F3 锚在当前页面底部控件上方，与输入栏、交互卡片及回到最新按钮分开。F1 留在所属卡片、附件输入、历史读取或供应商控件；关闭失败只标到请求目标，附件准备失败按电脑与会话隔离。
+
+实现与验证入口：Android `FeedbackBannerSlot` / `FeedbackOverlay`、`FeedbackPositionInstrumentedTest`、`FeedbackTest`；iOS `FeedbackBottomAnchorKey`、`ChatSessionActions.uploadFailed`、`FileTransferTests`、`StoreTests` 与 `OrbisUITests` 的提示位置用例。
+
+自动验证：Android 120 项单元测试、5 项 API 35 模拟器用例通过；iOS 141 项包测试、3 项 iPad 模拟器用例通过，两端构建与本地化校验通过。首次失败、复跑及截图见[证据目录](../../.artifacts/feedback-positions/)；共用池的 iPhone 处于保护状态，本轮未验证 iPhone 布局。部署：未部署。用户验收：待用户验证。
+
+### 6.9 QUOTA-FEEDBACK-01：配额查询失败留在配额区
+
+已认证的拒绝立即结束所属配额查询，失败显示在对应配置的双周期读数下方，不写入供应商目录错误。短暂断线保留同一电脑的最后读数；浏览其他 Agent 不清除已有结果。重试清除旧错误，过期回包不改写本次结果。
+
+回归入口：Android `SubscriptionQuotaTest`、`ProviderDialInstrumentedTest.quotaRefreshStaysAvailableAfterTheFirstReading`；iOS `HostStateTests`、`OrbisUITests.testProviderCatalogProblemAndQuotaErrorNeverOverlapDialOrQuotaCells`。Android 106 项定向单测及 1 项模拟器用例、iOS 146 项包测试及 2 项 iPad 模拟器用例通过。首次失败、复跑和截图见[证据目录](../../.artifacts/quota-feedback-20261120/)；未部署，未验证真实账号及 iPhone 布局。
+
 ### QUOTA-FEEDBACK-02：目录暂缺不取消配额查询
 
 供应商目录暂缺或不完整时，保留上次配额，并按原请求归属接收回包；目录恢复后在原配置下显示结果。目录确认原配置不再支持查询时，与收到供应商变更通知一样，清除该 Agent 的旧配额及在途请求；迟到回包不恢复已失效的数据。

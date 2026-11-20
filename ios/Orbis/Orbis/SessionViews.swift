@@ -175,9 +175,12 @@ struct SessionDrawerView: View, Equatable {
     @State private var incomingProjection: SessionDirectoryProjection?
     @State private var hostMenuAnchor = OrbisAnchor()
     private var catalog: SessionDirectoryCatalog { store.activeConnection.directoryCatalog }
-    private var enabledAgentKinds: Set<String>? { store.activeConnection.enabledAgentKinds }
+    private var enabledAgentKinds: Set<String>? { store.activeConnection.directoryEnabledAgentKinds }
+    private var unifiedCodex: Bool { store.activeConnection.unifiedCodexHistory }
     private var filterKind: String? {
-        guard let kind = state.kind, enabledAgentKinds?.contains(kind) != false,
+        guard let selected = state.kind else { return nil }
+        let kind = unifiedCodex && selected == "codexDesktop" ? "codex" : selected
+        guard enabledAgentKinds?.contains(kind) != false,
               kind != kimiCodeKind || store.activeConnection.kimiCodeSupported,
               kind != "openclaw" || store.openClawNegotiated else { return nil }
         return kind
@@ -188,7 +191,7 @@ struct SessionDrawerView: View, Equatable {
     private var request: SessionDirectoryFilter {
         SessionDirectoryFilter(hostId: store.selectedHostId, catalogRevision: catalog.revision, query: state.query,
             kind: filterKind, archived: state.archived, provider: state.providerKey,
-            currentProvider: store.currentProvider(for: state.kind ?? "codex"), language: String(describing: AppLocalization.shared.language),
+            currentProvider: store.currentProvider(for: filterKind ?? "codex"), language: String(describing: AppLocalization.shared.language),
             queryRevision: store.hostState.catalogQueryRevision, enabledAgentKinds: enabledAgentKinds)
     }
     private var projection: SessionDirectoryProjection? {
@@ -385,7 +388,7 @@ struct SessionDrawerView: View, Equatable {
     private var filterMenuItems: [OrbisMenuItem] {
         [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: filterKind == nil) { selectFilter(nil) }]
         + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind, "hermes", "opencode"].filter { kind in
-            guard enabledAgentKinds?.contains(kind) != false else { return false }
+            guard enabledAgentKinds?.contains(kind) != false, !unifiedCodex || kind != "codexDesktop" else { return false }
             if kind == "opencode", store.activeConnection.openCodeAvailability != nil { return true }
             if kind == kimiCodeKind { return store.activeConnection.kimiCodeSupported }; if kind == "openclaw", !store.openClawNegotiated { return false }
             return !["dshDesktop", "openclaw", "hermes", "opencode"].contains(kind) || store.supportedAgents?.contains(kind) == true
@@ -393,7 +396,7 @@ struct SessionDrawerView: View, Equatable {
         }.map { kind in
             let providers = kind == "codex" || kind == "codexDesktop"
                 ? sessionProviderOptions(catalog.sessions, kind: kind, current: store.currentProvider(for: kind)) : []
-            return OrbisMenuItem(title: filterTitle(kind), agentKind: kind, checked: state.kind == kind,
+            return OrbisMenuItem(title: unifiedCodex && kind == "codex" ? "Codex" : filterTitle(kind), agentKind: kind, checked: filterKind == kind,
                 children: providers.map { option in
                     OrbisMenuItem(title: option.label, checked: state.kind == kind && effectiveProviderKey == option.key) {
                         selectFilter(kind, provider: option.key)
@@ -506,26 +509,32 @@ struct SessionDrawerView: View, Equatable {
             else if runtime != nil, let problem = store.providerMismatch(session) { showMismatch(problem) }
             else { onOpenSession(session) }
         } label: {
-            HStack(spacing: 8) {
-                ZStack {
-                    AgentEmblem(kind: session.agentKind, size: 16, recessed: false).opacity(store.activatingSessionId == session.sessionId ? 0 : 1)
-                    if store.activatingSessionId == session.sessionId { ProgressView().controlSize(.mini) }
-                }.frame(width: 16, height: 16)
-                Text(catalog.titles[session.sessionId] ?? session.sessionId).font(.orbisLabel())
-                    .foregroundStyle(OrbisPalette(scheme).text)
-                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                if let error = store.sessionOperationErrors[session.sessionId] {
-                    Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error).lineLimit(2)
-                } else if let unavailable {
-                    Text(unavailable).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
-                        .lineLimit(1).frame(width: 56).accessibilityLabel(unavailable)
-                } else if let runtime, !["idle", "unknown"].contains(runtime.presentationStatus) {
-                    RuntimeStatusLabel(status: runtime.presentationStatus, title: runtime.presentationTitle)
-                } else if session.modifiedAt > 0 {
-                    Text(sessionTimeTitle(session.modifiedAt)).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    ZStack {
+                        AgentEmblem(kind: session.agentKind, size: 16, recessed: false).opacity(store.activatingSessionId == session.sessionId ? 0 : 1)
+                        if store.activatingSessionId == session.sessionId { ProgressView().controlSize(.mini) }
+                    }.frame(width: 16, height: 16)
+                    Text(catalog.titles[session.sessionId] ?? session.sessionId).font(.orbisLabel())
+                        .foregroundStyle(OrbisPalette(scheme).text)
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    if let unavailable {
+                        Text(unavailable).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                            .lineLimit(1).frame(width: 56).accessibilityLabel(unavailable)
+                    } else if let runtime, !["idle", "unknown"].contains(runtime.presentationStatus) {
+                        RuntimeStatusLabel(status: runtime.presentationStatus, title: runtime.presentationTitle)
+                    } else if session.modifiedAt > 0 {
+                        Text(sessionTimeTitle(session.modifiedAt)).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary).lineLimit(1)
+                    }
+                    if selecting { OrbisSelectionIndicator(selected: selected, selecting: true) }
                 }
-                if selecting { OrbisSelectionIndicator(selected: selected, selecting: true) }
-            }.padding(.trailing, 4).frame(minHeight: 48).contentShape(Rectangle())
+                if let error = store.sessionOperationErrors[session.sessionId] {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
+                        .lineLimit(2).padding(.leading, 24)
+                        .accessibilityIdentifier("drawer-session-error-" + session.sessionId)
+                }
+            }.padding(.trailing, 4).padding(.vertical, store.sessionOperationErrors[session.sessionId] == nil ? 0 : 6).frame(minHeight: 48).contentShape(Rectangle())
         }.buttonStyle(DirectoryRowStyle(selected: selected))
             .disabled(store.activatingSessionId != nil && !selecting)
             .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(session.sessionId) })
@@ -665,6 +674,10 @@ struct SessionDraftView: View {
         return choices.filter { enabled?.contains($0) != false }.filter { $0 != kimiCodeKind || owner.kimiCodeSupported }.filter { $0 != "openclaw" || owner.openClawNegotiated }
     }
     private var family: String { agentFamily(agent) }
+    private func launchLabel(_ kind: String) -> String {
+        if owner.unifiedCodexHistory && agentFamily(kind) == "codex" { return (kind == "codexDesktop" ? CodexLaunchMode.desktop : .terminal).title }
+        return agentVariantTitle(kind)
+    }
     private var openCode: OpenCodeAvailability? { owner.connection == .secured && owner.enabledAgentKinds?.contains("opencode") != false ? owner.openCodeAvailability : nil }
     private var showsOpenCode: Bool { openCode != nil || (owner.connection == .secured && allowed.contains("opencode")) }
     private var agentChoices: [String] {
@@ -768,7 +781,7 @@ struct SessionDraftView: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
-                    placeholder: owner.enabledAgentKinds?.contains(agent) == false ? L10n.tr("输入消息") : L10n.tr("让 {0} 做什么？", agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
+                    placeholder: owner.enabledAgentKinds?.contains(agent) == false ? L10n.tr("输入消息") : L10n.tr("让 {0} 做什么？", owner.unifiedCodexHistory && family == "codex" ? "Codex" : agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
                     ink: UIColor(p.text), placeholderInk: UIColor(p.secondary),
                     onEdit: { value, marked, _ in
                         text = value
@@ -834,7 +847,7 @@ struct SessionDraftView: View {
                     .simultaneousGesture(LongPressGesture().onEnded { _ in if variants.count > 1 { showVariantChoices(kind) } })
                     .accessibilityActions {
                         ForEach(variants.dropFirst().filter(allowed.contains), id: \.self) { variant in
-                            Button(agentVariantTitle(variant)) { agent = variant }
+                            Button(launchLabel(variant)) { agent = variant }
                         }
                     }
                     .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(chosen ? .isSelected : [])
@@ -858,7 +871,7 @@ struct SessionDraftView: View {
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(!hasVariants)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { codexLabelFrame = $0 }
-                .accessibilityLabel(agentTitle(agent)).accessibilityValue(agentVariantTitle(agent))
+                .accessibilityLabel(agentTitle(agent)).accessibilityValue(launchLabel(agent))
                 .accessibilityIdentifier(family == "codex" ? "draft-codex-version" : "draft-\(family)-version")
         } else {
             Text(agentTitle(agent)).font(.orbisLabel(.semibold)).foregroundStyle(p.agent(agent)).lineLimit(1)
@@ -954,7 +967,7 @@ struct SessionDraftView: View {
     private func showVariantChoices(_ family: String, from anchor: CGRect? = nil) {
         focused = false
         let choices = agentVariants(family).filter(allowed.contains).map { variant in
-            OrbisMenuItem(title: agentVariantTitle(variant), checked: agent == variant) { agent = variant }
+            OrbisMenuItem(title: launchLabel(variant), checked: agent == variant) { agent = variant }
         }
         if !choices.isEmpty { overlay.showMenu(choices, from: anchor ?? familyFrames[family] ?? .zero) }
     }
@@ -976,12 +989,31 @@ struct SessionDraftView: View {
     }
 }
 
+/// FILE-BROWSER-01: directory selection accepts typed paths as well as row navigation.
 struct RemoteDirectoryView: View {
     @ObservedObject var owner: HostConnection
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
+    @State private var pathInput = ""
+    @FocusState private var pathFocused: Bool
+    private var trimmedPath: String { pathInput.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private func jumpToPath() {
+        guard !trimmedPath.isEmpty, owner.connection == .secured, owner.browse?.loading != true else { return }
+        pathFocused = false
+        owner.browseDirectory(trimmedPath)
+    }
     var body: some View {
         VStack(spacing: 14) {
+            HStack(spacing: 10) {
+                TextField(L10n.tr("电脑路径"), text: $pathInput)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .font(.orbisCaption(mono: true)).focused($pathFocused).orbisInput(focused: pathFocused)
+                    .submitLabel(.go).onSubmit(jumpToPath)
+                    .accessibilityIdentifier("session-directory-path")
+                OrbisIconButton(symbol: "magnifyingglass", label: L10n.tr("跳转"), action: jumpToPath)
+                    .disabled(trimmedPath.isEmpty || owner.connection != .secured || owner.browse?.loading == true)
+                    .accessibilityIdentifier("session-directory-jump")
+            }
             HStack(spacing: 8) {
                 OrbisActionSymbol(systemName: "folder").foregroundStyle(OrbisPalette(scheme).accent)
                 Text(owner.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
@@ -1015,6 +1047,7 @@ struct RemoteDirectoryView: View {
                 }
             }
         }
+        .onChange(of: owner.browse?.path, initial: true) { _, path in pathInput = path ?? "" }
     }
 }
 

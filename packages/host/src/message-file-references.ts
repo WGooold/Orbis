@@ -38,6 +38,10 @@ export class MessageFileReferences {
   }
 
   async resolve(referenceId: string, deviceId: string): Promise<string> {
+    return (await this.resolveIdentity(referenceId, deviceId)).path;
+  }
+
+  async resolveIdentity(referenceId: string, deviceId: string): Promise<{ path: string; identity: string }> {
     const target = this.#paths.get(referenceId) ?? unavailable();
     if (target.deviceId !== deviceId) unavailable();
     const file = await realpath(target.path);
@@ -47,6 +51,6 @@ export class MessageFileReferences {
     const identity = `${info.dev}:${info.ino}:${info.birthtimeNs}`;
     if (target.resolved !== undefined && (target.resolved !== file || target.identity !== identity)) unavailable();
     target.resolved = file; target.identity = identity;
-    return file;
+    return { path: file, identity };
   }
 }

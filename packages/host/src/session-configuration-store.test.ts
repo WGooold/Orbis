@@ -25,6 +25,19 @@ describe("recoverable configured launch", () => {
     expect(await store.read("codex", "/fixture", "provider")).toEqual({ revision: 1, values: request.values });
     await expect(store.begin("device", { ...request, values: { model: "b" } })).rejects.toMatchObject({ code: "launch_id_conflict" });
   });
+  it("persists Codex launch mode and binds it to the idempotent launch identity", async () => {
+    const { path, store } = await fixture();
+    const desktopRequest: ConfiguredSessionLaunch = { ...request, agentKind: "codexDesktop", codexLaunchMode: "desktop" };
+    const first = await store.begin("device", desktopRequest);
+    expect(first.record.codexLaunchMode).toBe("desktop");
+    expect(JSON.parse(await readFile(path, "utf8")).launches['["device","launch"]'].codexLaunchMode).toBe("desktop");
+
+    const restarted = new SessionConfigurationStore(path);
+    expect((await restarted.begin("device", desktopRequest)).record.codexLaunchMode).toBe("desktop");
+    await expect(restarted.begin("device", { ...desktopRequest, codexLaunchMode: "terminal" }))
+      .rejects.toMatchObject({ code: "launch_id_conflict" });
+  });
+
   it("treats reordered permission fields and a lost save receipt as the same selection", async () => {
     const { store } = await fixture();
     await store.begin("device", request);

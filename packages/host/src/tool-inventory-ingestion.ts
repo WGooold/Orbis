@@ -52,8 +52,10 @@ export class ToolInventoryIngestion {
     return true;
   }
 
-  prepare(runtimeId: string, agent: AgentKey, source: { epoch: string; seq: number }, reference: ToolInventoryReference): PreparedToolInventory {
+  prepare(runtimeId: string, agent: AgentKey, source: { epoch: string; seq: number }, reference: ToolInventoryReference,
+    verifiedPreview = false): PreparedToolInventory {
     source = { epoch: source.epoch, seq: source.seq };
+    if (reference.source.epoch !== source.epoch || reference.source.seq > source.seq) throw new Error("tool_inventory_source_mismatch");
     this.#sweep();
     const pending = this.#pending.get(runtimeId);
     if (same(this.inventory.reference(agent), reference)) {
@@ -61,7 +63,7 @@ export class ToolInventoryIngestion {
       return { changes: [], reference, publication: null, conversationSource: { agent, ...source }, onCommitted() {} };
     }
     if (!pending?.complete || !same(pending.reference, reference)) throw new Error("tool_inventory_baseline_required");
-    const plan = this.inventory.prepare({ agent, runtimeId, source, reference, update: { kind: "baseline", tools: pending.tools } });
+    const plan = this.inventory.prepare({ agent, runtimeId, source, reference, update: { kind: "baseline", tools: pending.tools } }, verifiedPreview);
     return { ...plan, onCommitted: () => { plan.onCommitted(); if (this.#pending.get(runtimeId) === pending) this.release(runtimeId); } };
   }
   release(runtimeId: string): void {

@@ -351,7 +351,7 @@ struct AgentProvidersView: View {
                     }
                 } else {
                     VStack(spacing: 0) {
-                        providerDial.frame(minHeight: 300, maxHeight: .infinity)
+                        providerDial.frame(minHeight: 220, maxHeight: .infinity)
                         providerControls
                     }
                 }
@@ -376,16 +376,25 @@ struct AgentProvidersView: View {
         ProviderDialView(kinds: kinds, kind: host.providerKind, providers: host.providers, selected: selectedIndex,
             onKind: { kind in selectedId = nil; overlay.dismissDialog(); host.loadProviders(kind) },
             onSelect: { index in if host.providers.indices.contains(index) { selectedId = host.providers[index].id } }, onMoving: { moving = $0 })
-            .overlay {
-                if host.providersLoading { ProgressView().accessibilityLabel(L10n.tr("正在读取供应商")) }
-                else if let problem = host.providerCatalogProblem { OrbisNotice(text: problem, error: host.connected).padding(20) }
-                else if host.providers.isEmpty { Text(L10n.tr("还没有供应商")).font(.orbisBody()).foregroundStyle(palette.secondary).padding(20) }
+            .overlay(alignment: .trailing) {
+                if host.providersLoading {
+                    ProgressView().accessibilityLabel(L10n.tr("正在读取供应商")).padding(.trailing, 24).allowsHitTesting(false)
+                } else if host.providers.isEmpty && host.providerCatalogProblem == nil {
+                    Text(L10n.tr("还没有供应商")).font(.orbisBody()).foregroundStyle(palette.secondary).padding(.trailing, 24).allowsHitTesting(false)
+                }
             }
             .accessibilityIdentifier("provider-dial-area")
     }
     private var providerControls: some View {
-        VStack(spacing: 16) {
-            quotaPanel.frame(height: 124)
+        VStack(alignment: .leading, spacing: 12) {
+            quotaPanel
+            if let problem = host.providerCatalogProblem {
+                Label(problem, systemImage: "exclamationmark.circle")
+                    .font(.orbisCaption())
+                    .foregroundStyle(host.connected ? palette.error : palette.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("provider-catalog-problem")
+            }
             if let provider {
                 let active = provider.enabled && !provider.additive
                 OrbisActionButton(title: actionTitle(provider), symbol: active ? "checkmark" : provider.additive ? (provider.enabled ? "xmark" : "plus") : "arrow.left.arrow.right", tint: palette.agent(provider.kind)) {
@@ -399,30 +408,34 @@ struct AgentProvidersView: View {
                     .accessibilityLabel(L10n.tr("配置 {0} / {1}", host.providers.isEmpty ? 0 : selectedIndex + 1, host.providers.count))
                     .accessibilityIdentifier("provider-position")
             }.font(.orbisCaption()).foregroundStyle(palette.secondary)
-            if let notice = host.providerNotice { OrbisNotice(text: notice) }
+            if let notice = host.providerNotice { OrbisNotice(text: notice).accessibilityIdentifier("provider-notice") }
         }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 16)
     }
     private var quotaPanel: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 8) {
             if let provider, provider.enabled && provider.subscriptionSupported {
+                let snapshot = host.subscriptionQuota(for: provider)
+                let loading = host.isQueryingQuota(for: provider)
                 HStack(alignment: .top, spacing: 20) {
                     ForEach(["five_hour", "seven_day"], id: \.self) { name in
-                        let own = host.quotaProviderId == provider.id
-                        ProviderQuotaCell(name: name, window: own ? host.quota?.windows.first { $0.name == name } : nil,
-                            loading: own && host.queryingQuota, tint: palette.agent(provider.kind))
+                        ProviderQuotaCell(name: name, window: snapshot?.quota?.windows.first { $0.name == name },
+                            loading: loading, failed: snapshot?.error != nil, tint: palette.agent(provider.kind))
                     }
                     OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新配额"), compact: true) {
                         if let key = host.hostKey { host.querySubscription(provider, expectedHostKey: key) }
                     // Same precondition as querySubscription: an enabled refresh always sends a fresh read.
                     }.disabled(!host.canChangeProvider(for: provider.kind)).accessibilityIdentifier("provider-quota-refresh")
                 }
-                .overlay(alignment: .bottomLeading) {
-                    if host.quotaProviderId == provider.id, let error = host.quotaError { Text(error).font(.orbisCaption()).foregroundStyle(palette.error) }
+                if let error = snapshot?.error {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.orbisCaption()).foregroundStyle(palette.error)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("provider-quota-error")
                 }
             } else {
                 OrbisStatusWithInfo(title: L10n.tr("配额不可用"), message: L10n.tr("这个配置不提供配额查询"))
             }
-        }
+        }.frame(minHeight: 112, alignment: .top)
     }
     private func actionTitle(_ provider: AgentProvider) -> String {
         if provider.additive { return provider.enabled ? L10n.tr("移出 {0}", provider.name) : L10n.tr("启用 {0}", provider.name) }
@@ -447,6 +460,7 @@ private struct ProviderQuotaCell: View {
     let name: String
     let window: SubscriptionQuota.Window?
     let loading: Bool
+    let failed: Bool
     let tint: Color
     var body: some View {
         let p = OrbisPalette(scheme)
@@ -460,7 +474,7 @@ private struct ProviderQuotaCell: View {
             }.foregroundStyle(p.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 Text(remaining.map { String(format: "%.0f", $0) } ?? "—").font(.orbisDisplay()).foregroundStyle(low ? p.error : p.text)
-                Text("%").font(.orbisLabel()).foregroundStyle(p.secondary)
+                if remaining != nil { Text("%").font(.orbisLabel()).foregroundStyle(p.secondary) }
             }
             GeometryReader { proxy in
                 Capsule().fill(.clear).neuSurface(inset: true, radius: 3, intensity: 0.4, concentric: false)
@@ -471,7 +485,7 @@ private struct ProviderQuotaCell: View {
                 Text(subscriptionQuotaResetCountdown(resetsAt: reset, now: Date()))
                     .font(.orbisCaption()).foregroundStyle(p.secondary)
                     .accessibilityIdentifier("provider-quota-reset-" + name)
-            } else { Text(L10n.tr("待查询")).font(.orbisCaption()).foregroundStyle(p.secondary) }
+            } else { Text(L10n.tr(failed || window != nil ? "暂不可用" : "待查询")).font(.orbisCaption()).foregroundStyle(p.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("provider-quota-" + name)

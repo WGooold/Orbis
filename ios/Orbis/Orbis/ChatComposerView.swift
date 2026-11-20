@@ -161,6 +161,7 @@ private struct ChatComposerRowLayout: Layout {
 }
 
 struct ChatComposerView: View, Equatable {
+    @EnvironmentObject private var overlay: OrbisOverlay
     let model: ChatScreenModel
     let actions: ChatSessionActions
     let fallbackRuntime: RuntimeSummary
@@ -257,7 +258,6 @@ struct ChatComposerView: View, Equatable {
         let presentation = activePresentation
         let focused = composerFocus.focused
         return VStack(spacing: 0) {
-            InteractionWorkspaceView(model: model, actions: actions, runtimeId: runtime.runtimeId).equatable()
             if let tasks = runtime.backgroundTasks, tasks.visible {
                 BackgroundTasksView(tasks: tasks).id("\(runtime.runtimeId):\(runtime.sessionId ?? "")")
             }
@@ -302,9 +302,21 @@ struct ChatComposerView: View, Equatable {
                     }
                 }.frame(minHeight: 32).padding(.horizontal, 20).padding(.top, 6)
             }
-            if let error = facts.inputError { Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(p.error).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).accessibilityIdentifier("composer-error") }
+            if let error = facts.inputError {
+                Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(p.error)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.top, 6)
+                    .accessibilityIdentifier("composer-error")
+            }
             if let selectedCommand, let error = facts.menuErrors[selectedCommand] {
-                HStack { Label(error, systemImage: "exclamationmark.circle"); OrbisActionButton(title: L10n.tr("重试")) { actions.loadMenuOptions(selectedCommand) } }.font(.orbisCaption()).foregroundStyle(p.error).padding(.horizontal, 20)
+                HStack(alignment: .center, spacing: 8) {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.orbisCaption()).foregroundStyle(p.error)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    OrbisTextButton(title: L10n.tr("重试")) { actions.loadMenuOptions(selectedCommand) }
+                        .fixedSize(horizontal: true, vertical: false)
+                }.padding(.horizontal, 20).padding(.top, 6)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("composer-menu-error")
             }
             if voiceInput.isListening || voiceInput.isFinishing || voiceInput.errorMessage != nil || voiceCleanupInProgress || voiceCleanupStatus != nil {
                 HStack(alignment: .top, spacing: 8) {
@@ -627,9 +639,17 @@ struct ChatComposerView: View, Equatable {
             OrbisStatusWithInfo(title: L10n.tr("本机缓存"), message: L10n.tr("本机缓存，可离线浏览，发送消息前需在电脑继续此会话"))
             if let session = facts.cachedSession {
                 OrbisActionButton(title: L10n.tr("在电脑继续会话"), symbol: "play") {
-                    if actions.isCurrent { LiveActivityCoordinator.shared.cancelQueuedOpen(); actions.activate(session) }
+                    guard actions.isCurrent else { return }
+                    LiveActivityCoordinator.shared.cancelQueuedOpen()
+                    let modes = actions.codexResumeModes(session)
+                    if modes.count > 1 {
+                        overlay.showDialog(L10n.tr("启动方式"), actions: modes.map { mode in
+                            OrbisDialogAction(title: mode.title) { actions.activate(session, codexLaunchMode: mode) }
+                        } + [OrbisDialogAction(title: L10n.tr("返回"), role: .cancel)])
+                    } else { actions.activate(session, codexLaunchMode: modes.first) }
                 }
-                    .disabled(facts.connection != .secured || facts.activatingSessionId != nil)
+                    .disabled(facts.connection != .secured || facts.activatingSessionId != nil ||
+                              session.sessionId.hasPrefix("codex-history:") && actions.codexResumeModes(session).isEmpty)
             }
         }.padding(16)
     }

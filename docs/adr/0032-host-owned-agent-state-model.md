@@ -183,6 +183,22 @@ Host 承担投影存储、领域协调、范围缓存与恢复调度，以预算
 
 §5「patch 永远不是恢复基线」保持不变，但一条已作废的基线不能只把 `ready` 改成 false 保留下来：`epoch` / `seq` 仍是旧的，之后每块补丁都会以 `patch_baseline_mismatch`（旧基线仍 ready）或 `handshake_base_mismatch`（旧基线已 not-ready）被拒；`accept` 只在「旧 epoch 与补丁 epoch 相同」时才允许握手，所以一旦落后就再也进不了握手分支。一条会话因此永久停更，设备侧没有错误、只有不再变化的内容。
 
-`AgentConversationState.invalidateBaseline` 现在连同 `epoch` / `seq` 一起丢掉当前投影（页面缓存与字节记账同步回收），下一块补丁按「还没有基线」的握手接收，流恢复；旧 epoch 记进独立的 `#retired`（与当前投影同预算），迟到事件仍以 `retired_source_epoch` 被拒。`offline` 保留原语义：断线只丢可恢复性，已读到的行仍供按 id 取回原文。握手本身仍不是基线，重建基线仍要一次快照；作废后下一块补丁以未就绪握手到达，两端据此各自强制重新同步（iOS `syncSession(force:)`、Android `requestRecovery`），因此不需要 Host 主动索取快照。
+当时的 `AgentConversationState.invalidateBaseline` 连同 `epoch` / `seq` 丢弃当前投影，页面缓存与字节记账同步回收；下一块补丁按「还没有基线」的握手接收。退役 epoch 保存在与当前投影同预算的 `#retired` 中，迟到事件仍以 `retired_source_epoch` 被拒。`offline` 保留断线语义。**2026-11-21 起，退役 epoch 的唯一权威改为 Registry**，以同时覆盖失效后的快照与历史页；上限触顶后的安全恢复见本 ADR 下方 CODEX-SOURCE-04。
 
 实现与回归：[agent-conversation-state.ts](../../packages/host/src/agent-conversation-state.ts)、[agent-conversation-state.test.ts](../../packages/host/src/agent-conversation-state.test.ts)、[host-service.test.ts](../../packages/host/src/host-service.test.ts)。自动验证：会话投影 22 项、Host 端到端 95 项（Kimi 握手用例为同树其它改动引入的既有失败）、Codex 运行时 231 项，`tsc -b` 与 ESLint 通过；变异检验把作废改回「只置 ready=false」时新增的 3 项全部失败。证据与未覆盖边界见 [.artifacts/20261119-codex-source-02/](../../.artifacts/20261119-codex-source-02/)。当前运行的 Host 仍是本次修改前的安装包，现场计数需重装后复测。
+
+## 2026-11-21 同一会话的已核对预览可越过退役代次上限（CODEX-SOURCE-04）
+
+原先 `AgentConversationState` 和 Registry 各保留 64 个退役来源。对可恢复原生视图的 Codex Desktop，会话正常换代超过此数后，后续完整预览也会被 `source_epoch_limit` 拒绝；失效当前投影并不能解除 Registry 的拒绝。设备因此只能看到 `session_sync_model_rejected`，重开会话或重新请求历史仍然失败。
+
+现在由本机 `HostService` 在来源绑定、Session、epoch、seq、ready 状态全部吻合时，才把**当前事务关联的完整 preview 替换快照**标记为恢复基线。该基线仍是协议现有有界预览（不要求传输全历史），但其路径必须到达报告的 head，显示行、live checkpoint 与工具库存仍按同一事务校验。Registry 在该事务内滚动一条退役记录，不提高预算；失败事务完整回滚。迟到页面仍依当前 epoch 拒绝，patch、普通分页、非当前生产者以及非关联预览没有越权。设备只收到现有的 unknown patch、preview 和原有历史页，不增加协议字段。
+
+相关实现及测试：[agent-state-registry.ts](../../packages/host/src/agent-state-registry.ts)、[agent-conversation-state.ts](../../packages/host/src/agent-conversation-state.ts)、[session-sync-tasks.ts](../../packages/host/src/session-sync-tasks.ts)、[host-service.ts](../../packages/host/src/host-service.ts)、[host-service.test.ts](../../packages/host/src/host-service.test.ts)。
+
+## 2026-11-21 Codex 历史回放与工具缓存解耦（CODEX-SOURCE-03/05）
+
+原生完整历史回读用于确认条目顺序和正文，但工具输出还会保存在有界临时存储。以前回放摘要把临时缓存的存活状态写入 canonical row；仅缓存失效就会让同一原生历史内容不相等、再次换代。运行中的原生读取暂时缺少已经由通知确认的当前 turn 尾项，也可能被误当成删除并换代。
+
+工具摘要现在描述可读取部分，不随临时缓存是否仍在内存中重写；私有内容读取仍受当前来源、工具是否仍属于会话和读取租约检查。单纯历史排序／父边修正保留仍有效的工具内容，旧来源 pinned read 随 epoch 变化拒绝；原生条目实质内容被修正时清除相关临时捕获。对仍运行 turn 的原生响应只有在遗漏已观察 item 或 stream tail 时才视为暂时落后；普通 preview 等待同一核对完成，不返回过期 ready 状态。
+
+相关实现及测试：[codex-runtime.ts](../../packages/host/src/codex-runtime.ts)、[codex-runtime.test.ts](../../packages/host/src/codex-runtime.test.ts)。本轮隔离回归覆盖原生历史逐项相同、工具输出读取、跨来源 pinned read、重复完成通知、65 次 preview 换代、历史分页和后续 live patch。验证记录位于 `.artifacts/codex-source-epoch-recurrence-20261120/`；构建/安装及真实运行会话复测仍须分别确认，自动测试不是现场验收。

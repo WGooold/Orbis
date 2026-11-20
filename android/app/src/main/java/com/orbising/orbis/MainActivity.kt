@@ -21,6 +21,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
@@ -41,6 +42,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -186,6 +188,7 @@ import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.graphics.Brush
@@ -197,6 +200,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -495,6 +499,10 @@ internal fun RemoteApp(
                         rootScope.launch { compactDrawerState.close() }
                         cancelLaunchIntro(); allDownloadsOpen = false; model.openSession(host, session)
                     },
+                    onResumeCodex = { host, session, mode ->
+                        rootScope.launch { compactDrawerState.close() }
+                        cancelLaunchIntro(); allDownloadsOpen = false; model.openSession(host, session, mode)
+                    },
                     onOpenHistory = { host, session ->
                         cancelLaunchIntro(); allDownloadsOpen = false; model.openOfflineSession(host, session)
                     },
@@ -560,6 +568,7 @@ internal fun RemoteApp(
                             onSelectHost = { id -> cancelLaunchIntro(); model.selectHost(id) },
                             onUnpairHost = model::unpair, onAddHost = { addingHost = true },
                             onOpenSession = { host, session -> cancelLaunchIntro(); allDownloadsOpen = false; model.openSession(host, session) },
+                            onResumeCodex = { host, session, mode -> cancelLaunchIntro(); allDownloadsOpen = false; model.openSession(host, session, mode) },
                             onOpenHistory = { host, session -> cancelLaunchIntro(); allDownloadsOpen = false; model.openOfflineSession(host, session) },
                             onNewSession = { host, cwd ->
                                 cancelLaunchIntro(); model.selectRuntime(null); model.selectOfflineSession(null)
@@ -575,50 +584,109 @@ internal fun RemoteApp(
                     HomeTabBar(homeTab, onSelect = { tab ->
                         cancelLaunchIntro(); model.selectRuntime(null); model.selectOfflineSession(null)
                         allDownloadsOpen = false; addingHost = false; draftOrigin = null; homeTab = tab
-                    })
+                    }, reportFeedbackAnchor = false)
                 }
                 Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
-                Box(Modifier.widthIn(max = 720.dp).fillMaxSize()) {
-            OrbisPageHost(
-                onBack = {
-                    when (page) {
-                        HomeOverlay.Pairing -> { addingHost = false; model.clearPairingError() }
-                        HomeOverlay.OfflineHistory -> model.selectOfflineSession(null)
-                        HomeOverlay.Chat -> { draftOrigin = null; model.selectRuntime(null) }
-                        HomeOverlay.Downloads -> allDownloadsOpen = false
-                        null -> Unit
+                val visibleBanner = state.feedback.banner?.takeIf { page != HomeOverlay.Pairing }
+                val bannerTransition = remember { MutableTransitionState(visibleBanner != null) }
+                bannerTransition.targetState = visibleBanner != null
+                val bannerOccupiesTop = bannerTransition.currentState || bannerTransition.targetState
+                val feedbackGeometry = LocalFeedbackGeometry.current
+                val toastAnchor = when (page) {
+                    HomeOverlay.Chat -> when (feedbackGeometry.chatNestedPage) {
+                        "history" -> feedbackGeometry.historyPreviewTop
+                        "downloads" -> null
+                        else -> listOfNotNull(feedbackGeometry.composerTop, feedbackGeometry.chatOverlayTop).minOrNull()
                     }
-                },
-                underlay = rootHome,
-                open = page != null,
-                contentKey = page,
-                canNavigateBack = page != HomeOverlay.Pairing || !pairingInProgress,
-                expandFrom = draftOrigin.takeIf { page == HomeOverlay.Chat },
-            ) {
-                when (page) {
-                    HomeOverlay.Pairing -> PairingScreen(
-                        error = pairingError ?: state.pairingFailure, pairingInProgress = pairingInProgress,
-                        pair = { relayUrl, code, qrRaw -> model.pair(relayUrl, code, qrRaw) { addingHost = false } },
-                        clearError = { model.clearPairingError(); model.clearError() },
-                        onCancel = { addingHost = false; model.clearPairingError() },
-                    )
-                    HomeOverlay.OfflineHistory -> AgentTheme(agentBrand(state.sessions[state.selectedOfflineSessionId]?.agentKind)) {
-                        OfflineHistoryScreen(state, state.selectedOfflineSessionId, model, onBack = { model.selectOfflineSession(null) })
-                    }
-                    HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?: state.launchPage?.agentKind ?:
-                        state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
-                        ChatScreen(state, model, firstDraftSend = firstDraftSend, onFirstDraftSend = { firstDraftSend = null },
-                            onAbandonLaunch = { text ->
-                                val draft = sessionDrafts.draft(state.hostId)
-                                state.launchPage?.let { pending -> draft.agent.value = pending.agentKind ?: draft.agent.value; draft.cwd.value = pending.cwd }
-                                if (text.isNotBlank()) draft.text.value = text
-                                newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true
-                            })
-                    }
-                    HomeOverlay.Downloads -> HostDownloadsScreen(state, model, onBack = { allDownloadsOpen = false })
-                    null -> Unit
+                    null -> if (permanentDirectory) null else feedbackGeometry.tabsTop
+                    else -> null
                 }
-            }
+                // A covered surface may hide the toast, but must not reset its lifetime.
+                val toast = state.feedback.toast
+                LaunchedEffect(toast?.id) {
+                    if (toast != null && toast.action == null) {
+                        delay(InteractionMotion.ToastHold)
+                        model.dismissToast(toast.id)
+                    }
+                }
+                val visibleToast = toast?.takeIf {
+                    !(page == null && !permanentDirectory && compactDrawerState.isOpen)
+                }
+                Column(Modifier.widthIn(max = 720.dp).fillMaxSize()) {
+                    FeedbackBannerSlot(
+                        notice = visibleBanner,
+                        visibleState = bannerTransition,
+                        onDismiss = model::clearError,
+                    ) { action ->
+                        when (action) {
+                            FeedbackAction.REPAIR -> addingHost = true
+                            FeedbackAction.RECHECK -> model.retryFeedbackConnection()
+                            FeedbackAction.SETTINGS -> if (visibleBanner?.condition == FeedbackCondition.VERSION)
+                                context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://orbising.com/#download")))
+                                else { model.selectRuntime(null); model.selectOfflineSession(null); allDownloadsOpen = false; homeTab = HomeTab.Settings }
+                            FeedbackAction.UNDO -> Unit
+                        }
+                    }
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .then(if (bannerOccupiesTop) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier),
+                    ) {
+                        OrbisPageHost(
+                            onBack = {
+                                when (page) {
+                                    HomeOverlay.Pairing -> { addingHost = false; model.clearPairingError() }
+                                    HomeOverlay.OfflineHistory -> model.selectOfflineSession(null)
+                                    HomeOverlay.Chat -> { draftOrigin = null; model.selectRuntime(null) }
+                                    HomeOverlay.Downloads -> allDownloadsOpen = false
+                                    null -> Unit
+                                }
+                            },
+                            underlay = rootHome,
+                            open = page != null,
+                            contentKey = page,
+                            canNavigateBack = page != HomeOverlay.Pairing || !pairingInProgress,
+                            expandFrom = draftOrigin.takeIf { page == HomeOverlay.Chat },
+                        ) {
+                            when (page) {
+                                HomeOverlay.Pairing -> PairingScreen(
+                                    error = pairingError ?: state.pairingFailure, pairingInProgress = pairingInProgress,
+                                    pair = { relayUrl, code, qrRaw -> model.pair(relayUrl, code, qrRaw) { addingHost = false } },
+                                    clearError = { model.clearPairingError(); model.clearError() },
+                                    onCancel = { addingHost = false; model.clearPairingError() },
+                                )
+                                HomeOverlay.OfflineHistory -> AgentTheme(agentBrand(state.sessions[state.selectedOfflineSessionId]?.agentKind)) {
+                                    OfflineHistoryScreen(state, state.selectedOfflineSessionId, model, onBack = { model.selectOfflineSession(null) })
+                                }
+                                HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?: state.launchPage?.agentKind ?:
+                                    state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
+                                    ChatScreen(state, model, firstDraftSend = firstDraftSend, onFirstDraftSend = { firstDraftSend = null },
+                                        onAbandonLaunch = { text ->
+                                            val draft = sessionDrafts.draft(state.hostId)
+                                            state.launchPage?.let { pending -> draft.agent.value = pending.agentKind ?: draft.agent.value; draft.cwd.value = pending.cwd }
+                                            if (text.isNotBlank()) draft.text.value = text
+                                            newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true
+                                        })
+                                }
+                                HomeOverlay.Downloads -> HostDownloadsScreen(state, model, onBack = { allDownloadsOpen = false })
+                                null -> Unit
+                            }
+                        }
+                        FeedbackOverlay(
+                            notice = visibleToast,
+                            bottom = true,
+                            anchor = toastAnchor,
+                            onDismiss = model::dismissToast,
+                        ) { action ->
+                            when (action) {
+                                FeedbackAction.UNDO -> { homeTab = HomeTab.Chat; newSessionHostId = state.hostId; newSessionOpen = true }
+                                FeedbackAction.REPAIR -> addingHost = true
+                                FeedbackAction.RECHECK -> model.retryFeedbackConnection()
+                                FeedbackAction.SETTINGS -> homeTab = HomeTab.Settings
+                            }
+                        }
+                    }
                 }
                 }
             }
@@ -626,26 +694,6 @@ internal fun RemoteApp(
     }
     BackHandler(enabled = LocalPageActive.current && newSessionOpen && page == null) {
         closeSessionDraft()
-    }
-    if (appearsPaired) {
-        FeedbackOverlay(state.feedback.banner, bottom = false, onDismiss = model::clearError) { action ->
-            when (action) {
-                FeedbackAction.REPAIR -> addingHost = true
-                FeedbackAction.RECHECK -> model.retryFeedbackConnection()
-                FeedbackAction.SETTINGS -> if (state.feedback.banner?.condition == FeedbackCondition.VERSION)
-                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://orbising.com/#download")))
-                    else { model.selectRuntime(null); model.selectOfflineSession(null); allDownloadsOpen = false; homeTab = HomeTab.Settings }
-                FeedbackAction.UNDO -> Unit
-            }
-        }
-        FeedbackOverlay(state.feedback.toast, bottom = true, anchor = if (page == HomeOverlay.Chat) LocalFeedbackGeometry.current.composerTop else if (page == null) LocalFeedbackGeometry.current.tabsTop else null, onDismiss = { state.feedback.toast?.id?.let(model::dismissToast) }) { action ->
-            when (action) {
-                FeedbackAction.UNDO -> { homeTab = HomeTab.Chat; newSessionHostId = state.hostId; newSessionOpen = true }
-                FeedbackAction.REPAIR -> addingHost = true
-                FeedbackAction.RECHECK -> model.retryFeedbackConnection()
-                FeedbackAction.SETTINGS -> homeTab = HomeTab.Settings
-            }
-        }
     }
 }
 
@@ -669,6 +717,8 @@ private fun HostDownloadsScreen(state: RemoteState, model: RemoteViewModel, onBa
         onBrowseInto = model::browseInto,
         onBrowseUp = model::browseUp,
         onDismissBrowse = model::dismissBrowse,
+        initialBrowsePath = model.downloadBrowserPath(),
+        onBrowsePathResolved = model::rememberDownloadBrowserPath,
         onDownload = { path -> model.downloadFile(path) },
         onRetry = { taskId -> model.retryDownload(taskId) },
         onCancel = model::cancelDownload,
@@ -1062,7 +1112,7 @@ internal fun RuntimeListScreen(
                         )
                     }
                 }
-                state.sessionListError?.let { InlineFeedbackError(it) }
+                state.sessionListError?.let { InlineFeedbackError(it, Modifier.padding(bottom = 8.dp).testTag("home-session-list-error")) }
                 // V21：会话增删与重排不能把视口挤走。在发布新列表的同一次组合里决定位置，
                 // 让 LazyColumn 这一帧就按它测量，而不是先跟着首卡跳走再拉回来。
                 val homeKeys = remember(visibleRuntimes) { visibleRuntimes.map { "${it.hostId}:${it.runtime.runtimeId}" } }
@@ -1327,8 +1377,15 @@ internal fun RuntimeListScreen(
                                                             Text(L10n.tr("待确认"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelMedium,
                                                                 fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                                                         }
-                                                    } else if (row.card.error != null) StatusWithInfo(L10n.tr("操作未完成"), row.card.error, error = true)
-                                                    else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle)
+                                                    } else RuntimeStatus(runtime.presentationStatus, title = runtime.presentationTitle)
+                                                }
+                                                row.card.error?.let { cardError ->
+                                                    StatusWithInfo(
+                                                        L10n.tr("操作未完成"),
+                                                        cardError,
+                                                        modifier = Modifier.testTag("home-card-error-${runtime.runtimeId}"),
+                                                        error = true,
+                                                    )
                                                 }
                                             }
                                             OrbisSelectionIndicator(runtime.runtimeId in selectedIds, selecting && canClose)
@@ -1430,22 +1487,24 @@ private fun HistoryPagingHeader(
         }
         return
     }
-    when {
-        phase == SessionReadPhase.FAILED && error != null -> WarningCard(feedback ?: error)
-        feedback != null -> WarningCard(feedback)
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(
-            if (phase == SessionReadPhase.FAILED) L10n.tr("历史加载失败") else L10n.tr("还有更早的历史"),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        TextButton(onClick = onLoad) {
-            Text(if (phase == SessionReadPhase.FAILED) L10n.tr("重试") else L10n.tr("加载"))
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        when {
+            phase == SessionReadPhase.FAILED && error != null -> WarningCard(feedback ?: error)
+            feedback != null -> WarningCard(feedback)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                if (phase == SessionReadPhase.FAILED) L10n.tr("历史加载失败") else L10n.tr("还有更早的历史"),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = onLoad) {
+                Text(if (phase == SessionReadPhase.FAILED) L10n.tr("重试") else L10n.tr("加载"))
+            }
         }
     }
 }
@@ -1556,16 +1615,20 @@ internal fun OfflineHistoryScreen(
             }
             if (firstRead?.phase?.active == true) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             if (firstRead?.phase == SessionReadPhase.FAILED) item {
-                WarningCard(firstRead.error ?: L10n.tr("本地首屏读取失败"))
-                TextButton(onClick = { model.selectOfflineSession(sessionId) }) { Text(L10n.tr("重试读取")) }
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    WarningCard(firstRead.error ?: L10n.tr("本地首屏读取失败"))
+                    TextButton(onClick = { model.selectOfflineSession(sessionId) }) { Text(L10n.tr("重试读取")) }
+                }
             } else if (firstRead?.phase?.active != true) {
                 (projection?.error ?: if (graph == null) L10n.tr("本地没有可用的历史缓存") else null)?.let {
                     item { WarningCard(L10n.tr("历史记录加载失败：{0}", it)) }
                 }
             }
             if (historyRead?.phase == HistoryReadPhase.FAILED && historyState?.hasOlder != true) item {
-                WarningCard(historyPagingFeedback ?: historyRead.error ?: L10n.tr("历史记录加载失败"))
-                TextButton(onClick = { loadHistoryPage() }) { Text(L10n.tr("重试历史加载")) }
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    WarningCard(historyPagingFeedback ?: historyRead.error ?: L10n.tr("历史记录加载失败"))
+                    TextButton(onClick = { loadHistoryPage() }) { Text(L10n.tr("重试历史加载")) }
+                }
             }
             if (historyPagingFeedback != null && historyState?.hasOlder != true && historyRead?.phase != HistoryReadPhase.FAILED) {
                 item { WarningCard(historyPagingFeedback!!) }
@@ -1635,6 +1698,14 @@ internal fun ChatScreen(
         }
     }
     val presentationIdentity = ChatPresentationIdentity(state.hostId, runtimeId, pageSessionId, state.sessionBranchGenerations[runtimeId] ?: 0)
+    val previewConnection = model.filePreviewConnection(state.hostId).takeIf { runtime != null }
+    val previewActions = remember(previewConnection, presentationIdentity) {
+        previewConnection?.let { owner ->
+            FilePreviewActions(owner.browserPreview, "$runtimeId\u0000$pageSessionId\u0000${state.sessionBranchGenerations[runtimeId] ?: 0}") { key ->
+                if (model.filePreviewConnection(owner.hostId) === owner) owner.openFilePreview(runtimeId, sessionId, key)
+            }
+        }
+    }
     val projection = rememberChatPresentation(ChatPresentationRequest(
         presentationIdentity,
         conversation.messages, conversation.turnTimings, conversation.tools, state.pendingSends,
@@ -1814,8 +1885,6 @@ internal fun ChatScreen(
     }
     var pendingMessageCommandId by remember(runtimeId) { mutableStateOf<String?>(null) }
     var pendingMessageText by remember(runtimeId) { mutableStateOf("") }
-    var commandFeedback by remember(runtimeId) { mutableStateOf<String?>(null) }
-    var commandFeedbackTransient by remember(runtimeId) { mutableStateOf(false) }
     var showDeliveryChoices by remember(runtimeId, sessionId) { mutableStateOf(false) }
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -1956,8 +2025,7 @@ internal fun ChatScreen(
             model.queueUpload(uri, runtimeId) { taskId -> updateAttachedTaskIds(attachedTaskIds + taskId) }
         }
         if (uris.size > remaining) {
-            commandFeedbackTransient = false
-            commandFeedback = L10n.tr("一次最多发送 {0} 个文件", MAX_ATTACHMENTS_PER_MESSAGE)
+            model.setComposerError(runtimeId, L10n.tr("一次最多发送 {0} 个文件", MAX_ATTACHMENTS_PER_MESSAGE))
         }
     }
     val filePicker = rememberLauncherForActivityResult(
@@ -1988,7 +2056,7 @@ internal fun ChatScreen(
         cancelVoiceCleanup()
         animateSend(commandId)
         actionHaptic()
-        commandFeedback = null
+        model.clearComposerError(runtimeId)
         input = ""
         selectedSlashCommandName = null
         model.clearDraft(runtimeId)
@@ -2014,14 +2082,11 @@ internal fun ChatScreen(
         cancelVoiceCleanup()
         actionHaptic()
         val submittedText = input
-        commandFeedback = null
+        model.clearComposerError(runtimeId)
         pendingMessageCommandId = commandId
         pendingMessageText = submittedText
         // Keep command arguments recoverable until a definite success. A channel write
         // cannot prove that a prompt/skill or configuration action completed.
-    }
-    LaunchedEffect(commandFeedback, commandFeedbackTransient) {
-        if (commandFeedback != null && commandFeedbackTransient) { delay(2_500); commandFeedback = null }
     }
     LaunchedEffect(runtime?.status) {
         if (runtime?.status != "running") showDeliveryChoices = false
@@ -2194,6 +2259,7 @@ internal fun ChatScreen(
             },
             downloadArtifact = { artifact -> model.downloadArtifact(artifact) },
             downloadFile = { path -> model.downloadFile(path) },
+            onRetryTree = { model.setMenuOptionInterest(state.hostId, runtimeId, "tree") },
         )
     }
 
@@ -2280,22 +2346,40 @@ internal fun ChatScreen(
             selectedSlashCommandName = null
             model.clearDraft(runtimeId)
         }
-        // 失败也必须落在 composer 上方：斜杠命令不再像以前那样「发完没动静」，
-        // 而是明确说出是中断失败、电脑端拒绝，还是连接把请求丢了。
         if (pendingMessageText.trim().startsWith("/")) {
-            commandFeedbackTransient = result.ok
-            commandFeedback = if (result.ok) slashCommandFeedback(pendingMessageText, result)
-                else slashCommandError(pendingMessageText, result)
+            if (result.ok) {
+                model.clearComposerError(runtimeId)
+                model.showShortFeedback(slashCommandFeedback(pendingMessageText, result), "slash:$commandId")
+            } else {
+                model.setComposerError(runtimeId, slashCommandError(pendingMessageText, result))
+            }
         }
         model.consumeCommandResult(commandId)
         pendingMessageCommandId = null
         pendingMessageText = ""
     }
 
+    val chatFeedbackGeometry = LocalFeedbackGeometry.current
+    LaunchedEffect(chatFeedbackGeometry, historyOpen, downloadManagerOpen) {
+        chatFeedbackGeometry.chatNestedPage = when {
+            historyOpen -> "history"
+            downloadManagerOpen -> "downloads"
+            else -> null
+        }
+    }
+    DisposableEffect(chatFeedbackGeometry) {
+        onDispose {
+            chatFeedbackGeometry.composerTop = null
+            chatFeedbackGeometry.chatOverlayTop = null
+            chatFeedbackGeometry.chatNestedPage = null
+        }
+    }
+
     if (modelConfigurationOpen) SessionModelConfigurationSheet(state, runtimeId,
         onClose = { modelConfigurationOpen = false; modelConfigurationSetting = null },
         setting = modelConfigurationSetting, onSettingChange = { modelConfigurationSetting = it },
-        onSelect = { name, value -> executeSlash(name, value) }, onVerify = ::refreshConversation)
+        onSelect = { name, value -> executeSlash(name, value) }, onVerify = ::refreshConversation,
+        onRetryOptions = { settingName -> model.setMenuOptionInterest(state.hostId, runtimeId, settingName) })
 
     // 历史与分支和下载页一样盖在原聊天实例上，右滑时露出原聊天，保留列表、草稿与展开状态。
     OrbisPageHost(
@@ -2309,6 +2393,7 @@ internal fun ChatScreen(
         open = downloadManagerOpen,
         underlay = { DownloadFlightHost(chatFlight) { MessageSendFlightHost(sendFlight,
             active = !historyOpen && !downloadManagerOpen && LocalPageActive.current) {
+    ChatFilePreviewHost(previewActions) {
     Scaffold(
         topBar = {
             Column {
@@ -2447,8 +2532,19 @@ internal fun ChatScreen(
                             model.saveDraft(runtimeId, invocation)
                         },
                     )
-                    conversation.operationError?.takeIf(String::isNotBlank)?.let { InlineFeedbackError(it) }
-                    optionCommand?.let { state.menuOptionErrors[runtimeId + ":" + it] }?.let { InlineFeedbackError(it) }
+                    conversation.operationError?.takeIf(String::isNotBlank)?.let {
+                        InlineFeedbackError(it, Modifier.padding(horizontal = 20.dp).testTag("composer-error"))
+                    }
+                    optionCommand?.let { commandName ->
+                        state.menuOptionErrors[runtimeId + ":" + commandName]?.let { error ->
+                            InlineFeedbackError(
+                                error,
+                                modifier = Modifier.padding(horizontal = 20.dp).testTag("composer-menu-error"),
+                                actionLabel = L10n.tr("重试"),
+                                onAction = { model.setMenuOptionInterest(state.hostId, runtimeId, commandName) },
+                            )
+                        }
+                    }
                     ComposerContextNotice(composerStatus(runtime))
                     // 目录、分支和权限组成同一组会话信息；附件属于待发送消息，紧贴输入框。
                     // 输入斜杠命令时让位给命令列表，命令紧贴输入框（与 iOS 一致）。
@@ -2574,6 +2670,7 @@ internal fun ChatScreen(
                         onValueChange = { value ->
                             showDeliveryChoices = false
                             cancelVoiceCleanup()
+                            if (conversation.operationError != null) model.clearComposerError(runtimeId)
                             input = value
                             model.saveDraft(runtimeId, value)
                             if (!matchesSelectedSlashCommand(value, selectedSlashCommandName)) {
@@ -2648,7 +2745,7 @@ internal fun ChatScreen(
                                                 // Leave the composer usable; new messages wait on the config ledger.
                                                 if (executeSlash(selectedCommand.name, slash.second) != null) {
                                                     actionHaptic()
-                                                    commandFeedback = null
+                                                    model.clearComposerError(runtimeId)
                                                     input = ""
                                                     selectedSlashCommandName = null
                                                     model.clearDraft(runtimeId)
@@ -2694,28 +2791,39 @@ internal fun ChatScreen(
             }
         }
         },
-        floatingActionButton = {
-            AnimatedVisibility(visible = initialPositioned && !following && distanceToBottom > lineHeightPx * 3) {
-                // 回到最新是可交互控件：凸起圆钮（平铺 FAB 会变成一块无影的染色圆）。
-                NeumorphIconButton(
-                    onClick = {
-                        scope.launch {
-                            val lastIndex = listState.layoutInfo.totalItemsCount - 1
-                            if (lastIndex >= 0) {
-                                userScrolling = false
-                                hasBrowsed = false
-                                following = true
-                                listState.animateScrollToItem(lastIndex, Int.MAX_VALUE)
-                            }
-                        }
-                    },
-                    icon = Icons.Rounded.KeyboardArrowDown,
-                    contentDescription = L10n.tr("回到最新消息"),
-                    size = 44.dp,
-                )
-            }
-        },
     ) { padding ->
+        val chatStatusErrors = listOfNotNull(
+            if (runtime == null && launch == null) L10n.tr("会话已离线") else null,
+            historyActionError,
+            firstReadError,
+            rangeError,
+            state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError,
+            if (conversation.waitingLocalInteraction) L10n.tr("请在电脑端完成交互") else null,
+            conversation.interactionNotice,
+            conversation.systemNotice,
+        ).distinct()
+        var statusDetailsOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
+        var fullContentDialogOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
+        if (statusDetailsOpen || fullContentDialogOpen) {
+            val showingErrors = statusDetailsOpen && chatStatusErrors.isNotEmpty()
+            AlertDialog(
+                onDismissRequest = { statusDetailsOpen = false; fullContentDialogOpen = false },
+                title = { Text(if (showingErrors) L10n.tr("会话状态") else L10n.tr("完整内容")) },
+                text = {
+                    val full = if (showingErrors) null else truncatedContent?.let { state.fullEntries[it.first] }?.let(::fullEntryText)
+                    Box(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                        SelectionContainer { Text(full ?: chatStatusErrors.joinToString("\n").ifEmpty { L10n.tr("正在读取…") }) }
+                    }
+                },
+                confirmButton = { NeumorphTextButton(L10n.tr("关闭"), { statusDetailsOpen = false; fullContentDialogOpen = false }) },
+                dismissButton = {
+                    if (showingErrors && runtime != null) NeumorphTextButton(L10n.tr("重试"), {
+                        statusDetailsOpen = false
+                        model.refreshRuntime(runtimeId, explicitRetry = true)
+                    })
+                },
+            )
+        }
         Box(Modifier.fillMaxSize().padding(padding)) {
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
@@ -2739,42 +2847,18 @@ internal fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(24.dp),
             ) {
                 item(key = "chat-status") {
-                    val errors = listOfNotNull(
-                        if (runtime == null && launch == null) L10n.tr("会话已离线") else null,
-                        historyActionError,
-                        firstReadError, rangeError, state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError,
-                        if (conversation.waitingLocalInteraction) L10n.tr("请在电脑端完成交互") else null,
-                        conversation.interactionNotice, conversation.systemNotice,
-                    ).distinct()
-                    var detailsOpen by remember { mutableStateOf(false) }
                     Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
                             if (displayReadPending)
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         }
-                        when {
-                            errors.isNotEmpty() -> NeumorphTextButton(errors.first(), { detailsOpen = true }, Modifier.weight(1f))
-                            else -> Spacer(Modifier.weight(1f))
-                        }
+                        Spacer(Modifier.weight(1f))
                         if (truncatedContent != null) NeumorphTextButton(L10n.tr("完整内容"), {
                             model.requestFullEntry(runtimeId, truncatedContent.first)
-                            detailsOpen = true
+                            fullContentDialogOpen = true
                         })
                     }
-                    if (detailsOpen) AlertDialog(onDismissRequest = { detailsOpen = false },
-                        title = { Text(if (errors.isEmpty()) L10n.tr("完整内容") else L10n.tr("会话状态")) },
-                        text = {
-                            val full = truncatedContent?.let { state.fullEntries[it.first] }?.let(::fullEntryText)
-                            Box(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
-                                SelectionContainer { Text(full ?: errors.joinToString("\n").ifEmpty { L10n.tr("正在读取…") }) }
-                            }
-                        },
-                        confirmButton = { NeumorphTextButton(L10n.tr("关闭"), { detailsOpen = false }) },
-                        dismissButton = { if (errors.isNotEmpty()) NeumorphTextButton(L10n.tr("重试"), {
-                            detailsOpen = false
-                            model.refreshRuntime(runtimeId, explicitRetry = true)
-                        }) })
                 }
                 items(chatItems, key = ChatListItem::key, contentType = { it::class }) { item ->
                     when (item) {
@@ -2851,6 +2935,7 @@ internal fun ChatScreen(
             // Keep the loading state through local admission and the visible prepend.
             val historyLoading = historyAnchorPending || historyRead?.phase?.active == true
             val showHistoryRetry = historyState?.hasOlder == true && historyFailure
+            val hasStatusErrors = chatStatusErrors.isNotEmpty()
             // One top slot: no outgoing question animation remains when paging takes over.
             Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
                 if (failedLaunch != null) {
@@ -2867,6 +2952,17 @@ internal fun ChatScreen(
                     ChatHistoryRetry(enabled = canLoadHistory(retrying = true),
                         onRetry = { loadHistoryPage(retrying = true, hapticOnAcceptance = true) },
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+                } else if (hasStatusErrors) {
+                    NoticeBanner(
+                        text = chatStatusErrors.first(),
+                        isError = true,
+                        recheck = runtime != null,
+                        onRecheck = { model.refreshRuntime(runtimeId, explicitRetry = true) },
+                        onClose = null,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp).testTag("chat-status-error"),
+                        onClick = { statusDetailsOpen = true },
+                        showRecheckHint = false,
+                    )
                 } else if (!hasNotices) {
                     val readingRowId by remember(listState, projection) {
                         derivedStateOf {
@@ -2900,38 +2996,66 @@ internal fun ChatScreen(
                         onRecheck = { model.syncNotifications(runtimeId) }) { model.dismissNotification(runtimeId, it) }
                 }
             }
-            androidx.compose.runtime.key(runtimeId, sessionId) {
-                Box(Modifier.align(Alignment.BottomCenter)) {
-                    InteractionWorkspace(
-                        requests = conversation.interactions.values.toList(), connected = state.e2eReady && runtime != null,
-                        pendingCommands = state.pendingCommands.keys, error = null,
-                        respondConfirm = { request, approved ->
-                            if (model.respondConfirm(request, approved) == true) actionHaptic()
+            val showJumpToLatest = initialPositioned && !following && distanceToBottom > lineHeightPx * 3
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .onGloballyPositioned { coords ->
+                        chatFeedbackGeometry.chatOverlayTop = if (coords.size.height > 0) coords.boundsInWindow().top else null
+                    },
+                horizontalAlignment = Alignment.End,
+            ) {
+                AnimatedVisibility(
+                    visible = showJumpToLatest,
+                    modifier = Modifier.padding(end = 16.dp, bottom = 12.dp),
+                ) {
+                    // 回到最新是可交互控件：凸起圆钮（平铺 FAB 会变成一块无影的染色圆）。
+                    NeumorphIconButton(
+                        onClick = {
+                            scope.launch {
+                                val lastIndex = listState.layoutInfo.totalItemsCount - 1
+                                if (lastIndex >= 0) {
+                                    userScrolling = false
+                                    hasBrowsed = false
+                                    following = true
+                                    listState.animateScrollToItem(lastIndex, Int.MAX_VALUE)
+                                }
+                            }
                         },
-                        respondValue = { request, value ->
-                            if (model.respondValue(request, value) == true) actionHaptic()
-                        },
-                        respondValues = { request, values ->
-                            if (model.respondValues(request, values) == true) actionHaptic()
-                        },
-                        respondQuestionnaire = { request, answers ->
-                            if (model.respondQuestionnaire(request, answers) == true && answers != null) actionHaptic()
-                        },
-                        onCancel = model::cancelInteraction,
-                        responding = OperationKinds.respondingRequestIds(state.ledger, runtimeId),
-                        status = state.interactionStatus(runtimeId),
+                        icon = Icons.Rounded.KeyboardArrowDown,
+                        contentDescription = L10n.tr("回到最新消息"),
+                        size = 44.dp,
                     )
+                }
+                androidx.compose.runtime.key(runtimeId, sessionId) {
+                    Box(Modifier.fillMaxWidth()) {
+                        InteractionWorkspace(
+                            requests = conversation.interactions.values.toList(), connected = state.e2eReady && runtime != null,
+                            pendingCommands = state.pendingCommands.keys, error = null,
+                            respondConfirm = { request, approved ->
+                                if (model.respondConfirm(request, approved) == true) actionHaptic()
+                            },
+                            respondValue = { request, value ->
+                                if (model.respondValue(request, value) == true) actionHaptic()
+                            },
+                            respondValues = { request, values ->
+                                if (model.respondValues(request, values) == true) actionHaptic()
+                            },
+                            respondQuestionnaire = { request, answers ->
+                                if (model.respondQuestionnaire(request, answers) == true && answers != null) actionHaptic()
+                            },
+                            onCancel = model::cancelInteraction,
+                            responding = OperationKinds.respondingRequestIds(state.ledger, runtimeId),
+                            status = state.interactionStatus(runtimeId),
+                        )
+                    }
                 }
             }
         }
-        commandFeedback?.let { feedback ->
-            Text(feedback, Modifier.align(Alignment.BottomCenter).padding(12.dp)
-                .background(rememberNeumorphColors().layer(2), RemoteUi.ControlShape).padding(12.dp),
-                style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        }
         }
     }
-        } } },
+        } } } },
     ) { HostDownloadsScreen(state, model, onBack = { downloadManagerOpen = false }) }
         },
         content = historyPage,
@@ -3169,8 +3293,13 @@ internal fun AllDownloadsScreen(
     onRetry: (String) -> Unit,
     onCancel: (String) -> Unit,
     onDelete: (Set<String>) -> Unit,
+    initialBrowsePath: String? = null,
+    onBrowsePathResolved: (String?) -> Unit = {},
 ) {
     var filePickerOpen by rememberSaveable { mutableStateOf(false) }
+    var directDownloadPath by rememberSaveable { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+    val directPath = directDownloadPath.trim()
     var selectedTaskIds by remember(state.hostId) { mutableStateOf<Set<String>>(emptySet()) }
     val selectionHaptic = LocalHapticFeedback.current
     var pendingDeletion by remember(state.hostId) { mutableStateOf<Set<String>>(emptySet()) }
@@ -3214,11 +3343,45 @@ internal fun AllDownloadsScreen(
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+            // FILE-BROWSER-01: let the downloads screen fetch a known computer path without browsing.
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding).padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = directDownloadPath,
+                    onValueChange = { directDownloadPath = it },
+                    modifier = Modifier.weight(1f).testTag("download-path"),
+                    placeholder = { Text(L10n.tr("电脑文件的完整路径")) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go, autoCorrectEnabled = false),
+                    keyboardActions = KeyboardActions(onGo = {
+                        if (directPath.isNotEmpty() && state.e2eReady) {
+                            focusManager.clearFocus()
+                            onDownload(directPath)
+                            directDownloadPath = ""
+                        }
+                    }),
+                )
+                NeumorphIconButton(
+                    onClick = {
+                        if (directPath.isNotEmpty() && state.e2eReady) {
+                            focusManager.clearFocus()
+                            onDownload(directPath)
+                            directDownloadPath = ""
+                        }
+                    },
+                    icon = OrbisSymbols.Download,
+                    contentDescription = L10n.tr("按路径下载"),
+                    enabled = directPath.isNotEmpty() && state.e2eReady,
+                )
+            }
             NeumorphActionButton(
                 text = L10n.tr("浏览电脑文件"),
                 icon = OrbisSymbols.Folder,
                 onClick = { onDismissBrowse(); filePickerOpen = true },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding).padding(top = 12.dp, bottom = 20.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding).padding(top = 8.dp, bottom = 16.dp),
             )
             HorizontalDivider()
             if (downloads.isEmpty()) {
@@ -3287,6 +3450,8 @@ internal fun AllDownloadsScreen(
             onBrowseInto = onBrowseInto,
             onBrowseUp = onBrowseUp,
             onDownload = onDownload,
+            initialBrowsePath = initialBrowsePath,
+            onBrowsePathResolved = onBrowsePathResolved,
         )
     }
 }
@@ -4281,17 +4446,22 @@ private fun MessageBlocks(
             if (block.type == "render") {
                 val action = block.messageFileAction()
                 if (action != null) {
-                    MessageReferenceCard(block, downloads.values.firstOrNull { it.sourcePath == action }, onDownload = { downloadFile(action) })
+                    ChatFilePreviewCard("${message.messageId}:$index", ChatFilePreview.Source(reference = action),
+                        block.file?.fileName ?: block.messageRenderLabel()) {
+                        MessageReferenceCard(block, downloads.values.firstOrNull { it.sourcePath == action }, onDownload = { downloadFile(action) })
+                    }
                 } else {
                     Text(block.messageRenderLabel(), color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.labelMedium, modifier = Modifier.testTag("message-content-placeholder"))
                 }
             } else if (block.type == "artifact" && block.artifact != null) {
-                ArtifactCard(
-                    artifact = block.artifact,
-                    download = downloads[artifactDownloadKey(block.artifact)],
-                    onDownload = { downloadArtifact(block.artifact) },
-                )
+                ChatFilePreviewCard("${message.messageId}:$index", ChatFilePreview.Source(artifactId = block.artifact.artifactId), block.artifact.fileName) {
+                    ArtifactCard(
+                        artifact = block.artifact,
+                        download = downloads[artifactDownloadKey(block.artifact)],
+                        onDownload = { downloadArtifact(block.artifact) },
+                    )
+                }
             } else when (contentPresentation(message.role, block.type)) {
                 ContentPresentation.MESSAGE -> MarkdownText(block.text.orEmpty(), downloadFile)
                 ContentPresentation.THINKING -> CollapsedThinking(block.text.orEmpty())
@@ -4547,7 +4717,7 @@ private fun QueuedMessageRow(message: QueuedMessage, unconfirmed: Boolean, canSe
             Text(
                 L10n.tr("{0}，{1}{2}", queuedMessageDeliveryText(message.delivery), queuedMessageStateText(message.state), message.error?.let { "：$it" }.orEmpty()),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (message.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         // 只有还没送进上下文的消息能撤回；结果由队列事件回报（与 iOS 一致）。
@@ -4576,20 +4746,61 @@ private fun queuedMessageStateText(state: String): String = when (state) {
 }
 
 
-/** SC92: overlays retain the page geometry and never consume touches outside the Notice surface. */
+/** Docked F4 connection banner: occupies its own top strip so TopAppBar and navigation controls stay reachable. */
 @Composable
-internal fun FeedbackOverlay(notice: AppFeedback?, bottom: Boolean, anchor: Float? = null, onDismiss: () -> Unit, onAction: (FeedbackAction) -> Unit) {
-    var rootBottom by remember { mutableFloatStateOf(0f) }
-    val density = LocalDensity.current
-    val bottomPadding = if (bottom && anchor != null && rootBottom > 0f) with(density) { (rootBottom - anchor).coerceAtLeast(0f).toDp() } else 0.dp
-    LaunchedEffect(notice?.id) {
-        if (notice?.level == FeedbackLevel.F3 && notice.action == null) {
-            delay(InteractionMotion.ToastHold)
-            onDismiss()
+internal fun FeedbackBannerSlot(
+    notice: AppFeedback?,
+    visibleState: MutableTransitionState<Boolean>,
+    onDismiss: () -> Unit,
+    onAction: (FeedbackAction) -> Unit,
+) {
+    var last by remember { mutableStateOf(notice) }
+    if (notice != null) last = notice
+    AnimatedVisibility(
+        visibleState = visibleState,
+        enter = fadeIn(tween(InteractionMotion.duration(InteractionMotion.Panel))) +
+            expandVertically(tween(InteractionMotion.duration(InteractionMotion.Panel)), expandFrom = Alignment.Top),
+        exit = fadeOut(tween(InteractionMotion.duration(InteractionMotion.Exit))) +
+            shrinkVertically(tween(InteractionMotion.duration(InteractionMotion.Exit)), shrinkTowards = Alignment.Top),
+        label = "connection-banner",
+    ) {
+        last?.let { shown ->
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .statusBarsPadding(),
+            ) {
+                FeedbackNoticeCard(shown, bottom = false, onDismiss = onDismiss, onAction = onAction)
+            }
         }
     }
-    Box(Modifier.fillMaxSize().onGloballyPositioned { rootBottom = it.boundsInWindow().bottom }.then(if (bottom) Modifier.padding(bottom = bottomPadding).then(if (anchor == null) Modifier.imePadding().navigationBarsPadding() else Modifier) else Modifier.statusBarsPadding()),
-        contentAlignment = if (bottom) Alignment.BottomCenter else Alignment.TopCenter) {
+}
+
+/** SC92: overlays retain the page geometry and never consume touches outside the Notice surface. */
+@Composable
+internal fun FeedbackOverlay(notice: AppFeedback?, bottom: Boolean, anchor: Float? = null, onDismiss: (String) -> Unit, onAction: (FeedbackAction) -> Unit) {
+    var rootBottom by remember { mutableFloatStateOf(0f) }
+    var rootHeight by remember { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
+    val maxOffsetPx = (rootHeight - with(density) { 96.dp.toPx() }).coerceAtLeast(0f)
+    val bottomPadding = if (bottom && anchor != null && rootBottom > 0f) {
+        with(density) { (rootBottom - anchor).coerceIn(0f, maxOffsetPx).toDp() }
+    } else 0.dp
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onGloballyPositioned {
+                val bounds = it.boundsInWindow()
+                rootBottom = bounds.bottom
+                rootHeight = bounds.height
+            }
+            .then(
+                if (bottom) Modifier.padding(bottom = bottomPadding).then(if (anchor == null) Modifier.imePadding().navigationBarsPadding() else Modifier)
+                else Modifier.statusBarsPadding()
+            ),
+        contentAlignment = if (bottom) Alignment.BottomCenter else Alignment.TopCenter,
+    ) {
         androidx.compose.animation.AnimatedContent(targetState = notice, transitionSpec = {
             (fadeIn(tween(InteractionMotion.duration(InteractionMotion.Panel))) +
                 androidx.compose.animation.slideInVertically(tween(InteractionMotion.duration(InteractionMotion.Panel))) {
@@ -4597,22 +4808,42 @@ internal fun FeedbackOverlay(notice: AppFeedback?, bottom: Boolean, anchor: Floa
                 }).togetherWith(fadeOut(tween(InteractionMotion.duration(InteractionMotion.Exit))))
                 .using(null)
         }, label = if (bottom) "short-feedback" else "connection-banner") { shown ->
-            shown?.let {
-                NeumorphSurface(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
-                    .testTag(if (bottom) "feedback-f3" else "feedback-f4")
-                    .semantics(mergeDescendants = true) { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite },
-                    shape = RemoteUi.ControlShape, shadowScale = 0.6f, contentPadding = 12.dp) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (bottom) OrbisSymbols.Info else OrbisSymbols.Error, null, modifier = Modifier.size(20.dp),
-                            tint = if (bottom) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-                        Text(shown.message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                        shown.action?.let { action ->
-                            NeumorphTextButton(feedbackActionText(action, shown.condition), { onAction(action); if (bottom) onDismiss() })
-                        }
-                        NeumorphIconButton(onClick = onDismiss, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭通知"), size = 28.dp)
-                    }
-                }
+            // An exiting toast cannot dismiss or invoke the action of its replacement.
+            shown?.let { FeedbackNoticeCard(it, bottom = bottom, onDismiss = { onDismiss(it.id) },
+                onAction = { action -> if (it.id == notice?.id) onAction(action) }) }
+        }
+    }
+}
+
+@Composable
+private fun FeedbackNoticeCard(
+    notice: AppFeedback,
+    bottom: Boolean,
+    onDismiss: () -> Unit,
+    onAction: (FeedbackAction) -> Unit,
+) {
+    NeumorphSurface(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .testTag(if (bottom) "feedback-f3" else "feedback-f4")
+            .semantics(mergeDescendants = true) { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite },
+        shape = RemoteUi.ControlShape,
+        shadowScale = 0.6f,
+        contentPadding = 12.dp,
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                if (bottom) OrbisSymbols.Info else OrbisSymbols.Error,
+                null,
+                modifier = Modifier.size(20.dp),
+                tint = if (bottom) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+            )
+            Text(notice.message, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            notice.action?.let { action ->
+                NeumorphTextButton(feedbackActionText(action, notice.condition), { onAction(action); if (bottom) onDismiss() })
             }
+            NeumorphIconButton(onClick = onDismiss, icon = OrbisSymbols.Close, contentDescription = L10n.tr("关闭通知"), size = 28.dp)
         }
     }
 }
@@ -4648,8 +4879,23 @@ internal fun RuntimeNotifications(
 }
 
 @Composable
-private fun NoticeBanner(text: String, isError: Boolean, recheck: Boolean, onRecheck: (() -> Unit)?, onClose: (() -> Unit)?) {
-    NeumorphSurface(Modifier.fillMaxWidth(), shape = RemoteUi.ControlShape, shadowScale = 0.6f, contentPadding = 12.dp) {
+private fun NoticeBanner(
+    text: String,
+    isError: Boolean,
+    recheck: Boolean,
+    onRecheck: (() -> Unit)?,
+    onClose: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    showRecheckHint: Boolean = true,
+) {
+    NeumorphSurface(
+        modifier.fillMaxWidth(),
+        shape = RemoteUi.ControlShape,
+        shadowScale = 0.6f,
+        contentPadding = 12.dp,
+        onClick = onClick,
+    ) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
             Icon(if (isError) OrbisSymbols.Error else OrbisSymbols.Info, contentDescription = null,
                 tint = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4657,7 +4903,7 @@ private fun NoticeBanner(text: String, isError: Boolean, recheck: Boolean, onRec
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(text, style = MaterialTheme.typography.bodyMedium,
                     color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
-                if (recheck && text != L10n.tr("通知状态待核对")) {
+                if (recheck && showRecheckHint && text != L10n.tr("通知状态待核对")) {
                     Text(L10n.tr("通知状态待核对"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (recheck && onRecheck != null) {
@@ -5009,15 +5255,30 @@ internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -
 }
 
 @Composable
-internal fun InlineFeedbackError(message: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+internal fun InlineFeedbackError(
+    message: String,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Row(
+        modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Icon(OrbisSymbols.Error, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
-        Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        Text(message, Modifier.weight(1f), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        if (actionLabel != null && onAction != null) {
+            NeumorphTextButton(actionLabel, onClick = onAction, dismissOnClick = false)
+        }
     }
 }
 
 internal class FeedbackGeometry {
     var composerTop by mutableStateOf<Float?>(null)
+    var chatOverlayTop by mutableStateOf<Float?>(null)
     var tabsTop by mutableStateOf<Float?>(null)
+    var historyPreviewTop by mutableStateOf<Float?>(null)
+    var chatNestedPage by mutableStateOf<String?>(null)
 }
 internal val LocalFeedbackGeometry = staticCompositionLocalOf { FeedbackGeometry() }

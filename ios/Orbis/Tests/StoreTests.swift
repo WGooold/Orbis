@@ -190,6 +190,24 @@ struct StoreTests {
         ["type": "session.snapshot", "sessionId": sync["sessionId"]!, "syncId": sync["syncId"]!, "mode": "replace",
          "display": ["entries": [["message": message(text, text: text)]]]]
     }
+    @Test func downloadBrowserPathIsRememberedPerSelectedHost() throws {
+        let suiteName = "orbis-download-browser-tests-\(UUID().uuidString)"
+        let preferences = try #require(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        let first = DownloadBrowserPathStore(preferences: preferences)
+        let second = DownloadBrowserPathStore(preferences: preferences)
+
+        #expect(first.path(hostId: "host-1") == nil)
+        first.remember("/Users/test/build", hostId: "host-1")
+        #expect(second.path(hostId: "host-1") == "/Users/test/build")
+        #expect(second.path(hostId: "host-2") == nil)
+        second.remember("D:\\work", hostId: "host-2")
+        #expect(first.path(hostId: "host-1") == "/Users/test/build")
+        #expect(first.path(hostId: "host-2") == "D:\\work")
+        second.remove(hostId: "host-1")
+        #expect(first.path(hostId: "host-1") == nil)
+    }
+
     private func setup() -> (OrbisStore, TestTransport) {
         let transport = TestTransport()
         let store = OrbisStore(secure: MemorySecureStore(), transport: transport, preferences: nil)
@@ -443,6 +461,21 @@ struct StoreTests {
         #expect(store.activeConnection.sessionOperationErrors.isEmpty)
         store.activeConnection.editDraft("fixed", for: try #require(store.selectedRuntime))
         #expect(ChatScreenSnapshot(store: store).inputError == nil)
+    }
+
+    // FEEDBACK-POSITION-01: a picker failure belongs to its initiating composer, never Downloads or the next session.
+    @Test func attachmentPickerFailureStaysInItsComposer() async {
+        let (store, transport) = setup(); await transport.ready([runtime("a"), runtime("b")])
+        let actions = ChatSessionActions(store: store, target: .capture(store))
+        let reason = L10n.tr("无法读取所选照片")
+        actions.uploadFailed(reason)
+        #expect(ChatScreenSnapshot(store: store).inputError == reason)
+        #expect(store.activeConnection.transfers.error == nil)
+        store.selectRuntime("b")
+        actions.uploadFailed("stale result")
+        #expect(ChatScreenSnapshot(store: store).inputError == nil)
+        store.selectRuntime("a")
+        #expect(ChatScreenSnapshot(store: store).inputError == reason)
     }
 
     @Test func activatingAnOnlineSessionDoesNotLaunchADuplicateRuntime() async throws {
@@ -2239,6 +2272,12 @@ extension StoreTests {
         transport.state?(.offline, nil)
         #expect(store.activeConnection.closeRuntimes(["b"]).isEmpty)
         #expect(store.activeConnection.objectError("b") == L10n.tr("关闭会话未发送：请先连接电脑。"))
+        store.selectRuntime("b")
+        #expect(ChatScreenSnapshot(store: store).inputError == nil)
+        if let runtime = store.selectedRuntime { store.activeConnection.editDraft("draft", for: runtime) }
+        #expect(store.activeConnection.objectError("b") != nil)
+        #expect(store.activeConnection.closeRuntimes(["gone"]).isEmpty)
+        #expect(ChatScreenSnapshot(store: store).inputError == nil)
     }
 
     // SC93: typed Relay rejection reasons choose a solving action instead of displaying remote codes.

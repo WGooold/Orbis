@@ -71,10 +71,12 @@ struct ChatNoticesRegion: View, Equatable {
                 VStack(alignment: .leading, spacing: 8) {
                     OrbisStatusWithInfo(title: L10n.tr(launch.failure != nil ? "启动失败" : "启动未确认"), message: launch.failure ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: launch.failure != nil)
                     HStack(spacing: 12) {
-                        OrbisActionButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") { if actions.isCurrent { actions.retryLaunch() } }.accessibilityIdentifier("launch-retry")
-                        OrbisActionButton(title: L10n.tr("返回"), action: onBack).accessibilityIdentifier("launch-back")
+                        OrbisTextButton(title: L10n.tr("重试"), symbol: "arrow.clockwise") { if actions.isCurrent { actions.retryLaunch() } }.orbisNested().accessibilityIdentifier("launch-retry")
+                        OrbisTextButton(title: L10n.tr("返回"), action: onBack).orbisNested().accessibilityIdentifier("launch-back")
                     }
-                }.padding(.horizontal, 16).accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
+                }.neuSurface(radius: OrbisRadius.control, intensity: 0.6, padding: 12)
+                    .padding(.horizontal, 16).padding(.top, 8)
+                    .accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
             } else {
                 let history = model.transcript
                 let loadingHistory = history.historyLoading || viewport.awaitingOlderPage
@@ -88,6 +90,11 @@ struct ChatNoticesRegion: View, Equatable {
                 } else if history.hasOlder && history.historyError != nil {
                     VStack(spacing: 0) {
                         historyRetry(enabled: !history.syncing && (history.canSend || history.cached))
+                        if hasNotices { runtimeNotices }
+                    }
+                } else if let message = history.historyError {
+                    VStack(spacing: 6) {
+                        historyErrorBanner(message: message, canRetry: !history.cached && history.canSend && !history.syncing)
                         if hasNotices { runtimeNotices }
                     }
                 } else if hasNotices {
@@ -106,6 +113,16 @@ struct ChatNoticesRegion: View, Equatable {
     private var runtimeNotices: some View {
         RuntimeNoticesView(model: model, actions: actions, runtimeId: actions.runtimeId,
                            supported: facts.supported).padding(.horizontal, 16)
+    }
+    private func historyErrorBanner(message: String, canRetry: Bool) -> some View {
+        OrbisNotice(
+            text: message,
+            error: true,
+            trailing: canRetry ? AnyView(OrbisTextButton(title: L10n.tr("重试")) { actions.refresh() }.orbisNested()) : nil
+        )
+        .padding(.horizontal, 16).padding(.top, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat-history-error")
     }
     private func historyRetry(enabled: Bool) -> some View {
         let p = OrbisPalette(scheme)

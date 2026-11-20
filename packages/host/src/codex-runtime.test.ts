@@ -11,7 +11,8 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, RuntimeEventSchema, type AgentExecutionState, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
+import { SESSION_SYNC_PAGE_BYTES, SESSION_SYNC_WRAPPER_BYTES, RuntimeEventSchema, type AgentExecutionState, type AgentSessionSummary, type RuntimeEvent, type SessionSyncRequest, type ToolContentReadRequest } from "@orbis/protocol";
+import { ToolContentStore } from "@orbis/runtime-bridge";
 
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry } from "./agent-state-registry.js";
@@ -1112,6 +1113,96 @@ describe("Codex recoverable source checkpoints", () => {
     } finally { h.server.onExit?.(0); }
   });
 
+  // CODEX-SOURCE-03: a true native order correction may retire the capture, but losing
+  // temporary output must not change either canonical tool row on an identical reread.
+  it("does not rotate the Desktop epoch again when identical native turns reproject captured tool output", async () => {
+    const h = makeHarness({ desktop: true });
+    const store = await ToolContentStore.create({ directory: join(h.rolloutRoot, "tool-content"), producerId: "desktop-test" });
+    const route = { threadId: "th-1", turnId: "t" };
+    const sessionId = "codex-desktop:th-1";
+    const started = tool("cmd", "inProgress"), finished = { ...started, status: "completed", exitCode: 0 };
+    const turns = [{ id: "t", status: "completed", items: [agent("answer"), finished] }];
+    const preview = () => syncHistory(h, { sessionId });
+    const read: ToolContentReadRequest = { type: "session.tool.content.read", requestId: "captured-output", viewerId: "viewer",
+      runtimeId: sessionId, locator: { projectionVersion: 1, tool: { agent: { hostId: "local", agentKind: "codexDesktop", sessionId },
+        toolCallId: "cmd" }, part: "output" }, read: null, offset: 0, maxBytes: 16384 };
+    try {
+      h.runtime.setToolContentStore(store, "local");
+      await activate(h);
+      h.notify("turn/started", { threadId: route.threadId, turn: { id: route.turnId, startedAt: 1 } });
+      h.notify("item/started", { ...route, item: started });
+      h.notify("item/commandExecution/outputDelta", { ...route, itemId: started.id, delta: "captured output" });
+      h.notify("item/completed", { ...route, item: finished });
+      h.notify("item/completed", { ...route, item: agent("answer") });
+      h.notify("turn/completed", { threadId: route.threadId, turn: { id: route.turnId, status: "completed" } });
+      const before = preview()!;
+      expect(before.entries.map(entry => entry.entryId)).toEqual(["cmd", "cmd:result", "answer"]);
+      expect(before.entries[1]?.data.message).toMatchObject({ toolSummary: { contents: expect.arrayContaining([
+        expect.objectContaining({ part: "output", readCapability: "range" }),
+      ]) } });
+      const captured = await h.runtime.toolContents.read("device", read);
+      expect(captured.text).toBe("captured output");
+
+      h.runtime.announce(route.threadId);
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+      h.resolveNext({ data: turns });
+      await vi.waitFor(() => expect(preview()?.cursor.leafId).toBe("cmd:result"));
+      const corrected = preview()!;
+      expect(corrected.source?.epoch).not.toBe(before.source?.epoch);
+      expect(corrected.entries.map(entry => [entry.entryId, entry.parentId])).toEqual([
+        ["answer", null], ["cmd", "answer"], ["cmd:result", "cmd"],
+      ]);
+
+      // The completion retransmission must force a fresh projection, even though
+      // neither the native payload nor canonical content has changed.
+      h.notify("item/completed", { ...route, item: agent("answer") });
+      h.runtime.announce(route.threadId);
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(2));
+      const patchStart = h.events.length;
+      h.resolveNext({ data: turns });
+      await vi.waitFor(() => expect(h.events.slice(patchStart).some(event => event.type === "session.patch" && event.source.ready)).toBe(true));
+      const replayed = preview()!;
+      expect(replayed.entries).toEqual(corrected.entries);
+      expect(replayed.source?.epoch).toBe(corrected.source?.epoch);
+      expect(h.events.slice(patchStart).filter(event => event.type === "session.patch").every(event => event.source.ready)).toBe(true);
+
+      // A read pinned to the retired capture cannot leak old output into the new epoch.
+      await expect(h.runtime.toolContents.read("device", { ...read, requestId: "old-output", read: captured.read })).rejects
+        .toMatchObject({ reason: "content_version_invalid" });
+      const retained = await h.runtime.toolContents.read("device", { ...read, requestId: "retained-output" });
+      expect(retained.text).toBe("captured output");
+      expect(nativeReads(h)).toHaveLength(2);
+    } finally {
+      await h.runtime.stop();
+      await store.dispose();
+    }
+  });
+
+  // CODEX-SOURCE-05: an active native read omitting a completed tail is not a revert.
+  it("keeps a completed tail when the same running turn has not persisted it yet", async () => {
+    const h = makeHarness({ desktop: true });
+    const sessionId = "codex-desktop:th-1", route = { threadId: "th-1", turnId: "t" };
+    try {
+      await activate(h);
+      const user = { id: "user", type: "userMessage", content: [{ type: "text", text: "question" }] };
+      h.notify("turn/started", { threadId: route.threadId, turn: { id: route.turnId, startedAt: 1 } });
+      for (const item of [user, agent("answer")]) h.notify("item/completed", { ...route, item });
+      const before = syncHistory(h, { sessionId })!;
+      expect(before.cursor.leafId).toBe("answer");
+
+      h.runtime.announce(route.threadId);
+      await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
+      h.notify("item/completed", { ...route, item: agent("next") });
+      h.resolveNext({ data: [{ id: route.turnId, status: "inProgress", items: [user] }] });
+      await vi.waitFor(() => expect(syncHistory(h, { sessionId })?.cursor.leafId).toBe("next"));
+      const after = syncHistory(h, { sessionId })!;
+      expect(after.source?.epoch).toBe(before.source?.epoch);
+      expect(after.entries.map(({ entryId, parentId }) => [entryId, parentId])).toEqual([
+        ["user", null], ["answer", "user"], ["next", "answer"],
+      ]);
+    } finally { await h.runtime.stop(); }
+  });
+
   it("rereads a buffered completed item that differs from the overlapping native read", async () => {
     const h = makeHarness();
     await resume(h, [{ id: "t", status: "completed", items: [agent("a", "original")] }]);
@@ -1289,7 +1380,9 @@ describe("Codex recoverable source checkpoints", () => {
     await resume(h, [{ id: "t", status: "completed", items: [agent("a")] }]);
     h.notify("thread/reverted", { threadId: "th-1" });
     await vi.waitFor(() => expect(nativeReads(h)).toHaveLength(1));
-    expect(syncHistory(h)).toMatchObject({
+    // Inspect the raw adapter checkpoint; the Host dispatch waits for a ready preview.
+    h.runtime.handleCommand({ type: "session.sync", sessionId: "th-1", syncId: "raw-checkpoint", range: "preview" }, "raw", "th-1");
+    expect(h.events.find(event => event.type === "session.snapshot" && event.syncId === "raw-checkpoint")).toMatchObject({
       source: { ready: false }, checkpoint: { head: { leafId: null }, headCompleteness: "unknown", inventoryComplete: false },
       live: { complete: false },
     });

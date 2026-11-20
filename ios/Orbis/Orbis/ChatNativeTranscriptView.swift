@@ -8,11 +8,13 @@ final class ChatNativeCellGeometry {
     private final class Registration {
         weak var view: UIView?
         var onFrame: (CGRect?) -> Void
+        var includeClipping: Bool
         var lastFrame: CGRect?
         var hasReported = false
 
-        init(view: UIView, onFrame: @escaping (CGRect?) -> Void) {
+        init(view: UIView, includeClipping: Bool, onFrame: @escaping (CGRect?) -> Void) {
             self.view = view
+            self.includeClipping = includeClipping
             self.onFrame = onFrame
         }
     }
@@ -23,11 +25,12 @@ final class ChatNativeCellGeometry {
     private var contentSize: CGSize?
     fileprivate var onContentSizeChange: (() -> Void)?
 
-    func register(id: UUID, view: UIView, onFrame: @escaping (CGRect?) -> Void) {
+    func register(id: UUID, view: UIView, includeClipping: Bool = false, onFrame: @escaping (CGRect?) -> Void) {
         if let registration = registrations[id], registration.view === view {
             registration.onFrame = onFrame
+            registration.includeClipping = includeClipping
         } else {
-            registrations[id] = Registration(view: view, onFrame: onFrame)
+            registrations[id] = Registration(view: view, includeClipping: includeClipping, onFrame: onFrame)
         }
         refresh()
     }
@@ -51,9 +54,17 @@ final class ChatNativeCellGeometry {
             self.scheduled = false
             for registration in self.registrations.values {
                 let frame: CGRect?
-                if let view = registration.view, view.window != nil,
+                if let view = registration.view, let window = view.window,
                    view.bounds.width > 0, view.bounds.height > 0 {
-                    let converted = view.convert(view.bounds, to: nil)
+                    var converted = view.convert(view.bounds, to: nil)
+                    if registration.includeClipping {
+                        var ancestor = view.superview
+                        while let parent = ancestor, parent !== window {
+                            if parent is UIScrollView || parent.clipsToBounds { converted = converted.intersection(parent.convert(parent.bounds, to: nil)) }
+                            ancestor = parent.superview
+                        }
+                        converted = converted.intersection(window.bounds)
+                    }
                     frame = converted.isNull || converted.isInfinite ? nil : converted
                 } else {
                     frame = nil
@@ -986,6 +997,10 @@ struct ChatNativeTranscriptView: UIViewRepresentable {
             animatingOffset = false
             previousPanY = scrollView.panGestureRecognizer.translation(in: scrollView).y
             captureAnchorsIfNeeded()
+        }
+
+        func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+            (cell as? NativeTranscriptCell)?.geometry.refresh()
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {

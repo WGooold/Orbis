@@ -59,6 +59,37 @@ class SubscriptionQuotaTest {
         assertEquals(failed, failed.failSubscriptionQuery("query", "旧错误"))
     }
 
+    // QUOTA-FEEDBACK-01: an authenticated rejection settles the owning refresh, not the catalog or global banner.
+    @Test fun protocolRejectionSettlesOnlyTheOwningQuotaQuery() {
+        val reducer = RelayReducer()
+        val loaded = waiting.withSubscriptionResult(response())
+        val refreshing = loaded.beginSubscriptionQuery(provider, "retry")
+        val rejection = """{"type":"protocol.error","requestId":"retry","code":"invalid_request","message":"电脑端不支持配额查询"}"""
+        assertEquals(refreshing, reducer.reduce(refreshing, rejection, channel = null))
+        assertEquals(refreshing, reducer.reduce(refreshing, rejection.replace("retry", "query"), channel = "ctl"))
+        val failed = reducer.reduce(refreshing, rejection, channel = "ctl")
+        assertNull(failed.agentProviders.quotaRequestId)
+        assertEquals("电脑端不支持配额查询", failed.subscriptionQuotas["claude"]?.error)
+        assertEquals(loaded.subscriptionQuotas["claude"]?.quota, failed.subscriptionQuotas["claude"]?.quota)
+        assertNull(failed.agentProviders.error)
+        assertNull(failed.feedback.banner)
+        val retrying = failed.beginSubscriptionQuery(provider, "new")
+        assertNull(retrying.subscriptionQuotas["claude"]?.error)
+        assertEquals(retrying, reducer.reduce(retrying, rejection, channel = "ctl"))
+        val recovered = retrying.withSubscriptionResult(response(request = "new"))
+        assertNull(recovered.subscriptionQuotas["claude"]?.error)
+        assertNull(recovered.agentProviders.quotaRequestId)
+    }
+
+    @Test fun disconnectKeepsLastReadingAndDoesNotAcceptLateQuota() {
+        val loaded = waiting.withSubscriptionResult(response())
+        val interrupted = loaded.beginSubscriptionQuery(provider, "pending").interruptSubscriptionQuery()
+        assertNull(interrupted.agentProviders.quotaRequestId)
+        assertEquals(loaded.subscriptionQuotas["claude"]?.quota, interrupted.subscriptionQuotas["claude"]?.quota)
+        assertEquals(L10n.tr("连接已断开，请重新查询配额"), interrupted.subscriptionQuotas["claude"]?.error)
+        assertEquals(interrupted, interrupted.withSubscriptionResult(response(request = "pending")))
+    }
+
     // QUOTA-FEEDBACK-02: a partial catalog is not evidence that a queried configuration disappeared.
     @Test fun temporaryCatalogProblemKeepsTheReadingAndSettlesTheOwningReply() {
         val profiles = """[{"id":"official","enabled":true,"subscriptionSupported":true}]"""

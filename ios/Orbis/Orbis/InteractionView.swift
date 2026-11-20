@@ -21,9 +21,9 @@ struct InteractionWorkspaceView: View, Equatable {
         let requests = facts.requests.filter { !facts.responding.contains($0.requestId) }
         let status = facts.interactionText.map { (text: $0, pending: facts.interactionPending) }
         let inline = requests.count == 1 && requests[0].kind == "confirm"
-        // No reserved space: the panel floats above the composer over the transcript,
-        // so neither an empty slot nor an arriving request moves the input field.
-        Color.clear.frame(height: 0).overlay(alignment: .bottom) {
+        // Sits inside ChatBottomOverlayRegion over the transcript so neither an empty slot nor an
+        // arriving request moves the composer, while coordinating height with JumpToLatest and F3.
+        Group {
             if inline, let request = requests.first {
                 requestView(request, inSheet: false).padding(.horizontal, 16).padding(.bottom, 10).fixedSize(horizontal: false, vertical: true)
             } else if !requests.isEmpty {

@@ -1,5 +1,5 @@
 // Orbis 测试用途（场景与判定见本文件断言）：
-// - 下载 / 文件（S09、S15、S20、S21、M13、V19）
+// - 下载 / 文件（S09、S15、S20、S21、M13、V19、FILE-BROWSER-01）
 package com.orbising.orbis
 
 import android.graphics.Bitmap
@@ -15,10 +15,11 @@ import org.junit.Test
 class DownloadFileBrowserInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun downloadPageBrowsesDrivesFoldersAndDownloadsSelectedFileWithoutTyping() {
+    @Test fun downloadPickerJumpsToEnteredPathAndDownloadsMultipleSelectedFiles() {
         val state = mutableStateOf(RemoteState(connection = RelayConnection.ONLINE, e2eReady = true))
         val downloads = mutableListOf<String>()
         val visited = mutableListOf<String?>()
+        val rememberedPath = mutableStateOf<String?>(null)
         fun browse(path: String?) {
             visited += path
             val entries = when (path) {
@@ -38,25 +39,27 @@ class DownloadFileBrowserInstrumentedTest {
             onBrowseUp = { browse(state.value.sessionBrowse?.parent) },
             onDismissBrowse = { state.value = state.value.copy(sessionBrowse = null) },
             onDownload = downloads::add, onRetry = {}, onCancel = {}, onDelete = {},
+            initialBrowsePath = rememberedPath.value, onBrowsePathResolved = { rememberedPath.value = it },
         ) } }
-        compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+        compose.onAllNodes(hasSetTextAction()).onFirst().performTextInput("D:\\quick.txt")
+        compose.onNodeWithContentDescription("按路径下载").performClick()
         compose.onNodeWithText("浏览电脑文件").performClick()
-        compose.onNodeWithText("D:\\").performClick()
-        compose.onNodeWithText("build output").performClick()
-        compose.onNodeWithText("下载到手机").assertIsNotEnabled()
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("D:\\build output")
+        compose.onNodeWithTag("remote-directory-jump").performClick()
         compose.onNodeWithText("应用 v1.apk").performClick()
-        compose.onNodeWithText("下载到手机").assertIsEnabled()
-        capture("download-file-picker.png")
-        compose.onNodeWithText("上一级").performClick()
-        compose.onNodeWithText("build output").performClick()
-        compose.onNodeWithText("下载到手机").assertIsNotEnabled()
-        compose.onNodeWithText("应用 v1.apk").performClick()
-        compose.onNodeWithText("下载到手机").performClick()
+        compose.onNodeWithText("notes.txt").performClick()
+        compose.onNodeWithText("下载所选 2 个文件").assertIsEnabled()
+        capture("download-multi-select.png")
+        compose.onNodeWithText("下载所选 2 个文件").performClick()
         compose.onNodeWithText("选择电脑上的文件").assertDoesNotExist()
         compose.runOnIdle {
-            assertEquals(listOf("D:\\build output\\应用 v1.apk"), downloads)
-            assertTrue(visited.contains("D:\\build output"))
+            assertEquals(listOf("D:\\quick.txt", "D:\\build output\\应用 v1.apk", "D:\\build output\\notes.txt"), downloads)
+            assertEquals("D:\\build output", visited.last())
+            assertEquals("D:\\build output", rememberedPath.value)
         }
+        compose.onNodeWithText("浏览电脑文件").performClick()
+        compose.onNodeWithText("应用 v1.apk").assertExists()
+        compose.runOnIdle { assertEquals("D:\\build output", visited.last()) }
     }
 
     @Test fun longPressKeepsDownloadGeometryAndDeletionRequiresConfirmation() {

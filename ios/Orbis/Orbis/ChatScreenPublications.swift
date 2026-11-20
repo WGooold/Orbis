@@ -72,7 +72,7 @@ struct ChatScreenSnapshot {
         preparing = source.transfers.preparing
         commands = source.commands[id] ?? []; workingBranch = source.workingBranches[id]
         draftRevision = source.draftRevision; draft = runtime.map(source.draft) ?? ""
-        inputError = source.composerError(id) ?? source.objectError(id) ?? source.transfers.error
+        inputError = source.composerError(id) ?? source.objectError(id, includeCardOnly: false) ?? runtime.flatMap(source.transfers.uploadError)
         menuErrors = Dictionary(uniqueKeysWithValues: source.menuErrors.compactMap { key, value in let prefix = id + "\u{0}"; return key.hasPrefix(prefix) ? (String(key.dropFirst(prefix.count)), value) : nil })
         cachedSession = source.isViewingCachedSession ? source.sessions.first { $0.sessionId == session } : nil
         activatingSessionId = source.activatingSessionId

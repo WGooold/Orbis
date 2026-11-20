@@ -188,6 +188,27 @@ describe("SessionSyncTasks", () => {
     expect(h.sends[0]!.range).toBe(range);
   });
 
+  // CODEX-SOURCE-04: a source proof is usable only by the owning preview read,
+  // not just any frame with a preview label and a current runtime id.
+  it.each([
+    { range: "preview", producer: true, verified: true },
+    { range: "preview", producer: false, verified: false },
+    { range: "history", producer: true, verified: false },
+  ] as const)("bounds epoch recovery authority to the current producer's in-flight preview ($range, $producer)", ({ range, producer, verified }) => {
+    const acceptSnapshot = vi.fn(() => true);
+    const h = harness(false, { acceptSnapshot });
+    h.manager.request("a", "runtime", "cmd", request("sync", range));
+    h.manager.tick();
+    const response = snapshot(h.dispatches[0]!.id);
+    h.manager.handleEvent("other-runtime", response, true);
+    h.manager.handleEvent("runtime", snapshot("unsolicited"), true);
+    expect(acceptSnapshot).not.toHaveBeenCalled();
+    h.manager.handleEvent("runtime", response, producer);
+    expect(acceptSnapshot).toHaveBeenCalledExactlyOnceWith("runtime", response, verified);
+    h.manager.handleEvent("runtime", response, true);
+    expect(acceptSnapshot).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the applied baseline immutable across retry and rejects changed progress on the same ID", () => {
     const h = harness();
     const command = { ...request(), knownState: { epoch: "epoch", seq: 7, head: { leafId: "leaf" } } };

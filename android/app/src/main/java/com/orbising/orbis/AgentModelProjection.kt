@@ -50,6 +50,7 @@ internal fun RemoteState.applyAgentDomainProjection(
                     require(incoming.runtimeId == id && incoming.sessionId == sessionId)
                     runtime = runtime.copy(name = incoming.name, cwd = incoming.cwd, hostname = incoming.hostname,
                         sessionName = incoming.sessionName, agentKind = incoming.agentKind,
+                        codexCatalogId = incoming.codexCatalogId,
                         steerSupported = incoming.steerSupported ?: runtime.steerSupported)
                 }
                 "execution" -> {
@@ -170,9 +171,10 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
         val rangeComplete = value.text("nextCursor") == null && value["truncated"]?.jsonPrimitive?.booleanOrNull != true
         val completeKinds = if (!rangeComplete) emptySet() else (value["backends"] as? JsonArray).orEmpty().filterIsInstance<JsonObject>()
             .filter { it["complete"]?.jsonPrimitive?.booleanOrNull == true }.mapNotNull { it.text("kind") }.toSet()
-        val online = state.runtimes.values.mapNotNull { it.sessionId }.toSet()
+        val online = state.runtimes.values.flatMap { listOfNotNull(it.sessionId, it.codexCatalogId) }.toSet()
         val merged = state.sessions.filterValues { entry -> entry.sessionId in listed || entry.hasHistoryCache ||
-            entry.sessionId in online || entry.agentKind !in completeKinds }.toMutableMap()
+            entry.sessionId in online || entry.agentKind !in completeKinds ||
+            (entry.agentKind in setOf("codex", "codexDesktop") && isCodexCatalogId(entry.sessionId) != state.unifiedCodexHistory) }.toMutableMap()
         for (entry in entries) {
             val previous = merged[entry.sessionId]
             merged[entry.sessionId] = entry.copy(

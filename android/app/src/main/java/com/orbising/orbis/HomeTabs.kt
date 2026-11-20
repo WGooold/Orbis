@@ -19,8 +19,9 @@ import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -38,12 +39,23 @@ import com.orbising.orbis.OrbisActionIcon as Icon
 internal enum class HomeTab(val key: String) { Chat("chat"), Providers("providers"), Settings("settings") }
 
 @Composable
-internal fun HomeTabBar(selected: HomeTab, onSelect: (HomeTab) -> Unit, modifier: Modifier = Modifier) {
+internal fun HomeTabBar(
+    selected: HomeTab,
+    onSelect: (HomeTab) -> Unit,
+    modifier: Modifier = Modifier,
+    reportFeedbackAnchor: Boolean = true,
+) {
     OrbisMaterialTheme {
         val haptic = rememberActionHaptic()
         val feedbackGeometry = LocalFeedbackGeometry.current
+        DisposableEffect(feedbackGeometry, reportFeedbackAnchor) {
+            if (!reportFeedbackAnchor) feedbackGeometry.tabsTop = null
+            onDispose { if (reportFeedbackAnchor) feedbackGeometry.tabsTop = null }
+        }
         Row(
-            modifier.fillMaxWidth().onGloballyPositioned { feedbackGeometry.tabsTop = it.boundsInWindow().top }.background(MaterialTheme.colorScheme.background)
+            modifier.fillMaxWidth()
+                .then(if (reportFeedbackAnchor) Modifier.onGloballyPositioned { feedbackGeometry.tabsTop = it.boundsInWindow().top } else Modifier)
+                .background(MaterialTheme.colorScheme.background)
                 .navigationBarsPadding().padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 12.dp)
                 .selectableGroup().testTag("home-tabs"),
             horizontalArrangement = Arrangement.spacedBy(12.dp),

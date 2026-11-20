@@ -6,6 +6,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 internal const val AGENT_ENABLEMENT_FEATURE = "agent.enablement.v1"
+internal const val CODEX_UNIFIED_HISTORY = "codex.history-unified.v1"
+internal fun readyAdmitsCodexHistory(ready: JsonObject): Boolean =
+    CODEX_UNIFIED_HISTORY in ready.features("hostFeatures") && CODEX_UNIFIED_HISTORY in ready.features("deviceFeatures")
 internal fun readyAdmitsAgentEnablement(ready: JsonObject): Boolean =
     AGENT_ENABLEMENT_FEATURE in ready.features("hostFeatures") && AGENT_ENABLEMENT_FEATURE in ready.features("deviceFeatures")
 
@@ -21,6 +24,7 @@ internal fun requestedAgentFeatures(ready: JsonObject): List<String> {
     if ("device.features" !in features) return emptyList()
     val hostSupportsOpenClaw = "agent.openclaw" in features
     if ("dshDesktop" in ready && (!hostSupportsOpenClaw || readyAdmitsOpenClaw(ready)) &&
-        (AGENT_ENABLEMENT_FEATURE !in features || readyAdmitsAgentEnablement(ready))) return emptyList()
+        (AGENT_ENABLEMENT_FEATURE !in features || readyAdmitsAgentEnablement(ready)) &&
+        (CODEX_UNIFIED_HISTORY !in features || readyAdmitsCodexHistory(ready))) return emptyList()
     return deviceAgentFeatures(ready)
 }

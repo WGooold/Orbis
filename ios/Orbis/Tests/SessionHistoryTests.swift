@@ -104,6 +104,29 @@ struct SessionHistoryTests {
         #expect(sessionInteger(42) == 42)
     }
 
+    @Test func codexCatalogCacheIdsIsolateEqualNativeThreadIdsAcrossHomes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worker = SessionHistoryWorker(root: root), pairing = host(), generation = UUID()
+        worker.setGeneration(generation, host: pairing)
+        let terminalCache = "codex-history:" + String(repeating: "a", count: 64)
+        let desktopCache = "codex-history:" + String(repeating: "b", count: 64)
+        _ = try await worker.ingest(host: pairing, sessionId: "same-thread", cacheId: terminalCache,
+            event: packet([1]), activate: true, generation: generation)
+        _ = try await worker.ingest(host: pairing, sessionId: "same-thread", cacheId: desktopCache,
+            event: packet([2]), activate: true, generation: generation)
+
+        let terminal = try await worker.page(host: pairing, sessionId: "same-thread", cacheId: terminalCache, limit: 10)
+        let desktop = try await worker.page(host: pairing, sessionId: "same-thread", cacheId: desktopCache, limit: 10)
+        #expect(terminal.entries.map(\.entryId) == ["e1"])
+        #expect(desktop.entries.map(\.entryId) == ["e2"])
+        #expect(try await worker.page(host: pairing, sessionId: "same-thread", limit: 10).entries.isEmpty)
+        #expect(try await worker.branches(host: pairing, sessionId: "same-thread", cacheId: terminalCache).map(\.leafId) == ["e1"])
+        #expect(try await worker.branches(host: pairing, sessionId: "same-thread", cacheId: desktopCache).map(\.leafId) == ["e2"])
+        #expect(try await worker.entry(host: pairing, sessionId: "same-thread", cacheId: terminalCache, entryId: "e2") == nil)
+        #expect(try await worker.entry(host: pairing, sessionId: "same-thread", cacheId: desktopCache, entryId: "e2")?.entryId == "e2")
+    }
+
     @Test func canonicalNativeArgumentsPreserveLargeIntegersThroughSQLiteAndGraphCoding() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

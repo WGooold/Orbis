@@ -165,7 +165,7 @@ struct CachedSessionGraph: Codable {
         let anchor: String?
         let message: ChatMessage?
     }
-    let sessionId: String
+    var sessionId: String
     var epoch: String?
     var leafId: String?
     var entries: [String: Entry] = [:]

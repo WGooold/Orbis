@@ -12,17 +12,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowUpward
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.ChevronRight
-import androidx.compose.material.icons.rounded.Description
-import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -38,12 +32,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.dp
@@ -56,7 +55,7 @@ internal fun remoteBrowsePath(parent: String?, name: String): String = when {
     else -> "$parent\\$name"
 }
 
-/** The same navigation and loading/error states serve session folders and downloadable files. */
+/** FILE-BROWSER-01: path entry and navigation are shared by session-folder and file-download pickers. */
 @Composable
 internal fun RemoteDirectoryBrowser(
     browse: SessionBrowseState?,
@@ -66,12 +65,21 @@ internal fun RemoteDirectoryBrowser(
     onBrowseUp: () -> Unit,
     modifier: Modifier = Modifier,
     showFiles: Boolean = false,
-    selectedFile: String? = null,
+    selectedFiles: Set<String> = emptySet(),
     onSelectFile: (String) -> Unit = {},
 ) {
     val loading = browse?.isLoading == true
     val enabled = connected && !loading
     val entries = browse?.entries.orEmpty().filter { showFiles || it.isDir }
+    var pathInput by rememberSaveable(browse?.path) { mutableStateOf(browse?.path.orEmpty()) }
+    val focusManager = LocalFocusManager.current
+    val jumpToPath = {
+        val path = pathInput.trim()
+        if (path.isNotEmpty() && enabled) {
+            focusManager.clearFocus()
+            onBrowse(path)
+        }
+    }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(OrbisSymbols.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
@@ -91,6 +99,24 @@ internal fun RemoteDirectoryBrowser(
                     contentDescription = L10n.tr("刷新目录"), enabled = connected,
                 )
             }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            NeumorphTextField(
+                value = pathInput,
+                onValueChange = { pathInput = it },
+                modifier = Modifier.weight(1f).testTag("remote-directory-path"),
+                placeholder = { Text(L10n.tr("电脑路径")) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go, autoCorrectEnabled = false),
+                keyboardActions = KeyboardActions(onGo = { jumpToPath() }),
+            )
+            NeumorphIconButton(
+                onClick = jumpToPath,
+                icon = OrbisSymbols.Search,
+                contentDescription = L10n.tr("跳转"),
+                enabled = enabled && pathInput.isNotBlank(),
+                modifier = Modifier.testTag("remote-directory-jump"),
+            )
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         // In-sheet navigation stays inside the browser: a committing control would run the sheet's
@@ -114,7 +140,7 @@ internal fun RemoteDirectoryBrowser(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(entries, key = SessionBrowseEntry::name) { entry ->
-                val selected = !entry.isDir && selectedFile == entry.name
+                val selected = !entry.isDir && entry.name in selectedFiles
                 NeumorphSurface(
                     onClick = { if (entry.isDir) onBrowseInto(entry.name) else onSelectFile(entry.name) },
                     enabled = enabled && browse?.error == null,
@@ -137,10 +163,13 @@ internal fun RemoteDirectoryBrowser(
                         if (entry.isDir && entry.hasSessions) {
                             Text(L10n.tr("有历史"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         }
-                        if (entry.isDir || selected) {
-                            Icon(if (selected) OrbisSymbols.CheckCircle else OrbisSymbols.ChevronRight,
-                                contentDescription = null, modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.primary)
+                        if (entry.isDir || showFiles) {
+                            Icon(
+                                if (entry.isDir) OrbisSymbols.ChevronRight else OrbisSymbols.CheckCircle,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp).alpha(if (entry.isDir || selected) 1f else 0f),
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
                         }
                     }
                 }
@@ -158,13 +187,40 @@ internal fun DownloadFileSheet(
     onBrowseInto: (String) -> Unit,
     onBrowseUp: () -> Unit,
     onDownload: (String) -> Unit,
+    initialBrowsePath: String? = null,
+    onBrowsePathResolved: (String?) -> Unit = {},
 ) {
     val browse = state.sessionBrowse
     val connected = state.connection == RelayConnection.ONLINE && state.e2eReady
-    var selectedFile by rememberSaveable(browse?.path) { mutableStateOf<String?>(null) }
-    val selected = browse?.entries?.firstOrNull { !it.isDir && it.name == selectedFile }
-    LaunchedEffect(connected) {
-        if (connected) onBrowse(browse?.path)
+    var selectedFiles by rememberSaveable(browse?.path) { mutableStateOf(emptySet<String>()) }
+    val selected = browse?.entries.orEmpty().filter { !it.isDir && it.name in selectedFiles }
+    var previousBrowseRequestId by rememberSaveable { mutableStateOf<String?>(null) }
+    var awaitingBrowseResult by rememberSaveable { mutableStateOf(false) }
+    val markBrowseRequest = {
+        previousBrowseRequestId = browse?.requestId
+        awaitingBrowseResult = true
+    }
+    val browseTo: (String?) -> Unit = { path ->
+        markBrowseRequest()
+        onBrowse(path)
+    }
+    val browseIntoDirectory: (String) -> Unit = { name ->
+        markBrowseRequest()
+        onBrowseInto(name)
+    }
+    val browseParent: () -> Unit = {
+        markBrowseRequest()
+        onBrowseUp()
+    }
+    LaunchedEffect(connected, state.hostId, initialBrowsePath) {
+        if (connected) browseTo(initialBrowsePath)
+    }
+    LaunchedEffect(browse?.requestId, browse?.isLoading, browse?.error, browse?.path, awaitingBrowseResult) {
+        if (awaitingBrowseResult && browse != null && browse.requestId != previousBrowseRequestId &&
+            !browse.isLoading && browse.error == null) {
+            onBrowsePathResolved(browse.path)
+            awaitingBrowseResult = false
+        }
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -177,7 +233,13 @@ internal fun DownloadFileSheet(
         },
     ) {
         val confirmDownload = sheetCloseAction {
-            selected?.let { onDownload(remoteBrowsePath(browse?.path, it.name)); onDismiss() }
+            if (selected.isNotEmpty()) {
+                selected.forEach { onDownload(remoteBrowsePath(browse?.path, it.name)) }
+                onDismiss()
+            }
+        }
+        val toggleFile = { name: String ->
+            selectedFiles = if (name in selectedFiles) selectedFiles - name else selectedFiles + name
         }
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f, fill = false)) {
             // A compact window cannot fit browser chrome plus a fixed footer. Keep them in one
@@ -188,15 +250,16 @@ internal fun DownloadFileSheet(
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(L10n.tr("选择电脑上的文件"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 RemoteDirectoryBrowser(
-                    browse, connected, onBrowse, onBrowseInto, onBrowseUp,
+                    browse, connected, browseTo, browseIntoDirectory, browseParent,
                     modifier = Modifier.fillMaxWidth().then(if (scrollAll) Modifier.heightIn(max = 320.dp) else Modifier.weight(1f, fill = false)),
-                    showFiles = true, selectedFile = selectedFile, onSelectFile = { selectedFile = it },
+                    showFiles = true, selectedFiles = selectedFiles, onSelectFile = toggleFile,
                 )
-                FileNameText(selected?.name.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
+                FileNameText(selected.singleOrNull()?.name.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
                     style = MaterialTheme.typography.labelSmall)
                 NeumorphActionButton(
-                    text = L10n.tr("下载到手机"), icon = OrbisSymbols.Download, modifier = Modifier.fillMaxWidth(),
-                    enabled = connected && browse?.isLoading == false && browse.error == null && selected != null,
+                    text = if (selected.size <= 1) L10n.tr("下载到手机") else L10n.tr("下载所选 {0} 个文件", selected.size),
+                    icon = OrbisSymbols.Download, modifier = Modifier.fillMaxWidth(),
+                    enabled = connected && browse?.isLoading == false && browse.error == null && selected.isNotEmpty(),
                     onClick = confirmDownload,
                 )
             }

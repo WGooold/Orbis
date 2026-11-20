@@ -8,7 +8,7 @@ import { AgentStateRegistry, type PreparedRegistryCommit, type RegistryMutation,
 type Snapshot = Extract<RuntimeEvent, { type: "session.snapshot" }>;
 type Patch = Extract<RuntimeEvent, { type: "session.patch" }>;
 type Current = {
-  source: SessionSourceEpoch; retired: Set<string>; head: SessionBranchCursor; live: SessionLiveState;
+  source: SessionSourceEpoch; head: SessionBranchCursor; live: SessionLiveState;
   entries: RemoteSessionEntry[]; display?: DisplayBatch; timings: RuntimeTurnTiming[]; bytes: number;
 };
 export type ConversationStateOptions = { maxCurrentSessions?: number; maxCurrentBytes?: number; maxPageBytes?: number; maxPages?: number; maxPageCacheBytes?: number };
@@ -111,11 +111,6 @@ function contentRevision(value: object): string {
 export class AgentConversationState {
   readonly #registry: AgentStateRegistry;
   readonly #current = new Map<string, Current>();
-  /**
-   * 已作废的基线在被丢弃后仍要记住它退掉的 epoch：迟到事件不得复活旧图。
-   * 存活期与「无当前状态」的窗口一致，下一次被接受就清掉。
-   */
-  readonly #retired = new Map<string, Set<string>>();
   readonly #pages = new Map<string, { event: Snapshot; bytes: number }>();
   readonly #limits: Required<ConversationStateOptions>;
   #bytes = 0;
@@ -124,18 +119,21 @@ export class AgentConversationState {
     this.#registry = registry;
     this.#limits = { maxCurrentSessions: 256, maxCurrentBytes: 32 * 1024 * 1024, maxPageBytes: 1024 * 1024, maxPages: 256, maxPageCacheBytes: 32 * 1024 * 1024, ...options };
     registry.subscribe(change => {
-      if (change.kind === "reset") { this.#current.clear(); this.#retired.clear(); this.#pages.clear(); this.#bytes = this.#currentBytes = 0; }
+      if (change.kind === "reset") { this.#current.clear(); this.#pages.clear(); this.#bytes = this.#currentBytes = 0; }
       else if (change.kind === "closed" && change.domain === "history") this.#forget(scopeKey(change.scope));
     });
   }
 
   // ADR-0032 §5 §7：patch 可先写内容，但永远不是恢复基线；别放宽 hasBaseline。
-  accept(scope: StateScope, event: Snapshot | Patch, prepare?: (ready: boolean) => PreparedRegistryCommit | undefined, onRejected?: (reason: string) => void): boolean {
+  accept(scope: StateScope, event: Snapshot | Patch, prepare?: (ready: boolean, verifiedBaseline: boolean) => PreparedRegistryCommit | undefined,
+    onRejected?: (reason: string) => void, verifiedPreview = false): boolean {
     const reject = (reason: string): false => { try { onRejected?.(reason); } catch { /* Diagnostics cannot affect acceptance. */ } return false; };
     if (scope.kind !== "agent" || event.sessionId !== scope.key.sessionId) return reject("session_scope_mismatch");
     const key = scopeKey(scope), source = event.source, old = this.#current.get(key);
     if (!source || !Number.isSafeInteger(source.seq) || source.seq < 0) return reject("invalid_source");
-    if (old?.retired.has(source.epoch)) return reject("retired_source_epoch");
+    const sameEpoch = old?.source.epoch === source.epoch;
+    // One retirement ledger also guards read-only pages and survives invalidation.
+    if (!sameEpoch && this.#registry.isRetiredSourceEpoch(scope, "history", source.epoch)) return reject("retired_source_epoch");
     if (!this.#validDisplay(event, old?.source.epoch === source.epoch ? old : undefined)) return reject("invalid_display");
     const range = event.type === "session.snapshot" && (event.range === "history" || event.range === "catchup");
     if (range) {
@@ -152,7 +150,9 @@ export class AgentConversationState {
     if (event.type === "session.snapshot" && event.selection === "unchanged") {
       return old?.source.ready === true && old.source.epoch === source.epoch && old.source.seq === source.seq && event.cursor.leafId === old.head.leafId || reject("unchanged_baseline_mismatch");
     }
-    const sameEpoch = old?.source.epoch === source.epoch;
+    const replacement = verifiedPreview && event.type === "session.snapshot" && event.range === "preview" && event.mode === "replace" &&
+      (event.selection === undefined || event.selection === "snapshot") &&
+      (event.rangeStatus === undefined || event.rangeStatus === "complete" || event.rangeStatus === "limit_reached");
     // A source that has delivered no snapshot yet still publishes patches (Codex and DSH only emit
     // snapshots on request). Such a patch is a handshake: it carries content forward to devices and
     // keeps the source watermark, but it can never establish a recovery baseline.
@@ -168,24 +168,26 @@ export class AgentConversationState {
     const head = event.type === "session.patch" ? event.head : event.checkpoint?.head;
     if (event.type === "session.snapshot" && head && head.leafId !== event.cursor.leafId) return reject("snapshot_head_mismatch");
     let ready = !handshake && source.ready && (event.type === "session.patch" ? event.headCompleteness === "complete" : event.checkpoint?.headCompleteness === "complete" && event.checkpoint.inventoryComplete) && event.live?.complete === true && head !== undefined;
-    const retired = new Set(old?.retired ?? this.#retired.get(key));
-    if (old && !sameEpoch) { if (retired.size >= 64) return reject("source_epoch_limit"); retired.add(old.source.epoch); }
     if (!old && this.#current.size >= this.#limits.maxCurrentSessions) return reject("current_session_limit");
     if (bytesOfEvent(event) > this.#limits.maxPageBytes) ready = false;
     if (ready && old?.source.ready && sameEpoch && old.source.seq === source.seq &&
       (JSON.stringify(old.head) !== JSON.stringify(head) || JSON.stringify(old.live) !== JSON.stringify(event.live))) return reject("same_seq_state_mismatch");
     const canonical = ready ? this.#canonical(sameEpoch ? old : undefined, event, head!, reject) : { entries: [], timings: [] };
     if (!canonical) return false;
-    let next: Current = { source: { ...source, ready: ready === true }, retired, head: structuredClone(head ?? old?.head ?? { leafId: null }),
+    let next: Current = { source: { ...source, ready: ready === true }, head: structuredClone(head ?? old?.head ?? { leafId: null }),
       live: structuredClone(event.live ?? old?.live ?? { complete: false, turn: null, messages: [], tools: [] }), ...canonical, bytes: 0 };
     next.bytes = bytesOfCurrent(next);
     if (this.#currentBytes - (old?.bytes ?? 0) + next.bytes > this.#limits.maxCurrentBytes) {
       // Retain provenance and last-known registry values; discarded ranges cannot be a baseline.
       ready = false;
-      next = { source: { ...source, ready: false }, retired, head: { leafId: null }, live: { complete: false, turn: null, messages: [], tools: [] }, entries: [], timings: [], bytes: 0 };
+      next = { source: { ...source, ready: false }, head: { leafId: null }, live: { complete: false, turn: null, messages: [], tools: [] }, entries: [], timings: [], bytes: 0 };
       next.bytes = bytesOfCurrent(next);
       if (this.#currentBytes - (old?.bytes ?? 0) + next.bytes > this.#limits.maxCurrentBytes) return reject("current_byte_limit");
     }
+    // A bounded preview need not contain all history, but its path must actually
+    // reach the advertised head before it may retire a full generation ledger.
+    const verifiedBaseline = replacement && ready && (event.entries?.at(-1)?.entryId ?? null) === head!.leafId &&
+      event.entries?.every((entry, index, entries) => index === 0 || entry.parentId === entries[index - 1]!.entryId) === true;
     const provenance = { producer: "adapter" as const, sourceId: `conversation:${scope.key.agentKind}`, sourceEpoch: source.epoch, sourceRevision: source.seq };
     // Conversation history requires a verified baseline, while a complete live
     // checkpoint is independently safe to persist during the initial handshake.
@@ -232,7 +234,7 @@ export class AgentConversationState {
       changes.push({ kind: "collection", scope, domain: "artifacts", fact: { source: provenance, availability: "ready", completeness: "complete", items: Object.fromEntries(artifacts) } });
       if (dropped.length > 0) changes.push({ kind: "remove", scope, domain: "artifacts", fact: { source: provenance, availability: "ready", completeness: "complete", removeIds: dropped } });
     }
-    const companion = prepare?.(ready === true);
+    const companion = prepare?.(ready === true, verifiedBaseline);
     if (companion?.isCurrent?.() === false) return reject("stale_prepared_state");
     const dependency = companion?.conversationSource;
     if (dependency && (scopeKey({ kind: "agent", key: dependency.agent }) !== key ||
@@ -240,11 +242,10 @@ export class AgentConversationState {
     const result = this.#registry.commitTransaction([...changes, ...(companion?.changes ?? [])], () => {
       this.#currentBytes += next.bytes - (old?.bytes ?? 0);
       this.#current.set(key, next);
-      this.#retired.delete(key);
       if (!sameEpoch) this.#dropPages(key);
       if (ready && event.type === "session.snapshot" && bytesOfEvent(event) <= this.#limits.maxPageBytes) this.#cache(key, event);
       companion?.onCommitted();
-    });
+    }, verifiedBaseline ? { scope, epoch: source.epoch, seq: source.seq } : undefined);
     return result.ok || reject(`registry_${result.code}:${[...changes, ...(companion?.changes ?? [])][result.index]?.domain ?? "unknown"}`);
   }
 
@@ -319,7 +320,7 @@ export class AgentConversationState {
     }
   }
   #dropPages(key: string): void { for (const [id, page] of this.#pages) if (JSON.parse(id)[0] === key) { this.#bytes -= page.bytes; this.#pages.delete(id); } }
-  #forget(key: string): void { const old = this.#current.get(key); if (old) { this.#currentBytes -= old.bytes; this.#current.delete(key); } this.#retired.delete(key); this.#dropPages(key); }
+  #forget(key: string): void { const old = this.#current.get(key); if (old) { this.#currentBytes -= old.bytes; this.#current.delete(key); } this.#dropPages(key); }
   stats(): { pages: number; bytes: number; currentSessions: number; currentBytes: number } { return { pages: this.#pages.size, bytes: this.#bytes, currentSessions: this.#current.size, currentBytes: this.#currentBytes }; }
   /**
    * ADR-0038 §8：按需取回**未截断**的那一条 Entry。
@@ -378,23 +379,13 @@ export class AgentConversationState {
    * false 来修复：那样保留的 epoch/seq 仍是旧的，下一块补丁要么因 epoch 不符被拒成
    * `handshake_base_mismatch`，要么因 baseSeq 落后被拒成 `patch_baseline_mismatch`，此后每一块
    * 补丁都同样被拒（现场就是这个稳定状态）。作废时把整份当前状态连同它的 epoch/seq 一起丢掉，
-   * 下一块补丁就按「还没有基线」的握手处理；旧 epoch 记进 `#retired`，迟到事件照样会被拒。
+   * 下一块补丁就按「还没有基线」的握手处理；已退役的 epoch 仍由 Registry 拦截。
    */
   invalidateBaseline(scope: StateScope, companion?: PreparedRegistryCommit): void {
     if (scope.kind !== "agent") return;
     const key = scopeKey(scope), current = this.#current.get(key);
     this.#registry.commitTransaction([...this.#retiredFacts(scope, current), ...(companion?.changes ?? [])], () => {
-      if (current !== undefined) {
-        if (current.retired.size > 0) {
-          // 与当前投影同一预算：只记住最近作废的会话，避免长期运行积累。
-          if (!this.#retired.has(key) && this.#retired.size >= this.#limits.maxCurrentSessions) {
-            const oldest = this.#retired.keys().next().value as string;
-            this.#retired.delete(oldest);
-          }
-          this.#retired.set(key, current.retired);
-        }
-        this.#forget(key);
-      }
+      if (current !== undefined) this.#forget(key);
       companion?.onCommitted();
     });
   }

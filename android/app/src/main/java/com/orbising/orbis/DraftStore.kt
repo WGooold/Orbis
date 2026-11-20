@@ -14,8 +14,8 @@ data class DraftIdentity(
 internal fun draftIdentity(device: DeviceCredential, runtime: RuntimeSummary): DraftIdentity = DraftIdentity(
     relayUrl = device.relayUrl,
     deviceId = device.deviceId,
-    runtimeId = runtime.runtimeId,
-    sessionId = runtime.sessionId,
+    runtimeId = if (runtime.codexCatalogId != null) "codex-history" else runtime.runtimeId,
+    sessionId = runtime.directorySessionId,
 )
 
 private fun draftDevicePrefix(identity: DraftIdentity): String {

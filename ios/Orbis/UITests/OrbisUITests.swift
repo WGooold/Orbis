@@ -4874,4 +4874,121 @@ final class OrbisUITests: XCTestCase {
         }
     }
 
+    private func assertNoOverlap(_ aName: String, _ a: CGRect, _ bName: String, _ b: CGRect, file: StaticString = #filePath, line: UInt = #line) {
+        let intersects = a.minX < b.maxX - 1 && a.maxX > b.minX + 1 && a.minY < b.maxY - 1 && a.maxY > b.minY + 1
+        XCTAssertFalse(intersects, "\(aName) (\(a)) must not overlap \(bName) (\(b))", file: file, line: line)
+    }
+
+    private func assertAbove(_ upperName: String, _ upper: CGRect, _ lowerName: String, _ lower: CGRect, file: StaticString = #filePath, line: UInt = #line) {
+        assertNoOverlap(upperName, upper, lowerName, lower, file: file, line: line)
+        XCTAssertLessThanOrEqual(upper.maxY, lower.minY + 2, "\(upperName) (maxY=\(upper.maxY)) must sit above \(lowerName) (minY=\(lower.minY))", file: file, line: line)
+    }
+
+    // F1/F3/F4 geometry verification: docked F4 banner never covers TopBar or Pairing,
+    // compact action button never crushes banner height, and F3 sits cleanly above bottom navigation.
+    func testFeedbackBannerAndToastNeverOverlapHomeOrPairingControls() {
+        let app = launch("home", arguments: ["--preview-f4-banner", "--preview-f3-toast", "--preview-reduce-motion"])
+        let f4 = app.descendants(matching: .any)["feedback-f4"].firstMatch
+        let f3 = app.descendants(matching: .any)["feedback-f3"].firstMatch
+        let newSession = app.buttons["home-new-session"]
+        let bottomNav = app.descendants(matching: .any)["root-bottom-navigation"].firstMatch
+        XCTAssertTrue(f4.waitForExistence(timeout: 8))
+        XCTAssertTrue(f3.waitForExistence(timeout: 5))
+        XCTAssertTrue(newSession.waitForExistence(timeout: 5))
+        XCTAssertTrue(bottomNav.waitForExistence(timeout: 5))
+
+        // Compact banner height: OrbisTextButton + 28pt close icon must not inflate height like OrbisActionButton did.
+        XCTAssertLessThan(f4.frame.height, 110, "F4 banner should stay compact, got \(f4.frame.height)")
+        assertAbove("F4 banner", f4.frame, "Home header new-session button", newSession.frame)
+        assertAbove("F3 toast", f3.frame, "Root bottom navigation", bottomNav.frame)
+        XCTAssertTrue(newSession.isHittable)
+        capture("ios-feedback-home-f4-f3", app: app)
+
+        // Tapping "重新配对" pushes PairingEntryView where F4 must hide so cancel button stays unobstructed.
+        let repair = f4.buttons["重新配对"]
+        XCTAssertTrue(repair.waitForExistence(timeout: 3))
+        repair.tap()
+        let cancelPair = app.buttons["取消添加电脑"]
+        XCTAssertTrue(cancelPair.waitForExistence(timeout: 5))
+        XCTAssertTrue(f4.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(cancelPair.isHittable)
+        capture("ios-feedback-pairing-no-f4", app: app)
+    }
+
+    // Chat geometry verification: F4 docks above ChatHeader, while F3, JumpToLatest,
+    // InteractionWorkspace, and Composer stack vertically with zero intersection.
+    func testFeedbackChatBannerToastJumpAndInteractionNeverOverlap() {
+        let app = launch("approval", arguments: [
+            "--preview-long-transcript", "--preview-f4-banner", "--preview-f3-toast", "--preview-reduce-motion",
+        ])
+        let f4 = app.descendants(matching: .any)["feedback-f4"].firstMatch
+        let f3 = app.descendants(matching: .any)["feedback-f3"].firstMatch
+        let allow = app.buttons["允许"]
+        let back = app.buttons["返回"]
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(f4.waitForExistence(timeout: 8))
+        XCTAssertTrue(f3.waitForExistence(timeout: 5))
+        XCTAssertTrue(allow.waitForExistence(timeout: 5))
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+
+        // Scroll up to reveal JumpToLatest simultaneously with InteractionWorkspace and F3 toast.
+        let window = app.windows.firstMatch
+        let topDrag = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        let bottomDrag = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.72))
+        for _ in 0..<4 {
+            if app.buttons["跳到最新消息"].exists { break }
+            topDrag.press(forDuration: 0.05, thenDragTo: bottomDrag)
+        }
+        let jump = app.buttons["跳到最新消息"]
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+
+        assertAbove("F4 banner", f4.frame, "Chat back button", back.frame)
+        assertAbove("F3 toast", f3.frame, "JumpToLatest", jump.frame)
+        assertAbove("JumpToLatest", jump.frame, "Interaction allow button", allow.frame)
+        assertAbove("Interaction allow button", allow.frame, "Chat composer", composer.frame)
+        XCTAssertTrue(back.isHittable)
+        XCTAssertTrue(allow.isHittable)
+        capture("ios-feedback-chat-all-layers", app: app)
+    }
+
+    // Providers geometry verification: catalog problem sits below the dial (not overlaid on it),
+    // and quota error sits below the quota cells (not overlaid on 5-hour/7-day readings).
+    func testProviderCatalogProblemAndQuotaErrorNeverOverlapDialOrQuotaCells() {
+        let problemApp = launch("providers", arguments: ["--preview-provider-problem", "--preview-reduce-motion"])
+        let dial = problemApp.descendants(matching: .any)["provider-dial-area"].firstMatch
+        let catalogProblem = problemApp.descendants(matching: .any)["provider-catalog-problem"].firstMatch
+        XCTAssertTrue(dial.waitForExistence(timeout: 8))
+        XCTAssertTrue(catalogProblem.waitForExistence(timeout: 5))
+        assertAbove("Provider dial", dial.frame, "Provider catalog problem", catalogProblem.frame)
+        capture("ios-feedback-provider-catalog-problem", app: problemApp)
+        problemApp.terminate()
+
+        let quotaApp = launch("providers", arguments: ["--preview-quota-error", "--preview-reduce-motion"])
+        let refresh = quotaApp.buttons["provider-quota-refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 8))
+        XCTAssertTrue(waitUntilEnabled(refresh, timeout: 8))
+        refresh.tap()
+        XCTAssertTrue(quotaApp.staticTexts["82"].waitForExistence(timeout: 8))
+        XCTAssertTrue(quotaApp.staticTexts["35"].exists)
+        XCTAssertTrue(waitUntilEnabled(refresh, timeout: 8))
+        refresh.tap()
+        let quotaError = quotaApp.descendants(matching: .any)["provider-quota-error"].firstMatch
+        let fiveHour = quotaApp.descendants(matching: .any)["provider-quota-five_hour"].firstMatch
+        let sevenDay = quotaApp.descendants(matching: .any)["provider-quota-seven_day"].firstMatch
+        XCTAssertTrue(quotaError.waitForExistence(timeout: 5))
+        XCTAssertTrue(fiveHour.exists)
+        XCTAssertTrue(sevenDay.exists)
+        XCTAssertTrue(quotaApp.staticTexts["82"].exists)
+        XCTAssertTrue(quotaApp.staticTexts["35"].exists)
+        assertAbove("5-hour quota cell", fiveHour.frame, "Quota error", quotaError.frame)
+        assertAbove("7-day quota cell", sevenDay.frame, "Quota error", quotaError.frame)
+        capture("ios-feedback-provider-quota-error", app: quotaApp)
+        XCTAssertTrue(waitUntilEnabled(refresh, timeout: 8))
+        refresh.tap()
+        XCTAssertTrue(quotaError.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(quotaApp.staticTexts["80"].waitForExistence(timeout: 8))
+        quotaApp.terminate()
+    }
+
 }

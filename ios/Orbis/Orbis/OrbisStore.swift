@@ -142,16 +142,24 @@ final class HostConnection: ObservableObject {
     var feedbackChatVisible = false
     private var failedTransferRounds: [String: Int] = [:]
     private var toastTimeout: Task<Void, Never>?
-    struct ObjectFeedback: Equatable { let sessionId: String?; let message: String }
+    struct ObjectFeedback: Equatable {
+        let sessionId: String?
+        let message: String
+        var cardOnly = false
+    }
     @Published private(set) var objectErrors: [String: ObjectFeedback] = [:] { didSet { homeViewRevision &+= 1 } }
     @Published private(set) var composerErrors: [String: ObjectFeedback] = [:]
     @Published private(set) var sessionOperationErrors: [String: String] = [:] { didSet { directoryViewRevision &+= 1 } }
     @Published private(set) var queueErrors: [String: String] = [:]
     @Published private(set) var interactionErrors: [String: String] = [:]
     @Published private(set) var menuErrors: [String: String] = [:]
-    func objectError(_ runtimeId: String) -> String? {
-        guard let error = objectErrors[runtimeId], let runtime = runtimeIndex[runtimeId], error.sessionId == runtime.sessionId else { return nil }
+    func objectError(_ runtimeId: String, includeCardOnly: Bool = true) -> String? {
+        guard let error = objectErrors[runtimeId], includeCardOnly || !error.cardOnly,
+              let runtime = runtimeIndex[runtimeId], error.sessionId == runtime.sessionId else { return nil }
         return error.message
+    }
+    func clearObjectError(_ runtimeId: String) {
+        if objectErrors[runtimeId] != nil { objectErrors[runtimeId] = nil }
     }
     func composerError(_ runtimeId: String) -> String? {
         let runtime = runtimeIndex[runtimeId] ?? (selectedRuntime?.runtimeId == runtimeId ? selectedRuntime : nil)
@@ -169,9 +177,9 @@ final class HostConnection: ObservableObject {
     func clearSessionLaunchValidationError() {
         if sessionLaunchErrorIsValidation { sessionLaunchError = nil }
     }
-    private func inlineFeedback(_ message: String, runtimeId: String? = nil) {
+    private func inlineFeedback(_ message: String, runtimeId: String? = nil, cardOnly: Bool = false) {
         if let id = runtimeId ?? selectedRuntimeId, let runtime = runtimeIndex[id] {
-            objectErrors[id] = ObjectFeedback(sessionId: runtime.sessionId, message: FeedbackText.reason(message))
+            objectErrors[id] = ObjectFeedback(sessionId: runtime.sessionId, message: FeedbackText.reason(message), cardOnly: cardOnly)
         } else if let launch = launching, runtimeId == nil || runtimeId == launch.placeholder {
             launching?.failure = FeedbackText.reason(message)
         } else if runtimeId == nil { sessionLaunchError = FeedbackText.reason(message) }
@@ -190,12 +198,15 @@ final class HostConnection: ObservableObject {
     }
     func dismissFeedbackBanner() { feedback.dismissBanner() }
     func dismissFeedbackToast() { toastTimeout?.cancel(); toastTimeout = nil; feedback.dismissToast() }
-    func setFeedbackForeground(_ active: Bool) { feedback.setForeground(active); if !active { toastTimeout?.cancel(); toastTimeout = nil } }
+    func setFeedbackForeground(_ active: Bool) {
+        feedback.setForeground(active)
+        if !active { transfers.browserPreview.close(); toastTimeout?.cancel(); toastTimeout = nil }
+    }
     func clearFeedbackScope(preservingConnectionConditions: Bool = false) {
         toastTimeout?.cancel(); toastTimeout = nil
         if preservingConnectionConditions { feedback.clearTransientPresentation() } else { feedback.clear() }
         objectErrors = [:]; composerErrors = [:]; sessionOperationErrors = [:]; menuErrors = [:]; historyErrors = [:]; queueErrors = [:]; interactionErrors = [:]
-        sessionConfigurationError = nil; sessionLaunchError = nil; configFailures = [:]; transfers.error = nil
+        sessionConfigurationError = nil; sessionLaunchError = nil; configFailures = [:]; transfers.error = nil; transfers.clearUploadErrors()
         browse = nil; toolContent.close(); menuOptions.cancel(); menuOptionsTimeout?.cancel()
     }
     private func connectionFeedback(_ condition: FeedbackCondition) {
@@ -343,9 +354,12 @@ final class HostConnection: ObservableObject {
         let creation = ledger.create(opId: id, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
             basis: ledgerBasis(OperationKinds.runtimesDomain), payload: .launch(requestId: id, placeholder: placeholder), written: false, now: Date())
         guard creation == .created else { return false }
-        let payload: [String: Any] = ["type": "session.launch", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id,
+        var payload: [String: Any] = ["type": "session.launch", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id,
             "agentKind": agent, "cwd": cwd, "binding": config.binding, "revision": config.revision, "values": agent == "openclaw" ? SessionConfigurationValues().payload : sessionConfigurationValues.payload,
             "spawnMode": agent == "openclaw" ? "headless" : kimiSpawnMode(agent, otherwise: defaultSessionSpawnMode)]
+        if unifiedCodexHistory, ["codex", "codexDesktop"].contains(agent) {
+            payload["codexLaunchMode"] = agent == "codexDesktop" ? "desktop" : "terminal"
+        }
         let firstId = UUID().uuidString, firstCommand = UUID().uuidString
         guard let persisted = writeLaunchJournal(payload.merging(["firstMessage": firstMessage, "firstMessageId": firstId, "firstCommandId": firstCommand]) { _, new in new }, creating: true) else {
             ledger.remove(id); return false
@@ -370,6 +384,16 @@ final class HostConnection: ObservableObject {
         return true
     }
     @Published private(set) var codexDesktop: CodexDesktopAttach?
+    @Published private(set) var unifiedCodexHistory = false {
+        didSet {
+            if oldValue != unifiedCodexHistory { directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 }
+        }
+    }
+    var directoryEnabledAgentKinds: Set<String>? {
+        guard unifiedCodexHistory, var kinds = enabledAgentKinds else { return enabledAgentKinds }
+        if kinds.remove("codexDesktop") != nil { kinds.insert("codex") }
+        return kinds
+    }
     /// PERF-12 (Android parity): the composer owns the text it is editing; a keystroke is stored and
     /// persisted here without publishing. Writes that originate in the store advance `draftRevision`
     /// so a visible composer reloads them.
@@ -433,6 +457,7 @@ final class HostConnection: ObservableObject {
         /// 用户仍停在这个启动页：成功后切到真实会话；离开后不再把用户拉回，会话照常出现在首页。
         var following = true
         var spawnModeOverride: String? = nil
+        var codexLaunchMode: CodexLaunchMode? = nil
     }
     @Published private(set) var launching: LaunchState?
     /// 启动期间消息的占位 Session → 确认后的 Session。
@@ -482,7 +507,8 @@ final class HostConnection: ObservableObject {
             while !Task.isCancelled {
                 let revision = self.directoryInputRevision, metadata = self.directoryMetadataRevision
                 let catalog = await self.directoryWorker.resolve(sessions: self.sessions, runtimes: self.runtimes,
-                    messages: self.conversations, archived: OperationKinds.archiveOverrides(self.ledger), kimiCodeSupported: self.kimiCodeSupported)
+                    messages: self.conversations, archived: OperationKinds.archiveOverrides(self.ledger), kimiCodeSupported: self.kimiCodeSupported,
+                    unifiedCodex: self.unifiedCodexHistory)
                 guard !Task.isCancelled else { break }
                 // Transcript chunks may arrive continuously. A serial, older result may advance
                 // the same catalog; newer metadata/archives must fence it out.
@@ -886,6 +912,7 @@ final class HostConnection: ObservableObject {
     }
     private let deviceName: String
     private let preferences: UserDefaults?
+    private let downloadBrowserPaths: DownloadBrowserPathStore
     let historyWorker: SessionHistoryWorker
     @Published private(set) var cachedSessionIds: Set<String> = []
     @Published private(set) var selectedOfflineSession: SessionSummary?
@@ -1072,6 +1099,7 @@ final class HostConnection: ObservableObject {
         self.localStores = localStores ?? HostLocalStores()
         self.transport = transport ?? RelayTransport()
         self.preferences = preferences
+        downloadBrowserPaths = DownloadBrowserPathStore(preferences: preferences)
         replyCompletions = ReplyCompletionTracker(preferences: preferences, owner: initialPairing.map(FileTransfers.pairingKey) ?? "unpaired")
         let root = transferRoot ?? (preferences == nil ? FileManager.default.temporaryDirectory.appendingPathComponent("orbis-preview-" + UUID().uuidString) :
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Orbis"))
@@ -1090,6 +1118,7 @@ final class HostConnection: ObservableObject {
         do { identity = try secure.deviceIdentity() }
         catch { recordConnectionEvent(String(describing: error)); connectionFeedback(.pairing) }
         transfers.send = { [weak self] in self?.transport.send($0) ?? false }
+        transfers.browserPreview.send = { [weak self] in self?.transport.sendFilePreviewControl($0) ?? false }
         transfers.canUploadImport = { [weak self] target, runtimeId in
             guard let self else { return false }
             return self.importConnection(target) && self.externalImportRuntime(target)?.runtimeId == runtimeId
@@ -1207,12 +1236,14 @@ final class HostConnection: ObservableObject {
                 cwd: session?.cwd ?? launch.cwd, status: launch.failure != nil ? "error" : launch.unconfirmed ? "launch_unconfirmed" : "starting",
                 // 标题用启动目标的名称；sessionName 为空时 sessionTitle 会退回到占位 id。
                 sessionId: session?.sessionId ?? launch.resumed ?? launch.placeholder, sessionName: session?.name ?? launch.title,
-                hostname: session?.hostname, agentKind: session?.agentKind ?? launch.agentKind)
+                hostname: session?.hostname, agentKind: session?.agentKind ?? launch.agentKind,
+                codexCatalogId: session?.sessionId.hasPrefix("codex-history:") == true ? session?.sessionId : nil)
         }
         if let session = selectedOfflineSession {
             return RuntimeSummary(runtimeId: "cached:" + session.sessionId, name: session.name ?? session.sessionId,
                 cwd: session.cwd, status: "offline", sessionId: session.sessionId, sessionName: session.name,
-                hostname: session.hostname, agentKind: session.agentKind)
+                hostname: session.hostname, agentKind: session.agentKind,
+                codexCatalogId: session.sessionId.hasPrefix("codex-history:") ? session.sessionId : nil)
         }
         return runtimes.first { $0.runtimeId == selectedRuntimeId }
     }
@@ -1235,12 +1266,12 @@ final class HostConnection: ObservableObject {
     }
 
     func displayName(_ runtime: RuntimeSummary) -> String {
-        sessionTitle(runtime: runtime, session: runtime.sessionId.flatMap { sessionIndex[$0] },
+        sessionTitle(runtime: runtime, session: runtime.directorySessionId.flatMap { sessionIndex[$0] },
                      messages: conversations[runtime.runtimeId] ?? [])
     }
 
     func displayName(_ session: SessionSummary) -> String {
-        if let runtime = runtimes.first(where: { $0.sessionId == session.sessionId }) { return displayName(runtime) }
+        if let runtime = runtimes.first(where: { $0.directorySessionId == session.sessionId }) { return displayName(runtime) }
         return sessionTitle(runtime: nil, session: session)
     }
     func draft(for runtime: RuntimeSummary) -> String { drafts[localSessionKey(host: selectedHost, runtime: runtime)] ?? "" }
@@ -1249,7 +1280,8 @@ final class HostConnection: ObservableObject {
     /// composition update.
     func editDraft(_ text: String, for runtime: RuntimeSummary, persist: Bool = true) {
         if composerErrors[runtime.runtimeId] != nil { composerErrors[runtime.runtimeId] = nil }
-        if objectError(runtime.runtimeId) != nil { objectErrors[runtime.runtimeId] = nil }
+        if objectError(runtime.runtimeId, includeCardOnly: false) != nil { objectErrors[runtime.runtimeId] = nil }
+        transfers.clearUploadError(for: runtime)
         let key = localSessionKey(host: selectedHost, runtime: runtime)
         updateDrafts(reload: false, persist: persist) { $0[key] = text.isEmpty ? nil : text }
     }
@@ -1282,6 +1314,7 @@ final class HostConnection: ObservableObject {
             }
             localStores.saveCatalog(nil, key: sessionCacheKey(host), preferences: preferences)
             preferences?.removeObject(forKey: lastSessionKey(host))
+            downloadBrowserPaths.remove(hostId: hostId)
             historyWorker.invalidate(host: host)
             cleanupTask = Task { [historyWorker] in try? await historyWorker.remove(host: host) }
             updateDrafts(reload: true) { drafts in drafts = drafts.filter { !$0.key.hasPrefix(prefix) } }
@@ -1422,7 +1455,7 @@ final class HostConnection: ObservableObject {
 
     func selectRuntime(_ runtimeId: String) {
         guard runtimes.contains(where: { $0.runtimeId == runtimeId }) else { return }
-        if selectedRuntimeId != runtimeId { toolContent.close(); turnFileChanges.closeViewer() }
+        if selectedRuntimeId != runtimeId { transfers.browserPreview.close(); toolContent.close(); turnFileChanges.closeViewer() }
         selectedRuntimeId = runtimeId; selectedOfflineSession = nil; cachedHistoryOptions = []
         cancelForegroundReads(except: runtimeId)
         if let runtime = selectedRuntime { seedCachedHistory(runtime) }
@@ -1461,7 +1494,8 @@ final class HostConnection: ObservableObject {
             entryPreview = EntryPreview(requestId: id, runtimeId: runtime.runtimeId, sessionId: sessionId, entryId: entryId)
             runAsyncTransaction { [weak self] in
                 guard let self else { return }
-                let page = try? await self.historyWorker.page(host: host, sessionId: sessionId, leafId: entryId, limit: 1)
+                let page = try? await self.historyWorker.page(host: host, sessionId: sessionId, cacheId: runtime.codexCatalogId,
+                    leafId: entryId, limit: 1)
                 guard generation == self.connectionGeneration, self.entryPreview?.requestId == id else { return }
                 self.entryPreview?.message = page?.messages.last
                 self.entryPreview?.loading = false
@@ -1695,7 +1729,7 @@ final class HostConnection: ObservableObject {
         runAsyncTransaction { [weak self] in
             guard let self else { return }
             do {
-                let page = try await self.historyWorker.page(host: host, sessionId: sessionId,
+                let page = try await self.historyWorker.page(host: host, sessionId: sessionId, cacheId: runtime.codexCatalogId,
                     leafId: self.sessionReads.operations[operation]?.targetLeafId, beforeEntryId: boundary,
                     limit: prefetch?.nextMaxEntries ?? 30)
                 guard let current = self.readOwner(runtime), self.sessionReads.owns(operation, current: current) else { return }
@@ -1945,12 +1979,14 @@ final class HostConnection: ObservableObject {
         runAsyncTransaction { [weak self] in
             guard let self else { return }
             do {
-                let page = try await self.historyWorker.page(host: host, sessionId: session.sessionId, limit: 30)
+                let cacheId = session.sessionId.hasPrefix("codex-history:") ? session.sessionId : nil
+                let page = try await self.historyWorker.page(host: host, sessionId: session.sessionId, cacheId: cacheId, limit: 30)
                 guard generation == self.connectionGeneration, self.selectedOfflineSession?.sessionId == session.sessionId,
                       let current = self.readOwner(runtime) else { return }
                 let effect = self.sessionReads.localResult(operation, page: page, current: current)
                 self.applyReadEffect(effect, operation: operation, runtime: runtime)
-                let branches = try await self.historyWorker.branches(host: host, sessionId: session.sessionId)
+                let branches = try await self.historyWorker.branches(host: host, sessionId: session.sessionId,
+                    cacheId: session.sessionId.hasPrefix("codex-history:") ? session.sessionId : nil)
                 guard generation == self.connectionGeneration, self.selectedOfflineSession?.sessionId == session.sessionId else { return }
                 for branch in branches where !self.cachedHistoryOptions.contains(where: { $0.value == branch.leafId }) {
                     self.cachedHistoryOptions.append(RuntimeOption(value: branch.leafId, label: branch.message?.text ?? branch.leafId,
@@ -1970,7 +2006,9 @@ final class HostConnection: ObservableObject {
               let operation = sessionReads.begin(kind: .firstPage, owner: owner, targetLeafId: leafId).operationId else { return }
         let generation = connectionGeneration
         runAsyncTransaction { [weak self] in
-            guard let self, let page = try? await self.historyWorker.page(host: host, sessionId: session.sessionId, leafId: leafId, limit: 30),
+            let cacheId = session.sessionId.hasPrefix("codex-history:") ? session.sessionId : nil
+            guard let self, let page = try? await self.historyWorker.page(host: host, sessionId: session.sessionId,
+                    cacheId: cacheId, leafId: leafId, limit: 30),
                   generation == self.connectionGeneration, self.selectedOfflineSession?.sessionId == session.sessionId,
                   let current = self.readOwner(runtime) else { return }
             let effect = self.sessionReads.localResult(operation, page: page, current: current)
@@ -2005,7 +2043,7 @@ final class HostConnection: ObservableObject {
         runAsyncTransaction { [weak self] in
             guard let self else { return }
             defer { if self.cacheLoading[runtime.runtimeId] == operation { self.cacheLoading[runtime.runtimeId] = nil } }
-            guard let page = try? await self.historyWorker.page(host: host, sessionId: sessionId, limit: 30),
+            guard let page = try? await self.historyWorker.page(host: host, sessionId: sessionId, cacheId: runtime.codexCatalogId, limit: 30),
                   generation == self.connectionGeneration, self.selectedRuntimeId == runtime.runtimeId,
                   let current = self.readOwner(runtime) else { return }
             guard self.conversations[runtime.runtimeId] == nil else { self.sessionReads.finish(operation, phase: .superseded); return }
@@ -2199,19 +2237,31 @@ final class HostConnection: ObservableObject {
         conversations[runtimeId] = older + (conversations[runtimeId] ?? []).filter { !ids.contains($0.messageId) }
     }
 
-    func activate(_ session: SessionSummary) {
+    func activate(_ session: SessionSummary, codexLaunchMode: CodexLaunchMode? = nil) {
+        let unified = session.sessionId.hasPrefix("codex-history:")
+        guard !unified || unifiedCodexHistory else { return }
         let kimi = isKimiCode(kind: session.agentKind, id: session.sessionId)
         guard !kimi || kimiCodeSupported else { return }
         if session.agentKind == "openclaw", !openClawNegotiated { return }
         if let mismatch = providerMismatch(session) { sessionOperationErrors[session.sessionId] = mismatch; return }
-        if let runtime = runtimes.first(where: { $0.sessionId == session.sessionId }) {
+        if codexLaunchMode == nil, let runtime = runtimes.first(where: { (unified ? $0.codexCatalogId : $0.sessionId) == session.sessionId }) {
             selectRuntime(runtime.runtimeId)
             return
         }
         var target: [String: Any] = ["type": "resume", "sessionId": session.sessionId]
         let kind = kimi ? kimiCodeKind : session.agentKind
         if let kind { target["agentKind"] = kind }
-        activateTarget(target, sessionId: session.sessionId, spawnMode: kimi ? "headless" : nil)
+        let modes = codexResumeModes(session)
+        let mode = codexLaunchMode ?? (modes.count == 1 ? modes.first : nil)
+        if unified && (mode == nil || !modes.contains(mode!)) { return }
+        activateTarget(target, sessionId: session.sessionId, spawnMode: kimi ? "headless" : nil, codexLaunchMode: mode)
+    }
+
+    func codexResumeModes(_ session: SessionSummary) -> [CodexLaunchMode] {
+        guard unifiedCodexHistory, session.sessionId.hasPrefix("codex-history:"), session.archived != true else { return [] }
+        return (session.codexLaunchModes ?? []).filter { mode in
+            enabledAgentKinds?.contains(mode.agentKind) != false && (supportedAgents ?? []).contains(mode.agentKind)
+        }
     }
 
     func createSession(agentKind: String, cwd: String) {
@@ -2260,17 +2310,20 @@ final class HostConnection: ObservableObject {
     }
     #endif
 
-    private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String? = nil, displayTitle: String? = nil) {
+    private func activateTarget(_ target: [String: Any], sessionId: String, spawnMode: String? = nil, displayTitle: String? = nil, codexLaunchMode: CodexLaunchMode? = nil) {
         guard connection == .secured, activationRequestId == nil,
-              (target["agentKind"] as? String).map({ enabledAgentKinds?.contains($0) != false }) != false else { return }
+              (codexLaunchMode?.agentKind ?? target["agentKind"] as? String).map({ enabledAgentKinds?.contains($0) != false }) != false,
+              !sessionId.hasPrefix("codex-history:") || unifiedCodexHistory else { return }
         let requestId = UUID().uuidString
         let placeholder = "launch:" + requestId
         let creation = ledger.create(opId: requestId, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
                                      basis: ledgerBasis(OperationKinds.runtimesDomain),
                                      payload: .launch(requestId: requestId, placeholder: placeholder), written: false, now: Date())
         guard creation == .created else { return }
-        guard transport.send(["type": "session.activate", "protocolVersion": orbisProtocolVersion,
-                              "requestId": requestId, "target": target, "spawnMode": spawnMode ?? defaultSessionSpawnMode]) else {
+        var payload: [String: Any] = ["type": "session.activate", "protocolVersion": orbisProtocolVersion,
+                                      "requestId": requestId, "target": target, "spawnMode": spawnMode ?? (sessionId.hasPrefix("codex-history:") ? "auto" : defaultSessionSpawnMode)]
+        if let codexLaunchMode { payload["codexLaunchMode"] = codexLaunchMode.rawValue }
+        guard transport.send(payload) else {
             ledger.remove(requestId); handleLedger([])
             sessionLaunchError = L10n.tr("未连接到电脑，连接恢复后可重试。"); sessionLaunchErrorAwaitsConnection = true; return
         }
@@ -2286,7 +2339,8 @@ final class HostConnection: ObservableObject {
             ?? (cwd.split(separator: "/").last.map(String.init) ?? L10n.tr("新会话"))
         launching = LaunchState(requestId: requestId, placeholder: placeholder,
                                 target: target.compactMapValues { $0 as? String }, title: title, cwd: cwd,
-                                agentKind: target["agentKind"] as? String, resumed: resumed, sessionId: resumed, spawnModeOverride: spawnMode)
+                                agentKind: target["agentKind"] as? String, resumed: resumed, sessionId: resumed, spawnModeOverride: spawnMode,
+                                codexLaunchMode: codexLaunchMode)
         if let resumed, let session = sessionIndex[resumed], openCachedSession(session) { return }
         toolContent.close(); turnFileChanges.clear(); dismissPreview()
         selectedOfflineSession = nil; selectedRuntimeId = placeholder; messages = []; cachedHistoryOptions = []
@@ -2305,7 +2359,8 @@ final class HostConnection: ObservableObject {
         var target: [String: Any] = launch.target
         if let kind { target["agentKind"] = kind }
         launching = nil
-        activateTarget(target, sessionId: launch.resumed ?? "new", spawnMode: kind == kimiCodeKind ? "headless" : launch.spawnModeOverride, displayTitle: launch.title)
+        activateTarget(target, sessionId: launch.resumed ?? "new", spawnMode: kind == kimiCodeKind ? "headless" : launch.spawnModeOverride,
+                       displayTitle: launch.title, codexLaunchMode: launch.codexLaunchMode)
     }
 
     /// 用户离开了启动页：启动继续，成功后不把用户拉回，会话照常出现在首页。
@@ -2323,9 +2378,9 @@ final class HostConnection: ObservableObject {
                                                 sessionId: launch.resumed ?? launch.placeholder, agentKind: launch.agentKind)
         let cachedRuntime = launch.resumed.flatMap { id in selectedOfflineSession?.sessionId == id ? selectedRuntime : nil }
         for source in [placeholderRuntime, cachedRuntime].compactMap({ $0 }) {
+            if localSessionKey(host: selectedHost, runtime: source) == localSessionKey(host: selectedHost, runtime: runtime) { continue }
             let text = draft(for: source)
-            if !text.isEmpty, draft(for: runtime).isEmpty { saveDraft(text, for: runtime) }
-            saveDraft("", for: source)
+            if !text.isEmpty, draft(for: runtime).isEmpty { saveDraft(text, for: runtime); saveDraft("", for: source) }
         }
         let following = launch.following
         if following && launchComposerFocused { composerFocusHandoff = runtime.runtimeId }
@@ -2342,6 +2397,7 @@ final class HostConnection: ObservableObject {
 
     /// ADR-0049 §6.4 `archive`：卡片立即移到目标列表；回执、断线、期限与核对全部交给账本。
     func archive(_ session: SessionSummary, archived: Bool) {
+        guard !session.sessionId.hasPrefix("codex-history:") || unifiedCodexHistory else { return }
         if session.agentKind == "openclaw", !openClawNegotiated { return }
         guard connection == .secured, let kind = session.agentKind, !isKimiCode(kind: kind, id: session.sessionId) || kimiCodeSupported else { return }
         let requestId = UUID().uuidString
@@ -2372,6 +2428,16 @@ final class HostConnection: ObservableObject {
 
     /// 正在归档 / 恢复、尚未结算的会话：冲突入口在结算前禁用（L9）。
     func isArchiving(_ sessionId: String) -> Bool { OperationKinds.archiveOverrides(ledger)[sessionId] != nil }
+
+    func downloadBrowserPath() -> String? {
+        guard let hostId = selectedHostId else { return nil }
+        return downloadBrowserPaths.path(hostId: hostId)
+    }
+
+    func rememberDownloadBrowserPath(_ path: String?) {
+        guard let hostId = selectedHostId else { return }
+        downloadBrowserPaths.remember(path, hostId: hostId)
+    }
 
     func browseDirectory(_ path: String? = nil) {
         guard connection == .secured else {
@@ -2426,8 +2492,9 @@ final class HostConnection: ObservableObject {
                           command: ["type": "slash.execute", "name": name, "args": args, "messageId": id]) else {
             inlineFeedback(L10n.tr("命令未送达，请连接后重试。")); return false
         }
-        objectErrors[runtime.runtimeId] = nil
+        if objectError(runtime.runtimeId, includeCardOnly: false) != nil { objectErrors[runtime.runtimeId] = nil }
         composerErrors[runtime.runtimeId] = nil
+        transfers.clearUploadError(for: runtime)
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: text, attachments: [],
@@ -2506,13 +2573,13 @@ final class HostConnection: ObservableObject {
 
     func closeRuntimes(_ runtimeIds: Set<String>) -> Set<String> {
         guard connection == .secured else {
-            for id in runtimeIds { inlineFeedback(L10n.tr("关闭会话未发送：请先连接电脑。"), runtimeId: id) }; return []
+            for id in runtimeIds { inlineFeedback(L10n.tr("关闭会话未发送：请先连接电脑。"), runtimeId: id, cardOnly: true) }; return []
         }
         var submitted: Set<String> = []
         for runtime in runtimes where runtimeIds.contains(runtime.runtimeId) {
             if let reason = runtime.remoteCloseBlockReason(commands[runtime.runtimeId] ?? []) {
                 agentState.subscribe(runtime: runtime, force: true)
-                inlineFeedback(reason.message, runtimeId: runtime.runtimeId)
+                inlineFeedback(reason.message, runtimeId: runtime.runtimeId, cardOnly: true)
                 continue
             }
             if submitQuit(runtime.runtimeId) { submitted.insert(runtime.runtimeId) }
@@ -2530,11 +2597,11 @@ final class HostConnection: ObservableObject {
         case .created: break
         case .conflict: return true // 同一会话的关闭尚未结算，卡片已隐藏（L9）。
         case .duplicate, .full:
-            inlineFeedback(L10n.tr("关闭会话未发送：待确认的操作过多，请稍后重试。"), runtimeId: runtimeId); return false
+            inlineFeedback(L10n.tr("关闭会话未发送：待确认的操作过多，请稍后重试。"), runtimeId: runtimeId, cardOnly: true); return false
         }
         guard sendCommand(runtimeId: runtimeId, commandId: commandId, command: ["type": "slash.execute", "name": "quit", "args": ""]) else {
             ledger.remove(commandId)
-            inlineFeedback(L10n.tr("关闭会话未发送：请连接电脑后重试。"), runtimeId: runtimeId); return false
+            inlineFeedback(L10n.tr("关闭会话未发送：请连接电脑后重试。"), runtimeId: runtimeId, cardOnly: true); return false
         }
         handleLedger(ledger.written(commandId, now: Date()))
         return true
@@ -2683,7 +2750,7 @@ final class HostConnection: ObservableObject {
                 }
                 // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
                 if let text = OperationKinds.message(for: op) { if case .archive(let sessionId, _, _) = op.payload { sessionOperationErrors[sessionId] = text }
-                    else if case .quit(let runtimeId) = op.payload { inlineFeedback(text, runtimeId: runtimeId) }
+                    else if case .quit(let runtimeId) = op.payload { inlineFeedback(text, runtimeId: runtimeId, cardOnly: true) }
                     else if case .queueCancel(let runtimeId, let queueId) = op.payload { queueErrors[runtimeId + "\u{0}" + queueId] = text; if queuedMessages[runtimeId]?.contains(where: { $0.queueId == queueId }) != true { inlineFeedback(text, runtimeId: runtimeId) } }
                     else if case .respond(let runtimeId, _, _) = op.payload { interactionErrors[runtimeId] = text } }
                 if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
@@ -2864,8 +2931,9 @@ final class HostConnection: ObservableObject {
         guard sendCommand(runtimeId: runtime.runtimeId, commandId: commandId, command: command) else {
             inlineFeedback(L10n.tr("消息未送达，请连接后重试。"), runtimeId: runtime.runtimeId); return false
         }
-        objectErrors[runtime.runtimeId] = nil
+        if objectError(runtime.runtimeId, includeCardOnly: false) != nil { objectErrors[runtime.runtimeId] = nil }
         composerErrors[runtime.runtimeId] = nil
+        transfers.clearUploadError(for: runtime)
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         pendingSends.add(PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: attachments,
@@ -2888,8 +2956,9 @@ final class HostConnection: ObservableObject {
                                      prerequisites: Set(pending.map { OperationKinds.uploadPrerequisite($0.id) } + configs.map(\.opId)),
                                      payload: .send(runtimeId: runtime.runtimeId, sessionId: sessionId, messageId: id), written: false, now: Date())
         guard creation == .created else { composerFeedback(L10n.tr("待发送的消息过多，请稍后重试。")); return false }
-        objectErrors[runtime.runtimeId] = nil
+        if objectError(runtime.runtimeId, includeCardOnly: false) != nil { objectErrors[runtime.runtimeId] = nil }
         composerErrors[runtime.runtimeId] = nil
+        transfers.clearUploadError(for: runtime)
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
         var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: [],
@@ -3162,10 +3231,12 @@ final class HostConnection: ObservableObject {
             var rows = incoming
             if let loadKey { rows = await self.localStores.loadCatalog(key: loadKey, preferences: self.preferences) }
             guard !Task.isCancelled, generation == self.connectionGeneration else { return }
-            let retained = Set(self.runtimes.compactMap(\.sessionId)).union(self.graphs.keys).union(self.cachedSessionIds)
+            let retained = Set(self.runtimes.flatMap { [$0.sessionId, $0.codexCatalogId].compactMap { $0 } })
+                .union(self.graphs.keys).union(self.cachedSessionIds)
             let prepared = await self.sessionCatalogWorker.merge(current: self.sessions, incoming: rows,
                 completeKinds: completeKinds, retained: retained, cacheLoaded: self.cachedIndexLoaded,
-                identity: identity, replacing: replacing || loadKey != nil)
+                identity: identity, replacing: replacing || loadKey != nil,
+                unifiedCodex: self.unifiedCodexHistory, keepOtherCodexView: loadKey == nil)
             guard !Task.isCancelled, generation == self.connectionGeneration else { return }
             if let loadKey { self.loadedSessionCacheKey = loadKey }
             if prepared.changed {
@@ -3191,6 +3262,13 @@ final class HostConnection: ObservableObject {
     }
 
     func currentProvider(for kind: String) -> String? {
+        if kind == "codex", unifiedCodexHistory {
+            if let rows = hostState.domains["catalog"]?.value["currentProviders"].array,
+               let match = rows.first(where: { $0["agentKind"].string == kind }) { return match["provider"].string }
+            let providers = Set([hostState.currentProviders["codex"], hostState.currentProviders["codexDesktop"],
+                                 currentProviders["codex"], currentProviders["codexDesktop"]].compactMap { $0 })
+            return providers.count == 1 ? providers.first : nil
+        }
         if hostState.domains["providers"]?.availability == "ready" { return hostState.currentProviders[kind] }
         return currentProviders[kind]
     }
@@ -3230,7 +3308,7 @@ final class HostConnection: ObservableObject {
         // A verification reply keeps its read ownership after completion. A
         // duplicate cannot reinterpret its echoed commandId as a write receipt.
         if requestId?.hasPrefix(OperationKinds.verifyRequestPrefix) == true { return true }
-        var owned = false
+        var owned = hostState.rejectQuotaRequest(requestId, detail: detail)
         // SC99: command and request identities can refer to different owners.
         // Consume each once, without making a reader rejection a write receipt.
         let ledgerOwnsCommand = commandId.flatMap { ledger.operation($0) } != nil
@@ -3288,6 +3366,7 @@ final class HostConnection: ObservableObject {
             return
         }
         if consumeExternalImport(message, type: type) || consumeExternalLaunch(message, type: type) { return }
+        if channel == "ctl", transfers.browserPreview.consume(message) { return }
         if type == "protocol.error", connectionFatalProtocolCodes.contains(message["code"] as? String ?? "") {
             recordConnectionEvent("protocol.error.fatal: " + String(describing: message))
             connectionFeedback(FeedbackText.protocolCondition(message["code"] as? String) ?? .version)
@@ -3297,7 +3376,7 @@ final class HostConnection: ObservableObject {
         if type == "protocol.error" {
             recordConnectionEvent("protocol.error: " + (message["code"] as? String ?? "") + " " + (message["message"] as? String ?? ""))
         }
-        transfers.consume(message)
+        transfers.consume(message, allowPreviewChunk: channel == "bulk")
         if FileTransfers.ownedReplyTypes.contains(type) { return }
         recordConnectionEvent("\(channel ?? "—") · \(type)")
         if let requestId = message["requestId"] as? String,
@@ -3366,11 +3445,16 @@ final class HostConnection: ObservableObject {
             // OpenClaw's echo is independent of Gateway readiness. The old Host
             // continues to signal Desktop acceptance with the presence of its status key.
             let features = Set(message["hostFeatures"] as? [String] ?? [])
+            if channel == "ctl", let host = selectedHost, message["deviceId"] as? String == host.relay.deviceId {
+                transfers.browserPreview.authenticated(host: host.hostId, supportsPreview: features.contains(ChatFilePreview.feature))
+            }
             let supportsRender = features.contains(messageRenderFeature)
             let admittedOpenClaw = features.contains("agent.openclaw") && (message["deviceFeatures"] as? [String])?.contains("agent.openclaw") == true
+            let admittedCodex = readyAdmitsCodexHistory(message)
             if features.contains("device.features"), message["_orbisFilteredFallback"] == nil,
                message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw ||
-               features.contains(Self.agentEnablementFeature) && !readyAdmitsAgentEnablement(message) {
+               features.contains(Self.agentEnablementFeature) && !readyAdmitsAgentEnablement(message) ||
+               features.contains(codexUnifiedHistoryFeature) && !admittedCodex {
                 if filteredReady != nil { return }
                 let requested = deviceAgentFeatures(message)
                 if transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": requested]) {
@@ -3395,8 +3479,9 @@ final class HostConnection: ObservableObject {
             expectedMessageDisplayVersion = !supportsRender ? legacyDisplayProjectionVersion :
                 (message["dshDesktop"] == nil ? nil : messageDisplayProjectionVersion)
             let displayVersionChanged = previousDisplayVersion != expectedMessageDisplayVersion
-            let projectionChanged = openClawNegotiated != admittedOpenClaw
+            let projectionChanged = openClawNegotiated != admittedOpenClaw || unifiedCodexHistory != admittedCodex
             openClawNegotiated = admittedOpenClaw
+            unifiedCodexHistory = admittedCodex
             if projectionChanged { hostState.invalidateBackendProjection() }
             let catalogWasConnected = hostState.connected
             historyWindowSupported = false
@@ -3426,8 +3511,12 @@ final class HostConnection: ObservableObject {
                 runtimes.first(where: { $0.runtimeId == next.runtimeId })?.sessionLeafId != next.sessionLeafId
             } ?? false
             if hostRestarted { setHistoryConnection(false); clearSyncs(); sourcePositions = [:]; appliedBaselines = [:] }
-            for runtime in next where runtimes.first(where: { $0.runtimeId == runtime.runtimeId })?.sessionId != runtime.sessionId {
-                invalidateConversation(runtime.runtimeId)
+            for runtime in next {
+                let previous = runtimes.first { $0.runtimeId == runtime.runtimeId }
+                if previous?.sessionId != runtime.sessionId || previous?.codexCatalogId != runtime.codexCatalogId {
+                    if let session = previous?.sessionId { graphs[session] = nil }
+                    invalidateConversation(runtime.runtimeId)
+                }
             }
             runtimes = next.map(reprojectRuntime)
             // 新连接的首个 device.ready 是因果晚于旧连接上所有操作的完整在线列表（L2、L5）。
@@ -3565,6 +3654,7 @@ final class HostConnection: ObservableObject {
         case "session.activated":
             if let requestId = message["requestId"] as? String, requestId == activationRequestId || requestId == launching?.requestId,
                let sessionId = message["sessionId"] as? String {
+                if let expected = launching?.resumed, expected.hasPrefix("codex-history:"), message["codexCatalogId"] as? String != expected { return }
                 pendingActivation = sessionId; activatingSessionId = sessionId
                 // 同一 requestId 的 session.activated：Host 已给出 Session，等它的 Runtime 上线（ADR-0049 §7.5）。
                 if let launch = launching, launch.requestId == requestId {
@@ -3725,7 +3815,8 @@ final class HostConnection: ObservableObject {
             let next = reprojectRuntime(mergeRuntime(previous, metadata: fields))
             runtimes[index] = next
             if fields["model"] != nil || fields["thinkingLevel"] != nil { ledgerAuthority(OperationKinds.modelDomain(runtimeId), read: nil, complete: true) }
-            if previous.sessionId != next.sessionId {
+            if previous.sessionId != next.sessionId || previous.codexCatalogId != next.codexCatalogId {
+                if previous.codexCatalogId != next.codexCatalogId, let session = previous.sessionId { graphs[session] = nil }
                 invalidateConversation(runtimeId)
                 notifications.online(next)
                 agentState.subscribe(runtime: next)
@@ -3876,7 +3967,7 @@ final class HostConnection: ObservableObject {
                 rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("会话已应用状态发生变化，请重试。"))
                 return
             }
-            if let host = selectedHost, let page = try? await historyWorker.page(host: host, sessionId: pending.sessionId, limit: 30), generation == historyGeneration {
+            if let host = selectedHost, let page = try? await historyWorker.page(host: host, sessionId: pending.sessionId, cacheId: runtime.codexCatalogId, limit: 30), generation == historyGeneration {
                 finishSync(syncId, readPhase: nil)
                 completeRemoteRead(syncId, runtime: runtime, page: page, sourceConfirmed: true)
                 acknowledge(runtimeId: runtimeId, syncId: syncId, result: "applied")
@@ -3947,7 +4038,8 @@ final class HostConnection: ObservableObject {
                 parent = row["entryId"] as? String
             }
             guard let host = selectedHost, let boundary = pending.boundary,
-                  let persistedBoundary = try? await historyWorker.entry(host: host, sessionId: pending.sessionId, entryId: boundary),
+                  let persistedBoundary = try? await historyWorker.entry(host: host, sessionId: pending.sessionId,
+                    cacheId: runtime.codexCatalogId, entryId: boundary),
                   generation == historyGeneration, recoverRead(syncId, runtime: runtime) else {
                 rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("历史请求边界已经失效，请重试。")); return
             }
@@ -3961,7 +4053,7 @@ final class HostConnection: ObservableObject {
                 return
             }
             guard generation == historyGeneration, let host = selectedHost,
-                  let page = try? await historyWorker.page(host: host, sessionId: pending.sessionId,
+                  let page = try? await historyWorker.page(host: host, sessionId: pending.sessionId, cacheId: runtime.codexCatalogId,
                     leafId: pending.leaf, beforeEntryId: pending.boundary, limit: max(1, entries.count)),
                   generation == historyGeneration else { return }
             guard page.displayComplete, [.complete, .olderAvailable].contains(page.status) else {
@@ -3991,7 +4083,7 @@ final class HostConnection: ObservableObject {
                 rejectSnapshot(syncId, runtimeId: runtimeId, message: L10n.tr("补齐历史无法保存，请重试。")); return
             }
             guard generation == historyGeneration, let host = selectedHost,
-                  let page = try? await historyWorker.page(host: host, sessionId: pending.sessionId, leafId: target, limit: 1),
+                  let page = try? await historyWorker.page(host: host, sessionId: pending.sessionId, cacheId: runtime.codexCatalogId, leafId: target, limit: 1),
                   generation == historyGeneration else { return }
             finishSync(syncId, readPhase: nil)
             acknowledge(runtimeId: runtimeId, syncId: syncId, result: "applied")
@@ -4078,18 +4170,18 @@ final class HostConnection: ObservableObject {
         let lease = historyWriteLeases[runtime.runtimeId] ?? SessionHistoryWriteLease()
         historyWriteLeases[runtime.runtimeId] = lease
         do {
-            let committed = try await historyWorker.ingest(host: host, sessionId: sessionId, event: data, wrapped: rawEnvelope != nil,
+            let committed = try await historyWorker.ingest(host: host, sessionId: sessionId, cacheId: runtime.codexCatalogId, event: data, wrapped: rawEnvelope != nil,
                 activate: activate, generation: generation, lease: lease, expectedEpoch: activate ? nil : sourcePositions[runtime.runtimeId]?.epoch, limit: 256)
             let incomingIds = ((event["display"] as? [String: Any])?["entries"] as? [[String: Any]] ?? []).compactMap { $0["entryId"] as? String }
             let displayedIds = Array(displayMessageIds[runtime.runtimeId]?.keys ?? Dictionary<String, String>().keys)
-            let excluded = try await historyWorker.excludedDisplayEntries(host: host, sessionId: sessionId, entryIds: displayedIds + incomingIds)
+            let excluded = try await historyWorker.excludedDisplayEntries(host: host, sessionId: runtime.codexCatalogId ?? sessionId, entryIds: displayedIds + incomingIds)
             guard generation == historyGeneration, branchGeneration == branchGenerations[runtime.runtimeId] ?? 0,
-                  historyConnected, runtimes.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == sessionId }) else { return nil }
+                  historyConnected, runtimes.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == sessionId && $0.codexCatalogId == runtime.codexCatalogId }) else { return nil }
             excludedDisplayEntries[sessionId] = excluded
             let hiddenMessages = Set(excluded.compactMap { displayMessageIds[runtime.runtimeId]?[$0] })
             conversations[runtime.runtimeId]?.removeAll { hiddenMessages.contains($0.messageId) }
             graphs[sessionId] = committed.graph
-            cachedSessionIds.insert(sessionId)
+            cachedSessionIds.insert(runtime.directorySessionId ?? sessionId)
             if committed.epochChanged { timingsBySession[sessionId] = [:] }
             for timing in committed.turnTimings { timingsBySession[sessionId, default: [:]][timing.turnId] = timing }
             return committed
@@ -4338,6 +4430,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func invalidateConversation(_ runtimeId: String) {
+        if selectedRuntimeId == runtimeId { transfers.browserPreview.close() }
         configFailures.removeValue(forKey: runtimeId)
         for setting in OperationKinds.configSettings { configSelections.removeValue(forKey: OperationKinds.configTarget(runtimeId: runtimeId, setting: setting)) }
         if runtimeId == selectedRuntimeId { turnFileChanges.clear() }

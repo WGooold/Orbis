@@ -147,7 +147,8 @@ func remoteBrowsePath(parent: String?, name: String) -> String {
 /// Include the pairing namespace and session identity: a different computer,
 /// re-pairing, or a runtime moving to another session must never inherit a draft.
 func localSessionKey(host: HostPairing?, runtime: RuntimeSummary) -> String {
-    let components = [host?.relay.relayUrl ?? "", host?.relay.deviceId ?? "", host?.hostId ?? "", runtime.runtimeId, runtime.sessionId ?? ""]
+    let components = [host?.relay.relayUrl ?? "", host?.relay.deviceId ?? "", host?.hostId ?? "",
+                      runtime.codexCatalogId == nil ? runtime.runtimeId : "codex-history", runtime.directorySessionId ?? ""]
     return components.map { "\($0.utf8.count):\($0)" }.joined()
 }
 
@@ -227,7 +228,15 @@ func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
         "agent.enablement.v1",
         "state.compact-bootstrap.v1",
         "claude.send-now.v1",
+        codexUnifiedHistoryFeature,
     ].filter { advertised.contains($0) }
+}
+
+let codexUnifiedHistoryFeature = "codex.history-unified.v1"
+
+func readyAdmitsCodexHistory(_ ready: [String: Any]) -> Bool {
+    (ready["hostFeatures"] as? [String] ?? []).contains(codexUnifiedHistoryFeature) &&
+        (ready["deviceFeatures"] as? [String] ?? []).contains(codexUnifiedHistoryFeature)
 }
 
 /// A full authenticated ready follows the declaration; a filtered fallback is not an acknowledgment.
@@ -1166,14 +1175,20 @@ actor SessionDirectoryCatalogWorker {
     init(beforeRows: (@Sendable () -> Void)? = nil) { self.beforeRows = beforeRows }
 
     func resolve(sessions: [SessionSummary], runtimes: [RuntimeSummary], messages: [String: [ChatMessage]],
-                 archived: [String: Bool], kimiCodeSupported: Bool = false) -> SessionDirectoryCatalog {
-        let sessions = kimiCodeSupported ? sessions : sessions.filter { !isKimiCode(kind: $0.agentKind, id: $0.sessionId) }
-        let bySession = Dictionary(runtimes.compactMap { runtime in runtime.sessionId.map { ($0, runtime) } },
+                 archived: [String: Bool], kimiCodeSupported: Bool = false, unifiedCodex: Bool = false) -> SessionDirectoryCatalog {
+        let sessions = sessions.filter { row in
+            guard kimiCodeSupported || !isKimiCode(kind: row.agentKind, id: row.sessionId) else { return false }
+            if ["codex", "codexDesktop"].contains(row.agentKind ?? "") || row.sessionId.hasPrefix("codex-history:") {
+                return row.sessionId.hasPrefix("codex-history:") == unifiedCodex
+            }
+            return true
+        }
+        let bySession = Dictionary(runtimes.compactMap { runtime in (unifiedCodex ? runtime.directorySessionId : runtime.sessionId).map { ($0, runtime) } },
                                    uniquingKeysWith: { first, _ in first })
         let sameSessions = source == sessions
         if !sameSessions { sessionIndex = Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first }) }
         let titles = bySession.mapValues { runtime in
-            sessionTitle(runtime: runtime, session: runtime.sessionId.flatMap { sessionIndex[$0] }, messages: messages[runtime.runtimeId] ?? [])
+            sessionTitle(runtime: runtime, session: runtime.directorySessionId.flatMap { sessionIndex[$0] }, messages: messages[runtime.runtimeId] ?? [])
         }
         if let previous, sameSessions, overrides == archived, runtimeTitles == titles,
            previous.runtimeBySession == bySession { return previous }

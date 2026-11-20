@@ -212,6 +212,23 @@ describe("bounded Host tool inventory (ADR-0045)", () => {
     expect(() => inventory.prepare({ agent, runtimeId: "runtime", source: source(1, "third"), update: { kind: "baseline", tools: [] } })).toThrow("inventory_limit");
   });
 
+  // CODEX-SOURCE-04: only the complete conversation preview can rotate a
+  // full tool-inventory epoch fence; ordinary producer pages stay rejected.
+  it("rebuilds a capped tool inventory from the verified preview baseline", () => {
+    const { inventory, registry } = setup({ maxRetiredEpochs: 1 });
+    baseline(inventory, [tool(0)], 1, "e1");
+    baseline(inventory, [tool(1)], 2, "e2");
+    expect(() => inventory.prepare({ agent, runtimeId: "runtime", source: source(1, "e3"),
+      update: { kind: "baseline", tools: [tool(2)] } })).toThrow("inventory_limit");
+    const plan = inventory.prepare({ agent, runtimeId: "runtime", source: source(1, "e3"),
+      update: { kind: "baseline", tools: [tool(2)] } }, true);
+    expect(inventory.commit(plan).ok).toBe(true);
+    expect(inventory.reference(agent)).toMatchObject({ source: { epoch: "e3", seq: 1 }, totalCount: 1 });
+    expect(registry.read(scope, "tools")?.source.sourceEpoch).toBe("e3");
+    expect(() => inventory.prepare({ agent, runtimeId: "runtime", source: source(2, "e2"),
+      update: { kind: "baseline", tools: [tool(1)] } }, true)).toThrow("stale_source");
+  });
+
   it("uses a baseline notice when escaped JSON exceeds bytes despite fitting the item limit", () => {
     const { inventory } = setup(); baseline(inventory, []);
     const upserts = Array.from({ length: 60 }, (_, i) => tool(i, { inputSummary: { text: "界".repeat(340), originalBytes: 1020, omitted: false } }));

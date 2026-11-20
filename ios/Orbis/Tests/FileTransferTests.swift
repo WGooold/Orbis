@@ -381,4 +381,39 @@ struct FileTransferTests {
         #expect(!FileManager.default.fileExists(atPath: tempSource.path))
     }
 
+    @Test func downloadAndUploadPreparationErrorsStayScopedToTheirOwners() async throws {
+        let path = root()
+        defer { try? FileManager.default.removeItem(at: path) }
+        let store = FileTransfers(root: path)
+        store.send = { _ in true }; store.setConnection(host(), connected: false)
+        await store.waitForPendingIO()
+        // Disconnected download error stays on DownloadsView (transfers.error), not in chat uploadErrors.
+        #expect(!store.download(path: "/repo/a.txt"))
+        #expect(store.error != nil)
+        #expect(store.uploadErrors.isEmpty)
+
+        store.setConnection(host(), connected: true)
+        await store.waitForPendingIO()
+        // Starting a valid download clears previous download error.
+        #expect(store.download(path: "/repo/a.txt"))
+        await store.waitForPendingIO()
+        #expect(store.error == nil)
+
+        // Upload preparation failure stays strictly scoped to the initiating runtime.
+        let runtimeA = RuntimeSummary(runtimeId: "r-a", name: "A", cwd: "/repo", status: "idle", sessionId: "s-a")
+        let missingFile = path.appendingPathComponent("does-not-exist.bin")
+        #expect(store.upload(urls: [missingFile], runtime: runtimeA))
+        await store.waitForPendingIO()
+        #expect(store.error == nil)
+        let nextSession = RuntimeSummary(runtimeId: "r-a", name: "A", cwd: "/repo", status: "idle", sessionId: "replacement")
+        let otherRuntime = RuntimeSummary(runtimeId: "r-b", name: "B", cwd: "/repo", status: "idle", sessionId: "s-a")
+        #expect(store.uploadError(for: runtimeA) != nil)
+        #expect(store.uploadError(for: nextSession) == nil)
+        #expect(store.uploadError(for: otherRuntime) == nil)
+        store.clearUploadError(for: nextSession)
+        #expect(store.uploadError(for: runtimeA) != nil)
+        store.clearUploadError(for: runtimeA)
+        #expect(store.uploadError(for: runtimeA) == nil)
+    }
+
 }

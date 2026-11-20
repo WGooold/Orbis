@@ -33,7 +33,19 @@ data class SessionCatalogEntry(
     val modelProvider: String? = null,
     /** Client-local Pi label: captured once, persisted without loading the transcript again. */
     val cachedDisplayName: String? = null,
+    val codexLaunchModes: List<String>? = null,
 )
+
+internal fun isCodexCatalogId(id: String?): Boolean = id?.startsWith("codex-history:") == true
+internal fun codexModeKind(mode: String): String? = when (mode) { "desktop" -> "codexDesktop"; "terminal" -> "codex"; else -> null }
+internal fun codexModeTitle(mode: String): String = L10n.tr(if (mode == "desktop") "桌面启动" else "终端启动")
+internal fun RemoteState.codexResumeModes(id: String): List<String> {
+    if (!unifiedCodexHistory || !isCodexCatalogId(id)) return emptyList()
+    val entry = sessions[id]?.takeUnless { it.archived == true } ?: return emptyList()
+    return entry.codexLaunchModes.orEmpty().distinct().filter { mode ->
+        codexModeKind(mode)?.let { it in supportedAgents.orEmpty() && allowsAgentSource(it) } == true
+    }
+}
 
 /** Loading history must not erase the host supplied by the session directory. */
 internal fun SessionCatalogEntry.withHistoryCache(runtimeHostname: String?): SessionCatalogEntry = copy(

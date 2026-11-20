@@ -107,6 +107,59 @@ describe("Host conversation projection", () => {
     expect(model.accept(scope, patch("E2", 3), undefined, reason => reasons.push(reason))).toBe(true);
   });
 
+  // CODEX-SOURCE-04: exhaust the shipped epoch budget, including the registry
+  // left behind by invalidation, then recover without admitting any stale frames.
+  it("replaces a capped conversation only with a verified ready preview", () => {
+    const registry = new AgentStateRegistry(), model = new AgentConversationState(registry);
+    const preview = (epoch: string, seq = 1): ReturnType<typeof snapshot> => {
+      const event = snapshot(epoch, seq);
+      const tail: RemoteSessionEntry = { entryId: "a", parentId: "older", type: "message", timestamp: "1", data: { epoch } };
+      return { ...event, selection: "snapshot", complete: false, hasOlder: true, rangeStatus: "limit_reached", entries: [tail],
+        display: { projectionVersion: 2, windowStart: null, entries: [{ entryId: "a", displayId: "a", nativeType: "message", kind: "message",
+          message: { messageId: "a", role: "assistant", content: [{ type: "text", text: epoch }], timestamp: 1 }, reason: null }] } };
+    };
+    const page = (epoch: string): ReturnType<typeof snapshot> => ({ type: "session.snapshot", range: "history", mode: "prepend",
+      sessionId: "s", syncId: "history", beforeEntryId: "a", cursor: { leafId: "a" }, complete: true,
+      entries: [{ entryId: "older", parentId: null, type: "message", timestamp: "0", data: { epoch } }], source: { epoch, seq: 1, ready: true } });
+    const reasons: string[] = [];
+    const rejected = (reason: string) => reasons.push(reason);
+    for (let index = 0; index <= 64; index++) expect(model.accept(scope, preview(`e${index}`))).toBe(true);
+    expect(model.accept(scope, page("e64"))).toBe(true);
+    expect(model.accept(scope, patch("current", 1, false), undefined, rejected)).toBe(false);
+    expect(reasons.at(-1)).toBe("registry_source_epoch_limit:history");
+    model.invalidateBaseline(scope);
+    expect(model.hasBaseline(scope)).toBe(false);
+    expect(model.accept(scope, preview("current"), undefined, rejected)).toBe(false);
+    expect(reasons.at(-1)).toBe("registry_source_epoch_limit:history");
+
+    // A correlated partial preview or a retired epoch is still ineligible.
+    const current = preview("current");
+    expect(model.accept(scope, { ...current, live: { ...current.live!, complete: false } }, undefined, rejected, true)).toBe(false);
+    expect(model.accept(scope, { ...current, entries: [], display: undefined }, undefined, rejected, true)).toBe(false);
+    expect(model.accept(scope, preview("e63", 9), undefined, rejected, true)).toBe(false);
+    expect(model.accept(scope, page("current"), undefined, rejected, true)).toBe(false);
+    const before = registry.read(scope, "history")!;
+    expect(model.accept(scope, current, undefined, rejected, true)).toBe(true);
+    expect(registry.read(scope, "history")).toMatchObject({ revision: before.revision + 1, source: { sourceEpoch: "current" } });
+    expect(model.hasBaseline(scope)).toBe(true);
+    expect(model.recover(scope, { type: "session.sync", sessionId: "s", syncId: "latest", range: "preview" }))
+      .toMatchObject({ source: { epoch: "current" }, hasOlder: true, entries: current.entries });
+    expect(model.recover(scope, { type: "session.sync", sessionId: "s", syncId: "page", range: "history", beforeEntryId: "a" })).toBeUndefined();
+    expect(model.accept(scope, page("current"))).toBe(true);
+    expect(model.recover(scope, { type: "session.sync", sessionId: "s", syncId: "page", range: "history", beforeEntryId: "a" }))
+      .toMatchObject({ entries: page("current").entries });
+    expect(model.accept(scope, patch("current", 2))).toBe(true);
+    for (const epoch of ["e0", "e63", "e64"]) {
+      expect(model.accept(scope, patch(epoch, 1, false))).toBe(false);
+      expect(model.accept(scope, page(epoch))).toBe(false);
+      expect(model.accept(scope, preview(epoch, 9))).toBe(false);
+    }
+    // The bounded set stays full: eviction never allows an ordinary cross-epoch patch.
+    expect(model.accept(scope, patch("next", 1, false))).toBe(false);
+    expect(model.accept(scope, preview("next"), undefined, rejected, true)).toBe(true);
+    expect(model.hasBaseline(scope)).toBe(true);
+  });
+
   it("supports 256 current sessions with the default registry and rejects the 257th atomically", () => {
     const registry = new AgentStateRegistry();
     const model = new AgentConversationState(registry);

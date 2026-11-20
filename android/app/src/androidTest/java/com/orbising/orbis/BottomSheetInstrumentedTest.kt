@@ -148,7 +148,7 @@ class BottomSheetInstrumentedTest {
         capture("directory")
     }
 
-    /** S51 / SC73: browsing up and retrying stay in the sheet instead of pre-running its exit. */
+    /** S51 / SC73 / FILE-BROWSER-01: direct path entry keeps navigation and retry inside the sheet. */
     @Test fun draftDirectoryNavigationKeepsTheSheetAlive() {
         val browsed = mutableListOf<String?>()
         val ups = mutableListOf<String?>()
@@ -161,10 +161,13 @@ class BottomSheetInstrumentedTest {
         } }
         compose.onNodeWithTag("draft-directory").performClick()
         compose.runOnIdle { browsed.clear() }
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextClearance()
+        compose.onAllNodes(hasSetTextAction()).onLast().performTextInput("/workspace/nested")
+        compose.onNodeWithTag("remote-directory-jump").performClick()
         compose.onNodeWithText("重新读取").performClick()
         compose.onNodeWithText("上一级").performClick()
         compose.runOnIdle {
-            assertEquals(listOf<String?>("/workspace"), browsed)
+            assertEquals(listOf<String?>("/workspace/nested", "/workspace"), browsed)
             assertEquals(listOf<String?>("up"), ups)
         }
         // A committed exit that the sheet never owns leaves a transparent window behind, so the
@@ -174,23 +177,30 @@ class BottomSheetInstrumentedTest {
         compose.onNodeWithTag("orbis-sheet-window").assertDoesNotExist()
     }
 
-    @Test fun downloadBrowserKeepsItsFooterAndOnlyDownloadsAfterExit() {
+    /** FILE-BROWSER-01: multiple selected files queue together only after the sheet exit. */
+    @Test fun downloadBrowserKeepsItsFooterAndOnlyDownloadsAllSelectedFilesAfterExit() {
         val open = mutableStateOf(true)
         val downloads = mutableListOf<String>()
+        val initial = browseState()
+        val state = initial.copy(sessionBrowse = initial.sessionBrowse!!.copy(entries = listOf(
+            SessionBrowseEntry("report.txt", false, false), SessionBrowseEntry("notes.md", false, false),
+        )))
         compose.setContent { OrbisTheme {
-            if (open.value) DownloadFileSheet(browseState(), { open.value = false }, {}, {}, {}, { downloads += it })
+            if (open.value) DownloadFileSheet(state, { open.value = false }, {}, {}, {}, { downloads += it })
         } }
         compose.onNodeWithText("report.txt").performClick()
-        reveal(compose.onNodeWithText("下载到手机"))
-        assertFullyVisible(compose.onNodeWithText("下载到手机"))
-        capture("download")
+        compose.onNodeWithText("notes.md").performClick()
+        val action = compose.onNodeWithText("下载所选 2 个文件")
+        reveal(action)
+        assertFullyVisible(action)
+        capture("download-multiple")
         compose.mainClock.autoAdvance = false
-        compose.onNodeWithText("下载到手机").performClick()
+        action.performClick()
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(64)
         compose.runOnIdle { assertTrue(downloads.isEmpty()) }
         compose.mainClock.advanceTimeBy(400)
-        compose.runOnIdle { assertEquals(listOf("/workspace/report.txt"), downloads) }
+        compose.runOnIdle { assertEquals(listOf("/workspace/report.txt", "/workspace/notes.md"), downloads) }
         compose.onNodeWithTag("orbis-sheet-window").assertDoesNotExist()
     }
 

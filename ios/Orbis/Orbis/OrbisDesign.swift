@@ -2349,14 +2349,14 @@ struct OrbisNotice: View {
     var error = false
     var trailing: AnyView? = nil
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: trailing == nil ? .firstTextBaseline : .center, spacing: 8) {
             Image(systemName: error ? "exclamationmark.circle" : "info.circle")
                 .foregroundStyle(error ? OrbisPalette(scheme).error : OrbisPalette(scheme).secondary)
                 .orbisIconBaseline(OrbisTextSize.body)
             OrbisMotionText(text).foregroundStyle(OrbisPalette(scheme).text).frame(maxWidth: .infinity, alignment: .leading)
-            if let trailing { trailing }
+            if let trailing { trailing.fixedSize(horizontal: true, vertical: false) }
         }.font(.orbisBody()).frame(minHeight: 16)
-            .neuSurface(radius: OrbisRadius.control, intensity: 1, padding: 16)
+            .neuSurface(radius: OrbisRadius.control, intensity: 1, padding: trailing == nil ? 16 : 12)
     }
 }
 

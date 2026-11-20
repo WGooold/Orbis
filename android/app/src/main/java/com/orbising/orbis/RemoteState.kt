@@ -118,7 +118,9 @@ data class RuntimeSummary(
     /** Host execution activity; does not change the phase used by send/stop logic. */
     val compactionPhase: String? = null,
     val backgroundTasks: BackgroundTaskInventory? = null,
+    val codexCatalogId: String? = null,
 ) {
+    val directorySessionId: String? get() = codexCatalogId ?: sessionId
     val presentationStatus: String
         get() = when {
             compactionPhase == "running" && status in setOf("idle", "running") -> "compacting"
@@ -624,6 +626,7 @@ data class RemoteState(
      * 它比 [launchableAgents] 多回答一个问题：桌面版装了但没打开、还是打开了却接入失败。
      */
     val codexDesktop: CodexDesktopAttach? = null,
+    val unifiedCodexHistory: Boolean = false,
     val openCodeAvailability: OpenCodeAvailability? = null,
     /** Native backend modelProvider keys, keyed by agentKind; never Host-managed profile ids. */
     val currentProviders: Map<String, String> = emptyMap(),
@@ -835,6 +838,7 @@ internal fun mergeSessionCatalogEntry(
         agentKind = incoming.agentKind ?: existing.agentKind,
         archived = incoming.archived ?: existing.archived,
         modelProvider = incoming.modelProvider?.takeIf(String::isNotBlank) ?: existing.modelProvider,
+        codexLaunchModes = incoming.codexLaunchModes ?: existing.codexLaunchModes,
     )
 }
 
@@ -894,6 +898,8 @@ internal fun reduceSessionActivated(state: RemoteState, message: JsonObject): Re
     val requestId = message["requestId"]?.jsonPrimitive?.contentOrNull
     // ADR-0049 §6.8：启动中的会话即使已转为未确认，迟到的同一 requestId 仍可结算。
     val launch = state.launching?.takeIf { it.requestId == requestId }
+    val requested = launch?.resumed ?: requestId?.let(state.sessionActivateTargets::get)
+    if (isCodexCatalogId(requested) && (message["codexCatalogId"] as? JsonPrimitive)?.contentOrNull != requested) return state
     if (launch != null && requestId !in state.sessionActivateRequests) {
         val acknowledged = message["sessionId"]?.jsonPrimitive?.contentOrNull ?: return state
         return state.launchActivated(launch.requestId, acknowledged, System.currentTimeMillis())
@@ -1239,7 +1245,7 @@ private fun previousViewNeedsRefresh(state: RemoteState, runtime: RuntimeSummary
         view.sessionId != runtime.sessionId || view.leafId != runtime.sessionLeafId
     } ?: true
 
-internal fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = sessionId?.let { id ->
+internal fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = directorySessionId?.let { id ->
     SessionCatalogEntry(
         sessionId = id,
         // Empty means the current runtime is explicitly unnamed, so a cleared title
@@ -1251,7 +1257,7 @@ internal fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = sessionId?.le
         messageCount = 0,
         // 在线进程合入目录时也要带 agentKind（codex 是固定虚拟 runtimeId，Pi 是 UUID），
         // 否则侧栏在 session.list 刷新前无法给在线 codex 会话画角标。
-        agentKind = agentKind,
+        agentKind = if (codexCatalogId != null) "codex" else agentKind,
     )
 }
 
@@ -1356,13 +1362,15 @@ internal fun cachedHistoryRows(
 ): List<CachedSessionRow> {
     if (host == null) return emptyList()
     // ADR-0049 §6.4：未结算的归档叠加在目录上，卡片立即出现在目标列表。
-    val catalog = state.sessionsWithLedger().let { rows ->
-        if (state.kimiCodeSupported) rows else rows.filterValues { !isKimiCode(it.agentKind, it.sessionId) }
+    val catalog = state.sessionsWithLedger().filterValues { row ->
+        (state.kimiCodeSupported || !isKimiCode(row.agentKind, row.sessionId)) &&
+            (row.agentKind !in setOf("codex", "codexDesktop") && !isCodexCatalogId(row.sessionId) ||
+                isCodexCatalogId(row.sessionId) == state.unifiedCodexHistory)
     }
     val runtimesBySession = state.runtimes.values
-        .filter { it.sessionId != null }
+        .filter { it.directorySessionId != null }
         .sortedBy { title(it.sessionId, it) }
-        .groupBy { it.sessionId.orEmpty() }
+        .groupBy { it.directorySessionId.orEmpty() }
     val rows = linkedMapOf<String, CachedSessionRow>()
     for ((sessionId, runtimes) in runtimesBySession) {
         val runtime = runtimes.firstOrNull() ?: continue
@@ -2052,7 +2060,8 @@ class RelayReducer(
                 }.orEmpty().map { it.withOpenClawKind().withKimiIdentity() }.associateBy(RuntimeSummary::runtimeId)
                 val managedAgentView = readyAdmitsAgentEnablement(message)
                 val openClawNegotiated = readyAdmitsOpenClaw(message)
-                val projectionChanged = state.openClawNegotiated != openClawNegotiated
+                val unifiedCodexHistory = readyAdmitsCodexHistory(message)
+                val projectionChanged = state.openClawNegotiated != openClawNegotiated || state.unifiedCodexHistory != unifiedCodexHistory
                 // 「这台电脑支持哪些 agent」只有 Host 说得准。中继那条种子 device.ready 发的是
                 // 显式 `null`（它不知道装没装 codex）；任何一种"不知道"都保持原判（未知 = 不限制）。
                 val supportedAgents = message["agents"]
@@ -2076,8 +2085,11 @@ class RelayReducer(
                         state.knownRuntimeSessions.containsKey(runtimeId)
                     val previousSessionId = previousRuntime?.sessionId
                         ?: state.knownRuntimeSessions[runtimeId]
-                    !hasPrevious || previousSessionId != runtimes[runtimeId]?.sessionId
+                    !hasPrevious || previousSessionId != runtimes[runtimeId]?.sessionId ||
+                        previousRuntime?.codexCatalogId != runtimes[runtimeId]?.codexCatalogId
                 }
+                val replacedStorage = runtimes.values.filter { it.codexCatalogId != state.runtimes[it.runtimeId]?.codexCatalogId }
+                    .flatMap { listOfNotNull(it.sessionId, state.runtimes[it.runtimeId]?.sessionId) }.toSet()
                 val branchChanged = runtimes.keys.associateWith { runtimeId ->
                     if (sessionChanged[runtimeId] == true || state.conversations[runtimeId]?.sourceEpoch != null) false else {
                         val runtime = runtimes[runtimeId]
@@ -2145,8 +2157,10 @@ class RelayReducer(
                     sessionConfigurationSupported = message["sessionConfiguration"]?.jsonPrimitive?.intOrNull == 1,
                     kimiCodeSupported = kimiCodeSupported,
                     openClawNegotiated = openClawNegotiated,
+                    unifiedCodexHistory = unifiedCodexHistory,
                     prefersAutoSessionSpawn = (message["hostFeatures"] as? JsonArray)?.contains(JsonPrimitive("session.spawn.auto")) == true,
                     sessions = sessions,
+                    sessionGraphs = state.sessionGraphs - replacedStorage,
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
                     agentModelEpoch = message.string("modelEpoch"),
@@ -2232,7 +2246,8 @@ class RelayReducer(
                     ?: state.knownRuntimeSessions[runtime.runtimeId]
                 val capabilitiesArrivedBeforeOnline = !hasPreviousRuntime &&
                     state.capabilities.containsKey(runtime.runtimeId)
-                val sessionChanged = !hasPreviousRuntime || previousSessionId != runtime.sessionId
+                val storageChanged = previousRuntime?.codexCatalogId != runtime.codexCatalogId
+                val sessionChanged = !hasPreviousRuntime || previousSessionId != runtime.sessionId || storageChanged
                 val previousLeaf = previousRuntime?.sessionLeafId
                     ?: state.runtimeSessionViews[runtime.runtimeId]?.leafId
                 val versioned = !sessionChanged && state.conversations[runtime.runtimeId]?.sourceEpoch != null
@@ -2281,6 +2296,7 @@ class RelayReducer(
                 } ?: state.sessions
                 state.copy(
                     sessions = sessions,
+                    sessionGraphs = if (storageChanged) state.sessionGraphs - listOfNotNull(previousSessionId, runtime.sessionId).toSet() else state.sessionGraphs,
                     sessionBranchGenerations = if (sessionChanged || branchChanged) {
                         state.sessionBranchGenerations + (runtime.runtimeId to ((state.sessionBranchGenerations[runtime.runtimeId] ?: 0) + 1))
                     } else state.sessionBranchGenerations,
@@ -2469,6 +2485,11 @@ class RelayReducer(
             val activate = requestId in next.sessionActivateRequests
             val browse = next.sessionBrowse?.requestId == requestId
             // Launch settlement can already remove its request while its navigation target remains.
+            if (channel != null && requestId == next.agentProviders.quotaRequestId) {
+                val quotaError = if (code in CONNECTION_ACTION_PROTOCOL_CODES) error
+                    else feedbackFailureText(message.string("message"), L10n.tr("配额查询失败，请重试"))
+                next = next.failSubscriptionQuery(requestId, quotaError)
+            }
             if (list || activate || browse || requestId in next.sessionActivateTargets) next = next.copy(
                 sessionListRequests = next.sessionListRequests - requestId,
                 sessionListRequestEpochs = next.sessionListRequestEpochs - requestId,
@@ -2716,7 +2737,8 @@ class RelayReducer(
                 if (metadata.runtimeId != runtimeId) return state
                 val previousRuntime = state.runtimes[runtimeId]
                 val previousView = state.runtimeSessionViews[runtimeId]
-                val sessionChanged = previousRuntime != null && previousRuntime.sessionId != metadata.sessionId
+                val storageChanged = previousRuntime?.codexCatalogId != metadata.codexCatalogId
+                val sessionChanged = previousRuntime != null && (previousRuntime.sessionId != metadata.sessionId || storageChanged)
                 val previousLeaf = previousRuntime?.sessionLeafId
                     ?: previousView?.leafId
                 val graphForMetadata = state.sessionGraphs[metadata.sessionId]
@@ -2732,6 +2754,7 @@ class RelayReducer(
                 nextRuntimes = state.runtimes + (runtimeId to metadata.carryingComposerStatus(previousRuntime)
                     )
                 if (sessionChanged || branchChanged) {
+                    if (storageChanged) nextSessionGraphs = nextSessionGraphs - listOfNotNull(previousRuntime?.sessionId, metadata.sessionId).toSet()
                     nextBranchGenerations = nextBranchGenerations + (runtimeId to ((nextBranchGenerations[runtimeId] ?: 0) + 1))
                     nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
                     nextRangeFailures = nextRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") }
@@ -2755,7 +2778,7 @@ class RelayReducer(
                         previousView.leafId != incomingView.leafId
                     ) previousView else incomingView
                     nextRuntimeSessionViews = nextRuntimeSessionViews + (runtimeId to view)
-                    val graph = state.sessionGraphs[view.sessionId]
+                    val graph = state.sessionGraphs[view.sessionId].takeUnless { storageChanged }
                         ?: SessionGraph(view.sessionId).takeIf { view.leafId == null && metadata.sessionGraphSync }
                     if (graph != null && graph.hasCompleteEntryChain(view.leafId)) {
                         val oldLeaf = previousView?.takeIf { it.sessionId == view.sessionId }?.leafId
@@ -3069,10 +3092,10 @@ class RelayReducer(
                             .filterNot { it.startsWith("$runtimeId\u0000") }.toSet()
                     }
                     nextSessionGraphs = state.sessionGraphs + (snapshot.sessionId to graphForProjection)
-                    nextSessions = nextSessions + (
-                        snapshot.sessionId to (nextSessions[snapshot.sessionId] ?: SessionCatalogEntry(snapshot.sessionId))
-                            .withHistoryCache(state.runtimes[runtimeId]?.hostname)
-                    )
+                    val owner = state.runtimes[runtimeId]
+                    val storage = owner?.codexCatalogId ?: snapshot.sessionId
+                    nextSessions = nextSessions + (storage to (nextSessions[storage] ?: owner?.catalogEntry() ?: SessionCatalogEntry(storage))
+                        .withHistoryCache(owner?.hostname))
                 }
                 val hasRenderableCurrentView = currentViewLeaf != null && currentGraph.entries.containsKey(currentViewLeaf)
                 val hasRenderableTarget = targetLeafId != null && mergedGraph.entries.containsKey(targetLeafId)

@@ -108,7 +108,7 @@ struct ChatView: View {
                 ChatComposerView(model: model, actions: actions, fallbackRuntime: fallbackRuntime,
                                  composerFocus: composerFocus, sendFlight: sendFlight, onHistory: onHistory,
                                  onAcceptedSend: { acceptedSends.send($0) }).equatable()
-                    .anchorPreference(key: FeedbackComposerAnchorKey.self, value: .bounds) { $0 }
+                    .anchorPreference(key: FeedbackBottomAnchorKey.self, value: .bounds) { [.init(scope: .chat, bounds: $0)] }
                 FoldReadingSurface(model: model, actions: actions, mountToken: mountToken,
                                     enabled: controlsVisible && visualActive && scenePhase == .active,
                                     viewportHeight: max(1, (division?.minY ?? 0) - 12))
@@ -126,7 +126,12 @@ struct ChatView: View {
             .onChange(of: visualActive, initial: true) { _, active in
                 model.visibilityChanged(target: target, token: mountToken, visible: active, foreground: scenePhase == .active)
             }
+            .onChange(of: pageActivity.isTop) { _, isTop in
+                let preview = actions.connection.transfers.browserPreview
+                if !isTop, preview.current?.fullScreen != true { preview.close() }
+            }
             .onChange(of: scenePhase) { _, phase in
+                if phase != .active { actions.connection.transfers.browserPreview.close() }
                 model.visibilityChanged(target: target, token: mountToken, visible: visualActive, foreground: phase == .active)
             }
             .modifier(ChatTurnReviewRegion(model: model, actions: actions))
@@ -137,6 +142,7 @@ struct ChatView: View {
                 visualActive: visualActive, sendFlight: sendFlight))
             .onAppear { model.mount(target: target, token: mountToken, visible: visualActive, foreground: scenePhase == .active) }
             .onDisappear {
+                actions.connection.transfers.browserPreview.close()
                 releaseInterest()
                 model.unmount(target: target, token: mountToken)
             }

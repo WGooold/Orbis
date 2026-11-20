@@ -19,10 +19,11 @@
  * - 就绪判定：app-server 就绪后 stderr 打 banner 并提供 `healthz` HTTP 端点，
  *   轮询到 200 才连 WebSocket，避免连接被拒。
  */
-import { access } from "node:fs/promises";
+import { access, realpath, stat } from "node:fs/promises";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { platform } from "node:os";
+import { isAbsolute } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
 
@@ -115,6 +116,7 @@ export class CodexAppServer {
   #transport: CodexTransport | undefined;
   #endpoint: string | undefined;
   #codexCommand: CodexCommand | undefined;
+  #historyHome: string | undefined;
   #nextId = 0;
   #stopped = false;
   #closed = false;
@@ -144,6 +146,9 @@ export class CodexAppServer {
   get codexCommand(): CodexCommand | undefined {
     return this.#codexCommand;
   }
+
+  /** Native handshake evidence, not the Host's environment or a guessed Desktop path. */
+  get historyHome(): string | undefined { return this.#historyHome; }
 
   /**
    * 启动 app-server 子进程（带 ws listen）并完成 `initialize` 握手。
@@ -194,15 +199,21 @@ export class CodexAppServer {
         server.#transport = await wsTransport(server.#endpoint, timeoutMs);
       }
       server.#attachTransport();
-      await server.request("initialize", {
+      const initialized = await server.request("initialize", {
         capabilities: { experimentalApi: true },
         clientInfo: {
           name: options.clientName ?? "orbis-host",
           title: "Orbis Host",
           version: "0.1.0",
         },
-      }, timeoutMs);
+      }, timeoutMs) as { codexHome?: unknown } | null;
       server.notify("initialized");
+      const home = initialized?.codexHome;
+      const endpoint = server.mode === "external" && server.endpoint !== undefined ? new URL(server.endpoint) : undefined;
+      if (typeof home === "string" && isAbsolute(home) && (!endpoint ||
+        ["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname) && !endpoint.username && !endpoint.password)) {
+        server.#historyHome = await realpath(home).then(async path => (await stat(path)).isDirectory() ? path : undefined).catch(() => undefined);
+      }
       return server;
     } catch (error) {
       await server.stop();

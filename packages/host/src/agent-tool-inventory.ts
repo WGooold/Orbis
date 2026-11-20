@@ -88,7 +88,7 @@ export class AgentToolInventory {
     this.#timer.unref();
   }
 
-  prepare(input: ToolInventoryMutation): PreparedToolInventory {
+  prepare(input: ToolInventoryMutation, verifiedPreview = false): PreparedToolInventory {
     if (this.#disposed) return fail("invalid_inventory");
     const agent = AgentKeySchema.parse(input.agent), source = ToolSourceDependencySchema.parse(input.source);
     const key = agentKeyId(agent), previous = this.#inventories.get(key);
@@ -96,8 +96,13 @@ export class AgentToolInventory {
     if ((!previous || replaced) && input.update.kind !== "baseline") return fail("source_baseline_required");
     if (previous?.retired.has(source.epoch) || (previous && !replaced && source.seq < previous.latestSource.seq)) return fail("stale_source");
     const retired = new Set(previous?.retired);
-    if (replaced) retired.add(previous!.latestSource.epoch);
-    if (retired.size > this.#limits.maxRetiredEpochs) return fail("inventory_limit");
+    if (replaced) {
+      if (retired.size >= this.#limits.maxRetiredEpochs) {
+        if (!verifiedPreview) return fail("inventory_limit");
+        retired.delete(retired.values().next().value!);
+      }
+      retired.add(previous.latestSource.epoch);
+    }
     const upserts = input.update.kind === "baseline" ? input.update.tools : input.update.upserts;
     const removes = input.update.kind === "baseline" ? [] : input.update.removes;
     if (upserts.length > this.#limits.maxToolsPerSession || removes.length > this.#limits.maxToolsPerSession) return fail("inventory_limit");

@@ -29,6 +29,7 @@ struct ChatNativeTranscriptEnvironment {
     let overlay: OrbisOverlay
     let storeReference: OrbisStore?
     let fileActions: FileTransfers?
+    let openFilePreview: ((UUID) -> Void)?
     let downloadFlight: DownloadFlight?
     let sendFlight: MessageSendFlight?
     let visualActivity: ChatVisualActivity?
@@ -52,6 +53,7 @@ struct ChatNativeTranscriptEnvironment {
             .environmentObject(overlay)
             .environment(\.orbisStoreReference, storeReference)
             .environment(\.orbisFileActions, fileActions)
+            .environment(\.openChatFilePreview, openFilePreview)
             .environment(\.downloadFlight, downloadFlight)
             .environment(\.messageSendFlight, sendFlight)
             .environment(\.chatVisualActivity, visualActivity)
@@ -81,6 +83,7 @@ struct ChatNativeTranscriptEnvironmentReader<Content: View>: View {
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.orbisStoreReference) private var storeReference
     @Environment(\.orbisFileActions) private var fileActions
+    @Environment(\.openChatFilePreview) private var openFilePreview
     @Environment(\.downloadFlight) private var downloadFlight
     @Environment(\.messageSendFlight) private var sendFlight
     @Environment(\.chatVisualActivity) private var visualActivity
@@ -112,7 +115,7 @@ struct ChatNativeTranscriptEnvironmentReader<Content: View>: View {
                           layoutDirection: layoutDirection, dynamicTypeSize: dynamicTypeSize,
                           displayScale: displayScale, enabled: enabled,
                           keyboardNavigation: keyboardNavigation),
-            overlay: overlay, storeReference: storeReference, fileActions: fileActions,
+            overlay: overlay, storeReference: storeReference, fileActions: fileActions, openFilePreview: openFilePreview,
             downloadFlight: downloadFlight, sendFlight: sendFlight,
             visualActivity: visualActivity, interactions: interactions, readingInteraction: readingInteraction))
     }

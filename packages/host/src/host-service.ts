@@ -52,8 +52,10 @@ import {
   DEVICE_FEATURE_HERMES,
   DEVICE_FEATURE_COMPACT_BOOTSTRAP,
   DEVICE_FEATURE_CLAUDE_SEND_NOW,
+  CODEX_UNIFIED_HISTORY,
   HOST_FEATURE_DEVICE_FEATURES,
   HOST_FEATURE_IMPORT_TARGET,
+  HOST_FEATURE_FILE_PREVIEW,
   HOST_FEATURE_SESSION_SPAWN_AUTO,
   AGENT_ENABLEMENT_FEATURE,
   PROTOCOL_VERSION,
@@ -61,6 +63,7 @@ import {
   type HostProviderSummary,
   type AgentSessionSummary,
   type CodexDesktopAttach,
+  type CodexLaunchMode,
   type DshDesktopAttach,
   type DeviceE2ePayload,
   type EnvelopeChannel,
@@ -103,7 +106,7 @@ import { SessionWireContent } from "./session-wire-content.js";
 import { encodeDeviceMessage, omitRuntimeSendNow, projectCompactDeviceMessage, type DeviceMessageProjectionOptions } from "./device-message-projection.js";
 import { CompactStateModel } from "./compact-state-model.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
-import type { AgentBackend, BackendActivation } from "./agent-backend.js";
+import type { AgentActivateContext, AgentBackend, BackendActivation } from "./agent-backend.js";
 import { AgentLaunchRevoked, ClaudeBackend, PiBackend } from "./agent-backend.js";
 import type { KimiRuntime } from "./kimi-runtime.js";
 import { isKimiId, KIMI_KIND, KimiLaunchBlocked } from "./kimi-sessions.js";
@@ -114,6 +117,7 @@ import { ClaudeModsBridge } from "./claude-mods-bridge.js";
 import { claudeConfigDir } from "./claude-transcript.js";
 import { relayHttpBase } from "./config.js";
 import { CodexRuntime } from "./codex-runtime.js";
+import { CodexHistoryCatalog, codexMode, isCodexHistoryId, isCodexKind, type CodexHistoryRead } from "./codex-history-catalog.js";
 import { OpenCodeServiceConnection, type OpenCodeServiceStatus } from "./opencode-service-connection.js";
 import { OpenCodeBackend } from "./opencode-backend.js";
 import type { DshRuntime } from "./dsh-runtime.js";
@@ -530,22 +534,23 @@ export class HostService {
   }
 
   #acceptConversation(runtimeId: string, event: Extract<RuntimeEvent, { type: "session.snapshot" | "session.patch" }>,
-                      onRejected?: (reason: string) => void): boolean {
+                      onRejected?: (reason: string) => void, verifiedPreview = false): boolean {
     const scope = this.#agentFacts.scopeOf(runtimeId);
     let reason = "runtime_scope_missing";
     let inventory: PreparedToolInventory | undefined;
     let accepted = false;
     try {
-      accepted = scope !== undefined && this.#conversationState.accept(scope, event, ready => {
+      accepted = scope !== undefined && this.#conversationState.accept(scope, event, (ready, verifiedBaseline) => {
         const facts = this.#agentFacts.prepareConversation(runtimeId, event, ready);
         if (!ready || scope.kind !== "agent" || !event.source || !event.live?.toolInventory) return facts;
-        inventory = this.#toolIngestion.prepare(runtimeId, scope.key, event.source, event.live.toolInventory);
+        inventory = this.#toolIngestion.prepare(runtimeId, scope.key, event.source, event.live.toolInventory, verifiedBaseline);
         const plans = [inventory, ...(facts ? [facts] : [])];
         return { changes: plans.flatMap(plan => [...plan.changes]), conversationSource: inventory.conversationSource!,
           isCurrent: () => plans.every(plan => plan.isCurrent?.() !== false),
           onCommitted: () => { for (const plan of plans) plan.onCommitted(); } };
-      }, code => { reason = code; onRejected?.(code); });
+      }, code => { reason = code; }, verifiedPreview);
     } catch (error) { reason = error instanceof Error ? error.message : "tool_inventory_rejected"; }
+    if (!accepted) onRejected?.(reason);
     if (accepted && inventory?.publication) this.#broadcastDeviceMessage(this.#runtimeEventMessage(runtimeId, inventory.publication));
     if (!accepted) this.recordDiagnostic({ scope: scope ? "agent" : "host",
       agentKind: scope?.kind === "agent" ? scope.key.agentKind : null, sessionId: event.sessionId,
@@ -683,6 +688,7 @@ export class HostService {
     }));
     if (!this.#providerFactsClosing && generation === this.#providerFactsGeneration && modelEpoch === this.#agentStateRegistry.currentModelEpoch()) {
       this.#hostStateFacts.providers({ providers });
+      this.#hostStateFacts.catalogProviders(providers.flatMap((row: HostProviderSummary) => row.modelProvider ? [{ agentKind: row.agentKind, provider: row.modelProvider }] : []));
     }
   }
 
@@ -750,9 +756,9 @@ export class HostService {
   }
 
   /** The first range read reconciles the source; cursor continuations read one committed immutable inventory. */
-  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: readonly AgentKind[]): Promise<HostCatalogRange> {
+  async readHostRange(request: Pick<AgentStateRangeRequest, "cursor" | "limit"> = {}, hide?: readonly AgentKind[], unifiedCodex = false): Promise<HostCatalogRange> {
     if (!request.cursor && !this.#serviceClosed) await this.#catalogWithCache();
-    return this.#hostStateFacts.catalogRange(request, hide);
+    return this.#hostStateFacts.catalogRange(request, hide, unifiedCodex);
   }
 
   #beginSharedOperation(kind: HostSharedOperation["kind"], agentKind: AgentKind | null = null, sessionId: string | null = null): string | undefined {
@@ -836,6 +842,7 @@ export class HostService {
   readonly #sharedOperations = new Map<string, HostSharedOperation>();
   #sharedOperationsTruncatedAt = 0;
   readonly #desktopOwnedIds = new Set<string>();
+  readonly #codexHistory: CodexHistoryCatalog;
   readonly #sessionConfigurations: SessionConfigurationStore;
   readonly #kimiConfigurations: SessionConfigurationStore;
   // Published Hosts strictly decode their launch journal. New Agent records cannot poison it on rollback.
@@ -861,6 +868,7 @@ export class HostService {
     // 记录要跨重启保留：重启后「上一轮为什么连不上」仍然读得到，否则排查只能靠现场的这一次。
     this.#diagnostics = new DiagnosticJournal({ persistence: createDiagnosticJournalFileStore(stateDir) });
     this.#identity = identity;
+    this.#codexHistory = new CodexHistoryCatalog(identity.hostId);
     this.#store = store;
     this.#toolContentService = new ToolContentService({
       observe: (runtimeId, event, bytes, gaps) => {
@@ -883,6 +891,7 @@ export class HostService {
     this.#spawner = options.spawner ?? new SessionSpawner({ stateDir, ...(options.log === undefined ? {} : { log: options.log }) });
     this.#downloads = new HostDownloadService({
       resolveMessageReference: (id, deviceId) => this.#messageFileReferences.resolve(id, deviceId),
+      resolvePreviewReference: (id, deviceId) => this.#messageFileReferences.resolveIdentity(id, deviceId),
       indexPath: hostArtifactIndexPath(stateDir),
       publishEvent: (deviceId, runtimeId, event) => {
         this.#sendToDevice(deviceId, {
@@ -928,9 +937,9 @@ export class HostService {
         if (!this.#allowsDeviceRuntime(deviceId, runtimeId)) throw new Error("agent_feature_required");
         return this.#encodeForDevice(deviceId, this.#runtimeEventMessage(runtimeId, event));
       },
-      acceptSnapshot: (runtimeId, event) => {
+      acceptSnapshot: (runtimeId, event, verifiedPreview) => {
         let rejectionReason: string | undefined;
-        const accepted = this.#acceptConversation(runtimeId, event, reason => { rejectionReason = reason; });
+        const accepted = this.#acceptConversation(runtimeId, event, reason => { rejectionReason = reason; }, verifiedPreview);
         if (accepted) return true;
         if (rejectionReason === "range_epoch_mismatch" && event.range !== "preview" &&
             this.#invalidateConversationBaseline(runtimeId, event, rejectionReason)) return "baseline-required";
@@ -1184,7 +1193,7 @@ export class HostService {
     codex.seedDesktopThreads(this.#desktopOwnedIds);
     codex.setEventSink((event, threadId) => {
       const runtimeId = threadId === undefined ? codex.runtimeId : codex.runtimeIdFor(threadId);
-      this.#publishRuntimeEvent(runtimeId, event);
+      if (this.#backends.includes(codex)) this.#publishRuntimeEvent(runtimeId, event, codex);
     });
     codex.onCatalogChange = () => this.#invalidateCatalog();
     codex.onMetadataChange = () => {
@@ -1206,7 +1215,7 @@ export class HostService {
     };
     codex.onArchiveChange = (sessionId, archived) => {
       this.#invalidateCatalog();
-      this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: codex.kind, sessionId, archived });
+      this.#publishCodexArchive(codex, codex.nativeHistoryId(sessionId), archived);
     };
     if (codex.kind === "codexDesktop") codex.onDesktopThread = id => this.#recordDesktopThread(id);
     this.#backends.push(codex);
@@ -1590,7 +1599,7 @@ export class HostService {
       scope,
       identity,
       stateFormat: request.stateFormat,
-      ...(compact ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision, view) } : {}),
+      ...(compact && !this.#unifiedCodex(deviceId) ? { catalogBaseline: (epoch: string, revision: number) => this.#compactState.catalogBaseline(epoch, revision, view) } : {}),
       projectValue: (domain, value) => this.#projectHostDomain(deviceId, scope, domain, value),
       ...(request.domains === undefined ? {} : { domains: request.domains }),
       ...(known === undefined ? {} : { known }),
@@ -1624,6 +1633,20 @@ export class HostService {
 
   #allowsDeviceRequest(deviceId: string, message: object): boolean {
     const view = this.#agentView(deviceId);
+    const request = message as DeviceE2ePayload;
+    const unified = this.#unifiedCodex(deviceId);
+    if (request.type === "session.catalog.query" && unified && request.query.agentKind === "codex") return true;
+    if (request.type === "session.archive" && isCodexHistoryId(request.sessionId)) return unified && request.agentKind === "codex";
+    if (request.type === "session.activate") {
+      if (request.target.type === "resume" && isCodexHistoryId(request.target.sessionId)) return unified && request.target.agentKind === "codex";
+      if (request.codexLaunchMode !== undefined) {
+        // A new Codex activation can carry the launch mode as a separate dimension,
+        // but its legacy route kind must still select the same backend. Resumes of
+        // canonical catalog IDs use the branch above and may choose either mode.
+        return unified && request.target.type === "new" && isCodexKind(request.target.agentKind)
+          && request.codexLaunchMode === codexMode(request.target.agentKind) && allowsAgentRequest(view, message);
+      }
+    }
     const { runtimeId } = message as { runtimeId?: unknown };
     return (typeof runtimeId !== "string" || this.#allowsDeviceRuntime(deviceId, runtimeId)) && allowsAgentRequest(view, message);
   }
@@ -1638,19 +1661,57 @@ export class HostService {
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
   }
 
-  #projectCatalog(view: AgentView, value: unknown): unknown {
-    return value && typeof value === "object" ? this.#hostStateFacts.hiddenCatalog(value as Record<string, unknown>, hiddenKinds(view)) : value;
+  #unifiedCodex(deviceId: string): boolean { return this.#deviceFeatures.get(deviceId)?.has(CODEX_UNIFIED_HISTORY) === true; }
+
+  #codexRuntimeIdentity(value: unknown): unknown {
+    if (value === null || typeof value !== "object") return value;
+    const row = value as Partial<RuntimeMetadata>;
+    if (!row.runtimeId || !row.sessionId) return value;
+    const backend = this.#codexRuntimes().find(runtime => runtime.ownsRuntime(row.runtimeId!));
+    if (!backend) return value;
+    const threadId = backend.catalogIdentityFor({ runtimeId: row.runtimeId, sessionId: row.sessionId });
+    if (threadId === undefined) return value;
+    return { ...value, codexCatalogId: this.#codexHistory.id(backend.historyStore, threadId) };
+  }
+
+  #codexMessageIdentity(message: object): object {
+    const envelope = message as RelayToDeviceMessage;
+    if (envelope.type === "runtime.online") return { ...envelope, runtime: this.#codexRuntimeIdentity(envelope.runtime) };
+    if (envelope.type === "device.ready") return { ...envelope, runtimes: envelope.runtimes.map(runtime => this.#codexRuntimeIdentity(runtime)) };
+    if (envelope.type === "runtime.event" && envelope.event.type === "runtime.metadata") return {
+      ...envelope, event: { ...envelope.event, metadata: this.#codexRuntimeIdentity(envelope.event.metadata) },
+    };
+    return message;
+  }
+
+  #codexRuntimes(store?: string): CodexRuntime[] {
+    return this.#backends.filter((backend): backend is CodexRuntime => backend instanceof CodexRuntime && backend.isReady()
+      && !this.#disabledSources.has(backend.kind) && (store === undefined || backend.historyStore === store));
+  }
+
+  #publishCodexArchive(backend: CodexRuntime, threadId: string, archived: boolean, requester?: { deviceId: string; requestId: string }): void {
+    for (const deviceId of this.#links.keys()) {
+      const unified = this.#unifiedCodex(deviceId);
+      const message = { type: "session.archive.changed" as const, agentKind: unified ? "codex" as const : backend.kind,
+        sessionId: unified ? this.#codexHistory.id(backend.historyStore, threadId) : backend.legacySessionIdFor(threadId), archived,
+        ...(requester?.deviceId === deviceId ? { requestId: requester.requestId } : {}) };
+      this.#sendToDevice(deviceId, message);
+    }
+  }
+
+  #projectCatalog(view: AgentView, value: unknown, unified = false): unknown {
+    return value && typeof value === "object" ? this.#hostStateFacts.hiddenCatalog(value as Record<string, unknown>, hiddenKinds(view), unified) : value;
   }
 
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
-    if (scope.kind === "agent" && domain === "identity"
-      && !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW)) {
-      return omitRuntimeSendNow(value);
+    if (scope.kind === "agent" && domain === "identity") {
+      const identity = !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ? omitRuntimeSendNow(value) : value;
+      return this.#unifiedCodex(deviceId) ? this.#codexRuntimeIdentity(identity) : identity;
     }
     const view = this.#agentView(deviceId);
+    if (scope.kind === "host" && domain === "catalog") return this.#projectCatalog(view, value, this.#unifiedCodex(deviceId));
     if (!view) return value;
     if (scope.kind === "host") {
-      if (domain === "catalog") return this.#projectCatalog(view, value);
       if (domain === "workspaces") return this.#workspaceViews.get(view) ?? { workspaces: [], truncated: true };
       if (domain === "diagnostics") {
         const stats = this.#diagnostics.stats(row => allowsAgentIdentity(view, row));
@@ -1669,17 +1730,21 @@ export class HostService {
     if (runtimeId && !this.#allowsDeviceRuntime(deviceId, runtimeId)) return undefined;
     const view = this.#agentView(deviceId);
     const category = message as { type?: string; kind?: AgentKind };
+    const unified = this.#unifiedCodex(deviceId);
+    const canonicalArchive = unified && category.type === "session.archive.changed" && isCodexHistoryId((message as { sessionId?: string }).sessionId);
+    const unifiedList = unified && category.type === "session.list.result";
     const sharedCodexProvider = category.type?.startsWith("provider.") && category.kind === "codex" && allowsAgent(view, "codexDesktop");
-    const visible = sharedCodexProvider ? message : projectAgentMessage(view, message);
+    const visible = sharedCodexProvider || canonicalArchive || unifiedList ? message : projectAgentMessage(view, message);
     if (visible === undefined) return undefined;
     // Policy visibility never changes the set of parsers negotiated by this device.
     const ready = message as { type?: string; deviceFeatures?: string[] };
-    const projected = this.#managedPolicy && ready.type === "device.ready" ? {
+    const projected = (this.#managedPolicy || this.#unifiedCodex(deviceId)) && ready.type === "device.ready" ? {
       ...visible,
       ...(ready.deviceFeatures ? { deviceFeatures: ready.deviceFeatures } : {}),
       ...(this.#disabledSources.has("dshDesktop") && this.#deviceFeatures.get(deviceId)?.has(negotiatedAgentFeature("dshDesktop")!) ? { dshDesktop: null } : {}),
     } : visible;
-    return applyDeviceViewEpoch(projected, this.#deviceViewEpochs.get(deviceId));
+    return applyDeviceViewEpoch(this.#unifiedCodex(deviceId) ? this.#codexMessageIdentity(projected) : projected,
+      this.#deviceViewEpochs.get(deviceId));
   }
 
   #rejectAgentFeature(deviceId: string, message: { requestId?: unknown; commandId?: unknown }): void {
@@ -1889,8 +1954,10 @@ export class HostService {
       dshDesktop: this.#dshDesktopSnapshot(),
       hostFeatures: [
         HOST_FEATURE_DEVICE_FEATURES,
+        ...(this.#managedPolicy || this.#codexRuntimes().length || this.#options.ensureCodexRuntime || this.#options.ensureCodexDesktop ? [CODEX_UNIFIED_HISTORY] : []),
         ...(this.#managedPolicy ? [AGENT_ENABLEMENT_FEATURE] : []),
         HOST_FEATURE_IMPORT_TARGET,
+        HOST_FEATURE_FILE_PREVIEW,
         ...(this.#options.preferAutoSessionSpawn === true ? [HOST_FEATURE_SESSION_SPAWN_AUTO] : []),
         DEVICE_FEATURE_MESSAGE_RENDER,
         DEVICE_FEATURE_OPENCLAW,
@@ -1902,7 +1969,7 @@ export class HostService {
         ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : []),
       ],
       sessionConfiguration: 1,
-      ...(features && (features.has(DEVICE_FEATURE_OPENCLAW) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
+      ...(features && (features.has(DEVICE_FEATURE_OPENCLAW) || this.#unifiedCodex(deviceId) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
     };
   }
 
@@ -2561,13 +2628,15 @@ export class HostService {
       const before = this.#agentView(deviceId);
       const previous = this.#deviceFeatures.get(deviceId);
       const hadRender = previous?.has(DEVICE_FEATURE_MESSAGE_RENDER) ?? false;
+      const codexViewChanged = this.#unifiedCodex(deviceId) !== message.features.includes(CODEX_UNIFIED_HISTORY);
       const managementChanged = !!this.#managedPolicy && (!!previous?.has(AGENT_ENABLEMENT_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_FEATURE) ||
         !!previous?.has(DEVICE_FEATURE_OPENCLAW) !== message.features.includes(DEVICE_FEATURE_OPENCLAW));
       this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature => feature !== DEVICE_FEATURE_KIMI_CODE || this.#kimi !== undefined || this.#options.createKimiCodeRuntime !== undefined)));
       const hadClaudeSendNow = previous?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ?? false;
       if (message.features.includes(DEVICE_FEATURE_COMPACT_BOOTSTRAP)) this.#cancelBootstrapReplay(deviceId);
       const after = this.#agentView(deviceId);
-      if (before === after && !managementChanged && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER) && hadClaudeSendNow === message.features.includes(DEVICE_FEATURE_CLAUDE_SEND_NOW)) return;
+      if (before === after && !managementChanged && !codexViewChanged && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER) && hadClaudeSendNow === message.features.includes(DEVICE_FEATURE_CLAUDE_SEND_NOW)) return;
+      if (codexViewChanged) this.#invalidateCatalog();
       this.#resetAgentView(deviceId);
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
       for (const runtime of this.#runtimesSnapshot()) {
@@ -2628,7 +2697,7 @@ export class HostService {
         await this.#catalogWithCache();
       })()).then(() => {
         if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active || epoch !== this.#deviceViewEpochs.get(deviceId)) return;
-        const response = { ...this.#hostStateFacts.catalogQuery(message, hiddenKinds(this.#agentView(deviceId))), protocolVersion: PROTOCOL_VERSION };
+        const response = { ...this.#hostStateFacts.catalogQuery(message, hiddenKinds(this.#agentView(deviceId)), this.#unifiedCodex(deviceId)), protocolVersion: PROTOCOL_VERSION };
         if (encodeDeviceMessage(response).byteLength > 64 * 1024) {
           this.#sendToDevice(deviceId, { type: "protocol.error",
             requestId: message.requestId, code: "catalog_page_too_large", message: "目录页超出传输上限" }); return;
@@ -2770,7 +2839,7 @@ export class HostService {
     if (message.type === "agent.state.range.request") {
       const authenticatedLink = this.#links.get(deviceId);
       const epoch = this.#deviceViewEpochs.get(deviceId);
-      void this.readHostRange(message, hiddenKinds(this.#agentView(deviceId))).then(page => {
+      void this.readHostRange(message, hiddenKinds(this.#agentView(deviceId)), this.#unifiedCodex(deviceId)).then(page => {
         if (this.#serviceClosed || authenticatedLink !== this.#links.get(deviceId) || !authenticatedLink?.active || epoch !== this.#deviceViewEpochs.get(deviceId)) return;
         this.#sendToDevice(deviceId, { type: "agent.state.range.page", protocolVersion: PROTOCOL_VERSION,
           requestId: message.requestId, scope: "host", domain: "catalog", page });
@@ -2831,6 +2900,11 @@ export class HostService {
       return;
     }
     if (command.type === "file.download" || command.type === "artifact.download") {
+      if (command.maxBytes !== undefined && message.runtimeId !== this.hostId) {
+        this.#sendToDeviceOn(deviceId, path, { type: "protocol.error", code: "invalid_command", commandId: message.commandId,
+          message: "预览必须请求文件所在的电脑" });
+        return;
+      }
       if (message.runtimeId.startsWith(OPENCLAW_PREFIX)) {
         this.#sendToDeviceOn(deviceId, path, { type: "protocol.error", code: "unsupported_command",
           commandId: message.commandId, message: "OpenClaw 会话不支持文件传输" });
@@ -3068,12 +3142,13 @@ export class HostService {
   }
 
   /** `session.activated` 回执：激活结果统一从 `BackendActivation` 摊平成协议字段。 */
-  #sendActivated(deviceId: string, requestId: string, agentKind: AgentKind, activated: BackendActivation): void {
+  #sendActivated(deviceId: string, requestId: string, agentKind: AgentKind, activated: BackendActivation, catalogId?: string): void {
     this.#sendToDevice(deviceId, {
       type: "session.activated",
       requestId,
       agentKind,
       ...(activated.sessionId === undefined ? {} : { sessionId: activated.sessionId }),
+      ...(catalogId === undefined ? {} : { codexCatalogId: catalogId }),
       spawnMode: activated.spawnMode,
       ...(activated.pid === undefined ? {} : { pid: activated.pid }),
     });
@@ -3132,15 +3207,24 @@ export class HostService {
   async #collectCatalogs(epoch: number): Promise<AgentSessionSummary[]> {
     // Query ready backends concurrently so one slow backend does not stall the whole catalog.
     // 逐后端记结果：拉取失败或后端没就绪，在模型里都不能退化成「它没有会话」（ADR-0032 模块 03）。
+    const unified = [...this.#deviceFeatures.values()].some(features => features.has(CODEX_UNIFIED_HISTORY));
     const results = await Promise.all(this.#backends.filter(backend => !this.#disabledSources.has(backend.kind)).map(async (backend): Promise<{
       sessions: AgentSessionSummary[];
       summary: HostCatalogBackend;
+      history?: CodexHistoryRead;
     }> => {
       if (!backend.isReady()) {
         return { sessions: [], summary: { kind: backend.kind, ready: false, sessions: 0, complete: false, elapsedMs: 0 } };
       }
       const started = Date.now();
       try {
+        if (unified && backend instanceof CodexRuntime) {
+          const { kind, historyStore } = backend;
+          const [active, archived] = await Promise.all([backend.catalogViews(false, true), backend.catalogViews(true, true)]);
+          const sessions = [...new Map([...active.legacy, ...archived.legacy].map(row => [row.sessionId, row])).values()];
+          return { sessions, summary: { kind, ready: true, sessions: sessions.length, complete: true, elapsedMs: Date.now() - started },
+            history: { kind, store: historyStore, active: active.unified, archived: archived.unified } };
+        }
         const load = (archived: boolean) => backend.catalogCoverage?.(archived)
           ?? (archived ? backend.catalog(true) : backend.catalog()).then(sessions => ({ sessions, complete: true }));
         const [active, archived] = await Promise.all([
@@ -3181,8 +3265,15 @@ export class HostService {
     const visible = sessions.filter(entry => entry.agentKind !== "codex" || !desktopIds.has(entry.sessionId));
 
     if (epoch === this.#catalogEpoch && !this.#serviceClosed) {
+      const enabled = new Set(this.#launchableAgentsSnapshot().filter(isCodexKind));
+      const history = results.flatMap(result => result.history ? [result.history] : []);
+      for (const row of backends) if (isCodexKind(row.kind)) enabled.add(row.kind);
+      const unifiedCode = unified ? {
+        ...this.#codexHistory.update(history, enabled), ready: history.length > 0,
+      } : undefined;
+      const currentProviders = this.#hostStateFacts.readProviders()?.providers.flatMap(row => row.modelProvider ? [{ agentKind: row.agentKind, provider: row.modelProvider }] : []);
       this.#hostStateFacts.catalog({ totalSessions: visible.length, truncated: false, backends,
-        sessions: visible.map(entry => ({ ...entry, hostname: hostname() })), currentProviders: this.#hostStateFacts.read()?.currentProviders ?? [] });
+        sessions: visible.map(entry => ({ ...entry, hostname: hostname() })), currentProviders: currentProviders ?? this.#hostStateFacts.read()?.currentProviders ?? [] }, unifiedCode);
     }
     return visible;
   }
@@ -3256,6 +3347,10 @@ export class HostService {
   }>): Promise<void> {
     const epoch = this.#deviceViewEpochs.get(deviceId), link = this.#links.get(deviceId);
     const kind = "agentKind" in message ? message.agentKind : undefined;
+    if (message.type === "session.launch" && message.codexLaunchMode !== undefined &&
+      (!this.#unifiedCodex(deviceId) || !isCodexKind(kind) || message.codexLaunchMode !== codexMode(kind))) {
+      this.#rejectAgentFeature(deviceId, message); return;
+    }
     const sourceCurrent = kind === undefined ? () => true : this.#sourceCurrent(kind);
     const current = () => sourceCurrent() && link?.active !== undefined && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId);
     if (!current() || !allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message); return; }
@@ -3436,6 +3531,49 @@ export class HostService {
     }
   }
 
+  async #codexHistoryRoute(sessionId: string) {
+    await this.#catalogWithCache();
+    const route = this.#codexHistory.route(sessionId);
+    if (!route) throw new ActivationError("session_not_found", "找不到这个 Codex 历史会话，请刷新目录");
+    return route;
+  }
+
+  async #resumeCodexHistory(deviceId: string, requestId: string, id: string, mode: CodexLaunchMode | undefined,
+    context: AgentActivateContext, requireLaunch: (kind: AgentKind) => () => void): Promise<void> {
+    const route = await this.#codexHistoryRoute(id);
+    if (route.archived) throw new ActivationError("session_not_found", "请先恢复这个已归档会话");
+    const candidates = this.#codexRuntimes(route.store);
+    const live = candidates.filter(runtime => runtime.servingActivation(route.threadId));
+    if (live.length > 1) throw new SessionArchiveError("session_busy", "无法确认 Codex 当前运行连接");
+    const selected = mode ? candidates.find(runtime => codexMode(runtime.kind) === mode)
+      : live[0] ?? (candidates.length === 1 ? candidates[0] : undefined);
+    if (!selected) throw new ActivationError("agent_unsupported", candidates.length > 1 && mode === undefined
+      ? "请选择 Codex 启动方式" : "所选 Codex 启动方式无法读取该会话");
+    const current = requireLaunch(selected.kind);
+    const requireCurrent = () => {
+      current();
+      if (!this.#unifiedCodex(deviceId) || !this.#codexRuntimes(route.store).includes(selected)) throw new AgentLaunchRevoked();
+    };
+    requireCurrent();
+    if (live[0] === selected) {
+      this.#sendActivated(deviceId, requestId, selected.kind, selected.servingActivation(route.threadId)!, id);
+      return;
+    }
+    // Never end another connection to satisfy a mode choice. A loaded peer may
+    // still be holding the writer even when its UI/turn looks idle.
+    if (live.length || !(await Promise.all(candidates.filter(peer => peer !== selected)
+      .map(peer => peer.confirmsNotLoaded(route.threadId)))).every(Boolean)) {
+      throw new SessionArchiveError("session_busy", "Codex 会话仍在另一种启动方式中打开");
+    }
+    await selected.assertResumableHistory(route.threadId);
+    requireCurrent();
+    // The native writer lock remains the final authority if a writer arrived
+    // between the observation and resume (including clients outside Orbis).
+    const activated = await selected.activateNative({ type: "resume", sessionId: route.threadId }, { ...context, requireCurrent });
+    this.#invalidateCatalog();
+    this.#sendActivated(deviceId, requestId, selected.kind, activated, id);
+  }
+
   /** §8 的四个请求。所有失败都走 `protocol.error` 并带回 `requestId`，不静默吞。 */
   async #handleSessionRequest(
     deviceId: string,
@@ -3463,6 +3601,28 @@ export class HostService {
     if (message.type === "session.activate") { this.#activationsPending++; this.refreshHostFacts(); }
     this.#options.log?.(`[debug] 收到 ${message.type}（requestId=${requestId}）`);
     try {
+      if (message.type === "session.archive" && isCodexHistoryId(message.sessionId)) {
+        const link = this.#links.get(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
+        const route = await this.#codexHistoryRoute(message.sessionId);
+        const candidates = this.#codexRuntimes(route.store);
+        const live = candidates.filter(runtime => runtime.servingActivation(route.threadId));
+        const selected = live[0] ?? candidates[0];
+        if (!selected) throw new ActivationError("agent_unsupported", "没有可读取该历史的 Codex 连接");
+        if (live.length > 1 || !(await Promise.all(candidates.filter(peer => peer !== selected)
+          .map(peer => peer.confirmsNotLoaded(route.threadId)))).every(Boolean)) {
+          throw new SessionArchiveError("session_busy", "无法确认 Codex 会话可以归档");
+        }
+        const current = this.#sourceCurrent(selected.kind);
+        const requireCurrent = () => {
+          if (!current() || this.#links.get(deviceId) !== link || !link?.active || this.#deviceViewEpochs.get(deviceId) !== epoch
+            || !this.#unifiedCodex(deviceId) || !this.#codexRuntimes(route.store).includes(selected)) throw new AgentLaunchRevoked();
+        };
+        requireCurrent();
+        try { await selected.setNativeArchived(route.threadId, message.archived, requireCurrent); }
+        finally { this.#invalidateCatalog(); }
+        this.#publishCodexArchive(selected, route.threadId, message.archived, { deviceId, requestId });
+        return;
+      }
       if (message.type === "session.archive") {
         const backend = this.#backends.find((candidate) => candidate.kind === message.agentKind && candidate.isReady());
         if (backend === undefined) throw new ActivationError("agent_unsupported", "对应的 agent 后端未就绪");
@@ -3472,7 +3632,8 @@ export class HostService {
           // Even a failed native call can unload a thread or leave a completed file move.
           this.#invalidateCatalog();
         }
-        this.#broadcastDeviceMessage({
+        if (backend instanceof CodexRuntime) this.#publishCodexArchive(backend, backend.nativeHistoryId(message.sessionId), message.archived, { deviceId, requestId });
+        else this.#broadcastDeviceMessage({
           type: "session.archive.changed", requestId,
           agentKind: message.agentKind, sessionId: message.sessionId, archived: message.archived,
         });
@@ -3509,13 +3670,16 @@ export class HostService {
         // profiles 与 authenticated 冲成 null。模型里的供应商摘要由 refreshProviderFacts() 独占写入；
         // 手机要用的 current 仍然在这条消息的返回值里（currentProviders），不受影响。
         const localHostname = hostname();
+        const currentProviders = providers.flat();
+        this.#hostStateFacts.catalogProviders(currentProviders);
+        const view = this.#unifiedCodex(deviceId) ? this.#hostStateFacts.catalogView(hiddenKinds(this.#agentView(deviceId)), true) : { sessions, currentProviders };
         const payload = {
           type: "session.list.result" as const,
           requestId,
-          sessions: sessions.filter(row => allowsAgentIdentity(this.#agentView(deviceId), row)).slice(0, 2_000).map(entry => ({ ...entry, hostname: localHostname })),
-          currentProviders: providers.flat(),
+          sessions: (view.sessions ?? []).filter(row => this.#unifiedCodex(deviceId) || allowsAgentIdentity(this.#agentView(deviceId), row))
+            .slice(0, 2_000).map(entry => ({ ...entry, hostname: localHostname })),
+          currentProviders: (view.currentProviders ?? []).slice(0, 2),
         };
-        this.#hostStateFacts.catalogProviders(payload.currentProviders);
         this.refreshHostFacts();
         this.#options.log?.(
           `[debug] 回 session.list.result：${payload.sessions.length} 条，${JSON.stringify(payload).length} 字节${cached ? "（命中缓存）" : ""}`,
@@ -3545,7 +3709,7 @@ export class HostService {
       const link = this.#links.get(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
       const requireLaunch = (kind: AgentKind) => {
         const sourceCurrent = this.#sourceCurrent(kind);
-        return () => { if (!sourceCurrent() || link !== this.#links.get(deviceId) || epoch !== this.#deviceViewEpochs.get(deviceId)) throw new AgentLaunchRevoked(); };
+        return () => { if (!sourceCurrent() || !link?.active || link !== this.#links.get(deviceId) || epoch !== this.#deviceViewEpochs.get(deviceId)) throw new AgentLaunchRevoked(); };
       };
       if (target.type === "new" && target.agentKind === KIMI_KIND) throw new ActivationError("agent_unsupported", "请使用可恢复的 Kimi Code 启动请求");
       if (target.type === "resume" && isKimiId(target.sessionId) && target.agentKind !== undefined && target.agentKind !== KIMI_KIND)
@@ -3555,6 +3719,10 @@ export class HostService {
         ...(message.spawnMode !== undefined ? { spawnMode: message.spawnMode }
           : target.type === "resume" && isKimiId(target.sessionId) ? { spawnMode: "headless" as const } : {}),
       };
+      if (target.type === "resume" && isCodexHistoryId(target.sessionId)) {
+        await this.#resumeCodexHistory(deviceId, requestId, target.sessionId, message.codexLaunchMode, context, requireLaunch);
+        return;
+      }
       if (target.type === "new") {
         const requireCurrent = requireLaunch(target.agentKind);
         requireCurrent();
@@ -3676,8 +3844,9 @@ export class HostService {
   #handleSessionReady(deviceId: string, kind: PathKind, active: PathKind, change: PathChange): void {
     // Features belong to the App process on the other end; a new handshake may be a different (older) build.
     const previousView = this.#agentView(deviceId);
+    const previousUnifiedCodex = this.#unifiedCodex(deviceId);
     this.#deviceFeatures.delete(deviceId);
-    if (previousView !== this.#agentView(deviceId)) this.#deviceViewEpochs.set(deviceId, randomUUID());
+    if (previousUnifiedCodex || previousView !== this.#agentView(deviceId)) this.#deviceViewEpochs.set(deviceId, randomUUID());
     this.#fieldTraffic.release(deviceId);
     this.#toolContentService.releaseDevice(deviceId); this.#toolInventory.closeOwner(deviceId);
     this.#fileChanges.releaseDevice(deviceId); this.#changeSubscribers.delete(deviceId);
@@ -3853,7 +4022,14 @@ export class HostService {
       sequence: this.#nextEventSequence(runtimeId, channelForDeviceMessage({ type: "runtime.event", event })), event };
   }
 
-  #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent): void {
+  #isCurrentCodexSource(runtimeId: string, event: Extract<RuntimeEvent, { type: "session.patch" | "session.snapshot" }>,
+    producer?: CodexRuntime): boolean {
+    if (!producer || !event.source || this.#backends.find(backend => backend.isReady() && backend.ownsRuntime(runtimeId)) !== producer) return false;
+    const current = producer.conversationSource(runtimeId, event.sessionId);
+    return current?.epoch === event.source.epoch && current.seq === event.source.seq && current.ready === event.source.ready;
+  }
+
+  #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent, codex?: CodexRuntime): void {
     if (this.#isCodexRuntime(runtimeId)) this.#deviceMessageRendering.observe(runtimeId, event);
     if (!isKimiId(runtimeId) && !runtimeId.startsWith(OPENCLAW_PREFIX)) this.#fileChangeTurns.observe(runtimeId, event);
     if (event.type === "tool.activity") return;
@@ -3870,11 +4046,23 @@ export class HostService {
       const displaced = this.#agentFacts.displacedRuntime(runtimeId, event.metadata);
       if (displaced) this.#markRuntimeOffline(displaced.runtimeId, "replaced_by_new_runtime");
     }
-    if (event.type === "session.snapshot") { this.#sessionSync.handleEvent(runtimeId, event); return; }
+    if (event.type === "session.snapshot") {
+      this.#sessionSync.handleEvent(runtimeId, event, event.range === "preview" && this.#isCurrentCodexSource(runtimeId, event, codex));
+      return;
+    }
     if (event.type === "session.patch") {
       this.#countToolTraffic(runtimeId, "bodyJsonBytes", Buffer.byteLength(JSON.stringify(event.live?.messages ?? []), "utf8"));
       let rejectionReason: string | undefined;
       if (!this.#acceptConversation(runtimeId, event, reason => { rejectionReason = reason; })) {
+        if (rejectionReason?.startsWith("registry_source_epoch_limit:") &&
+          this.#isCurrentCodexSource(runtimeId, event, codex)) {
+          // Don't serve the old cached preview after a confirmed native boundary.
+          // Forward only the existing unknown boundary, never a rejected ready patch.
+          const scope = this.#agentFacts.scopeOf(runtimeId);
+          if (scope && this.#conversationState.hasBaseline(scope)) this.#invalidateConversationBaseline(runtimeId, event, rejectionReason);
+          if (!event.source.ready) this.#broadcastDeviceMessage(this.#runtimeEventMessage(runtimeId, event));
+          return;
+        }
         if (["patch_baseline_mismatch", "handshake_base_mismatch", "unknown_patch_base_mismatch", "unknown_epoch_base_mismatch"]
             .includes(rejectionReason ?? "")) this.#invalidateConversationBaseline(runtimeId, event, rejectionReason!);
         this.#loopback?.sendResync(runtimeId, "model_baseline_required");
@@ -3984,6 +4172,12 @@ export class HostService {
   #broadcastDeviceMessage(message: RelayToDeviceMessage): void {
     if (message.type === "runtime.offline") this.#deviceMessageRendering.releaseRuntime(message.runtimeId);
     if (message.type === "runtime.online" || message.type === "runtime.offline") this.refreshHostFacts();
+    // Negotiated devices receive catalog identity alongside the unchanged wire
+    // identity, not instead of it. A broadcast cannot share those bytes.
+    if (message.type === "runtime.online" || message.type === "runtime.event" && message.event.type === "runtime.metadata") {
+      for (const id of this.#links.keys()) this.#sendToDevice(id, message);
+      return;
+    }
     const visible = (id: string) => this.#visibleTo(id, message) !== undefined;
     const chatEvent = message.type === "runtime.event" && ["session.patch", "session.snapshot", "message.started", "message.delta",
       "message.finished", "turn.started", "turn.finished", "tool.started", "tool.updated", "tool.finished"].includes(message.event.type);

@@ -61,6 +61,22 @@ class LaunchLedgerTest {
         }
     }
 
+    @Test fun codexLaunchModeNegotiatesSeparatelyFromSpawnMode() {
+        val legacy = setup()
+        val unified = legacy.copy(unifiedCodexHistory = true)
+        val target = Json.decodeFromString<kotlinx.serialization.json.JsonObject>("""{"type":"resume","sessionId":"codex-history:${"a".repeat(64)}","agentKind":"codex"}""")
+        assertNull(legacy.sessionActivationRequest("legacy", target, codexLaunchMode = "desktop")["codexLaunchMode"])
+        val request = unified.sessionActivationRequest("new", target, spawnMode = "headless", codexLaunchMode = "desktop")
+        assertEquals("\"desktop\"", request["codexLaunchMode"].toString())
+        assertEquals("\"headless\"", request["spawnMode"].toString())
+
+        val desktop = SessionConfigurationSnapshot("codexDesktop", "/repo/app", "fixture", 0, SessionConfigurationValues(), SessionConfigurationCatalog("fixture"))
+        val configured = unified.configuredSessionLaunchRequest("configured", desktop, spawnMode = "headless")
+        assertEquals("\"desktop\"", configured["codexLaunchMode"].toString())
+        assertEquals("\"headless\"", configured["spawnMode"].toString())
+        assertNull(legacy.configuredSessionLaunchRequest("legacy-config", desktop)["codexLaunchMode"])
+    }
+
     // LAUNCH-WAIT-01: legacy/resume launches have no configured journal; only
     // a matching uncertain or failed configured launch may expose abandonment.
     @Test fun abandonmentAvailabilityRequiresTheMatchingUnresolvedJournal() {

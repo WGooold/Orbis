@@ -95,17 +95,14 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
         DualProviderDial(kind, providers, currentIndex, hostId, active,
             onKind = { next -> if (kind != next) { kind = next; previewId = "" } },
             onBrowse = { previewId = providers.getOrNull(it)?.id.orEmpty() },
-            onMoving = { moving = it }, modifier = Modifier.fillMaxWidth().weight(1f).heightIn(min = 300.dp))
+            onMoving = { moving = it }, modifier = Modifier.fillMaxWidth().weight(1f).heightIn(min = 220.dp))
         AgentTheme(agentBrand(kind)) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 ProviderQuotaPair(state, kind, preview, canQuery = canUse,
                     onQuery = { selected -> onQuerySubscription(selected, hostId) })
-                state.subscriptionQuotas[kind]?.takeIf { it.providerId == preview?.id }?.error?.let {
-                    Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("provider-quota-error"))
-                }
                 operation?.error?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error) }
-                state.providerCatalogProblems[kind]?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error) }
+                state.providerCatalogProblems[kind]?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("provider-catalog-problem")) }
                 val title = when {
                     operation?.requestId != null -> L10n.tr("正在切换配置")
                     preview == null -> if (operation?.loading == true) L10n.tr("正在读取供应商") else L10n.tr("当前没有可用供应商")
@@ -376,41 +373,46 @@ private fun ProviderQuotaPair(state: RemoteState, kind: String, provider: AgentP
     LaunchedEffect(canQuery, provider?.id, available) {
         if (canQuery && available && !queried && snapshot == null && !loading) { queried = true; provider?.let(onQuery) }
     }
-    Box(Modifier.fillMaxWidth().heightIn(min = 112.dp).testTag("provider-quota-pair"), contentAlignment = Alignment.CenterStart) {
-        if (!available) StatusWithInfo(L10n.tr("配额不可用"),
-            if (provider?.subscriptionSupported == true) L10n.tr("启用后可查询配额") else L10n.tr("这个配置不提供配额查询"))
-        else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-            listOf("five_hour", "seven_day").forEach { name ->
-                val window = snapshot?.quota?.windows?.firstOrNull { it.name == name }
-                val resetCountdown = subscriptionQuotaResetCountdownLabel(window?.resetsAt)
-                val percent = window?.remainingPercent
-                val low = percent != null && percent <= 20
-                val color = if (low) LocalOrbisPalette.current.danger else MaterialTheme.colorScheme.primary
-                val progress by animateFloatAsState(((percent ?: 0.0) / 100).toFloat(),
-                    tween(InteractionMotion.duration(InteractionMotion.State)), label = "quota-progress")
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(if (name == "five_hour") L10n.tr("5 小时") else L10n.tr("7 天"),
-                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (low) { Icon(OrbisSymbols.Warning, null, Modifier.size(12.dp), tint = color)
-                            Text(L10n.tr("即将用完"), style = MaterialTheme.typography.labelSmall, color = color) }
-                    }
-                    MotionText(percent?.let { String.format(L10n.locale, "%.0f%%", it) } ?: "—",
-                        style = MaterialTheme.typography.displaySmall, color = if (low) color else MaterialTheme.colorScheme.onSurface)
-                    NeumorphSurface(Modifier.fillMaxWidth().height(6.dp), CircleShape, NeumorphStyle.Pressed, shadowScale = 0.4f) {
-                        Box(Modifier.fillMaxWidth().height(6.dp)) {
-                            Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp).background(color, CircleShape))
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(Modifier.fillMaxWidth().heightIn(min = 112.dp).testTag("provider-quota-pair"), contentAlignment = Alignment.CenterStart) {
+            if (!available) StatusWithInfo(L10n.tr("配额不可用"),
+                if (provider?.subscriptionSupported == true) L10n.tr("启用后可查询配额") else L10n.tr("这个配置不提供配额查询"))
+            else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                listOf("five_hour", "seven_day").forEach { name ->
+                    val window = snapshot?.quota?.windows?.firstOrNull { it.name == name }
+                    val resetCountdown = subscriptionQuotaResetCountdownLabel(window?.resetsAt)
+                    val percent = window?.remainingPercent
+                    val low = percent != null && percent <= 20
+                    val color = if (low) LocalOrbisPalette.current.danger else MaterialTheme.colorScheme.primary
+                    val progress by animateFloatAsState(((percent ?: 0.0) / 100).toFloat(),
+                        tween(InteractionMotion.duration(InteractionMotion.State)), label = "quota-progress")
+                    Column(Modifier.weight(1f).testTag("provider-quota-$name"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(if (name == "five_hour") L10n.tr("5 小时") else L10n.tr("7 天"),
+                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            if (low) { Icon(OrbisSymbols.Warning, null, Modifier.size(12.dp), tint = color)
+                                Text(L10n.tr("即将用完"), style = MaterialTheme.typography.labelSmall, color = color) }
                         }
+                        MotionText(percent?.let { String.format(L10n.locale, "%.0f%%", it) } ?: "—",
+                            style = MaterialTheme.typography.displaySmall, color = if (low) color else MaterialTheme.colorScheme.onSurface)
+                        NeumorphSurface(Modifier.fillMaxWidth().height(6.dp), CircleShape, NeumorphStyle.Pressed, shadowScale = 0.4f) {
+                            Box(Modifier.fillMaxWidth().height(6.dp)) {
+                                Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp).background(color, CircleShape))
+                            }
+                        }
+                        // A manual refresh keeps the last reading visible, so the caption carries the in-flight state.
+                        Text(if (loading) L10n.tr("查询中") else resetCountdown
+                            ?: L10n.tr("暂不可用"), style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth())
                     }
-                    // A manual refresh keeps the last reading visible, so the caption carries the in-flight state.
-                    Text(if (loading) L10n.tr("查询中") else resetCountdown
-                        ?: L10n.tr("暂不可用"), style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth())
                 }
+                // Always present: every tap after the automatic first query is a fresh subscription read.
+                NeumorphIconButton({ provider?.let(onQuery) }, OrbisSymbols.Refresh,
+                    L10n.tr("刷新配额"), enabled = canQuery && !loading, modifier = Modifier.testTag("provider-query"))
             }
-            // Always present: every tap after the automatic first query is a fresh subscription read.
-            NeumorphIconButton({ provider?.let(onQuery) }, OrbisSymbols.Refresh,
-                L10n.tr("刷新配额"), enabled = canQuery && !loading, modifier = Modifier.testTag("provider-query"))
+        }
+        if (available && !loading) snapshot?.error?.let { error ->
+            InlineFeedbackError(error, Modifier.testTag("provider-quota-error"))
         }
     }
 }

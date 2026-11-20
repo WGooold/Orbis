@@ -93,6 +93,10 @@ internal class LanTransport(
         if (importChannel != null && attempt?.importChannel !== importChannel) return false
         send("data", payload.withWireProtocolVersion(protocolVersion).toString().toByteArray(Charsets.UTF_8), "ctl")
     }
+    fun sendFilePreview(payload: JsonObject): Boolean = synchronized(lock) {
+        if (attempt?.allowsFilePreview != true) return false
+        sendPayload(payload)
+    }
     fun sendBinary(payload: ByteArray, channel: String, importChannel: Any? = null): Boolean = synchronized(lock) {
         if (importChannel != null && attempt?.importChannel !== importChannel) return false
         send("bin", payload, channel)
@@ -119,6 +123,7 @@ internal class LanTransport(
         var socket: WebSocket? = null
         var channel: E2eChannel? = null
         var importChannel: Any? = null
+        var allowsFilePreview = false
         val ready = CompletableDeferred<Boolean>()
         val down = CompletableDeferred<Unit>()
         private val handshake = DeviceHandshake(pskRoot)
@@ -162,6 +167,7 @@ internal class LanTransport(
                                     val message = runCatching { E2eJson.json.parseToJsonElement(text) as? JsonObject }.getOrNull()
                                     if (message?.get("type") == JsonPrimitive("device.ready")) {
                                         importChannel = if (announcesImportTarget(message)) importChannel ?: Any() else null
+                                        allowsFilePreview = announcesFilePreview(message, deviceId)
                                     }
                                 }
                                 onPlaintext(text, envelope.hdr.ch)

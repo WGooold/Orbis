@@ -347,7 +347,7 @@ final class HostState: ObservableObject {
         let key = pairing.map(FileTransfers.pairingKey)
         let changedHost = hostKey != key
         guard changedHost || self.connected != connected else { return }
-        cancelRequests()
+        cancelRequests(retainQuota: !changedHost)
         queryReads.disconnect()
         self.connected = connected
         hostKey = key; hostId = pairing?.hostId
@@ -437,7 +437,6 @@ final class HostState: ObservableObject {
 
     func loadProviders(_ kind: String) {
         guard ["pi", "codex", "dsh", "claude"].contains(kind), !changingProvider else { return }
-        clearQuota()
         providerKind = kind; providerError = nil; providerNotice = nil
         refresh(["providers"])
     }
@@ -497,8 +496,15 @@ final class HostState: ObservableObject {
         return enabled.isEmpty ? L10n.tr("未启用供应商") : enabled.map(\.name).joined(separator: L10n.tr("、"))
     }
     func subscriptionQuota(for kind: String) -> ProviderQuotaSnapshot? {
-        guard let snapshot = subscriptionQuotas[kind], currentProvider(for: kind)?.id == snapshot.providerId else { return nil }
+        currentProvider(for: kind).flatMap { subscriptionQuota(for: $0) }
+    }
+    func subscriptionQuota(for provider: AgentProvider) -> ProviderQuotaSnapshot? {
+        guard provider.enabled, provider.subscriptionSupported,
+              let snapshot = subscriptionQuotas[provider.kind], snapshot.providerId == provider.id else { return nil }
         return snapshot
+    }
+    func isQueryingQuota(for provider: AgentProvider) -> Bool {
+        quotaRequest?.kind == provider.kind && quotaRequest?.providerId == provider.id
     }
     var currentProviders: [String: String] {
         guard let domain = domains["providers"], domain.availability == "ready", missing["providers"] == nil else { return [:] }
@@ -519,7 +525,7 @@ final class HostState: ObservableObject {
     func querySubscription(_ provider: AgentProvider, expectedHostKey: String) {
         guard hostKey == expectedHostKey, canChangeProvider(for: provider.kind), providers(for: provider.kind).contains(provider), provider.enabled,
               provider.subscriptionSupported else { return }
-        quota = subscriptionQuota(for: provider.kind)?.quota
+        quota = subscriptionQuota(for: provider)?.quota
         quotaError = nil
         subscriptionQuotas[provider.kind] = ProviderQuotaSnapshot(providerId: provider.id, quota: quota, error: nil)
         let id = UUID().uuidString
@@ -534,6 +540,15 @@ final class HostState: ObservableObject {
             guard let self, self.quotaRequest?.id == id else { return }
             self.finishQuota(error: L10n.tr("配额查询超时，请稍后重试"))
         }
+    }
+
+    // An authenticated protocol rejection is as final as a provider.subscription.result failure.
+    @discardableResult
+    func rejectQuotaRequest(_ requestId: String?, detail: String?) -> Bool {
+        guard connected, let request = quotaRequest, request.id == requestId, request.hostKey == hostKey else { return false }
+        let reason = detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        finishQuota(error: FeedbackText.reason(reason.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("配额查询失败，请重试")))
+        return true
     }
 
     private func finishQuota(error: String? = nil) {
@@ -626,7 +641,9 @@ final class HostState: ObservableObject {
                   request.kind == message["kind"] as? String, request.providerId == message["id"] as? String,
                   request.hostKey == hostKey,
                   subscriptionQuotas[request.kind]?.providerId == request.providerId else { return true }
-            if let error = message["error"] as? String { finishQuota(error: error); return true }
+            if let error = message["error"] as? String, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                finishQuota(error: FeedbackText.reason(error)); return true
+            }
             guard let raw = message["quota"] as? [String: Any], let result: SubscriptionQuota = decode(raw), result.valid else {
                 finishQuota(error: L10n.tr("配额数据格式无法识别，请升级 Host 后重试")); return true
             }
@@ -667,6 +684,7 @@ final class HostState: ObservableObject {
             diagnosticPage = page; finishDiagnostics(); return true
         case "protocol.error":
             let id = message["requestId"] as? String
+            if rejectQuotaRequest(id, detail: message["message"] as? String) { return true }
             let error = message["message"] as? String ?? L10n.tr("电脑端无法完成读取")
             if let id, id == diagnosticRequest { finishDiagnostics(error: error); return true }
             if let id, id == providerRequest?.id {
@@ -742,9 +760,11 @@ final class HostState: ObservableObject {
     private func finishDiagnostics(error: String? = nil) {
         diagnosticTimeout?.cancel(); diagnosticRequest = nil; diagnosticsLoading = false; diagnosticsError = error
     }
-    private func cancelRequests() {
+    private func cancelRequests(retainQuota: Bool = false) {
         modelRevision &+= 1
-        clearQuota()
+        if retainQuota {
+            if quotaRequest != nil { finishQuota(error: L10n.tr("连接已断开，请重新查询配额")) }
+        } else { clearQuota() }
         modelTimeout?.cancel(); providerTimeout?.cancel(); diagnosticTimeout?.cancel(); catalogTimeout?.cancel()
         catalogRequest = nil
         if changingProvider { stopProviderChange(L10n.tr("连接已断开，请刷新以确认操作结果")) }

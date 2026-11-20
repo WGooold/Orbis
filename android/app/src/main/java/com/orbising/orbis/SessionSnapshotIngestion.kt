@@ -131,10 +131,12 @@ internal fun ingestSessionSnapshot(
     currentState: () -> RemoteState,
     connectionCurrent: () -> Boolean,
 ): CommittedSessionBatch? {
+    val runtime = currentState().runtimes[runtimeId] ?: return null
+    val storage = runtime.codexCatalogId ?: snapshot.sessionId
     fun owns(): Boolean = connectionCurrent() && currentState().ownsSessionSnapshot(
         commandId, runtimeId, snapshot.sessionId, snapshot.syncId,
         snapshot.targetLeafId ?: snapshot.cursor.leafId, snapshot.range, snapshot.beforeEntryId,
-    )
+    ) && currentState().runtimes[runtimeId]?.codexCatalogId == runtime.codexCatalogId
     if (!owns()) return null
     val state = currentState()
     val pending = state.sessionSyncCommands.getValue(commandId)
@@ -162,7 +164,7 @@ internal fun ingestSessionSnapshot(
         require(snapshot.entries.size <= pending.historyPrefetch.nextMaxEntries) { "history_window_count_exceeded" }
         require(snapshot.rangeStatus in setOf("complete", "older_available", "limit_reached")) { "history_window_range_invalid" }
         val boundaryId = requireNotNull(pending.beforeEntryId)
-        val boundary = store.readEntries(device, snapshot.sessionId, listOf(boundaryId)).singleOrNull()
+        val boundary = store.readEntries(device, storage, listOf(boundaryId)).singleOrNull()
         requireNotNull(boundary) { "history_window_boundary_missing" }
         var parent: String? = null
         snapshot.entries.forEachIndexed { index, entry ->
@@ -175,7 +177,7 @@ internal fun ingestSessionSnapshot(
     }
     val observed = if (cacheOnly) null else
         (pending.targetLeafId ?: snapshot.targetLeafId ?: snapshot.cursor.leafId)?.takeIf { id ->
-            snapshot.entries.any { it.entryId == id } || store.contains(device, snapshot.sessionId, id)
+            snapshot.entries.any { it.entryId == id } || store.contains(device, storage, id)
         }
     val patches = snapshot.source?.takeIf { !cacheOnly }?.let { source ->
         contiguousSourcePatches(source.epoch, source.seq, state.conversations[runtimeId]?.sourcePatchBuffer?.values.orEmpty())
@@ -185,10 +187,9 @@ internal fun ingestSessionSnapshot(
         display = mergedSnapshotDisplay(snapshot.display, patches),
     )
     val finalObserved = if (patches.isEmpty()) observed else patches.last().head.leafId?.takeIf { id ->
-        page.entries.any { it.entryId == id } || store.contains(device, snapshot.sessionId, id)
+        page.entries.any { it.entryId == id } || store.contains(device, storage, id)
     }
-    return ingestCanonicalPage(store, device, page, state, finalObserved, ::owns,
-        state.runtimes.getValue(runtimeId).agentKind, activateSource = !cacheOnly)
+    return ingestCanonicalPage(store, device, page, storage, finalObserved, ::owns, runtime.agentKind, activateSource = !cacheOnly)
 }
 
 internal fun RemoteState.ownsSessionPatch(runtimeId: String, patch: SessionPatch): Boolean {
@@ -210,7 +211,10 @@ internal fun ingestSessionPatch(
     currentState: () -> RemoteState,
     connectionCurrent: () -> Boolean,
 ): CommittedSessionBatch? {
-    fun owns() = connectionCurrent() && currentState().ownsSessionPatch(runtimeId, patch)
+    val runtime = currentState().runtimes[runtimeId] ?: return null
+    val storage = runtime.codexCatalogId ?: patch.sessionId
+    fun owns() = connectionCurrent() && currentState().ownsSessionPatch(runtimeId, patch) &&
+        currentState().runtimes[runtimeId]?.codexCatalogId == runtime.codexCatalogId
     if (!owns()) return null
     require(patch.entries.size <= 256) { "session_patch_too_many_entries" }
     val state = currentState()
@@ -223,16 +227,15 @@ internal fun ingestSessionPatch(
     if (patches.isEmpty()) return CommittedSessionBatch(emptyList())
     val page = patches.last().canonicalPage(mergedPatchEntries(emptyList(), patches), mergedPatchDisplay(patches))
     val observed = patches.last().head.leafId?.takeIf { id ->
-        page.entries.any { it.entryId == id } || store.contains(device, patch.sessionId, id) }
-    return ingestCanonicalPage(store, device, page, state, observed, ::owns,
-        state.runtimes.getValue(runtimeId).agentKind)
+        page.entries.any { it.entryId == id } || store.contains(device, storage, id) }
+    return ingestCanonicalPage(store, device, page, storage, observed, ::owns, runtime.agentKind)
 }
 
 private fun ingestCanonicalPage(
     store: SessionGraphStore,
     device: DeviceCredential,
     snapshot: SessionGraphSnapshot,
-    state: RemoteState,
+    storage: String,
     observed: String?,
     owns: () -> Boolean,
     agentKind: String?,
@@ -243,18 +246,18 @@ private fun ingestCanonicalPage(
     requireNotNull(snapshot.source) { "session_source_missing" }
     validateCanonicalEntries(snapshot.entries, { null })
     try {
-        store.upsert(device, snapshot.sessionId, snapshot.entries, observed,
+        store.upsert(device, storage, snapshot.entries, observed,
             snapshot.turnTimings.orEmpty(), writeGuard = owns, agentKind = agentKind,
             source = snapshot.source, activateSource = activateSource, display = snapshot.display)
     } catch (error: SessionGraphStoreException) {
         if (error.message == "stale_snapshot") return null
         throw error
     }
-    val entries = store.readEntries(device, snapshot.sessionId, snapshot.entries.map { it.entryId })
+    val entries = store.readEntries(device, storage, snapshot.entries.map { it.entryId })
     if (!owns()) return null
     // 显示结果同样从盘上读回来：条目被来源修正过时，只有盘上那一份才配得上它们。
     val committedDisplay = snapshot.display?.let { wire ->
-        val stored = store.readCommittedDisplay(device, snapshot.sessionId, entries.map(SessionGraphEntry::entryId))
+        val stored = store.readCommittedDisplay(device, storage, entries.map(SessionGraphEntry::entryId))
         DisplayBatch(
             projectionVersion = wire.projectionVersion,
             entries = entries.mapNotNull { stored.entries[it.entryId] },

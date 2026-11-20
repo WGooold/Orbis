@@ -168,6 +168,55 @@ struct HostStateTests {
         #expect(state.subscriptionQuota(for: "claude")?.quota?.windows.last?.remainingPercent == 40)
     }
 
+    // QUOTA-FEEDBACK-01: failures stay with the request even when the displayed Agent changes.
+    @Test func quotaRejectionWhileBrowsingAnotherAgentKeepsOwnedReadingAndFailure() async throws {
+        let (state, sent) = setup()
+        let rows = (providers(kind: "codex")["providers"] as! [[String: Any]]) +
+            (providers(kind: "claude")["providers"] as! [[String: Any]])
+        await state.consume(snapshot(sent, domains: [domain("providers", value: ["providers": rows])]))
+        let codex = try #require(state.currentProvider(for: "codex"))
+        let key = try #require(state.hostKey)
+        state.querySubscription(codex, expectedHostKey: key)
+        await state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": codex.id,
+            "quota": ["checkedAt": 1000, "windows": [
+                ["name": "five_hour", "remainingPercent": 80, "resetsAt": NSNull()],
+                ["name": "seven_day", "remainingPercent": 40, "resetsAt": NSNull()]]]])
+        state.querySubscription(codex, expectedHostKey: key)
+        let request = sent.last["requestId"]!
+        state.loadProviders("claude")
+        let error: [String: Any] = ["type": "protocol.error", "requestId": request, "code": "invalid_request", "message": "电脑端不支持配额查询"]
+        #expect(await state.consume(error))
+        #expect(!state.queryingQuota)
+        #expect(state.subscriptionQuota(for: "codex")?.error == "电脑端不支持配额查询")
+        #expect(state.subscriptionQuota(for: "codex")?.quota?.windows.first?.remainingPercent == 80)
+        #expect(state.subscriptionQuota(for: "claude") == nil)
+        #expect(state.providerError == nil)
+        #expect(!(await state.consume(error)))
+    }
+
+    @Test func disconnectWhileRefreshingKeepsLastReadingAndDoesNotAcceptLateQuota() async throws {
+        let (state, sent) = setup()
+        await installProviders(state, sent)
+        let codex = try #require(state.currentProvider(for: "codex"))
+        let key = try #require(state.hostKey)
+        state.querySubscription(codex, expectedHostKey: key)
+        let data: [String: Any] = ["checkedAt": 1000, "windows": [
+            ["name": "five_hour", "remainingPercent": 80, "resetsAt": NSNull()],
+            ["name": "seven_day", "remainingPercent": 40, "resetsAt": NSNull()]]]
+        await state.consume(["type": "provider.subscription.result", "requestId": sent.last["requestId"]!, "kind": "codex", "id": codex.id, "quota": data])
+        state.querySubscription(codex, expectedHostKey: key)
+        let pending = sent.last["requestId"]!
+        state.setConnection(pairing(), connected: false)
+        #expect(!state.queryingQuota)
+        #expect(state.subscriptionQuota(for: "codex")?.quota?.windows.first?.remainingPercent == 80)
+        #expect(state.subscriptionQuota(for: "codex")?.error == L10n.tr("连接已断开，请重新查询配额"))
+        state.setConnection(pairing(), connected: true)
+        await state.consume(["type": "provider.subscription.result", "requestId": pending, "kind": "codex", "id": codex.id, "error": "late error"])
+        #expect(state.subscriptionQuota(for: "codex")?.error == L10n.tr("连接已断开，请重新查询配额"))
+        state.setConnection(pairing("host-b"), connected: true)
+        #expect(state.subscriptionQuotas.isEmpty)
+    }
+
     // QUOTA-FEEDBACK-02: only a confirmed configuration change supersedes a pending quota reply.
     @Test func temporaryCatalogGapKeepsQuotaButAConfirmedSwitchInvalidatesIt() async throws {
         let (state, sent) = setup()

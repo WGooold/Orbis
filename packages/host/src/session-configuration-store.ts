@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { AgentKindSchema, SessionConfigurationValuesSchema, type AgentKind, type ConfiguredSessionLaunch, type SessionConfigurationCatalog,
+import { AgentKindSchema, CodexLaunchModeSchema, SessionConfigurationValuesSchema, type AgentKind, type ConfiguredSessionLaunch, type SessionConfigurationCatalog,
   type SessionConfigurationValues, type SessionLaunchResult } from "@orbis/protocol";
 
 const preference = z.object({ revision: z.number().int().nonnegative(), values: SessionConfigurationValuesSchema });
@@ -10,7 +10,7 @@ const launch = z.object({
   deviceId: z.string(), fingerprint: z.string(), launchId: z.string(), agentKind: AgentKindSchema,
   cwd: z.string(), binding: z.string(), revision: z.number().int().nonnegative(), values: SessionConfigurationValuesSchema,
   phase: z.enum(["preparing", "created", "configuring", "ready", "failed", "unknown"]),
-  sessionId: z.string().optional(), spawnMode: z.enum(["tui", "headless"]).optional(), error: z.string().optional(),
+  sessionId: z.string().optional(), spawnMode: z.enum(["tui", "headless"]).optional(), codexLaunchMode: CodexLaunchModeSchema.optional(), error: z.string().optional(),
   /** Reserved before opening Claude; not evidence that the native session exists. */
   expectedSessionId: z.string().uuid().optional(),
   nativeLaunchMarker: z.string().uuid().optional(),
@@ -27,6 +27,11 @@ const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(
   : value !== null && typeof value === "object" ? Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)
     .sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
 const fingerprint = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+// Keep the exact pre-ADR-0095 fingerprint for legacy requests, while binding a
+// negotiated launch mode into the durable identity when the caller supplied it.
+const launchFingerprint = (request: ConfiguredSessionLaunch): string => fingerprint(request.codexLaunchMode === undefined
+  ? [request.agentKind, request.cwd, request.binding, request.values, request.spawnMode ?? "tui"]
+  : [request.agentKind, request.cwd, request.binding, request.values, request.spawnMode ?? "tui", request.codexLaunchMode]);
 
 /** A selected value must still belong to the current native catalog at the side-effect boundary. */
 export function validateSessionConfiguration(catalog: SessionConfigurationCatalog, values: SessionConfigurationValues): void {
@@ -99,7 +104,7 @@ export class SessionConfigurationStore {
   begin(deviceId: string, request: ConfiguredSessionLaunch): Promise<{ record: Launch; execute: boolean }> {
     return this.#serial(async () => {
       const data = structuredClone(await this.#load()); const key = this.#key(deviceId, request.launchId);
-      const hash = fingerprint([request.agentKind, request.cwd, request.binding, request.values, request.spawnMode ?? "tui"]);
+      const hash = launchFingerprint(request);
       const prior = data.launches[key];
       if (prior) {
         if (prior.fingerprint !== hash) throw new SessionConfigurationError("launch_id_conflict", "启动身份与已有配置冲突，请先核对原启动");
@@ -114,6 +119,7 @@ export class SessionConfigurationStore {
       data.preferences[prefKey] = { revision, values: request.values };
       const record: Launch = { deviceId, fingerprint: hash, launchId: request.launchId, agentKind: request.agentKind,
         cwd: request.cwd, binding: request.binding, revision, values: request.values, phase: "preparing",
+        ...(request.codexLaunchMode === undefined ? {} : { codexLaunchMode: request.codexLaunchMode }),
         ...(request.agentKind === "claude" ? { expectedSessionId: randomUUID() } : {}),
         ...(request.agentKind === "kimiCode" ? { nativeLaunchMarker: randomUUID() } : {}) };
       data.launches[key] = record; await this.#commit(data); this.#active.add(key);
@@ -126,9 +132,10 @@ export class SessionConfigurationStore {
       const data = structuredClone(await this.#load()); const key = this.#key(deviceId, request.launchId);
       if (data.launches[key]) return;
       if (Object.keys(data.launches).length >= 4096) throw new SessionConfigurationError("launch_capacity", "启动记录已达上限，请在电脑端检查保留记录");
-      data.launches[key] = { deviceId, fingerprint: fingerprint([request.agentKind, request.cwd, request.binding, request.values, request.spawnMode ?? "tui"]),
+      data.launches[key] = { deviceId, fingerprint: launchFingerprint(request),
         launchId: request.launchId, agentKind: request.agentKind, cwd: request.cwd, binding: request.binding,
-        revision: request.revision, values: request.values, phase: "failed", error };
+        revision: request.revision, values: request.values, phase: "failed",
+        ...(request.codexLaunchMode === undefined ? {} : { codexLaunchMode: request.codexLaunchMode }), error };
       await this.#commit(data);
     });
   }

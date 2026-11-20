@@ -14,6 +14,9 @@ import { basename, extname, join } from "node:path";
 
 import {
   ARTIFACT_CHUNK_BYTES,
+  FILE_PREVIEW_BYTES,
+  FILE_PREVIEW_DOCUMENT_BYTES,
+  FILE_PREVIEW_CHUNK_BYTES,
   MESSAGE_FILE_PREFIX,
   PROTOCOL_VERSION,
   encodeArtifactChunkFrame,
@@ -23,6 +26,7 @@ import {
   type RuntimeCommand,
   type RuntimeEvent,
 } from "@orbis/protocol";
+import { readStaticFilePreview, type StaticPreviewFormat } from "./static-file-preview.js";
 
 /** 同时在跑的下载条数上限。这是防手滑，不是安全边界。 */
 const DEFAULT_MAX_CONCURRENT = 4;
@@ -30,6 +34,9 @@ const DEFAULT_MAX_CONCURRENT = 4;
 const MAX_INDEX_ENTRIES = 500;
 /** pull 传输多久没有任何 `artifact.read` 就回收（手机静默消失时的兜底）。 */
 const PULL_IDLE_TIMEOUT_MS = 60_000;
+const PREVIEW_TIMEOUT_MS = 40_000;
+const MAX_HOST_PREVIEWS = 2;
+type PreviewFailed = Extract<RelayToDeviceMessage, { type: "file.preview.failed" }>;
 
 type DownloadCommand = Extract<RuntimeCommand, { type: "file.download" | "artifact.download" }>;
 
@@ -43,6 +50,7 @@ export type HostDownloadServiceOptions = {
   /** artifact 索引落盘位置（`<stateDir>/artifacts.json`）。 */
   indexPath: string;
   resolveMessageReference?: (id: string, deviceId: string) => Promise<string>;
+  resolvePreviewReference?: (id: string, deviceId: string) => Promise<{ path: string; identity: string }>;
   log?: (line: string) => void;
   maxConcurrent?: number;
 };
@@ -55,9 +63,7 @@ type ResolvedArtifact = RemoteArtifact & { path: string; referenceId?: string };
 /**
  * 一条 receiver-driven 的范围下载（ADR-0005）。
  *
- * 刻意只留这五个字段：没有窗口、没有 ack、没有重试计数、不持文件句柄。
- * 每次 `artifact.read` 现场打开文件按范围读一段——一 MiB 的 I/O 面前，一次 open 的开销
- * 可以忽略，换来的是「设备静默消失绝不会漏一个 fd」。
+ * 不持文件句柄或发送窗口。普通下载每次按范围读盘，预览读取已经准备好的小快照。
  */
 type ActivePull = {
   deviceId: string;
@@ -71,6 +77,13 @@ type ActivePull = {
   /** 已服务的范围请求数（含重传），用来在完成日志里说清「传了多少次」。 */
   reads: number;
   startedAt: number;
+  preview?: { format: StaticPreviewFormat; bytes: Uint8Array; deadline: ReturnType<typeof setTimeout> };
+};
+
+type PreparingPreview = {
+  commandId: string;
+  abandoned: boolean;
+  next?: { commandId: string; run: () => void; discard: () => void };
 };
 
 type CommandRecord = {
@@ -152,6 +165,7 @@ export class HostDownloadService {
   readonly #options: HostDownloadServiceOptions;
   readonly #pulls = new Map<string, ActivePull>();
   readonly #commands = new Map<string, CommandRecord>();
+  readonly #preparingPreviews = new Map<string, PreparingPreview>();
   /** artifactId → 元数据（含 path）。来源是各个 runtime 上报的 `artifact.started`。 */
   readonly #index = new Map<string, IndexedArtifact>();
   #indexWriteChain: Promise<void> = Promise.resolve();
@@ -242,11 +256,12 @@ export class HostDownloadService {
     commandId: string,
     command: DownloadCommand,
   ): Promise<boolean> {
+    if (command.maxBytes !== undefined) return this.#offerPreview(deviceId, runtimeId, commandId, command, command.maxBytes);
     const known = this.#commands.get(commandId);
     if (known !== undefined) {
       // 同一条命令重发（手机重连后重放）：把还活着的那次重新宣告一遍，不再开第二条。
       const existingPull = known.transferId === undefined ? undefined : this.#pulls.get(known.transferId);
-      if (existingPull !== undefined) {
+      if (existingPull !== undefined && existingPull.deviceId === deviceId && existingPull.runtimeId === runtimeId && !existingPull.preview) {
         this.#publishPullStarted(existingPull);
         return true;
       }
@@ -254,7 +269,7 @@ export class HostDownloadService {
     }
     this.#sweepIdlePulls(Date.now());
     const max = this.#options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
-    if (this.#pulls.size >= max) {
+    if ([...this.#pulls.values()].filter(pull => !pull.preview).length >= max) {
       this.#options.log?.(`下载已达上限（${max}），拒绝 ${commandId}`);
       this.#failDownload(deviceId, runtimeId, commandId, "下载任务已达上限，请稍后重试");
       this.#commands.set(commandId, { transferId: undefined, terminal: true });
@@ -299,6 +314,82 @@ export class HostDownloadService {
     return true;
   }
 
+  async #offerPreview(deviceId: string, runtimeId: string, commandId: string, command: DownloadCommand, maxBytes: number): Promise<boolean> {
+    const fail = (reason: PreviewFailed["reason"]): false => {
+      this.#options.publishMessage?.(deviceId, { type: "file.preview.failed", protocolVersion: PROTOCOL_VERSION,
+        runtimeId, commandId, reason });
+      return false;
+    };
+    if (!commandId || commandId.length > 128) return false;
+    if ((command.offset ?? 0) !== 0 || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > FILE_PREVIEW_BYTES) {
+      return fail("invalid_request");
+    }
+    const active = [...this.#pulls.values()].filter(pull => pull.preview);
+    const duplicate = active.find(pull => pull.deviceId === deviceId && pull.runtimeId === runtimeId && pull.commandId === commandId);
+    if (duplicate) { this.#publishPullStarted(duplicate); return true; }
+    const preparation = this.#preparingPreviews.get(deviceId);
+    if (preparation) {
+      if (preparation.commandId === commandId || preparation.next?.commandId === commandId) return true;
+      // Keep at most the latest explicit selection while an obsolete snapshot finishes off-thread.
+      preparation.abandoned = true;
+      preparation.next?.discard();
+      return await new Promise(resolve => {
+        preparation.next = { commandId, discard: () => resolve(false),
+          run: () => { void this.#offerPreview(deviceId, runtimeId, commandId, command, maxBytes).then(resolve); } };
+      });
+    }
+    if (this.#preparingPreviews.size + active.filter(pull => pull.deviceId !== deviceId).length >= MAX_HOST_PREVIEWS) return fail("busy");
+    // A new explicit selection supersedes only this device's previous *preview*, never its downloads.
+    for (const pull of active) if (pull.deviceId === deviceId) this.#removePull(pull);
+    const pending: PreparingPreview = { commandId, abandoned: false };
+    this.#preparingPreviews.set(deviceId, pending);
+    try {
+      const referenceId = command.type === "file.download" ? command.path : undefined;
+      const indexed = command.type === "artifact.download" ? this.#index.get(command.artifactId) : undefined;
+      const reference = referenceId?.startsWith(MESSAGE_FILE_PREFIX)
+        ? await this.#options.resolvePreviewReference?.(referenceId, deviceId) : undefined;
+      if (pending.abandoned) return false;
+      const path = indexed?.path ?? reference?.path;
+      if (!path) return fail("unavailable");
+      const fileName = indexed?.fileName ?? safeDownloadFileName(path);
+      const extension = extname(fileName).toLowerCase();
+      const format = extension === ".svg" ? "svg" : extension === ".html" || extension === ".htm" ? "html" : undefined;
+      if (!format) return fail("unsupported");
+      const result = await readStaticFilePreview(path, format, maxBytes, reference?.identity, Math.min(maxBytes, FILE_PREVIEW_DOCUMENT_BYTES));
+      if (pending.abandoned) return false;
+      if ("reason" in result) return fail(result.reason);
+      const transferId = randomUUID();
+      const deadline = setTimeout(() => {
+        const pull = this.#pulls.get(transferId);
+        if (pull) { this.#removePull(pull); fail("transfer_failed"); }
+      }, PREVIEW_TIMEOUT_MS);
+      deadline.unref();
+      const pull: ActivePull = {
+        deviceId, runtimeId, commandId, transferId, startOffset: 0, cancelled: false,
+        artifact: { artifactId: indexed?.artifactId ?? randomUUID(), fileName, mimeType: "text/html", path,
+          size: result.bytes.byteLength, sha256: result.sha256, ...(referenceId === undefined ? {} : { referenceId }) },
+        lastActivityAt: Date.now(), startedAt: Date.now(), reads: 0, preview: { format, bytes: result.bytes, deadline },
+      };
+      this.#pulls.set(transferId, pull);
+      this.#publishPullStarted(pull);
+      return true;
+    } catch { return pending.abandoned ? false : fail("unavailable"); }
+    finally {
+      this.#preparingPreviews.delete(deviceId);
+      pending.next?.run();
+    }
+  }
+
+  #removePull(pull: ActivePull): void {
+    pull.cancelled = true;
+    this.#pulls.delete(pull.transferId);
+    if (pull.preview) clearTimeout(pull.preview.deadline);
+    else {
+      this.#commands.set(pull.commandId, { transferId: pull.transferId, terminal: true });
+      this.#trimCommands();
+    }
+  }
+
   /**
    * 一次 `artifact.read`：按范围读盘并回一个分片帧。
    *
@@ -325,11 +416,12 @@ export class HostDownloadService {
     if (active.deviceId !== deviceId) return;
     active.lastActivityAt = Date.now();
     const end = request.offset + request.length;
-    if (request.length < 1 || request.length > ARTIFACT_CHUNK_BYTES || end > active.artifact.size) {
+    if (request.offset < 0 || request.length < 1 || request.length > (active.preview ? FILE_PREVIEW_CHUNK_BYTES : ARTIFACT_CHUNK_BYTES) || end > active.artifact.size) {
       this.#publishReadFailed(active, request.requestId, "range_out_of_bounds");
       return;
     }
-    const data = await readRange(active.artifact.path, request.offset, request.length).catch(() => undefined);
+    const data = active.preview ? active.preview.bytes.subarray(request.offset, end)
+      : await readRange(active.artifact.path, request.offset, request.length).catch(() => undefined);
     // 读盘期间可能被取消/回收/换设备：结果作废，不发帧。
     if (this.#pulls.get(request.transferId) !== active || active.cancelled) return;
     if (data === undefined) {
@@ -349,9 +441,7 @@ export class HostDownloadService {
   handleDone(deviceId: string, transferId: string): boolean {
     const active = this.#pulls.get(transferId);
     if (active === undefined || active.deviceId !== deviceId) return false;
-    this.#pulls.delete(transferId);
-    this.#commands.set(active.commandId, { transferId, terminal: true });
-    this.#trimCommands();
+    this.#removePull(active);
     this.#options.log?.(
       `下载完成（pull）：${active.artifact.fileName} ${active.artifact.size} 字节，` +
       `${active.reads} 次范围请求，${Date.now() - active.startedAt}ms`,
@@ -370,6 +460,13 @@ export class HostDownloadService {
   }
 
   #publishPullStarted(active: ActivePull): void {
+    if (active.preview) {
+      this.#options.publishMessage?.(active.deviceId, { type: "file.preview.started", protocolVersion: PROTOCOL_VERSION,
+        runtimeId: active.runtimeId, commandId: active.commandId, transferId: active.transferId,
+        artifactId: active.artifact.artifactId, format: active.preview.format, size: active.artifact.size, sha256: active.artifact.sha256,
+        ...(active.artifact.referenceId === undefined ? {} : { referenceId: active.artifact.referenceId }) });
+      return;
+    }
     this.#options.publishEvent(active.deviceId, active.runtimeId, {
       type: "artifact.started",
       commandId: active.commandId,
@@ -388,10 +485,9 @@ export class HostDownloadService {
 
   /** 手机静默消失时回收 pull 上下文（不持资源，只是别让它占着并发名额）。 */
   #sweepIdlePulls(now: number): void {
-    for (const [transferId, active] of [...this.#pulls]) {
-      if (now - active.lastActivityAt <= PULL_IDLE_TIMEOUT_MS) continue;
-      this.#pulls.delete(transferId);
-      this.#commands.set(active.commandId, { transferId, terminal: true });
+    for (const active of this.#pulls.values()) {
+      if (active.preview || now - active.lastActivityAt <= PULL_IDLE_TIMEOUT_MS) continue;
+      this.#removePull(active);
     }
   }
 
@@ -416,25 +512,20 @@ export class HostDownloadService {
     const pull = this.#pulls.get(command.transferId);
     if (pull === undefined) return false;
     if (pull.runtimeId !== runtimeId || pull.deviceId !== deviceId) return false;
-    if (command.type === "artifact.cancel") {
-      pull.cancelled = true;
-      this.#pulls.delete(command.transferId);
-      this.#commands.set(pull.commandId, { transferId: command.transferId, terminal: true });
-      this.#trimCommands();
-    }
+    this.#removePull(pull);
     // pull 路径上没有 ack：进度由设备下一个 read 表达，忽略 ack 即可。
     return true;
   }
 
   /** 一台设备的链路没了：它名下的下载提前收场。 */
   releaseDevice(deviceId: string): void {
-    for (const [transferId, pull] of [...this.#pulls]) {
-      if (pull.deviceId !== deviceId) continue;
-      pull.cancelled = true;
-      this.#pulls.delete(transferId);
-      this.#commands.set(pull.commandId, { transferId, terminal: true });
+    const pending = this.#preparingPreviews.get(deviceId);
+    if (pending) {
+      pending.abandoned = true;
+      pending.next?.discard();
+      delete pending.next;
     }
-    this.#trimCommands();
+    for (const pull of this.#pulls.values()) if (pull.deviceId === deviceId) this.#removePull(pull);
   }
 
   /**
@@ -447,9 +538,12 @@ export class HostDownloadService {
     const active = this.#pulls.get(transferId);
     if (active === undefined) return false;
     this.#options.log?.(`中继报告下载路径失效：${active.artifact.fileName} ${reason}`);
-    this.#pulls.delete(transferId);
-    this.#commands.set(active.commandId, { transferId, terminal: true });
-    this.#trimCommands();
+    this.#removePull(active);
+    if (active.preview) {
+      this.#options.publishMessage?.(active.deviceId, { type: "file.preview.failed", protocolVersion: PROTOCOL_VERSION,
+        runtimeId: active.runtimeId, commandId: active.commandId, reason: "transfer_failed" });
+      return true;
+    }
     // 用 `artifact.failed`（不是 `command.result`）：手机按 transferId 把这条任务标成可续传。
     this.#options.publishEvent(active.deviceId, active.runtimeId, {
       type: "artifact.failed",
@@ -469,12 +563,16 @@ export class HostDownloadService {
    */
   failDeviceTransfers(deviceId: string, reason: string): number {
     let failed = 0;
-    for (const [transferId, pull] of [...this.#pulls]) {
+    const pending = this.#preparingPreviews.get(deviceId);
+    if (pending) {
+      pending.abandoned = true;
+      pending.next?.discard();
+      delete pending.next;
+    }
+    for (const pull of this.#pulls.values()) {
       if (pull.deviceId !== deviceId) continue;
       this.#options.log?.(`中继报告设备离线：${pull.artifact.fileName} ${reason}（pull）`);
-      pull.cancelled = true;
-      this.#pulls.delete(transferId);
-      this.#commands.set(pull.commandId, { transferId, terminal: true });
+      this.#removePull(pull);
       failed += 1;
     }
     this.#trimCommands();

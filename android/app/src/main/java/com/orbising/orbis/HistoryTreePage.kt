@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.ui.platform.testTag
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,6 +50,8 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -91,6 +94,7 @@ internal fun HistoryTreePage(
     onEditAndRestart: (HistoryNode) -> Unit,
     downloadArtifact: (RemoteArtifact) -> Unit,
     downloadFile: (String) -> Unit,
+    onRetryTree: (() -> Unit)? = null,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -226,12 +230,14 @@ internal fun HistoryTreePage(
                     Modifier.padding(horizontal = RemoteUi.PagePadding))
             }
             if (rows.isEmpty()) {
-                Text(
-                    if (treeOptions.isEmpty() && state.capabilities[runtimeId]?.commands?.find { it.name == HISTORY_TREE_COMMAND }?.argument?.optionCatalog?.count?.let { it > 0 } == true)
-                        L10n.tr("读取中…") else if (treeOptions.isEmpty()) L10n.tr("这个会话还没有可显示的分支记录") else L10n.tr("没有匹配的节点"),
-                    modifier = Modifier.padding(RemoteUi.PagePadding),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (actionError == null) {
+                    Text(
+                        if (treeOptions.isEmpty() && state.capabilities[runtimeId]?.commands?.find { it.name == HISTORY_TREE_COMMAND }?.argument?.optionCatalog?.count?.let { it > 0 } == true)
+                            L10n.tr("读取中…") else if (treeOptions.isEmpty()) L10n.tr("这个会话还没有可显示的分支记录") else L10n.tr("没有匹配的节点"),
+                        modifier = Modifier.padding(RemoteUi.PagePadding),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             } else {
                 LazyColumn(
                     state = listState,
@@ -259,28 +265,35 @@ internal fun HistoryTreePage(
                 }
             }
             actionError?.let { message ->
-                Text(
+                InlineFeedbackError(
                     message,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = RemoteUi.PagePadding, vertical = 4.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = RemoteUi.PagePadding, vertical = 4.dp).testTag("history-tree-error"),
+                    actionLabel = if (rows.isEmpty() && onRetryTree != null) L10n.tr("重试") else null,
+                    onAction = onRetryTree,
                 )
             }
+            val feedbackGeometry = LocalFeedbackGeometry.current
+            DisposableEffect(feedbackGeometry, selectedNode == null) {
+                if (selectedNode == null) feedbackGeometry.historyPreviewTop = null
+                onDispose { feedbackGeometry.historyPreviewTop = null }
+            }
             selectedNode?.let { node ->
-                HistoryPreviewPanel(
-                    node = node,
-                    preview = remember(graph, node.nodeId) { historyNodePreview(graph, node.nodeId) },
-                    busy = busy,
-                    pending = pendingNodeId != null,
-                    isPendingNode = node.nodeId == pendingNodeId,
-                    downloads = state.downloads,
-                    downloadArtifact = downloadArtifact,
-                    downloadFile = downloadFile,
-                    runtimeId = runtimeId,
-                    onExitPreview = { selectedNodeId = null },
-                    onContinueFrom = { onContinueFrom(node) },
-                    onEditAndRestart = { onEditAndRestart(node) },
-                )
+                Box(Modifier.fillMaxWidth().onGloballyPositioned { feedbackGeometry.historyPreviewTop = it.boundsInWindow().top }) {
+                    HistoryPreviewPanel(
+                        node = node,
+                        preview = remember(graph, node.nodeId) { historyNodePreview(graph, node.nodeId) },
+                        busy = busy,
+                        pending = pendingNodeId != null,
+                        isPendingNode = node.nodeId == pendingNodeId,
+                        downloads = state.downloads,
+                        downloadArtifact = downloadArtifact,
+                        downloadFile = downloadFile,
+                        runtimeId = runtimeId,
+                        onExitPreview = { selectedNodeId = null },
+                        onContinueFrom = { onContinueFrom(node) },
+                        onEditAndRestart = { onEditAndRestart(node) },
+                    )
+                }
             }
         }
     }

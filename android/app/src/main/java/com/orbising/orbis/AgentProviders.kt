@@ -72,7 +72,7 @@ internal fun parseSubscriptionQuota(value: JsonObject): SubscriptionQuota? {
 
 internal fun RemoteState.beginSubscriptionQuery(provider: AgentProvider, request: String): RemoteState {
     val previous = subscriptionQuotas[provider.kind]?.takeIf { it.providerId == provider.id }
-    return copy(subscriptionQuotas = subscriptionQuotas - provider.kind +
+    return copy(subscriptionQuotas = subscriptionQuotas +
         (provider.kind to ProviderQuotaSnapshot(provider.id, previous?.quota)),
         agentProviders = agentProviders.copy(hostId = hostId, quotaRequestId = request,
             quotaProviderId = provider.id, quotaKind = provider.kind, quota = previous?.quota, quotaError = null))
@@ -88,6 +88,11 @@ internal fun RemoteState.failSubscriptionQuery(request: String, error: String): 
         agentProviders = current.copy(quotaRequestId = null, quota = previous, quotaError = error))
 }
 
+// Preserve the last successful reading through a disconnect; views and request state share one result.
+internal fun RemoteState.interruptSubscriptionQuery(): RemoteState = agentProviders.quotaRequestId?.let {
+    failSubscriptionQuery(it, L10n.tr("连接已断开，请重新查询配额"))
+} ?: this
+
 internal fun RemoteState.withSubscriptionResult(message: JsonObject): RemoteState {
     val current = agentProviders
     val request = message["requestId"]?.jsonPrimitive?.contentOrNull ?: return this
@@ -102,12 +107,13 @@ internal fun RemoteState.withSubscriptionResult(message: JsonObject): RemoteStat
     val matchesProvider = knownProviders?.any { it.id == id && it.enabled && it.subscriptionSupported }
         ?: (subscriptionQuotas[kind]?.providerId == id)
     if (!matchesProvider) return this
-    val failure = message["error"]?.jsonPrimitive?.contentOrNull
+    val failure = (message["error"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
     val quota = (message["quota"] as? JsonObject)?.let(::parseSubscriptionQuota)
     val error = failure ?: if (quota == null) L10n.tr("配额数据格式无法识别，请升级 Host 后重试") else null
-    if (error != null) return failSubscriptionQuery(request, error)
+    if (error != null) return failSubscriptionQuery(request,
+        feedbackFailureText(error, L10n.tr("配额查询失败，请重试")))
     return copy(subscriptionQuotas = subscriptionQuotas + (kind to ProviderQuotaSnapshot(id, quota)),
-        agentProviders = current.copy(quotaRequestId = null, quota = if (failure == null) quota else null, quotaError = error))
+        agentProviders = current.copy(quotaRequestId = null, quota = quota, quotaError = null))
 }
 
 internal fun RemoteState.clearProviderQuota(kind: String? = null): RemoteState = copy(

@@ -125,12 +125,14 @@ private fun DrawerAgentFilterMenu(
     hermes: Boolean = false,
     openCode: Boolean = false,
     enabledAgentKinds: Set<String>? = null,
+    unifiedCodex: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showProviders by remember { mutableStateOf(false) }
+    val selectedLabel = if (unifiedCodex && selected == DrawerAgentFilter.Codex) "Codex" else selected.label
     val filterLabel = if (selected.hasProviderFilter) {
-        L10n.tr("{0}，{1}", selected.label, providerOptions.firstOrNull { it.key == providerFilterKey }?.label.orEmpty())
-    } else selected.label
+        L10n.tr("{0}，{1}", selectedLabel, providerOptions.firstOrNull { it.key == providerFilterKey }?.label.orEmpty())
+    } else selectedLabel
     Box {
         NeumorphIconButton(
             onClick = { showProviders = false; expanded = true; if (selected.hasProviderFilter) onRequestProviders() },
@@ -147,7 +149,7 @@ private fun DrawerAgentFilterMenu(
             onBack = { showProviders = false }) { renderedPage ->
             if (renderedPage.isNotEmpty()) {
                 NeumorphMenuItem(
-                    text = { Text(L10n.tr("{0}，provider", selected.label)) },
+                    text = { Text(L10n.tr("{0}，provider", selectedLabel)) },
                     leadingIcon = { Icon(OrbisSymbols.ArrowBack, contentDescription = L10n.tr("返回会话筛选"), modifier = Modifier.size(18.dp)) },
                     onClick = { showProviders = false },
                 )
@@ -164,6 +166,7 @@ private fun DrawerAgentFilterMenu(
             // The Desktop entry is listed only where this Host offers it (ADR-0076).
             DrawerAgentFilter.values().filter { filter ->
                 if (filter != DrawerAgentFilter.All && enabledAgentKinds?.contains(filter.key) == false) return@filter false
+                if (unifiedCodex && filter == DrawerAgentFilter.CodexDesktop) return@filter false
                 when (filter) {
                     DrawerAgentFilter.DeepSeekDesktop -> desktopDeepSeek || filter == selected
                     DrawerAgentFilter.Kimi -> kimiCode
@@ -174,7 +177,7 @@ private fun DrawerAgentFilterMenu(
                 }
             }.forEach { filter ->
                 NeumorphMenuItem(
-                    text = { Text(filter.label) },
+                    text = { Text(if (unifiedCodex && filter == DrawerAgentFilter.Codex) "Codex" else filter.label) },
                     onClick = {
                         onSelect(filter)
                         if (filter.hasProviderFilter) { showProviders = true; onRequestProviders() } else expanded = false
@@ -228,6 +231,7 @@ internal fun SessionDrawer(
     isOpen: Boolean = true,
     preparedCatalog: List<CachedHostGroup>? = null,
     permanent: Boolean = false,
+    onResumeCodex: (String, String, String) -> Unit = { host, session, _ -> onOpenSession(host, session) },
 ) {
     val activeHostId = state.hostId
     val pageActive = LocalPageActive.current
@@ -241,12 +245,17 @@ internal fun SessionDrawer(
     // 只列当前电脑的目录：多台电脑不合并成一棵树，切换在页脚的电脑行（ADR-0030 修订）。
     val activeHostState = hosts.firstOrNull { it.hostId == activeHostId }?.state
     var savedAgentFilterKey by rememberSaveable { mutableStateOf(DrawerAgentFilter.All.key) }
-    val enabledAgentKinds = state.enabledAgentKinds()
-    val agentFilterKey = savedAgentFilterKey.takeUnless {
+    val unifiedCodex = state.unifiedCodexHistory
+    val enabledAgentKinds = state.enabledAgentKinds()?.let { kinds ->
+        if (unifiedCodex && "codexDesktop" in kinds) kinds - "codexDesktop" + "codex" else kinds
+    }
+    val selection = if (unifiedCodex && savedAgentFilterKey == "codexDesktop") "codex" else savedAgentFilterKey
+    val agentFilterKey = selection.takeUnless {
         it != DrawerAgentFilter.All.key && enabledAgentKinds?.contains(it) == false ||
             it == KIMI_CODE_KIND && !state.kimiCodeSupported || it == "openclaw" && !state.openClawNegotiated
     } ?: DrawerAgentFilter.All.key
     val agentFilter = drawerAgentFilter(agentFilterKey)
+    val agentLabel = if (unifiedCodex && agentFilter == DrawerAgentFilter.Codex) "Codex" else agentFilter.label
     val openCodeUnavailable = state.openCodeAvailability
         ?.takeIf { state.e2eReady && agentFilter == DrawerAgentFilter.OpenCode }?.message()
     val currentProvider = state.currentProviders[agentFilter.key]
@@ -254,6 +263,7 @@ internal fun SessionDrawer(
     var requestedProviderKey by rememberSaveable(activeHostId, agentFilterKey) { mutableStateOf(CURRENT_CODEX_PROVIDER) }
     var showArchived by rememberSaveable { mutableStateOf(false) }
     var blockedSession by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var launchChoice by remember(activeHostId) { mutableStateOf<Pair<String, String>?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     val searchTerm = query.trim()
     val request = DrawerCatalogRequest(activeHostState, AppLocalization.language, DrawerCatalogFilter(
@@ -365,6 +375,20 @@ internal fun SessionDrawer(
             } else null,
         )
     }
+    launchChoice?.let { (hostId, sessionId) ->
+        val modes = state.codexResumeModes(sessionId)
+        NeumorphDialog(
+            onDismissRequest = { launchChoice = null },
+            title = { MotionText(L10n.tr("启动方式")) },
+            text = {},
+            confirmButton = {
+                modes.forEach { mode -> NeumorphTextButton(codexModeTitle(mode), {
+                    launchChoice = null; onResumeCodex(hostId, sessionId, mode)
+                }) }
+            },
+            dismissButton = { NeumorphTextButton(L10n.tr("返回"), { launchChoice = null }) },
+        )
+    }
 
     DrawerPanel(modifier = Modifier.width(if (permanent) 320.dp else drawerWidth), permanent = permanent) {
         Column(
@@ -418,6 +442,7 @@ internal fun SessionDrawer(
                         // Same rule as iOS: the Host offers DeepSeek Desktop, or this computer already has its sessions.
                         kimiCode = state.kimiCodeSupported,
                         enabledAgentKinds = enabledAgentKinds,
+                        unifiedCodex = unifiedCodex,
                         desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it } ||
                             state.sessions.values.any { it.agentKind == "dshDesktop" },
                         openClaw = state.openClawNegotiated && (state.supportedAgents?.contains("openclaw") == true ||
@@ -431,7 +456,7 @@ internal fun SessionDrawer(
                 }
             if (agentFilter.hasProviderFilter) {
                 MotionText(
-                    L10n.tr("{0}，{1}", agentFilter.label, providerLabel),
+                    L10n.tr("{0}，{1}", agentLabel, providerLabel),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
@@ -510,7 +535,7 @@ internal fun SessionDrawer(
                                     if (showArchived) L10n.tr("没有已归档的会话")
                                     else if (agentFilter.hasProviderFilter && providerKey == CURRENT_CODEX_PROVIDER && currentProvider == null) L10n.tr("尚未获取当前 provider")
                                     else if (agentFilter == DrawerAgentFilter.All) L10n.tr("还没有可显示的会话")
-                                    else L10n.tr("没有{0}会话", agentFilter.label)
+                                    else L10n.tr("没有{0}会话", agentLabel)
                                 } else L10n.tr("没有找到匹配的目录或会话"),
                                 style = MaterialTheme.typography.bodyMedium,
                             )
@@ -544,6 +569,13 @@ internal fun SessionDrawer(
                                     onOpenSession = {
                                         if (isActiveHost && state.codexProviderMismatch(row.sessionId) != null) {
                                             blockedSession = hostId to row.sessionId
+                                        } else if (isCodexCatalogId(row.sessionId) && !row.isOnline) {
+                                            val modes = state.codexResumeModes(row.sessionId).takeIf { state.e2eReady }.orEmpty()
+                                            when {
+                                                modes.size > 1 -> launchChoice = hostId to row.sessionId
+                                                modes.size == 1 -> onResumeCodex(hostId, row.sessionId, modes.single())
+                                                row.catalogEntry?.hasHistoryCache == true -> onOpenHistory(hostId, row.sessionId)
+                                            }
                                         } else {
                                             onOpenSession(hostId, row.sessionId)
                                         }
@@ -797,19 +829,28 @@ private fun DrawerSessionRow(row: CachedSessionRow, runtimeStatus: String?, runt
             if (selecting) onToggleSelection() else if (!row.isArchived) onOpenSession()
             else if (row.catalogEntry?.hasHistoryCache == true) onOpenHistory() else onBeginSelection()
         }, onLongClick = onBeginSelection) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AgentIcon(agentBrand(row.agentKind), Modifier.size(16.dp))
-            Text(row.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.labelMedium)
-            if (selecting && archiveUnavailableReason != null) Text(archiveUnavailableReason,
-                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
-                modifier = Modifier.width(56.dp), overflow = TextOverflow.Ellipsis)
-            else if (operationError != null) StatusWithInfo(L10n.tr("操作未完成"), operationError, error = true)
-            else if (runtimeStatus != null && runtimeStatus !in setOf("idle", "unknown")) RuntimeStatusIndicator(runtimeStatus, runtimeStatusTitle)
-            else if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-            OrbisSelectionIndicator(selected, selecting)
+        Column(Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(end = 4.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AgentIcon(agentBrand(row.agentKind), Modifier.size(16.dp))
+                Text(row.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelMedium)
+                if (selecting && archiveUnavailableReason != null) Text(archiveUnavailableReason,
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1,
+                    modifier = Modifier.width(56.dp), overflow = TextOverflow.Ellipsis)
+                else if (runtimeStatus != null && runtimeStatus !in setOf("idle", "unknown")) RuntimeStatusIndicator(runtimeStatus, runtimeStatusTitle)
+                else if (row.modifiedAt > 0) Text(sessionTimeText(row.modifiedAt), style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                OrbisSelectionIndicator(selected, selecting)
+            }
+            if (operationError != null) {
+                StatusWithInfo(
+                    L10n.tr("操作未完成"),
+                    operationError,
+                    modifier = Modifier.padding(start = 24.dp, end = 4.dp, bottom = 4.dp).testTag("drawer-session-error-${row.sessionId}"),
+                    error = true,
+                )
+            }
         }
     }
 }
