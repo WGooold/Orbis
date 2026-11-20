@@ -1,6 +1,7 @@
 package com.orbising.orbis
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.NorthWest
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import com.orbising.orbis.OrbisActionIcon as Icon
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -18,6 +20,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideIn
 import androidx.compose.animation.slideOut
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -27,9 +30,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.FloatState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -109,16 +115,49 @@ internal fun AnimatedChatQuestionReminder(
 }
 
 @Composable
-internal fun ChatHistoryProgress(modifier: Modifier = Modifier) {
+internal fun ChatHistoryProgress(
+    modifier: Modifier = Modifier,
+    loading: Boolean,
+    pullProgress: FloatState,
+) {
+    // Pixel updates drive only the draw layer; the label changes at the threshold.
+    val armed by remember(loading, pullProgress) { derivedStateOf { !loading && pullProgress.floatValue >= 1f } }
+    val color = if (armed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    val duration = InteractionMotion.duration(InteractionMotion.State)
+    var settled by remember { mutableStateOf(false) }
+    val arrival by animateFloatAsState(if (settled || duration == 0) 1f else 0f,
+        tween(duration, easing = InteractionMotion.GlyphEase), label = "chat-history-arrival")
+    LaunchedEffect(Unit) { settled = true }
+    // CHAT-PAGING-05: alpha composites into a bounded layer. Keep the transparent
+    // gutter inside that layer so the pill and its outer shadows fade as one.
     NeumorphSurface(
-        modifier.testTag("chat-history-loading").semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+        modifier.graphicsLayer {
+            val reveal = if (loading) arrival else pullProgress.floatValue
+            translationY = if (duration == 0) 0f else -6.dp.toPx() * (1f - reveal)
+            alpha = 0.65f + 0.35f * reveal
+        }.padding(horizontal = 16.dp, vertical = 8.dp)
+            .testTag(if (loading) "chat-history-loading" else "chat-history-pull")
+            .semantics(mergeDescendants = true) { if (loading) liveRegion = LiveRegionMode.Polite },
         shape = RemoteUi.ControlShape, shadowScale = 0.6f,
     ) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            CircularProgressIndicator(Modifier.size(16.dp).clearAndSetSemantics {}, strokeWidth = 2.dp)
-            Text(L10n.tr("正在加载更早的历史…"), style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+                if (loading) {
+                    CircularProgressIndicator(Modifier.size(16.dp).clearAndSetSemantics {}, strokeWidth = 2.dp)
+                } else {
+                    CircularProgressIndicator(progress = { pullProgress.floatValue },
+                        modifier = Modifier.size(16.dp).clearAndSetSemantics {}, color = color,
+                        trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f), strokeWidth = 2.dp)
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(10.dp), tint = color)
+                }
+            }
+            val title = when {
+                loading -> L10n.tr("正在加载更早的历史…")
+                armed -> L10n.tr("松手加载")
+                else -> L10n.tr("下拉加载历史")
+            }
+            Text(title, style = MaterialTheme.typography.labelMedium, color = color)
         }
     }
 }

@@ -2,7 +2,17 @@
 // - MOT-20 / SC42（MOT-20、SC42、R54、S24、V01、V03）
 package com.orbising.orbis
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -13,6 +23,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
@@ -156,7 +168,22 @@ class ChatQuestionReminderInstrumentedTest {
         progress.assertDoesNotExist()
         show(pending.copy(kind = SessionReadKind.PREFETCH))
         progress.assertDoesNotExist()
-        show(pending)
+        // CHAT-PAGING-03: the first frame is already visible; only the overlay moves as it settles.
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.runOnIdle { state.value = original.copy(sessionReads = mapOf(pending.operationId to pending)) }
+            compose.mainClock.advanceTimeByFrame()
+            progress.assertIsDisplayed()
+            val entryTop = progress.fetchSemanticsNode().boundsInRoot.top
+            assertEquals(viewport, transcript.fetchSemanticsNode().boundsInRoot)
+            compose.mainClock.advanceTimeBy(InteractionMotion.State.toLong() + 64)
+            val restingTop = progress.fetchSemanticsNode().boundsInRoot.top
+            if (InteractionMotion.duration(InteractionMotion.State) > 0) {
+                assertTrue("History progress should settle downward from its visible entry frame", restingTop > entryTop)
+            } else {
+                assertEquals(entryTop, restingTop, 1f)
+            }
+        } finally { compose.mainClock.autoAdvance = true }
         progress.assertIsDisplayed().assertTextEquals(L10n.tr("正在加载更早的历史…")).assertHasNoClickAction()
         assertEquals(viewport.center.x, progress.fetchSemanticsNode().boundsInRoot.center.x, 1f)
         compose.onNodeWithTag("chat-question-reminder").assertDoesNotExist()
@@ -167,6 +194,56 @@ class ChatQuestionReminderInstrumentedTest {
         progress.assertDoesNotExist()
         compose.onNodeWithTag("chat-question-reminder").assertIsDisplayed()
         assertEquals(position, scroll.firstVisibleItemIndex to scroll.firstVisibleItemScrollOffset)
+    }
+
+    // CHAT-PAGING-04: keep a real pointer down to inspect the two preview states before release.
+    @Test fun historyPullShowsProgressBeforeReleaseAndDoesNotLoadOnCancellation() {
+        val progress = mutableFloatStateOf(0f)
+        var loads = 0
+        var threshold = 0f
+        compose.setContent {
+            threshold = with(LocalDensity.current) { 44.dp.toPx() }
+            OrbisTheme(darkTheme = false) {
+                Box(Modifier.fillMaxSize().background(rememberNeumorphColors().base)) {
+                    Box(Modifier.fillMaxSize().testTag("history-gesture-viewport")
+                        .chatHistoryPull(ChatPresentationIdentity("host", "runtime", "session", 0) to "device",
+                            nearTop = { true }, canLoad = { true }, onLoad = { loads++ },
+                            onProgress = { progress.floatValue = it }))
+                    if (progress.floatValue > 0f) {
+                        ChatHistoryProgress(
+                            Modifier.align(Alignment.TopCenter),
+                            loading = false, pullProgress = progress,
+                        )
+                    }
+                }
+            }
+        }
+        val transcript = compose.onNodeWithTag("history-gesture-viewport")
+        val pill = compose.onNodeWithTag("chat-history-pull")
+        transcript.performTouchInput { down(center); moveBy(Offset(0f, threshold * 0.5f)) }
+        pill.assertIsDisplayed().assertTextEquals(L10n.tr("下拉加载历史")).assertHasNoClickAction()
+        compose.runOnIdle { assertEquals(0.5f, progress.floatValue, 0.01f); assertEquals(0, loads) }
+        // CHAT-PAGING-05: sample outside the layer while it is translucent, not at full opacity.
+        val bounds = pill.fetchSemanticsNode().boundsInRoot
+        val frame = capture("history-pull-halfway")
+        val x = bounds.center.x.toInt()
+        val backdrop = android.graphics.Color.red(frame.getPixel(x, frame.height / 2))
+        val highlight = android.graphics.Color.red(frame.getPixel(x, floor(bounds.top).toInt() - 1))
+        val shadow = android.graphics.Color.red(frame.getPixel(x, ceil(bounds.bottom).toInt() + 1))
+        assertTrue("Half-pulled pill must retain light and shadow outside its bounds ($highlight / $backdrop / $shadow)",
+            highlight >= backdrop + 3 && shadow <= backdrop - 3)
+        transcript.performTouchInput { moveBy(Offset(0f, threshold * 0.7f)) }
+        pill.assertTextEquals(L10n.tr("松手加载"))
+        compose.runOnIdle { assertEquals(0, loads) }
+        transcript.performTouchInput { moveBy(Offset(0f, -threshold * 0.5f)); up() }
+        pill.assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, loads) }
+        transcript.performTouchInput { down(center); moveBy(Offset(0f, threshold * 1.2f)); cancel() }
+        pill.assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, loads) }
+        transcript.performTouchInput { down(center); moveBy(Offset(0f, threshold * 1.2f)); up() }
+        pill.assertDoesNotExist()
+        compose.runOnIdle { assertEquals(1, loads) }
     }
 
     @Test fun notificationsTakePriorityAndHostChangesClearTheReminder() = withChat { state, scroll, _ ->
@@ -210,11 +287,13 @@ class ChatQuestionReminderInstrumentedTest {
         reminder.assertIsDisplayed()
     }
 
-    private fun capture(name: String) {
+    private fun capture(name: String): Bitmap {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val directory = File(context.getExternalFilesDir(null), "question-reminder").apply { mkdirs() }
+        val frame = compose.onRoot().captureToImage().asAndroidBitmap()
         File(directory, "$name.png").outputStream().use {
-            assertTrue(compose.onRoot().captureToImage().asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+            assertTrue(frame.compress(Bitmap.CompressFormat.PNG, 100, it))
         }
+        return frame
     }
 }

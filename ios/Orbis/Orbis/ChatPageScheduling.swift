@@ -146,7 +146,9 @@ final class ChatViewportController {
     private(set) var request: ChatViewportPolicy.Request?
     private(set) var contextGeneration = 0
     private(set) var readingQuestion: ChatQuestion?
-    private(set) var retryingHistory = false
+    private(set) var awaitingOlderPage = false
+    private(set) var historyPullProgress: CGFloat = 0
+    private(set) var showingHistoryPull = false
     @ObservationIgnored private(set) var policy = ChatViewportPolicy()
     @ObservationIgnored let arrivals = ReplyCardArrivals()
     @ObservationIgnored var bottomDistance: CGFloat = 0
@@ -157,15 +159,12 @@ final class ChatViewportController {
 
     func commit(_ state: ChatTranscriptState, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if let current, current.target != state.target || current.historyRevision != state.historyRevision {
-            bottomDistance = 0; readingRowID = nil; retryingHistory = false
+            bottomDistance = 0; readingRowID = nil
             update { $0.resetContext() }
         }
-        if let current, !state.historyLoading,
-           current.historyPageRevision != state.historyPageRevision || current.historyLoading {
-            update { $0.olderPageFinished() }
-            retryingHistory = false
-        }
+        reconcileHistoryLoading(state.historyLoading)
         self.current = state
+        if showingHistoryPull && !canLoadHistory() { historyPullChanged(0) }
         updateReadingQuestion()
         sourceReady = state.connection == .secured && !state.syncing && !state.cached
         // Register before assigning the observed region: lazy row initialization can
@@ -175,20 +174,21 @@ final class ChatViewportController {
     }
     func resetForMount() {
         bottomDistance = 0; readingRowID = nil; current = nil
-        readingQuestion = nil; retryingHistory = false
+        readingQuestion = nil
         update { $0.resetContext() }
     }
     func setVisualActive(_ active: Bool) {
         visible = active
-        if !active { readingSurface.cancel() }
+        if !active { readingSurface.cancel(); historyPullChanged(0) }
         arrivals.setReadiness(active && policy.hasPositioned && sourceReady, following: policy.following)
     }
     @discardableResult func update<Result>(_ change: (inout ChatViewportPolicy) -> Result) -> Result {
         let before = nativeState
         let result = change(&policy)
-        if before.contextGeneration != policy.contextGeneration { readingSurface.cancel() }
+        if before.contextGeneration != policy.contextGeneration { readingSurface.cancel(); historyPullChanged(0) }
         if following != policy.following { following = policy.following }
         if showJump != policy.showJump { showJump = policy.showJump }
+        if awaitingOlderPage != policy.awaitingOlderPage { awaitingOlderPage = policy.awaitingOlderPage }
         if showQuestionReminder != policy.showQuestionReminder { showQuestionReminder = policy.showQuestionReminder }
         if request != policy.request { request = policy.request }
         if contextGeneration != policy.contextGeneration { contextGeneration = policy.contextGeneration }
@@ -222,9 +222,17 @@ final class ChatViewportController {
               !current.historyLoading, !policy.awaitingOlderPage, current.canSend || current.cached else { return false }
         return retrying ? current.historyError != nil : current.historyError == nil
     }
-    func acceptedHistory(retrying: Bool) {
-        if retrying { retryingHistory = true }
+    func historyPullChanged(_ progress: CGFloat) {
+        let value = progress > 0 && canLoadHistory() ? progress : 0
+        if historyPullProgress != value { historyPullProgress = value }
+        if showingHistoryPull != (value > 0) { showingHistoryPull = value > 0 }
+    }
+    func acceptedHistory() {
         update { $0.olderPageAccepted(bottomDistance: bottomDistance) }
+        historyPullChanged(0)
+    }
+    func reconcileHistoryLoading(_ loading: Bool) {
+        if awaitingOlderPage && !loading { update { $0.olderPageFinished() } }
     }
     func owns(_ candidate: ChatViewportPolicy.Request) -> Bool { policy.owns(candidate) }
 }

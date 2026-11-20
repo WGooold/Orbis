@@ -506,6 +506,9 @@ final class ChatScreenModel {
             viewport.commit(regions.transcript)
             transcriptInputRevision &+= 1
             transcript = regions.transcript
+        } else {
+            // A fast completion can coalesce with the start without changing the transcript (e.g. retry returns the same error).
+            viewport.reconcileHistoryLoading(regions.transcript.historyLoading)
         }
         if force || composer != regions.composer { invalidated |= ChatSchedulingTrace.RegionMask.composer; composer = regions.composer }
         if force || notices != regions.notices { invalidated |= ChatSchedulingTrace.RegionMask.notices; notices = regions.notices }

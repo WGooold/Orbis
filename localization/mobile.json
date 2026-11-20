@@ -1086,6 +1086,8 @@
   "正在加载会话": "Loading sessions",
   "正在加载会话…": "Loading sessions…",
   "正在加载更早的历史…": "Loading earlier history…",
+  "下拉加载历史": "Pull for earlier messages",
+  "松手加载": "Release to load",
   "正在发送": "Sending",
   "正在发送…": "Sending…",
   "正在取回…": "Retrieving…",

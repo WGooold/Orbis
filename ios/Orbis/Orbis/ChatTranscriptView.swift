@@ -227,7 +227,7 @@ struct ChatTranscriptView: View, Equatable {
                     guard ownsViewport else { return }
                     self.viewport.update { $0.directionChanged(towardEarlier: earlier) }
                 }, pagingOwner: { ownsViewport && viewport.canLoadHistory() ? viewport.nativeState.contextGeneration : nil },
-                    onHistoryPull: { _ = loadOlder() }))
+                    onHistoryProgress: updateHistoryPull, onHistoryPull: { _ = loadOlder() }))
                 .background {
                     if #unavailable(iOS 18.0) { LegacyScrollInteraction(onInteraction: userInteractionChanged) }
                 }
@@ -345,7 +345,7 @@ struct ChatTranscriptView: View, Equatable {
                     guard ownsViewport else { return }
                     viewport.update { $0.directionChanged(towardEarlier: earlier) }
                 }, canPageHistory: { ownsViewport && viewport.canLoadHistory() },
-                onHistoryPull: { _ = loadOlder() }, reduceMotion: reduceMotion)
+                onHistoryProgress: updateHistoryPull, onHistoryPull: { _ = loadOlder() }, reduceMotion: reduceMotion)
         }
         }
         .background { ChatTranscriptInteractionHost(state: nativeInteractions) }
@@ -386,9 +386,14 @@ struct ChatTranscriptView: View, Equatable {
         self.viewport.update { $0.jumpToLatest() }
     }
 
+    private func updateHistoryPull(_ progress: CGFloat) {
+        if ownsViewport { viewport.historyPullChanged(progress) }
+    }
+
     private func loadOlder(retrying: Bool = false) -> Bool {
         guard ownsViewport, viewport.canLoadHistory(retrying: retrying), actions.loadOlderHistory() else { return false }
-        viewport.acceptedHistory(retrying: retrying)
+        viewport.acceptedHistory()
+        OrbisHaptics.commit()
         return true
     }
 
