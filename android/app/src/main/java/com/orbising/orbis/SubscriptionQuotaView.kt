@@ -55,12 +55,30 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.text.DateFormat
-import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
+
+internal fun subscriptionQuotaResetCountdown(resetsAtMillis: Long, nowMillis: Long): String {
+    val remainingMillis = (resetsAtMillis - nowMillis).coerceAtLeast(0L)
+    if (remainingMillis == 0L) return L10n.tr("即将重置")
+
+    val minuteMillis = 60_000L
+    val totalMinutes = remainingMillis / minuteMillis + if (remainingMillis % minuteMillis == 0L) 0 else 1
+    val days = totalMinutes / (24 * 60)
+    val hours = totalMinutes % (24 * 60) / 60
+    val minutes = totalMinutes % 60
+    val duration = when {
+        days > 0 -> listOfNotNull(L10n.tr("{0}天", days), hours.takeIf { it > 0 }?.let { L10n.tr("{0}小时", it) })
+        hours > 0 -> listOfNotNull(L10n.tr("{0}小时", hours), minutes.takeIf { it > 0 }?.let { L10n.tr("{0}分钟", it) })
+        else -> listOf(L10n.tr("{0}分钟", minutes.coerceAtLeast(1)))
+    }.joinToString(" ")
+    return L10n.tr("重置倒计时 {0}", duration)
+}
+
+internal fun subscriptionQuotaResetCountdownLabel(resetsAtMillis: Long?): String? =
+    resetsAtMillis?.let { subscriptionQuotaResetCountdown(it, System.currentTimeMillis()) }
 
 /** The agent mark is a two-sided coin; the rest of its card owns refresh. */
 @Composable
@@ -124,7 +142,7 @@ internal fun SubscriptionQuotaCoin(
             }
         }
     }
-    val reset = window?.resetsAt?.let { L10n.tr("，重置 ") + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, L10n.locale).format(Date(it)) }.orEmpty()
+    val resetCountdown = subscriptionQuotaResetCountdownLabel(window?.resetsAt)
     Box(Modifier.size(width = 64.dp, height = 56.dp).testTag("quota-coin-$kind")
         .clickable(interactionSource = interactions, indication = null, enabled = enabled && !loading,
             role = Role.Button, onClickLabel = if (hasReadings) L10n.tr("翻面查看") + if (weekly) L10n.tr("5 小时配额") else L10n.tr("周配额") else L10n.tr("查询订阅配额")) {
@@ -135,7 +153,10 @@ internal fun SubscriptionQuotaCoin(
             }
         }.semantics(mergeDescendants = true) {
             contentDescription = L10n.tr("{0} 配额", agentBrand(kind).title)
-            stateDescription = L10n.tr("{0}，", title) + if (remaining != null) L10n.tr("剩余 {0}{1}", percent, reset) else if (loading) L10n.tr("查询中") else if (hasReadings) L10n.tr("暂不可用") else L10n.tr("待查询")
+            stateDescription = L10n.tr("{0}，", title) + if (remaining != null) {
+                val remainingDescription = L10n.tr("剩余 {0}", percent)
+                resetCountdown?.let { L10n.tr("{0}，{1}", remainingDescription, it) } ?: remainingDescription
+            } else if (loading) L10n.tr("查询中") else if (hasReadings) L10n.tr("暂不可用") else L10n.tr("待查询")
         }.graphicsLayer {
             alpha = if (!enabled) 0.4f else if (pressed) 0.6f else 1f
         }, contentAlignment = Alignment.CenterStart) {

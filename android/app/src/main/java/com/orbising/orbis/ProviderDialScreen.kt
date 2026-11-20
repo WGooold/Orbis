@@ -35,8 +35,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import java.text.DateFormat
-import java.util.Date
 import kotlin.math.*
 
 private val DIAL_AGENTS = listOf("codex", "claude", "dsh", "pi")
@@ -384,6 +382,7 @@ private fun ProviderQuotaPair(state: RemoteState, kind: String, provider: AgentP
         else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
             listOf("five_hour", "seven_day").forEach { name ->
                 val window = snapshot?.quota?.windows?.firstOrNull { it.name == name }
+                val resetCountdown = subscriptionQuotaResetCountdownLabel(window?.resetsAt)
                 val percent = window?.remainingPercent
                 val low = percent != null && percent <= 20
                 val color = if (low) LocalOrbisPalette.current.danger else MaterialTheme.colorScheme.primary
@@ -404,9 +403,9 @@ private fun ProviderQuotaPair(state: RemoteState, kind: String, provider: AgentP
                         }
                     }
                     // A manual refresh keeps the last reading visible, so the caption carries the in-flight state.
-                    Text(if (loading) L10n.tr("查询中") else window?.resetsAt?.let { L10n.tr("重置 {0}", DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT, L10n.locale).format(Date(it))) }
+                    Text(if (loading) L10n.tr("查询中") else resetCountdown
                         ?: L10n.tr("暂不可用"), style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth())
                 }
             }
             // Always present: every tap after the automatic first query is a fresh subscription read.

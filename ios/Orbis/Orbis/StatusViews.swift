@@ -468,7 +468,9 @@ private struct ProviderQuotaCell: View {
             }.frame(height: 6)
             if loading { Text(L10n.tr("正在查询")).font(.orbisCaption()).foregroundStyle(p.secondary) }
             else if let reset = window?.resetsAt {
-                Text(Date(timeIntervalSince1970: Double(reset) / 1000), style: .relative).font(.orbisCaption()).foregroundStyle(p.secondary).lineLimit(1)
+                Text(subscriptionQuotaResetCountdown(resetsAt: reset, now: Date()))
+                    .font(.orbisCaption()).foregroundStyle(p.secondary)
+                    .accessibilityIdentifier("provider-quota-reset-" + name)
             } else { Text(L10n.tr("待查询")).font(.orbisCaption()).foregroundStyle(p.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)

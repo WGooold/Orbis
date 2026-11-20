@@ -3641,7 +3641,7 @@ internal fun AgentProvidersContent(
                                 val label = if (window.name == "five_hour") L10n.tr("5 小时配额") else L10n.tr("周配额")
                                 Text(label + L10n.tr("：") + (window.remainingPercent?.let { L10n.tr("剩余 ") + String.format(L10n.locale, "%.1f", it) + "%" } ?: L10n.tr("暂不可用")))
                                 window.remainingPercent?.let { remaining -> LinearProgressIndicator(progress = { (remaining / 100).toFloat() }, modifier = Modifier.fillMaxWidth()) }
-                                window.resetsAt?.let { Text(L10n.tr("重置时间：") + dateFormat.format(java.util.Date(it)), style = MaterialTheme.typography.bodySmall) }
+                                window.resetsAt?.let { Text(subscriptionQuotaResetCountdownLabel(it).orEmpty(), style = MaterialTheme.typography.bodySmall) }
                             }
                             Text(L10n.tr("查询时间：") + dateFormat.format(java.util.Date(quota.checkedAt)), style = MaterialTheme.typography.bodySmall)
                         }

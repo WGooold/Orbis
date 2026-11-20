@@ -191,6 +191,27 @@ struct SubscriptionQuota: Decodable {
     }
 }
 
+func subscriptionQuotaResetCountdown(resetsAt: Int64, now: Date) -> String {
+    let remainingSeconds = max(0, Double(resetsAt) / 1_000 - now.timeIntervalSince1970)
+    guard remainingSeconds > 0 else { return L10n.tr("即将重置") }
+
+    let totalMinutes = Int64(ceil(remainingSeconds / 60))
+    let days = totalMinutes / (24 * 60)
+    let hours = totalMinutes % (24 * 60) / 60
+    let minutes = totalMinutes % 60
+    let duration: String
+    if days > 0 {
+        duration = [L10n.tr("{0}天", days), hours > 0 ? L10n.tr("{0}小时", hours) : nil]
+            .compactMap { $0 }.joined(separator: " ")
+    } else if hours > 0 {
+        duration = [L10n.tr("{0}小时", hours), minutes > 0 ? L10n.tr("{0}分钟", minutes) : nil]
+            .compactMap { $0 }.joined(separator: " ")
+    } else {
+        duration = L10n.tr("{0}分钟", max(1, totalMinutes))
+    }
+    return L10n.tr("重置倒计时 {0}", duration)
+}
+
 struct ProviderQuotaSnapshot {
     let providerId: String
     let quota: SubscriptionQuota?

@@ -154,8 +154,11 @@ internal object LocalizationCatalog {
         "{0} 项工具与设置" to "{0} tools and settings",
         "{0}{1}，{2}" to "{0}{1}, {2}",
         "{0}供应商" to "{0} provider",
+        "{0}分钟" to "{0}m",
         "{0}切换未完成，消息未发送" to "{0} switch failed. Message was not sent.",
         "{0}切换未完成：{1}" to "{0} switch did not complete: {1}",
+        "{0}天" to "{0}d",
+        "{0}小时" to "{0}h",
         "{0}目录 {1}，{2} 个会话" to "{0}folder {1}, {2} sessions",
         "{0}（分离 HEAD）" to "{0} (detached HEAD)",
         "{0}（已读取）" to "{0} loaded",
@@ -165,11 +168,11 @@ internal object LocalizationCatalog {
         "{0}，" to "{0}, ",
         "{0}，provider" to "{0}, provider",
         "{0}，v{1}，{2}" to "{0}, v{1}, {2}",
+    )
+    private fun part1(): Map<String, String> = mapOf(
         "{0}，{1}" to "{0}, {1}",
         "{0}，{1} / 4" to "{0}, {1} / 4",
         "{0}，{1}/{2}" to "{0}, {1}/{2}",
-    )
-    private fun part1(): Map<String, String> = mapOf(
         "{0}，{1}{2}" to "{0}, {1}{2}",
         "{0}，{1}，{2}" to "{0}, {1}, {2}",
         "{0}，{1}，{2} / {3}" to "{0}, {1}, {2} / {3}",
@@ -317,11 +320,11 @@ internal object LocalizationCatalog {
         "从这条回复后继续" to "Continue after this reply",
         "代码" to "Code",
         "会话" to "Session",
+    )
+    private fun part2(): Map<String, String> = mapOf(
         "会话 ID 无效" to "Invalid session ID",
         "会话信息" to "Session info",
         "会话信息未能完整读取，请重新加载" to "Could not load all session information. Reload.",
-    )
-    private fun part2(): Map<String, String> = mapOf(
         "会话信息未能完整读取，请重试" to "Could not load all session information. Try again.",
         "会话内容未确认，请重新加载" to "Session content is unconfirmed. Reload it.",
         "会话内容读取失败，请重新加载" to "Session content could not be read. Reload it.",
@@ -469,11 +472,11 @@ internal object LocalizationCatalog {
         "分享内容" to "Shared content",
         "分享导出文件" to "Share exported file",
         "分享文字" to "Shared text",
+    )
+    private fun part3(): Map<String, String> = mapOf(
         "分支会停在这条回复之后，接着往下聊" to "The branch will move after this reply so you can continue chatting",
         "分支会移到这条消息之前，原文回到输入框" to "The branch will move before this message and its text will return to the composer",
         "分支信息待同步" to "Branch info awaiting sync",
-    )
-    private fun part3(): Map<String, String> = mapOf(
         "切换" to "Switch",
         "切换 OpenCode Agent" to "Switch OpenCode agent",
         "切换 {0} 供应商" to "Switch {0} provider",
@@ -505,6 +508,7 @@ internal object LocalizationCatalog {
         "刷新配额" to "Refresh quota",
         "前置操作已失效" to "Prerequisite operation expired",
         "剩余 " to "Remaining ",
+        "剩余 {0}" to "remaining {0}",
         "剩余 {0} 秒" to "{0} seconds remaining",
         "剩余 {0}{1}" to "{0}{1} remaining",
         "加入会话草稿" to "Add to session draft",
@@ -522,6 +526,7 @@ internal object LocalizationCatalog {
         "协议模式" to "Protocol mode",
         "单选" to "Choose one",
         "即将用完" to "Almost used up",
+        "即将重置" to "Resetting soon",
         "历史与分支" to "History and branches",
         "历史内容基准已失效，正在重新同步。" to "The history baseline is no longer valid. Syncing again.",
         "历史加载失败" to "History failed to load",
@@ -619,13 +624,13 @@ internal object LocalizationCatalog {
         "只读" to "Read-only",
         "只读分析并给出计划，不修改文件" to "Read-only analysis and planning without modifying files",
         "只读历史" to "Read-only history",
+    )
+    private fun part4(): Map<String, String> = mapOf(
         "可信的读取操作直接执行，其他操作先申请审批。" to "Trusted read operations run directly. Other operations request approval first.",
         "可多选" to "Choose multiple",
         "可用命令" to "Available commands",
         "可用性" to "Availability",
         "可读写电脑账户能访问的文件并联网，不受 Codex 沙箱限制。" to "Allows network access and reading or writing files accessible to the computer account, without Codex sandbox restrictions.",
-    )
-    private fun part4(): Map<String, String> = mapOf(
         "同步任务已满，请稍后重试" to "Sync task limit reached. Try again shortly.",
         "同步失败" to "Sync failed",
         "同步暂未完成，请重试" to "Sync is incomplete. Try again.",
@@ -771,13 +776,13 @@ internal object LocalizationCatalog {
         "局域网" to "LAN",
         "局域网发送队列已满" to "LAN send queue is full",
         "局域网密钥未建立" to "LAN key is not established",
+    )
+    private fun part5(): Map<String, String> = mapOf(
         "局域网握手尚未完成" to "LAN handshake is incomplete",
         "局域网握手状态无效" to "Invalid LAN handshake state",
         "局域网连接已关闭" to "LAN connection closed",
         "展开" to "Expand",
         "展开交互" to "Expand interaction",
-    )
-    private fun part5(): Map<String, String> = mapOf(
         "展开分支" to "Expand branch",
         "展开完整内容" to "Show full content",
         "展开目录" to "Expand folder",
@@ -923,13 +928,13 @@ internal object LocalizationCatalog {
         "当前会话尚未提供可用命令" to "Commands are not available for this session yet",
         "当前会话未提供手机端权限设置" to "This session does not offer mobile permission settings",
         "当前会话未提供斜杠命令" to "This session does not offer slash commands",
+    )
+    private fun part6(): Map<String, String> = mapOf(
         "当前会话未提供权限管理信息，请在电脑端查看和管理权限" to "Permission management is unavailable for this session. Manage permissions on the computer.",
         "当前会话权限" to "Current session permissions",
         "当前会话正在运行任务，暂时无法执行此命令" to "This session is running a task. The command is temporarily unavailable.",
         "当前会话清单尚未完整" to "Current session list is incomplete",
         "当前会话的权限模式只能在电脑上按 Shift+Tab 切换；计划模式也可以用 /plan 进入" to "Change this session's permission mode on the computer with Shift+Tab. You can also enter plan mode with /plan.",
-    )
-    private fun part6(): Map<String, String> = mapOf(
         "当前位置" to "Current position",
         "当前位置就是这条记录" to "You are already at this record",
         "当前使用" to "In use",
@@ -1075,13 +1080,13 @@ internal object LocalizationCatalog {
         "文件传输失败。" to "File transfer failed.",
         "文件传输数据不完整" to "Incomplete file transfer data",
         "文件内容已更改，请删除任务后重新下载。" to "File content changed. Delete this task and download again.",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "文件分片无效" to "Invalid file chunk",
         "文件分片格式无效" to "Invalid file chunk format",
         "文件分片长度无效" to "Invalid file chunk length",
         "文件操作已经失效" to "File operation expired",
         "文件概况读取超时" to "File summary read timed out",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "文件清单未送达，请连接电脑后重试。" to "File list request was not delivered. Connect to the computer and try again.",
         "文件清单版本或分页无效" to "Invalid file list version or pagination",
         "文件清单读取超时，可重试" to "File list read timed out. You can retry.",
@@ -1227,13 +1232,13 @@ internal object LocalizationCatalog {
         "本地会话读取失败：{0}" to "Local session could not be read: {0}",
         "本地历史存在缺口，请连接后重试" to "Local history has gaps. Connect and try again.",
         "本地历史父节点形成循环" to "Local history parent nodes form a cycle",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "本地历史范围无效：{0}" to "Invalid local history range: {0}",
         "本地历史读取失败，请重试。" to "Local history read failed. Try again.",
         "本地没有可用的历史缓存" to "No local history cache available",
         "本地进度与文件长度不一致。" to "Local progress does not match the file length.",
         "本地首屏存在缺口，等待源端恢复" to "Initial local page has gaps. Waiting for source recovery.",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "本地首屏存在缺口，请连接后重试" to "Initial local page has gaps. Connect and try again.",
         "本地首屏读取失败" to "Initial local page read failed",
         "本机 deviceId {0}" to "Local deviceId {0}",
@@ -1379,13 +1384,13 @@ internal object LocalizationCatalog {
         "此文件类型暂不支持文本差异。" to "Text diffs are not yet supported for this file type.",
         "此电脑在本机保存的配对和草稿将被移除。之后可以重新扫码连接。" to "This computer's pairing and drafts on this phone will be removed. You can scan again to reconnect later.",
         "此目录没有可浏览的文件或子目录" to "No browsable files or subfolders here",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "此目录没有子目录" to "No subfolders here",
         "此节点没有可显示的缓存内容。" to "No cached content to display for this node.",
         "此设备暂不支持语音识别" to "Speech recognition is not supported on this device",
         "此设备没有可用的本机语音识别服务。继续后，Android 系统语音服务可能通过网络处理音频。请勿口述密码等敏感信息。识别结果只写入当前草稿，不会自动发送。" to "On-device speech recognition is unavailable. If you continue, Android system speech services may process audio over the network. Do not dictate passwords or other sensitive information. Recognized text goes into the current draft and is never sent automatically.",
         "此轮文件版本已超过电脑端保留期限。" to "The computer's retention period for this turn's file versions has expired.",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "此轮未保存可比较的文件版本。" to "No comparable file versions were saved for this turn.",
         "此部分内容已无法恢复" to "This content cannot be recovered",
         "没有{0}会话" to "No {0}sessions",
@@ -1531,13 +1536,13 @@ internal object LocalizationCatalog {
         "目录分页读取超时，请刷新重试" to "Folder page read timed out. Refresh and try again.",
         "目录格式无法识别" to "Unrecognized catalog format",
         "目录缺少后端清单" to "Catalog is missing backend list",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "目录缺少字段" to "Catalog is missing fields",
         "目录缺少总数" to "Catalog is missing total count",
         "目录缺少条数" to "Catalog is missing entry count",
         "目录读取请求未送达。" to "Folder request was not delivered.",
         "目录读取超时，请重试" to "Folder read timed out. Try again.",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "目录读取超时，请重试。" to "Folder read timed out. Try again.",
         "目标电脑已变更、未连接或正在创建会话，请返回目录重试" to "Target computer changed, disconnected or is creating a session. Return to folders and try again.",
         "目标电脑或供应商列表已变化，请刷新后重试" to "Target computer or provider list changed. Refresh and try again.",
@@ -1683,13 +1688,13 @@ internal object LocalizationCatalog {
         "语音清理" to "Voice cleanup",
         "语音识别暂不可用" to "Speech recognition is unavailable",
         "语音识别说明" to "Speech recognition info",
+    )
+    private fun part11(): Map<String, String> = mapOf(
         "语音输入失败，请重试" to "Voice input failed. Please try again.",
         "说明" to "Information",
         "请从命令菜单选择斜杠命令。" to "Choose slash commands from the command menu.",
         "请允许麦克风权限" to "Allow microphone access",
         "请先完成当前任务和待处理交互，再调整权限" to "Finish the current task and pending interactions before changing permissions",
-    )
-    private fun part11(): Map<String, String> = mapOf(
         "请先恢复这个已归档会话" to "Restore this archived session first",
         "请先核对上一次启动及首句结果" to "Check the previous launch and first message before starting another session.",
         "请先读取并确认启动配置" to "Load and confirm the startup settings first.",
@@ -1835,13 +1840,13 @@ internal object LocalizationCatalog {
         "连接状态 {0}    加密通道 {1}" to "Connection {0}    Encrypted channel {1}",
         "连接电脑后可下载文件。" to "Connect to the computer to download files.",
         "连接电脑后可操作" to "Connect to the computer to use this action",
+    )
+    private fun part12(): Map<String, String> = mapOf(
         "连接电脑后继续" to "Connect to the computer to continue",
         "连接电脑并打开会话后，可把历史保存在本机。" to "Connect to the computer and open a session to save history locally.",
         "连接电脑并继续此会话后可取回完整内容。" to "Connect to the computer and continue this session to retrieve the full content.",
         "连接错误" to "Connection error",
         "连接：{0}" to "Connection: {0}",
-    )
-    private fun part12(): Map<String, String> = mapOf(
         "退出 Codex（关闭电脑上的 TUI 窗口）" to "Quit Codex (close the TUI window on the computer)",
         "退出多选" to "Exit selection",
         "退出消息操作" to "Exit message actions",
@@ -1912,6 +1917,7 @@ internal object LocalizationCatalog {
         "重新配对" to "Pair again",
         "重置 " to "Resets ",
         "重置 {0}" to "Resets {0}",
+        "重置倒计时 {0}" to "Reset in {0}",
         "重置时间：" to "Resets at: ",
         "重试" to "Retry",
         "重试上传" to "Retry upload",
@@ -1956,6 +1962,7 @@ internal object LocalizationCatalog {
         "（当前）" to " (current)",
         "）" to ")",
         "，" to ", ",
+        "，{0}" to ", {0}",
         "，当前" to ", current",
         "，有待确认" to ", awaiting confirmation",
         "，未确认" to ", Unconfirmed",
