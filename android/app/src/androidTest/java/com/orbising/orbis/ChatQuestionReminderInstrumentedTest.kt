@@ -200,6 +200,7 @@ class ChatQuestionReminderInstrumentedTest {
     @Test fun historyPullShowsProgressBeforeReleaseAndDoesNotLoadOnCancellation() {
         val progress = mutableFloatStateOf(0f)
         var loads = 0
+        var armingFeedbacks = 0
         var threshold = 0f
         compose.setContent {
             threshold = with(LocalDensity.current) { 44.dp.toPx() }
@@ -208,7 +209,7 @@ class ChatQuestionReminderInstrumentedTest {
                     Box(Modifier.fillMaxSize().testTag("history-gesture-viewport")
                         .chatHistoryPull(ChatPresentationIdentity("host", "runtime", "session", 0) to "device",
                             nearTop = { true }, canLoad = { true }, onLoad = { loads++ },
-                            onProgress = { progress.floatValue = it }))
+                            onProgress = { progress.floatValue = it }, onArmed = { armingFeedbacks++ }))
                     if (progress.floatValue > 0f) {
                         ChatHistoryProgress(
                             Modifier.align(Alignment.TopCenter),
@@ -222,7 +223,7 @@ class ChatQuestionReminderInstrumentedTest {
         val pill = compose.onNodeWithTag("chat-history-pull")
         transcript.performTouchInput { down(center); moveBy(Offset(0f, threshold * 0.5f)) }
         pill.assertIsDisplayed().assertTextEquals(L10n.tr("下拉加载历史")).assertHasNoClickAction()
-        compose.runOnIdle { assertEquals(0.5f, progress.floatValue, 0.01f); assertEquals(0, loads) }
+        compose.runOnIdle { assertEquals(0.5f, progress.floatValue, 0.01f); assertEquals(0, loads); assertEquals(0, armingFeedbacks) }
         // CHAT-PAGING-05: sample outside the layer while it is translucent, not at full opacity.
         val bounds = pill.fetchSemanticsNode().boundsInRoot
         val frame = capture("history-pull-halfway")
@@ -234,16 +235,22 @@ class ChatQuestionReminderInstrumentedTest {
             highlight >= backdrop + 3 && shadow <= backdrop - 3)
         transcript.performTouchInput { moveBy(Offset(0f, threshold * 0.7f)) }
         pill.assertTextEquals(L10n.tr("松手加载"))
-        compose.runOnIdle { assertEquals(0, loads) }
+        // CHAT-PAGING-06: preview gives one tick while held; release and cancel only end the gesture.
+        compose.runOnIdle { assertEquals(0, loads); assertEquals(1, armingFeedbacks) }
+        transcript.performTouchInput { moveBy(Offset(0f, threshold * 0.1f)) }
+        compose.runOnIdle { assertEquals(0, loads); assertEquals(1, armingFeedbacks) }
         transcript.performTouchInput { moveBy(Offset(0f, -threshold * 0.5f)); up() }
         pill.assertDoesNotExist()
-        compose.runOnIdle { assertEquals(0, loads) }
-        transcript.performTouchInput { down(center); moveBy(Offset(0f, threshold * 1.2f)); cancel() }
+        compose.runOnIdle { assertEquals(0, loads); assertEquals(1, armingFeedbacks) }
+        transcript.performTouchInput {
+            down(center); moveBy(Offset(0f, threshold * 1.2f))
+            moveBy(Offset(0f, -threshold * 0.4f)); moveBy(Offset(0f, threshold * 0.4f)); cancel()
+        }
         pill.assertDoesNotExist()
-        compose.runOnIdle { assertEquals(0, loads) }
+        compose.runOnIdle { assertEquals(0, loads); assertEquals(3, armingFeedbacks) }
         transcript.performTouchInput { down(center); moveBy(Offset(0f, threshold * 1.2f)); up() }
         pill.assertDoesNotExist()
-        compose.runOnIdle { assertEquals(1, loads) }
+        compose.runOnIdle { assertEquals(1, loads); assertEquals(4, armingFeedbacks) }
     }
 
     @Test fun notificationsTakePriorityAndHostChangesClearTheReminder() = withChat { state, scroll, _ ->

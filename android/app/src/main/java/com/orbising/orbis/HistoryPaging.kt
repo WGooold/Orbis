@@ -63,11 +63,13 @@ internal fun Modifier.chatHistoryPull(
     canLoad: () -> Boolean,
     onLoad: () -> Unit,
     onProgress: (Float) -> Unit,
+    onArmed: () -> Unit,
 ): Modifier = pointerInput(owner) {
     val gesture = ChatHistoryPan()
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         gesture.begin(nearTop(), canLoad(), density)
+        var armed = false
         try {
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Final)
@@ -81,7 +83,12 @@ internal fun Modifier.chatHistoryPull(
                     if (!change.isConsumed && gesture.release(distance.x, distance.y, nearTop(), admitted)) onLoad()
                     break
                 }
-                onProgress(gesture.progress(distance.x, distance.y, nearTop(), admitted))
+                val progress = gesture.progress(distance.x, distance.y, nearTop(), admitted)
+                onProgress(progress)
+                // CHAT-PAGING-06: only an in-drag transition to the full ring gives feedback.
+                val nextArmed = progress >= 1f
+                if (nextArmed && !armed) onArmed()
+                armed = nextArmed
             }
         } finally {
             gesture.cancel()
