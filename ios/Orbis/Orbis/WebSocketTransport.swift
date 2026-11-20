@@ -698,7 +698,7 @@ final class RelayTransport: NSObject, OrbisTransport {
             }
         case .authenticated(let header, let payload, let message):
             guard channel != nil else { return }
-            if socket?.kind == .quic, !bootstrapReady, header.k == "data", header.ch == "ctl", message?["type"] as? String == "device.ready" {
+            if !bootstrapReady, header.k == "data", header.ch == "ctl", message?["type"] as? String == "device.ready" {
                 activateRelay()
             }
             switch header.k {

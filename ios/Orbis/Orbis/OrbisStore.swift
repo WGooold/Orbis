@@ -3296,7 +3296,6 @@ final class HostConnection: ObservableObject {
             let previousDisplayVersion = expectedMessageDisplayVersion
             // The Host advertises the rich projection on its ready message; older Hosts keep the
             // released display version, and the filtered (non-`dshDesktop`) view never carries it.
-            let supportsRender = ((message["hostFeatures"] as? [String]) ?? []).contains(messageRenderFeature)
             expectedMessageDisplayVersion = !supportsRender ? legacyDisplayProjectionVersion :
                 (message["dshDesktop"] == nil ? nil : messageDisplayProjectionVersion)
             let displayVersionChanged = previousDisplayVersion != expectedMessageDisplayVersion
