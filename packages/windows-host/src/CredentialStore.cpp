@@ -17,13 +17,30 @@
 
 // QA 构建每次重新签名后，macOS 会为钥匙串条目重新要求人工授权；隔离测试
 // 用 ORBIS_NO_KEYCHAIN=1 把激活凭据存在激活文件旁边，不碰钥匙串与 DPAPI。
-static bool plainFileStore() {
+// 测试证据目录（.artifacts/）与 smoke-data 同样自动采用隔离文件存储，避免污染系统钥匙串或弹出授权提示。
+static bool plainFileStore(const QString &path = QString()) {
     const auto value = qgetenv("ORBIS_NO_KEYCHAIN");
-    return value == "1" || value == "true";
+    if (value == "1" || value == "true") return true;
+    if (!path.isEmpty()) {
+        const auto normalized = QDir::fromNativeSeparators(path);
+        if (normalized.contains("/.artifacts/") || normalized.contains("/smoke-data")) return true;
+    }
+    return false;
 }
 
 #ifdef Q_OS_MACOS
 #include <Security/Security.h>
+
+static bool defaultKeychainAvailable(QString *error) {
+    SecKeychainRef defaultKeychain = nullptr;
+    const auto status = SecKeychainCopyDefault(&defaultKeychain);
+    if (status != errSecSuccess) {
+        if (error) *error = QStringLiteral("无法访问 macOS 钥匙串：未找到默认钥匙串（%1）").arg(status);
+        return false;
+    }
+    if (defaultKeychain) CFRelease(defaultKeychain);
+    return true;
+}
 
 // activation.dat contains only a random reference; secrets stay in the user's Keychain.
 // Stage a new item before atomically replacing the reference, so a failed save keeps
@@ -48,6 +65,7 @@ static void keychainRemove(const QString &path, const QByteArray &reference) {
     CFRelease(query);
 }
 static bool keychainWrite(const QString &path, const QByteArray &plain, QString *error) {
+    if (!defaultKeychainAvailable(error)) return false;
     QByteArray previous;
     QFile oldFile(path);
     if (oldFile.open(QIODevice::ReadOnly)) previous = oldFile.readAll();
@@ -77,6 +95,7 @@ static QByteArray keychainRead(const QString &path, const QByteArray &reference,
         if (error) *error = QStringLiteral("激活凭据引用已损坏，请重新验证邮箱");
         return {};
     }
+    if (!defaultKeychainAvailable(error)) return {};
     auto query = keychainQuery(path, reference);
     CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
     CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
@@ -95,7 +114,7 @@ static QByteArray keychainRead(const QString &path, const QByteArray &reference,
 #endif
 
 bool CredentialStore::save(const QString &path, const QJsonObject &value, QString *error) {
-    if (plainFileStore()) {
+    if (plainFileStore(path)) {
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly)) {
             if (error) *error = QStringLiteral("无法保存激活凭据：") + file.errorString();
@@ -135,7 +154,7 @@ bool CredentialStore::save(const QString &path, const QJsonObject &value, QStrin
 bool CredentialStore::clear(const QString &path, QString *error) {
     QFile file(path);
     if (!file.exists()) return true;
-    if (plainFileStore()) {
+    if (plainFileStore(path)) {
         if (!file.remove()) { if (error) *error = file.errorString(); return false; }
         return true;
     }
@@ -155,7 +174,7 @@ QJsonObject CredentialStore::load(const QString &path, QString *error) {
     QFile file(path);
     if (!file.exists()) return {};
     if (!file.open(QIODevice::ReadOnly)) { if (error) *error = file.errorString(); return {}; }
-    if (plainFileStore()) {
+    if (plainFileStore(path)) {
         QJsonParseError parseError;
         const auto value = QJsonDocument::fromJson(file.readAll(), &parseError).object();
         if (parseError.error != QJsonParseError::NoError && error) *error = QStringLiteral("激活凭据已损坏，请重新验证邮箱");

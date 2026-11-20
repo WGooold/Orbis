@@ -1,12 +1,21 @@
 #include "../CredentialStore.h"
+#include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest>
+#ifdef Q_OS_MACOS
+#include <Security/Security.h>
+#endif
 
 class CredentialStoreTest : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase() {
+#ifdef Q_OS_MACOS
+        SecKeychainSetUserInteractionAllowed(false);
+#endif
+    }
     void credentialsAreEncryptedAndRecoverable() {
         QTemporaryDir temp;
         const auto path = temp.path() + "/activation.dat";
@@ -41,6 +50,21 @@ private slots:
         QVERIFY(CredentialStore::clear(path, &error));
         QVERIFY(!QFile::exists(path));
         qunsetenv("ORBIS_NO_KEYCHAIN");
+    }
+    // 测试证据目录（.artifacts/）自动采用隔离文件存储，无需环境变量即可跳过钥匙串
+    void artifactsPathSkipsKeychain() {
+        QTemporaryDir temp;
+        const auto artifactsDir = temp.path() + "/.artifacts/smoke-data";
+        QDir().mkpath(artifactsDir);
+        const auto path = artifactsDir + "/activation.dat";
+        const QJsonObject value{{"credential", "artifacts-secret"}, {"email", "smoke@qq.com"}};
+        QString error;
+        QVERIFY2(CredentialStore::save(path, value, &error), qPrintable(error));
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadOnly)); const auto plain = file.readAll(); file.close();
+        QCOMPARE(QJsonDocument::fromJson(plain).object(), value);
+        QCOMPARE(CredentialStore::load(path, &error), value);
+        QVERIFY(CredentialStore::clear(path, &error));
+        QVERIFY(!QFile::exists(path));
     }
     void updatedCredentialsReplacePreviousValue() {
         QTemporaryDir temp;
