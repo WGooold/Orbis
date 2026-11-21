@@ -517,6 +517,7 @@ data class SessionBrowseState(
     val entries: List<SessionBrowseEntry> = emptyList(),
     val isLoading: Boolean = true,
     val error: String? = null,
+    val forDownload: Boolean = false,
 )
 
 @Serializable
@@ -691,6 +692,7 @@ data class RemoteState(
     val sessionListRequests: Set<String> = emptySet(),
     /** 新建会话 / 下载共用的电脑文件浏览：null 表示选择器已关闭。 */
     val sessionBrowse: SessionBrowseState? = null,
+    val lastDownloadBrowserPath: String? = null,
     /** 进行中的 session.activate 请求（L1 resume / L2 new 共用）。 */
     val sessionActivateRequests: Set<String> = emptySet(),
     /** Only explicit resume requests may navigate when their acknowledged Session comes online. */
@@ -957,15 +959,16 @@ private fun reduceSessionArchiveChanged(state: RemoteState, message: JsonObject)
 private fun reduceSessionBrowseResult(state: RemoteState, message: JsonObject): RemoteState {
     val requestId = message["requestId"]?.jsonPrimitive?.contentOrNull
     val browse = state.sessionBrowse ?: return state
-    if (requestId != browse.requestId) return state
-    val path = message["path"]?.jsonPrimitive?.contentOrNull
+    if (requestId != browse.requestId || !browse.isLoading) return state
+    val path = (message["path"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return state
     val parent = message["parent"]?.jsonPrimitive?.contentOrNull
     val entries = runCatching {
         message["entries"]?.let { sessionMessageJson.decodeFromJsonElement<List<SessionBrowseEntry>>(it) }
-    }.getOrNull() ?: emptyList()
+    }.getOrNull() ?: return state
     return state.copy(
+        lastDownloadBrowserPath = if (browse.forDownload) path else state.lastDownloadBrowserPath,
         sessionBrowse = browse.copy(
-            path = path ?: "",
+            path = path,
             parent = parent,
             entries = entries.sortedWith(
                 compareByDescending<SessionBrowseEntry> { it.isDir }
@@ -1908,6 +1911,7 @@ internal fun RemoteState.markReconnecting(): RemoteState {
         currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
         e2eReady = false,
+        sessionBrowse = sessionBrowse?.takeUnless { it.forDownload && it.isLoading },
         agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
         agentEnablementPending = null, agentEnablementFailed = false,
         conversations = conversations.mapValues { (_, conversation) ->
@@ -2574,7 +2578,7 @@ class RelayReducer(
                 next = next.copy(agentProviders = next.agentProviders.stopOperation(error))
             val list = requestId in next.sessionListRequests
             val activate = requestId in next.sessionActivateRequests
-            val browse = next.sessionBrowse?.requestId == requestId
+            val browse = next.sessionBrowse?.let { it.requestId == requestId && it.isLoading } == true
             // Launch settlement can already remove its request while its navigation target remains.
             if (channel != null && requestId == next.agentProviders.quotaRequestId) {
                 val quotaError = if (code in CONNECTION_ACTION_PROTOCOL_CODES) error

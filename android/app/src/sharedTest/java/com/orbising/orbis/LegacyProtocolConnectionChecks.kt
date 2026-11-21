@@ -14,7 +14,7 @@ import org.junit.Test
 
 /** Strict legacy peers, real WebSockets, HS1/2/3, MAC checks, encryption and binary transfer. */
 abstract class LegacyProtocolConnectionChecks {
-    private val psk = ByteArray(32) { (it + 7).toByte() }
+    private val psk = StrictPeer.psk()
 
     // SC88: a dual-version Host must keep protocol-19 task inventories, including
     // when the Relay's independent outer connection still uses protocol 18.
@@ -231,7 +231,7 @@ abstract class LegacyProtocolConnectionChecks {
         http.dispatcher.executorService.shutdownNow(); http.connectionPool.evictAll()
     }
 
-    private inner class StrictPeer(val version: Int, val direct: Boolean = false, val compatible: Boolean = false) : WebSocketListener() {
+    internal class StrictPeer(val version: Int, val direct: Boolean = false, val compatible: Boolean = false) : WebSocketListener() {
         val ready = CountDownLatch(1)
         val authentication = LinkedBlockingQueue<Int>()
         val received = LinkedBlockingQueue<Pair<String, ByteArray>>()
@@ -272,7 +272,7 @@ abstract class LegacyProtocolConnectionChecks {
                     if (keys == null) {
                         val hello = PlaintextEnvelope.read<HandshakeHello>(envelope, "hs")
                         devicePublic = Crypto.fromBase64Url(hello.ePubD, "ePubD")
-                        val derived = HandshakeE2e.deriveSessionKeys(Crypto.deriveSharedSecret(keyPair.privateRaw, devicePublic!!), psk, keyPair.publicRaw, devicePublic!!)
+                        val derived = HandshakeE2e.deriveSessionKeys(Crypto.deriveSharedSecret(keyPair.privateRaw, devicePublic!!), psk(), keyPair.publicRaw, devicePublic!!)
                         keys = derived
                         sendFrame(PlaintextEnvelope.build("hs", "host", "host", "phone", HandshakeAcceptBody("hs2", Crypto.toBase64Url(keyPair.publicRaw),
                             Crypto.toBase64Url(HandshakeE2e.handshakeMacFromHost(derived, keyPair.publicRaw, devicePublic!!)))))
@@ -320,6 +320,10 @@ abstract class LegacyProtocolConnectionChecks {
         fun sendChunk(bytes: ByteArray) = sendFrame(channel!!.seal("bin", "host", "host", "phone", bytes, "bulk"))
         private fun sendFrame(envelope: EnvelopeV2) {
             for (piece in EnvelopePieces.fragment(envelope)) check(socket!!.send(E2eJson.json.encodeToString(V2Frame("v2.frame", wireVersion, piece))))
+        }
+
+        companion object {
+            fun psk() = ByteArray(32) { (it + 7).toByte() }
         }
     }
 }

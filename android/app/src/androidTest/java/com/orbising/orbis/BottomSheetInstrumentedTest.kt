@@ -182,7 +182,7 @@ class BottomSheetInstrumentedTest {
         val open = mutableStateOf(true)
         val downloads = mutableListOf<String>()
         val initial = browseState()
-        val state = initial.copy(sessionBrowse = initial.sessionBrowse!!.copy(entries = listOf(
+        val state = initial.copy(sessionBrowse = initial.sessionBrowse!!.copy(forDownload = true, entries = listOf(
             SessionBrowseEntry("report.txt", false, false), SessionBrowseEntry("notes.md", false, false),
         )))
         compose.setContent { OrbisTheme {

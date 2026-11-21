@@ -706,23 +706,26 @@ internal data class FirstDraftSend(val hostId: String?, val send: PendingSend, v
 @Composable
 private fun HostDownloadsScreen(state: RemoteState, model: RemoteViewModel, onBack: () -> Unit) {
     val active = LocalPageActive.current
-    DisposableEffect(state.hostId, active) {
-        model.setTransferFeedbackScope(downloads = active)
-        onDispose { model.setTransferFeedbackScope(downloads = false) }
+    val owner = state.hostId?.let(model::connectionFor)
+    DisposableEffect(owner, active) {
+        owner?.setTransferFeedbackScope(downloads = active, uploadIds = emptySet())
+        onDispose { owner?.setTransferFeedbackScope(downloads = false, uploadIds = emptySet()) }
+    }
+    DisposableEffect(owner) {
+        onDispose { owner?.dismissBrowse(forDownload = true) }
     }
     AllDownloadsScreen(
         state = state,
         onBack = onBack,
-        onBrowse = model::browseSessions,
-        onBrowseInto = model::browseInto,
-        onBrowseUp = model::browseUp,
-        onDismissBrowse = model::dismissBrowse,
-        initialBrowsePath = model.downloadBrowserPath(),
-        onBrowsePathResolved = model::rememberDownloadBrowserPath,
-        onDownload = { path -> model.downloadFile(path) },
-        onRetry = { taskId -> model.retryDownload(taskId) },
-        onCancel = model::cancelDownload,
-        onDelete = model::deleteDownloads,
+        onOpenBrowse = { owner?.openDownloadBrowser() },
+        onBrowse = { owner?.browseDownloadDirectory(it) },
+        onBrowseInto = { owner?.browseInto(it, forDownload = true) },
+        onBrowseUp = { owner?.browseUp(forDownload = true) },
+        onDismissBrowse = { owner?.dismissBrowse(forDownload = true) },
+        onDownload = { owner?.downloadFile(it) },
+        onRetry = { owner?.retryDownload(it) },
+        onCancel = { owner?.cancelDownload(it) },
+        onDelete = { owner?.deleteDownloads(it) },
     )
 }
 
@@ -3293,11 +3296,10 @@ internal fun AllDownloadsScreen(
     onRetry: (String) -> Unit,
     onCancel: (String) -> Unit,
     onDelete: (Set<String>) -> Unit,
-    initialBrowsePath: String? = null,
-    onBrowsePathResolved: (String?) -> Unit = {},
+    onOpenBrowse: () -> Unit = { onBrowse(null) },
 ) {
-    var filePickerOpen by rememberSaveable { mutableStateOf(false) }
-    var directDownloadPath by rememberSaveable { mutableStateOf("") }
+    var filePickerOpen by rememberSaveable(state.hostId) { mutableStateOf(false) }
+    var directDownloadPath by rememberSaveable(state.hostId) { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
     val directPath = directDownloadPath.trim()
     var selectedTaskIds by remember(state.hostId) { mutableStateOf<Set<String>>(emptySet()) }
@@ -3450,8 +3452,7 @@ internal fun AllDownloadsScreen(
             onBrowseInto = onBrowseInto,
             onBrowseUp = onBrowseUp,
             onDownload = onDownload,
-            initialBrowsePath = initialBrowsePath,
-            onBrowsePathResolved = onBrowsePathResolved,
+            onOpen = onOpenBrowse,
         )
     }
 }

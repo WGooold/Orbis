@@ -208,6 +208,92 @@ struct StoreTests {
         #expect(first.path(hostId: "host-1") == nil)
     }
 
+    /// FILE-BROWSER-02: only a successful listing on its original Host updates the next opening,
+    /// including when the app's store is rebuilt from its persisted preferences.
+    @Test func downloadBrowserReopensLastSuccessfulDirectoryWithoutMixingHostsOrPickers() async throws {
+        let key = "orbis-download-resume-" + UUID().uuidString
+        let preferences = try #require(UserDefaults(suiteName: key))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(key)
+        defer { preferences.removePersistentDomain(forName: key); try? FileManager.default.removeItem(at: root) }
+        let secure = MemorySecureStore(), first = TestTransport(), second = TestTransport()
+        secure.hosts.append(HostPairing(hostId: "host-2", hostName: "Second", hostPub: "second-public",
+            pskRoot: Base64URL.encode(Data(repeating: 2, count: 32)),
+            relay: RelayCredential(relayUrl: "wss://relay.example", deviceId: "device-2", credential: "test-only"), lan: []))
+        let store = OrbisStore(secure: secure, autoConnect: false, preferences: preferences, transferRoot: root,
+            transportFactory: { $0.hostId == "host-1" ? first : second })
+        first.drain = { [weak store] in await store?.waitForPendingEvents() }; second.drain = first.drain
+        let paths = DownloadBrowserPathStore(preferences: preferences)
+
+        func request(_ transport: TestTransport, path: String?) throws -> String {
+            let request = try #require(transport.sent.last { $0["type"] as? String == "session.browse" })
+            #expect(request["path"] as? String == path)
+            #expect(Set(request.keys) == (path == nil ? ["type", "protocolVersion", "requestId"] : ["type", "protocolVersion", "requestId", "path"]))
+            return try #require(request["requestId"] as? String)
+        }
+        func listing(_ id: String, path: String) -> [String: Any] {
+            ["type": "session.browse.result", "requestId": id, "path": path, "entries": []]
+        }
+
+        store.connect(hostId: "host-1"); await first.ready([])
+        let owner = store.activeConnection
+        owner.openDownloadBrowser()
+        let rootRead = try request(first, path: nil)
+        await first.emit(listing(rootRead, path: ""))
+        owner.browseDownloadDirectory("/tmp/../build output")
+        let jump = try request(first, path: "/tmp/../build output")
+        await first.emit(listing(jump, path: "/build output"))
+        #expect(paths.path(hostId: "host-1") == "/build output")
+
+        owner.browseDownloadDirectory("/unreadable")
+        let failed = try request(first, path: "/unreadable")
+        // Wrong request, missing fields, and an already rejected request must not settle the browse.
+        await first.emit(listing(jump, path: "/late"))
+        await first.emit(["type": "session.browse.result", "requestId": failed, "entries": []])
+        #expect(owner.browse?.loading == true)
+        await first.emit(["type": "protocol.error", "requestId": failed, "code": "session_request_failed", "message": "目录不可读"])
+        await first.emit(listing(failed, path: "/late"))
+        #expect(owner.browse?.error == "目录不可读")
+        #expect(paths.path(hostId: "host-1") == "/build output")
+
+        owner.dismissDownloadBrowser()
+        owner.openDownloadBrowser()
+        let reopening = try request(first, path: "/build output")
+        store.connect(hostId: "host-2"); await second.ready([])
+        let otherOwner = store.activeConnection
+        otherOwner.openDownloadBrowser()
+        let secondRoot = try request(second, path: nil)
+        await first.emit(listing(reopening, path: "/late-on-first"))
+        #expect(paths.path(hostId: "host-1") == "/build output")
+        #expect(paths.path(hostId: "host-2") == nil)
+        await second.emit(listing(secondRoot, path: ""))
+        otherOwner.browseDownloadDirectory("D:\\work")
+        let secondJump = try request(second, path: "D:\\work")
+        await second.emit(listing(secondJump, path: "D:\\work"))
+
+        store.selectHost("host-1")
+        owner.browseDirectory("/new-session")
+        let workspace = try request(first, path: "/new-session")
+        await first.emit(listing(workspace, path: "/new-session"))
+        owner.dismissDownloadBrowser() // A closing downloads sheet must not clear the workspace picker.
+        #expect(owner.workDirectoryBrowse?.path == "/new-session")
+        #expect(paths.path(hostId: "host-1") == "/build output")
+        first.acceptsSends = false
+        owner.browseDownloadDirectory("/not-sent")
+        #expect(owner.browse?.loading == false)
+        #expect(paths.path(hostId: "host-1") == "/build output")
+
+        let afterRestart = TestTransport()
+        let restored = OrbisStore(secure: secure, transport: afterRestart, autoConnect: false,
+            preferences: try #require(UserDefaults(suiteName: key)), transferRoot: root)
+        afterRestart.drain = { [weak restored] in await restored?.waitForPendingEvents() }
+        restored.connect(hostId: "host-1"); await afterRestart.ready([])
+        restored.activeConnection.openDownloadBrowser()
+        _ = try request(afterRestart, path: "/build output")
+        restored.unpair(hostId: "host-1"); await restored.waitForPendingEvents()
+        #expect(paths.path(hostId: "host-1") == nil)
+        #expect(paths.path(hostId: "host-2") == "D:\\work")
+    }
+
     private func setup() -> (OrbisStore, TestTransport) {
         let transport = TestTransport()
         let store = OrbisStore(secure: MemorySecureStore(), transport: transport, preferences: nil)

@@ -4678,6 +4678,55 @@ final class OrbisUITests: XCTestCase {
         capture("drawer-older-sessions-collapsed", app: app)
     }
 
+    // FILE-BROWSER-02: a fresh sheet restores the last listing, not its checkmarks or a failed jump.
+    func testDownloadBrowserRestoresDirectoryAfterDismissalAndBatchDownload() {
+        let app = launch("downloads", arguments: ["--preview-download-browser"])
+        let open = app.buttons["浏览电脑文件"]
+        let path = app.textFields["download-browser-path"]
+        let close = app.buttons["关闭"]
+        XCTAssertTrue(open.waitForExistence(timeout: 8))
+        XCTAssertTrue(waitUntilEnabled(open, timeout: 5))
+        open.tap()
+        let projects = app.buttons["/Projects"]
+        XCTAssertTrue(projects.waitForExistence(timeout: 5))
+        projects.tap()
+        let releases = app.buttons["releases"]
+        XCTAssertTrue(releases.waitForExistence(timeout: 5))
+        releases.tap()
+        let report = app.buttons["report.zip"], notes = app.buttons["notes.txt"]
+        XCTAssertTrue(report.waitForExistence(timeout: 5))
+        report.tap()
+        XCTAssertTrue(app.buttons["下载到手机"].isEnabled)
+        close.tap()
+        XCTAssertTrue(path.waitForNonExistence(timeout: 4))
+
+        open.tap()
+        XCTAssertTrue(report.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["下载到手机"].isEnabled)
+        path.tap()
+        path.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "/Projects/releases".count) + "/missing")
+        app.buttons["download-browser-jump"].tap()
+        XCTAssertTrue(app.staticTexts["目录不可读"].waitForExistence(timeout: 4))
+        close.tap()
+        XCTAssertTrue(path.waitForNonExistence(timeout: 4))
+
+        open.tap()
+        XCTAssertTrue(report.waitForExistence(timeout: 5))
+        report.tap(); notes.tap()
+        let download = app.buttons["下载所选 2 个文件"]
+        XCTAssertTrue(download.isEnabled)
+        capture("download-resumed-multiselect", app: app)
+        download.tap()
+        XCTAssertTrue(path.waitForNonExistence(timeout: 4))
+        let cards = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "download-card-"))
+        XCTAssertEqual(cards.count, 2)
+
+        open.tap()
+        XCTAssertTrue(report.waitForExistence(timeout: 5))
+        XCTAssertEqual(path.value as? String, "/Projects/releases")
+        XCTAssertFalse(app.buttons["下载到手机"].isEnabled)
+    }
+
     func testDownloadCardsPauseResumeAndSelectWithoutSideButtons() {
         let app = launch("downloads")
         let path = app.textFields["download-path"]

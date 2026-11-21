@@ -44,4 +44,31 @@ class RemoteFileBrowserTest {
         assertEquals("没有权限读取目录", result.sessionBrowse.error)
         assertNull(result.error)
     }
+
+    // FILE-BROWSER-02: a matching, still-pending download listing is the only source of a new location.
+    @Test fun `only successful download browser receipts change the remembered path`() {
+        val reducer = RelayReducer()
+        val state = RemoteState(lastDownloadBrowserPath = "/saved", sessionBrowse = SessionBrowseState("download", "/asked", forDownload = true))
+        val result = """{"type":"session.browse.result","requestId":"download","path":"/resolved","entries":[]}"""
+        val resolved = reducer.reduce(state, result)
+        assertEquals("/resolved", resolved.lastDownloadBrowserPath)
+        assertSame(resolved.sessionBrowse, reducer.reduce(resolved, result.replace("/resolved", "/duplicate")).sessionBrowse)
+        assertEquals("", reducer.reduce(state, result.replace("/resolved", "")).lastDownloadBrowserPath)
+
+        val workspace = state.copy(sessionBrowse = state.sessionBrowse!!.copy(forDownload = false))
+        assertEquals("/saved", reducer.reduce(workspace, result).lastDownloadBrowserPath)
+        assertEquals("/resolved", reducer.reduce(workspace, result).sessionBrowse?.path)
+
+        val failed = reducer.reduce(state, """{"type":"protocol.error","requestId":"download","code":"session_request_failed","message":"目录不可读"}""")
+        val timedOut = state.copy(sessionBrowse = state.sessionBrowse.copy(isLoading = false, error = "timeout"))
+        val obsolete = state.copy(sessionBrowse = state.sessionBrowse.copy(requestId = "newer"))
+        for (retired in listOf(failed, timedOut, obsolete, state.copy(sessionBrowse = null), state.markReconnecting())) {
+            val next = reducer.reduce(retired, result)
+            assertEquals("/saved", next.lastDownloadBrowserPath)
+            assertEquals(retired.sessionBrowse, next.sessionBrowse)
+        }
+        val malformed = """{"type":"session.browse.result","requestId":"download","entries":[]}"""
+        assertEquals("/saved", reducer.reduce(state, malformed).lastDownloadBrowserPath)
+        assertTrue(reducer.reduce(state, malformed).sessionBrowse!!.isLoading)
+    }
 }

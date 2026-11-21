@@ -207,7 +207,7 @@ final class HostConnection: ObservableObject {
         if preservingConnectionConditions { feedback.clearTransientPresentation() } else { feedback.clear() }
         objectErrors = [:]; composerErrors = [:]; sessionOperationErrors = [:]; menuErrors = [:]; historyErrors = [:]; queueErrors = [:]; interactionErrors = [:]
         sessionConfigurationError = nil; sessionLaunchError = nil; configFailures = [:]; transfers.error = nil; transfers.clearUploadErrors()
-        browse = nil; toolContent.close(); menuOptions.cancel(); menuOptionsTimeout?.cancel()
+        dismissBrowse(); toolContent.close(); menuOptions.cancel(); menuOptionsTimeout?.cancel()
     }
     private func connectionFeedback(_ condition: FeedbackCondition) {
         switch condition {
@@ -1432,6 +1432,7 @@ final class HostConnection: ObservableObject {
             if state != .secured { self.pendingSends.connectionLost(); self.ledgerCloseConnection(); self.replyCompletions.resetActive() }
             else { self.ledgerOpenConnection() }
             self.connection = state
+            if state != .secured, self.browse?.forDownload == true, self.browse?.loading == true { self.dismissDownloadBrowser() }
             if state != .secured { self.pathRTT = nil }
             if state != .secured { self.homeDirectoryReceived = false; self.defaultSessionSpawnMode = "tui"; self.filteredReady = nil; self.resetAgentEnablement(); self.importReady = false; self.finishExternalImport(.unconfirmed); self.finishExternalLaunch(.unconfirmed) }
             self.recordConnectionEvent(L10n.tr("连接：{0}", state.rawValue))
@@ -2511,35 +2512,41 @@ final class HostConnection: ObservableObject {
     /// 正在归档 / 恢复、尚未结算的会话：冲突入口在结算前禁用（L9）。
     func isArchiving(_ sessionId: String) -> Bool { OperationKinds.archiveOverrides(ledger)[sessionId] != nil }
 
-    func downloadBrowserPath() -> String? {
-        guard let hostId = selectedHostId else { return nil }
-        return downloadBrowserPaths.path(hostId: hostId)
+    func openDownloadBrowser() {
+        browseDownloadDirectory(selectedHostId.flatMap { downloadBrowserPaths.path(hostId: $0) })
     }
 
-    func rememberDownloadBrowserPath(_ path: String?) {
-        guard let hostId = selectedHostId else { return }
-        downloadBrowserPaths.remember(path, hostId: hostId)
+    func browseDownloadDirectory(_ path: String?) {
+        browseDirectory(path, forDownload: true)
     }
 
     func browseDirectory(_ path: String? = nil) {
+        browseDirectory(path, forDownload: false)
+    }
+
+    var workDirectoryBrowse: DirectoryBrowse? { browse?.forDownload == false ? browse : nil }
+
+    private func browseDirectory(_ path: String?, forDownload: Bool) {
+        browseTimeout?.cancel()
         guard connection == .secured else {
-            browse = DirectoryBrowse(requestId: "", path: path, loading: false, error: L10n.tr("未连接到电脑，连接恢复后可重试。"))
+            browse = DirectoryBrowse(requestId: "", path: path, loading: false, error: L10n.tr("未连接到电脑，连接恢复后可重试。"), forDownload: forDownload)
             return
         }
-        browseTimeout?.cancel()
         let requestId = UUID().uuidString
-        browse = DirectoryBrowse(requestId: requestId, path: path)
+        browse = DirectoryBrowse(requestId: requestId, path: path, forDownload: forDownload)
         var request: [String: Any] = ["type": "session.browse", "protocolVersion": orbisProtocolVersion, "requestId": requestId]
         if let path { request["path"] = path }
         guard transport.send(request) else { browse?.loading = false; browse?.error = L10n.tr("目录读取请求未送达。"); return }
         browseTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
-            guard let self, self.browse?.requestId == requestId else { return }
+            guard let self, self.browse?.requestId == requestId, self.browse?.loading == true else { return }
             self.browse?.loading = false; self.browse?.error = L10n.tr("目录读取超时，请重试。")
         }
     }
 
     func dismissBrowse() { browseTimeout?.cancel(); browseTimeout = nil; browse = nil }
+    func dismissDownloadBrowser() { if browse?.forDownload == true { dismissBrowse() } }
+    func dismissWorkDirectoryBrowser() { if browse?.forDownload == false { dismissBrowse() } }
 
     @discardableResult
     func executeSlash(_ name: String, args: String = "", composerDraft: String? = nil) -> Bool {
@@ -3433,7 +3440,9 @@ final class HostConnection: ObservableObject {
             sessionListRequest = nil; owned = true
         }
         if let requestId, requestId == browse?.requestId {
-            browseTimeout?.cancel(); browse?.loading = false; browse?.error = FeedbackText.reason(detail ?? L10n.tr("目录不可读"))
+            if browse?.loading == true {
+                browseTimeout?.cancel(); browse?.loading = false; browse?.error = FeedbackText.reason(detail ?? L10n.tr("目录不可读"))
+            }
             owned = true
         }
         return owned
@@ -3707,12 +3716,18 @@ final class HostConnection: ObservableObject {
             workingBranches[id]?.commit = message["commit"] as? String
             workingBranches[id]?.loaded = true
         case "session.browse.result":
-            guard message["requestId"] as? String == browse?.requestId else { return }
+            guard var current = browse, current.loading, message["requestId"] as? String == current.requestId,
+                  let path = message["path"] as? String, let rows = message["entries"] as? [[String: Any]] else { return }
+            let entries: [BrowseEntry] = rows.compactMap(jsonDecode)
+            guard entries.count == rows.count else { return }
             browseTimeout?.cancel()
-            browse?.path = message["path"] as? String
-            browse?.parent = message["parent"] as? String
-            browse?.entries = (message["entries"] as? [[String: Any]] ?? []).compactMap(jsonDecode)
-            browse?.loading = false
+            // FILE-BROWSER-02: only the connection that accepts this download listing can save it.
+            if current.forDownload, let hostId = selectedHostId { downloadBrowserPaths.remember(path, hostId: hostId) }
+            current.path = path
+            current.parent = message["parent"] as? String
+            current.entries = entries
+            current.loading = false
+            browse = current
         case "session.configuration.result":
             guard message["requestId"] as? String == sessionConfigurationRequest,
                   let snapshot: SessionConfigurationSnapshot = jsonDecode(message) else { return }

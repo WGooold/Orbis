@@ -29,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -187,40 +188,15 @@ internal fun DownloadFileSheet(
     onBrowseInto: (String) -> Unit,
     onBrowseUp: () -> Unit,
     onDownload: (String) -> Unit,
-    initialBrowsePath: String? = null,
-    onBrowsePathResolved: (String?) -> Unit = {},
+    onOpen: () -> Unit = { onBrowse(null) },
 ) {
-    val browse = state.sessionBrowse
+    val browse = state.sessionBrowse?.takeIf { it.forDownload }
     val connected = state.connection == RelayConnection.ONLINE && state.e2eReady
-    var selectedFiles by rememberSaveable(browse?.path) { mutableStateOf(emptySet<String>()) }
+    var selectedFiles by remember(browse?.path) { mutableStateOf(emptySet<String>()) }
     val selected = browse?.entries.orEmpty().filter { !it.isDir && it.name in selectedFiles }
-    var previousBrowseRequestId by rememberSaveable { mutableStateOf<String?>(null) }
-    var awaitingBrowseResult by rememberSaveable { mutableStateOf(false) }
-    val markBrowseRequest = {
-        previousBrowseRequestId = browse?.requestId
-        awaitingBrowseResult = true
-    }
-    val browseTo: (String?) -> Unit = { path ->
-        markBrowseRequest()
-        onBrowse(path)
-    }
-    val browseIntoDirectory: (String) -> Unit = { name ->
-        markBrowseRequest()
-        onBrowseInto(name)
-    }
-    val browseParent: () -> Unit = {
-        markBrowseRequest()
-        onBrowseUp()
-    }
-    LaunchedEffect(connected, state.hostId, initialBrowsePath) {
-        if (connected) browseTo(initialBrowsePath)
-    }
-    LaunchedEffect(browse?.requestId, browse?.isLoading, browse?.error, browse?.path, awaitingBrowseResult) {
-        if (awaitingBrowseResult && browse != null && browse.requestId != previousBrowseRequestId &&
-            !browse.isLoading && browse.error == null) {
-            onBrowsePathResolved(browse.path)
-            awaitingBrowseResult = false
-        }
+    // FILE-BROWSER-02: the opening (or reconnection), not a changed saved path, triggers a read.
+    LaunchedEffect(connected, state.hostId) {
+        if (connected) onOpen()
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -250,7 +226,7 @@ internal fun DownloadFileSheet(
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(L10n.tr("选择电脑上的文件"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 RemoteDirectoryBrowser(
-                    browse, connected, browseTo, browseIntoDirectory, browseParent,
+                    browse, connected, onBrowse, onBrowseInto, onBrowseUp,
                     modifier = Modifier.fillMaxWidth().then(if (scrollAll) Modifier.heightIn(max = 320.dp) else Modifier.weight(1f, fill = false)),
                     showFiles = true, selectedFiles = selectedFiles, onSelectFile = toggleFile,
                 )

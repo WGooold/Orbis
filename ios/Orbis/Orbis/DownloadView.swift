@@ -8,6 +8,7 @@ struct DownloadsView: View {
     @Environment(\.orbisAppearance) private var visualStyle
     let onBack: () -> Void
     @State private var browserOpen = false
+    @State private var browserOwner: HostConnection?
     @State private var selected: Set<String> = []
     @State private var path = ""
     @FocusState private var pathFocused: Bool
@@ -28,7 +29,10 @@ struct DownloadsView: View {
                     .disabled(store.connection != .secured || path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.padding(.horizontal, 24).padding(.top, 8)
             if let error = transfers.error { Label(error, systemImage: "exclamationmark.circle").font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.top, 8) }
-            OrbisActionButton(title: L10n.tr("浏览电脑文件"), symbol: "folder") { browserOpen = true }
+            OrbisActionButton(title: L10n.tr("浏览电脑文件"), symbol: "folder") {
+                browserOwner = store.activeConnection
+                browserOpen = true
+            }
                 .disabled(store.connection != .secured).padding(.horizontal, 24).padding(.vertical, 12)
             if downloads.isEmpty { OrbisEmptyState(symbol: "arrow.down.to.line", title: L10n.tr("暂无下载")) }
             else {
@@ -42,10 +46,16 @@ struct DownloadsView: View {
             }
         }.background(OrbisPalette(scheme).base.ignoresSafeArea())
             .orbisBackPriority("download-selection", active: !selected.isEmpty) { selected = [] }
-            .onChange(of: store.selectedHostId) { _, _ in selected = [] }
+            .onChange(of: ObjectIdentifier(store.activeConnection)) { _, _ in
+                selected = []
+                browserOpen = false
+            }
             .onChange(of: downloads.map(\.id)) { _, ids in selected.formIntersection(ids) }
-            .orbisBottomSheet(isPresented: $browserOpen, onDismiss: store.dismissBrowse) {
-                DownloadBrowserView { browserOpen = false }.orbisSheet([.large])
+            .orbisBottomSheet(isPresented: $browserOpen, onDismiss: {
+                browserOwner?.dismissDownloadBrowser()
+                browserOwner = nil
+            }) {
+                if let browserOwner { DownloadBrowserView(owner: browserOwner) { browserOpen = false }.orbisSheet([.large]) }
             }
     }
 
@@ -130,44 +140,35 @@ struct DownloadsView: View {
 
 /// FILE-BROWSER-01: direct path navigation and multi-file downloads share one browser state.
 private struct DownloadBrowserView: View {
-    @EnvironmentObject private var store: OrbisStore
-    @EnvironmentObject private var transfers: FileTransfers
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
+    @ObservedObject var owner: HostConnection
     let onDismiss: () -> Void
     @State private var selected: Set<String> = []
     @State private var pathInput = ""
-    @State private var previousBrowseRequestId: String?
-    @State private var awaitingBrowseResult = false
     @FocusState private var pathFocused: Bool
 
+    private var directory: DirectoryBrowse? { owner.browse?.forDownload == true ? owner.browse : nil }
     private var selectedFiles: [BrowseEntry] {
-        (store.browse?.entries ?? []).filter { !$0.isDir && selected.contains($0.id) }
+        (directory?.entries ?? []).filter { !$0.isDir && selected.contains($0.id) }
     }
     private var trimmedPath: String { pathInput.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var sortedEntries: [BrowseEntry] {
-        (store.browse?.entries ?? []).sorted {
+        (directory?.entries ?? []).sorted {
             ($0.isDir ? 0 : 1, $0.name) < ($1.isDir ? 0 : 1, $1.name)
         }
     }
 
-    private func browse(_ path: String?) {
-        previousBrowseRequestId = store.browse?.requestId
-        awaitingBrowseResult = true
-        store.browseDirectory(path)
-    }
-
     private func jumpToPath() {
-        guard !trimmedPath.isEmpty, store.connection == .secured, store.browse?.loading != true else { return }
+        guard !trimmedPath.isEmpty, owner.connection == .secured, directory?.loading != true else { return }
         pathFocused = false
-        selected.removeAll()
-        browse(trimmedPath)
+        owner.browseDownloadDirectory(trimmedPath)
     }
 
     private func downloadSelected() {
-        guard !selectedFiles.isEmpty else { return }
+        guard owner.connection == .secured, directory?.loading == false, directory?.error == nil, !selectedFiles.isEmpty else { return }
         for entry in selectedFiles {
-            transfers.download(path: remoteBrowsePath(parent: store.browse?.path, name: entry.name))
+            owner.transfers.download(path: remoteBrowsePath(parent: directory?.path, name: entry.name))
         }
         onDismiss()
     }
@@ -178,7 +179,7 @@ private struct DownloadBrowserView: View {
         OrbisMotionButton {
             if entry.isDir {
                 selected.removeAll()
-                browse(remoteBrowsePath(parent: store.browse?.path, name: entry.name))
+                owner.browseDownloadDirectory(remoteBrowsePath(parent: directory?.path, name: entry.name))
             } else if !selected.insert(entry.id).inserted {
                 selected.remove(entry.id)
             }
@@ -209,7 +210,7 @@ private struct DownloadBrowserView: View {
                 .submitLabel(.go).onSubmit(jumpToPath)
                 .accessibilityIdentifier("download-browser-path")
             OrbisIconButton(symbol: "magnifyingglass", label: L10n.tr("跳转"), action: jumpToPath)
-                .disabled(trimmedPath.isEmpty || store.connection != .secured || store.browse?.loading == true)
+                .disabled(trimmedPath.isEmpty || owner.connection != .secured || directory?.loading == true)
                 .accessibilityIdentifier("download-browser-jump")
         }
         .padding(.horizontal, 24)
@@ -219,34 +220,34 @@ private struct DownloadBrowserView: View {
         ScrollView {
             VStack(spacing: 14) {
                 HStack {
-                    Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
+                    Text(directory?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
                         .font(.orbisCaption(mono: true))
                         .frame(maxWidth: .infinity, alignment: .leading)
                     ZStack {
-                        if store.browse?.loading == true { ProgressView().controlSize(.small) }
+                        if directory?.loading == true { ProgressView().controlSize(.small) }
                         else {
                             OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) {
-                                browse(store.browse?.path)
+                                owner.browseDownloadDirectory(directory?.path)
                             }
                         }
                     }
                     .frame(width: 48, height: 48)
                 }
-                if store.browse?.path?.isEmpty == false {
+                if directory?.path?.isEmpty == false {
                     OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") {
                         selected.removeAll()
-                        browse(store.browse?.parent)
+                        owner.browseDownloadDirectory(directory?.parent)
                     }
-                    .disabled(store.browse?.loading == true)
+                    .disabled(directory?.loading == true)
                 }
-                if let error = store.browse?.error {
+                if let error = directory?.error {
                     OrbisNotice(text: error, error: true)
                     OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") {
-                        browse(store.browse?.path)
+                        owner.browseDownloadDirectory(directory?.path)
                     }
-                } else if store.browse?.loading == false {
+                } else if directory?.loading == false {
                     ForEach(sortedEntries) { browserEntry($0) }
-                    if store.browse?.entries.isEmpty == true {
+                    if directory?.entries.isEmpty == true {
                         Text(L10n.tr("此目录没有可浏览的文件或子目录"))
                             .font(.orbisLabel())
                             .foregroundStyle(OrbisPalette(scheme).secondary)
@@ -257,7 +258,7 @@ private struct DownloadBrowserView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 10)
         }
-        .disabled(store.connection != .secured)
+        .disabled(owner.connection != .secured)
     }
 
     private var downloadFooter: some View {
@@ -266,7 +267,7 @@ private struct DownloadBrowserView: View {
             symbol: "arrow.down.to.line",
             action: downloadSelected
         )
-        .disabled(selectedFiles.isEmpty || store.browse?.loading != false || store.browse?.error != nil || store.connection != .secured)
+        .disabled(selectedFiles.isEmpty || directory?.loading != false || directory?.error != nil || owner.connection != .secured)
         .padding(.horizontal, 24)
         .padding(.bottom, 24)
     }
@@ -279,17 +280,11 @@ private struct DownloadBrowserView: View {
             downloadFooter
         }
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
-        .onAppear { browse(store.downloadBrowserPath()) }
-        .onChange(of: store.browse?.path, initial: true) { _, path in pathInput = path ?? "" }
-        .onChange(of: store.browse?.loading) { _, loading in
-            if awaitingBrowseResult, loading == false, let browse = store.browse,
-               browse.requestId != previousBrowseRequestId, browse.error == nil {
-                store.rememberDownloadBrowserPath(browse.path)
-                awaitingBrowseResult = false
-            }
+        .onChange(of: owner.connection, initial: true) { _, connection in
+            if connection == .secured { owner.openDownloadBrowser() }
         }
-        .onChange(of: store.selectedHostId) { _, _ in onDismiss() }
-        .onChange(of: store.browse?.requestId) { _, _ in selected.removeAll() }
+        .onChange(of: directory?.path, initial: true) { _, path in pathInput = path ?? "" }
+        .onChange(of: directory?.requestId) { _, _ in selected.removeAll() }
     }
 }
 

@@ -635,6 +635,7 @@ struct DirectoryBrowse {
     var entries: [BrowseEntry] = []
     var loading = true
     var error: String?
+    var forDownload = false
 }
 
 struct WorkingBranch {
@@ -872,7 +873,7 @@ enum FeedbackText {
     }
 }
 
-/// FILE-BROWSER-01: persists the last successfully opened downloads folder per paired Host.
+/// FILE-BROWSER-02: persists the last successfully opened downloads folder per paired Host.
 struct DownloadBrowserPathStore {
     private static let preferenceKey = "orbis.downloadBrowserPaths.v1"
     private let preferences: UserDefaults?
@@ -885,9 +886,10 @@ struct DownloadBrowserPathStore {
         values[hostId].flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    func remember(_ path: String?, hostId: String) {
+    func remember(_ path: String, hostId: String) {
         var next = values
-        next[hostId] = path ?? ""
+        guard next[hostId] != path else { return }
+        next[hostId] = path
         preferences?.set(next, forKey: Self.preferenceKey)
     }
 

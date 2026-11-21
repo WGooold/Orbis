@@ -106,6 +106,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         (kind != "openclaw" || state.canLaunchOpenClaw() && config?.snapshot != null && config.error == null) &&
         (kind != KIMI_CODE_KIND || state.kimiCodeSupported && config?.snapshot != null) &&
         (!importMode || config?.snapshot != null && config.requestId == null && config.error == null)
+    val workDirectory = state.sessionBrowse?.takeUnless { it.forDownload }
     fun submit() {
         if (canStart && onSubmit(kind, cwd, text.trim(), bounds, fieldBounds)) text = ""
     }
@@ -130,10 +131,10 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
             if (presetCwd != null) cwd = presetCwd
             if (cwd.isBlank()) cwd = state.runtimes.values.firstOrNull()?.cwd
                 ?: state.sessions.values.firstOrNull { it.cwd.isNotBlank() }?.cwd.orEmpty()
-            if (cwd.isBlank() && state.sessionBrowse == null) onBrowse(null)
+            if (cwd.isBlank() && workDirectory == null) onBrowse(null)
         }
     }
-    LaunchedEffect(state.sessionBrowse?.path) { if (!importMode && cwd.isBlank()) cwd = state.sessionBrowse?.path.orEmpty() }
+    LaunchedEffect(workDirectory?.path) { if (!importMode && cwd.isBlank()) cwd = workDirectory?.path.orEmpty() }
     LaunchedEffect(supported, kinds) { if (supported != null && (kind !in supported || agentFamily(kind) !in kinds))
         listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, "hermes", "opencode")
             .firstOrNull { it in supported && agentFamily(it) in kinds }?.let { kind = it }
@@ -311,9 +312,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                 modifier = Modifier.fillMaxWidth().padding(16.dp).testTag("draft-permissions-apply"))
         }
         if (directoryOpen) OrbisChoiceSheet(L10n.tr("工作目录"), { directoryOpen = false }) {
-            RemoteDirectoryBrowser(state.sessionBrowse, state.e2eReady, onBrowse, onBrowseInto, onBrowseUp,
+            RemoteDirectoryBrowser(workDirectory, state.e2eReady, onBrowse, onBrowseInto, onBrowseUp,
                 modifier = Modifier.fillMaxWidth().heightIn(max = 440.dp))
-            val browse = state.sessionBrowse
+            val browse = workDirectory
             NeumorphActionButton(text = L10n.tr("使用此目录"), onClick = {
                 browse?.path?.takeIf(String::isNotBlank)?.let { cwd = it; directoryOpen = false }
             }, enabled = browse != null && !browse.isLoading && browse.error == null && !browse.path.isNullOrBlank(),

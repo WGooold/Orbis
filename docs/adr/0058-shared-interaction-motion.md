@@ -16,6 +16,10 @@
 
 下载反馈（M16 / UI-06）表示本地任务受理，复用共用视觉与生命周期，保持命中、布局和阅读稳定。返回来源见 [ADR-0054](0054-shared-full-page-navigation.md)；两端聊天页使用下载飞入，历史页均不放置下载管理入口；实现见 [DownloadFlight.kt](../../android/app/src/main/java/com/orbising/orbis/DownloadFlight.kt) 与 [OrbisDesign.swift](../../ios/Orbis/Orbis/OrbisDesign.swift)，回归见 [DownloadFlightInstrumentedTest.kt](../../android/app/src/androidTest/java/com/orbising/orbis/DownloadFlightInstrumentedTest.kt) 和 [OrbisUITests.swift](../../ios/Orbis/UITests/OrbisUITests.swift)。
 
+目录与文件浏览（FILE-BROWSER-01 / FILE-BROWSER-02）：工作目录支持输入路径跳转；下载支持按完整文件路径发起或在目录内多选。下载浏览器首次从电脑根目录打开，之后按配对电脑恢复最后一次成功读取的目录，重启 App 后仍生效。只保存当前下载浏览请求返回的目录，不保留文件勾选；工作目录及失败、过期的请求不更新记录。实现见 [Android 浏览器](../../android/app/src/main/java/com/orbising/orbis/RemoteFileBrowser.kt)、[Android 连接](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[iOS 浏览器](../../ios/Orbis/Orbis/DownloadView.swift) 和 [iOS 连接](../../ios/Orbis/Orbis/OrbisStore.swift)。沿用 `session.browse` 协议。
+
+FILE-BROWSER-02 自动验证：Android 定向单测 6 项、模拟器 6 项通过；Swift 定向测试 3 项、iOS 模拟器 UI 1 项通过。测试见 [Android 单测](../../android/app/src/test/java/com/orbising/orbis/RemoteFileBrowserTest.kt)、[Android 模拟器](../../android/app/src/androidTest/java/com/orbising/orbis/DownloadFileBrowserInstrumentedTest.kt)、[Swift 状态测试](../../ios/Orbis/Tests/StoreTests.swift) 与 [iOS UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)。构建、首次失败和复验保存在 [.artifacts/file-browser-resume-20261121](../../.artifacts/file-browser-resume-20261121/)；未部署，未发布共享 QA 候选，真机待用户验证。
+
 | 场景 | 作用 |
 | --- | --- |
 | SC01 | 首页单卡关闭 |

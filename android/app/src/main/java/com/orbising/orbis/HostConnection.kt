@@ -89,6 +89,7 @@ internal class HostStores(private val application: Application) {
     val downloads by lazy { ArtifactDownloadStore(application).also { store -> legacyHostId?.let(store::adoptHostId) } }
     val uploads by lazy { ArtifactUploadStore(application).also { store -> legacyHostId?.let(store::adoptHostId) } }
     val lastSession = LastSessionStore(application)
+    val downloadBrowserPaths by lazy { DownloadBrowserPathStore(application) }
     val notifier = InteractionNotifier(application)
     private val launchJournals = mutableMapOf<String, ConfiguredLaunchJournal>()
 
@@ -560,6 +561,7 @@ internal class HostConnection(
             val restored = loadHostCache {
                 val cached = RemoteState(hostId = pairing.hostId,
                     sessions = sessionCatalogStore.load(device, pairing.hostId).associateBy(SessionCatalogEntry::sessionId),
+                    lastDownloadBrowserPath = stores.downloadBrowserPaths.load(hostId),
                     downloads = artifactDownloadStore.load()
                         .filter { it.hostId == pairing.hostId || it.hostId == null && it.transferRuntimeId == pairing.hostId }
                         .associateBy(ArtifactDownload::taskId),
@@ -574,7 +576,8 @@ internal class HostConnection(
             // construction (the cache load above resumes on a later dispatch).
             launchJournalJob = scope.launch(Dispatchers.Default) { configuredLaunchJournal.changes.collect { updateState { it } } }
             updateState { current -> current.copy(sessions = restored.sessions + current.sessions,
-                downloads = restored.downloads + current.downloads, uploads = restored.uploads + current.uploads) }
+                downloads = restored.downloads + current.downloads, uploads = restored.uploads + current.uploads,
+                lastDownloadBrowserPath = restored.lastDownloadBrowserPath) }
             cacheReady = true
             scheduleSessionCatalogSave()
             connect(device)
@@ -1201,22 +1204,20 @@ internal class HostConnection(
         updateState { it.ledgerWritten(requestId, System.currentTimeMillis()) }
     }
 
-    private val downloadBrowserPreferences by lazy {
-        application.getSharedPreferences("orbis_download_browser", android.content.Context.MODE_PRIVATE)
-    }
+    // An IO reply must either save before shutdown (and unpair cleanup), or not write at all.
+    private val downloadBrowserWriteLock = Any()
 
-    /** The last successfully opened directory is scoped to this paired computer. */
-    fun downloadBrowserPath(): String? = downloadBrowserPreferences.getString(hostId, null)?.takeIf(String::isNotEmpty)
-
-    fun rememberDownloadBrowserPath(path: String?) {
-        downloadBrowserPreferences.edit().putString(hostId, path.orEmpty()).apply()
-    }
+    fun openDownloadBrowser() = browseDownloadDirectory(mutableState.value.lastDownloadBrowserPath?.takeIf(String::isNotEmpty))
+    fun browseDownloadDirectory(path: String?) = browseSessions(path, forDownload = true)
 
     /** 新建会话与下载共用的只读浏览。path 为空返回盘符 / 根。 */
-    fun browseSessions(path: String? = null) {
+    fun browseSessions(path: String? = null) = browseSessions(path, forDownload = false)
+
+    private fun browseSessions(path: String?, forDownload: Boolean) {
+        if (!shouldConnect) return
         val requestId = UUID.randomUUID().toString()
-        val current = mutableState.value.sessionBrowse
-        sendSessionPayload(
+        val current = mutableState.value.sessionBrowse?.takeIf { it.forDownload == forDownload }
+        val sent = sendSessionPayload(
             requestId = requestId,
             payload = buildJsonObject {
                 put("type", "session.browse")
@@ -1232,11 +1233,13 @@ internal class HostConnection(
                         parent = current?.takeIf { state -> state.path == path }?.parent,
                         entries = current?.takeIf { state -> state.path == path }?.entries ?: emptyList(),
                         isLoading = true,
+                        forDownload = forDownload,
                     ),
                 )
             },
-            rollback = { it.copy(sessionBrowse = current) },
+            rollback = { if (it.sessionBrowse?.requestId == requestId) it.copy(sessionBrowse = current) else it },
         )
+        if (!sent) return
         scope.launch {
             delay(15_000)
             updateState { state ->
@@ -1249,19 +1252,22 @@ internal class HostConnection(
     }
 
     /** 浏览器下钻到子目录（name 拼到当前 path 上，根层级的 name 本身就是完整路径）。 */
-    fun browseInto(name: String) {
+    fun browseInto(name: String, forDownload: Boolean = false) {
         val browse = mutableState.value.sessionBrowse ?: return
-        if (browse.isLoading || browse.entries.none { it.name == name && it.isDir }) return
-        browseSessions(remoteBrowsePath(browse.path, name))
+        if (browse.forDownload != forDownload || browse.isLoading || browse.error != null || browse.entries.none { it.name == name && it.isDir }) return
+        browseSessions(remoteBrowsePath(browse.path, name), forDownload)
     }
 
-    fun browseUp() {
+    fun browseUp(forDownload: Boolean = false) {
         val browse = mutableState.value.sessionBrowse ?: return
-        browseSessions(browse.parent?.takeIf(String::isNotBlank))
+        if (browse.forDownload != forDownload || browse.isLoading) return
+        browseSessions(browse.parent?.takeIf(String::isNotBlank), forDownload)
     }
 
-    fun dismissBrowse() {
-        updateState { it.copy(sessionBrowse = null) }
+    fun dismissBrowse(forDownload: Boolean = false) {
+        updateState { state ->
+            if (state.sessionBrowse?.forDownload == forDownload) state.copy(sessionBrowse = null) else state
+        }
     }
 
     /** L1：继续已有会话——cwd 与 agentKind 都来自会话记录，手机只需要 sessionId。 */
@@ -1531,15 +1537,15 @@ internal class HostConnection(
      * which still has to serve the other Host connections.
      */
     fun shutdown() {
+        synchronized(downloadBrowserWriteLock) { shouldConnect = false }
         browserPreview.resetConnection()
         closeToolDetail()
         closeChangeViewer()
-        shouldConnect = false
         startupJob?.cancel()
         launchJournalJob?.cancel()
         changeSummaryJob.cancel()
         homePresentationJob.cancel()
-        updateState { state -> state.sessionReads.values.filter { it.phase.active }.fold(state) { next, read ->
+        updateState { state -> state.sessionReads.values.filter { it.phase.active }.fold(state.copy(sessionBrowse = null)) { next, read ->
             next.finishHistoryRead(read.operationId, SessionReadPhase.CANCELLED)
         } }
         pairingAwaitingAccept = false
@@ -3323,14 +3329,24 @@ internal class HostConnection(
                                     .filter { (taskId, task) -> previous.downloads[taskId] != task }
                                     .values
                                     .forEach(artifactDownloadStore::register)
+                                var downloadPathToSave: String? = null
                                 updateState { latest ->
+                                    if (messageType == "session.browse.result" &&
+                                        (interactiveChannel == null || currentGeneration != generation || !latest.e2eReady || !shouldConnect))
+                                        return@updateState latest
                                     val rebased = if (latest === previous) next
                                         else incomingMessage?.let { reducer.reduce(latest, payload, it, committedBatch, channel = interactiveChannel) }
                                             ?: reducer.reduce(latest, payload, committedBatch, channel = interactiveChannel)
+                                    downloadPathToSave = rebased.lastDownloadBrowserPath?.takeIf { it != latest.lastDownloadBrowserPath }
                                     if (artifactFailure == null) rebased else rebased.copy(
                                         downloads = rebased.downloads.mapValues { (taskId, task) -> persistedDownloads[taskId] ?: task },
                                         feedback = rebased.feedback,
                                     )
+                                }
+                                downloadPathToSave?.let { path ->
+                                    synchronized(downloadBrowserWriteLock) {
+                                        if (shouldConnect) stores.downloadBrowserPaths.save(hostId, path)
+                                    }
                                 }
                                 next = mutableState.value
                                 if (interactiveChannel != null && messageType == "device.ready") scope.launch { recoverConfiguredLaunch() }

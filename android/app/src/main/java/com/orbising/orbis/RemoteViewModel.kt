@@ -186,6 +186,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             ?: pairingOrder.value.firstOrNull()?.hostId
         if (activeHostId.value != resolved) {
             active()?.browserPreview?.close()
+            active()?.dismissBrowse(forDownload = true)
             active()?.clearFeedbackScope()
             active()?.setFeedbackVisible(false)
         }
@@ -205,8 +206,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val connection = synchronized(lock) { connections.remove(id) }
         observationJobs.remove(id)?.cancel()
         connection?.shutdown()
-        getApplication<Application>().getSharedPreferences("orbis_download_browser", android.content.Context.MODE_PRIVATE)
-            .edit().remove(id).apply()
         val pairing = pairingOrder.value.firstOrNull { it.hostId == id }
         pairings.remove(id)
         hostStates.update { it - id }
@@ -215,6 +214,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         pairing?.let { removed ->
             val credential = removed.credential()
             viewModelScope.launch(Dispatchers.IO) {
+                stores.downloadBrowserPaths.clear(id)
                 val downloadIds = stores.downloads.load().filter { it.hostId == id }.map(ArtifactDownload::taskId).toSet()
                 val uploadIds = stores.uploads.load().filter { it.hostId == id }.map(UploadTask::taskId).toSet()
                 if (downloadIds.isNotEmpty()) stores.downloads.delete(downloadIds)
@@ -436,8 +436,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun setSessionArchived(sessionId: String, archived: Boolean) =
         active()?.setSessionArchived(sessionId, archived)
 
-    fun downloadBrowserPath(): String? = active()?.downloadBrowserPath()
-    fun rememberDownloadBrowserPath(path: String?) = active()?.rememberDownloadBrowserPath(path)
     fun browseSessions(path: String? = null) = active()?.browseSessions(path)
 
     fun browseInto(name: String) = active()?.browseInto(name)
@@ -657,7 +655,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun connectionFor(hostId: String): HostConnection? = synchronized(lock) { connections[hostId] }
+    internal fun connectionFor(hostId: String): HostConnection? = synchronized(lock) { connections[hostId] }
 
     // ── Diagnostics ─────────────────────────────────────────────────────────
 

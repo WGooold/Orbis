@@ -475,8 +475,11 @@ func makePreviewStore(screen: String) -> OrbisStore {
     // keystroke's draft write triggers; preview drafts start empty and files stay temporary.
     let standardPreferences = ProcessInfo.processInfo.arguments.contains("--preview-standard-preferences")
     if standardPreferences { UserDefaults.standard.removeObject(forKey: "orbis.sessionDrafts") }
-    let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing", twoHosts: twoHosts), preferences: standardPreferences ? .standard : nil,
-                           transferRoot: standardPreferences ? FileManager.default.temporaryDirectory.appendingPathComponent("orbis-preview-" + UUID().uuidString) : nil,
+    let browserPreferences = screen == "downloads" && ProcessInfo.processInfo.arguments.contains("--preview-download-browser")
+    let preferences = browserPreferences ? UserDefaults(suiteName: "orbis.preview.download-browser") : (standardPreferences ? UserDefaults.standard : nil)
+    if browserPreferences { preferences?.removePersistentDomain(forName: "orbis.preview.download-browser") }
+    let store = OrbisStore(secure: PreviewStorage(empty: screen == "pairing", twoHosts: twoHosts), preferences: preferences,
+                           transferRoot: preferences == nil ? nil : FileManager.default.temporaryDirectory.appendingPathComponent("orbis-preview-" + UUID().uuidString),
                            transportFactory: { pairing in pairing.hostId == "preview-host" ? transport : PreviewTransport(screen: screen, variant: 1) })
     PreviewViewportUpdates.changeList = { [weak store, weak transport] operation in
         transport?.changeList(operation)
@@ -1180,8 +1183,22 @@ private final class PreviewTransport: OrbisTransport {
             receive?(["type": "diagnostics.page", "requestId": object["requestId"]!,
                       "page": ["records": records, "nextCursor": next ? "preview-next" as Any : NSNull(), "truncated": false]], "ctl")
         } else if object["type"] as? String == "session.browse" {
-            receive?(["type": "session.browse.result", "requestId": object["requestId"]!, "path": object["path"] as? String ?? "/Projects", "parent": "/",
-                      "entries": [["name": "orbis", "isDir": true, "hasSessions": true], ["name": "website", "isDir": true, "hasSessions": true], ["name": "experiments", "isDir": true, "hasSessions": false]]], "ctl")
+            let path = object["path"] as? String
+            if screen == "downloads" && ProcessInfo.processInfo.arguments.contains("--preview-download-browser") {
+                if path == "/missing" {
+                    receive?(["type": "protocol.error", "requestId": object["requestId"]!, "code": "session_request_failed", "message": "目录不可读"], "ctl")
+                } else {
+                    let entries: [[String: Any]] = path == "/Projects/releases" ?
+                        ["report.zip", "notes.txt"].map { ["name": $0, "isDir": false, "hasSessions": false] } :
+                        [["name": path == nil ? "/Projects" : "releases", "isDir": true, "hasSessions": false]]
+                    var result: [String: Any] = ["type": "session.browse.result", "requestId": object["requestId"]!, "path": path ?? "", "entries": entries]
+                    if path == "/Projects/releases" { result["parent"] = "/Projects" }
+                    receive?(result, "ctl")
+                }
+            } else {
+                receive?(["type": "session.browse.result", "requestId": object["requestId"]!, "path": path ?? "/Projects", "parent": "/",
+                          "entries": [["name": "orbis", "isDir": true, "hasSessions": true], ["name": "website", "isDir": true, "hasSessions": true], ["name": "experiments", "isDir": true, "hasSessions": false]]], "ctl")
+            }
         } else if object["type"] as? String == "runtime.git.request" {
             ChatLifecycleProbe.shared.gitRequested()
             receive?(["type": "runtime.git", "requestId": object["requestId"]!, "runtimeId": object["runtimeId"]!, "sessionId": "session-1", "cwd": "/Projects/orbis", "branch": "main"], "ctl")

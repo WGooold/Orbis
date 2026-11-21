@@ -690,7 +690,7 @@ struct SessionDraftView: View {
     }
     /// Both native entries of this family can start here, so the variant is a real choice.
     private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).allSatisfy(allowed.contains) }
-    private var currentPath: String? { path ?? presetCwd ?? (onImportSubmit == nil ? owner.browse?.path : nil) }
+    private var currentPath: String? { path ?? presetCwd ?? (onImportSubmit == nil ? owner.workDirectoryBrowse?.path : nil) }
     private var hasMessage: Bool { onImportSubmit != nil || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var configuration: SessionConfigurationSnapshot? {
         owner.sessionConfiguration.flatMap { $0.agentKind == agent && $0.cwd == currentPath ? $0 : nil }
@@ -958,10 +958,10 @@ struct SessionDraftView: View {
             OrbisPageHeader(title: L10n.tr("在哪个目录里开始"), closes: true, back: { choosingDirectory = false }) { EmptyView() }
             ScrollView { RemoteDirectoryView(owner: owner) }
             OrbisActionButton(title: L10n.tr("选择这个目录"), symbol: "checkmark") {
-                path = owner.browse?.path; choosingDirectory = false
-            }.disabled(owner.browse?.path?.isEmpty != false || owner.browse?.loading != false || owner.browse?.error != nil)
+                path = owner.workDirectoryBrowse?.path; choosingDirectory = false
+            }.disabled(owner.workDirectoryBrowse?.path?.isEmpty != false || owner.workDirectoryBrowse?.loading != false || owner.workDirectoryBrowse?.error != nil)
         }.padding(16).onAppear { owner.browseDirectory(currentPath) }
-            .onDisappear { owner.dismissBrowse() }
+            .onDisappear { owner.dismissWorkDirectoryBrowser() }
     }
     /// Desktop entries stay variants of their Agent family instead of extra primary Agents.
     private func showVariantChoices(_ family: String, from anchor: CGRect? = nil) {
@@ -998,7 +998,7 @@ struct RemoteDirectoryView: View {
     @FocusState private var pathFocused: Bool
     private var trimmedPath: String { pathInput.trimmingCharacters(in: .whitespacesAndNewlines) }
     private func jumpToPath() {
-        guard !trimmedPath.isEmpty, owner.connection == .secured, owner.browse?.loading != true else { return }
+        guard !trimmedPath.isEmpty, owner.connection == .secured, owner.workDirectoryBrowse?.loading != true else { return }
         pathFocused = false
         owner.browseDirectory(trimmedPath)
     }
@@ -1011,32 +1011,32 @@ struct RemoteDirectoryView: View {
                     .submitLabel(.go).onSubmit(jumpToPath)
                     .accessibilityIdentifier("session-directory-path")
                 OrbisIconButton(symbol: "magnifyingglass", label: L10n.tr("跳转"), action: jumpToPath)
-                    .disabled(trimmedPath.isEmpty || owner.connection != .secured || owner.browse?.loading == true)
+                    .disabled(trimmedPath.isEmpty || owner.connection != .secured || owner.workDirectoryBrowse?.loading == true)
                     .accessibilityIdentifier("session-directory-jump")
             }
             HStack(spacing: 8) {
                 OrbisActionSymbol(systemName: "folder").foregroundStyle(OrbisPalette(scheme).accent)
-                Text(owner.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
+                Text(owner.workDirectoryBrowse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
                     .font(.orbisCaption(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
                 // Spinner and refresh share one fixed slot so the path never reflows while loading.
                 ZStack {
-                    if owner.browse?.loading == true { ProgressView().controlSize(.small) }
-                    else { OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) { owner.browseDirectory(owner.browse?.path) }.disabled(owner.connection != .secured) }
+                    if owner.workDirectoryBrowse?.loading == true { ProgressView().controlSize(.small) }
+                    else { OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) { owner.browseDirectory(owner.workDirectoryBrowse?.path) }.disabled(owner.connection != .secured) }
                 }.frame(width: 48, height: 48)
             }
-            if owner.browse?.path?.isEmpty == false {
-                OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") { owner.browseDirectory(owner.browse?.parent) }
-                    .disabled(owner.browse?.loading == true || owner.connection != .secured)
+            if owner.workDirectoryBrowse?.path?.isEmpty == false {
+                OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") { owner.browseDirectory(owner.workDirectoryBrowse?.parent) }
+                    .disabled(owner.workDirectoryBrowse?.loading == true || owner.connection != .secured)
             }
-            if let error = owner.browse?.error {
+            if let error = owner.workDirectoryBrowse?.error {
                 OrbisNotice(text: error, error: true)
-                OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { owner.browseDirectory(owner.browse?.path) }
+                OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") { owner.browseDirectory(owner.workDirectoryBrowse?.path) }
                     .disabled(owner.connection != .secured)
-            } else if owner.browse?.loading == false {
-                let entries = (owner.browse?.entries ?? []).filter(\.isDir).sorted { ($0.hasSessions ? 0 : 1, $0.name) < ($1.hasSessions ? 0 : 1, $1.name) }
+            } else if owner.workDirectoryBrowse?.loading == false {
+                let entries = (owner.workDirectoryBrowse?.entries ?? []).filter(\.isDir).sorted { ($0.hasSessions ? 0 : 1, $0.name) < ($1.hasSessions ? 0 : 1, $1.name) }
                 if entries.isEmpty { Text(L10n.tr("此目录没有子目录")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary).padding(16) }
                 ForEach(entries) { entry in
-                    OrbisMotionButton { owner.browseDirectory(remoteBrowsePath(parent: owner.browse?.path, name: entry.name)) } label: {
+                    OrbisMotionButton { owner.browseDirectory(remoteBrowsePath(parent: owner.workDirectoryBrowse?.path, name: entry.name)) } label: {
                         HStack(spacing: 10) {
                             OrbisActionSymbol(systemName: "folder").foregroundStyle(OrbisPalette(scheme).accent)
                             Text(entry.name).font(.orbisBody()).frame(maxWidth: .infinity, alignment: .leading)
@@ -1047,7 +1047,7 @@ struct RemoteDirectoryView: View {
                 }
             }
         }
-        .onChange(of: owner.browse?.path, initial: true) { _, path in pathInput = path ?? "" }
+        .onChange(of: owner.workDirectoryBrowse?.path, initial: true) { _, path in pathInput = path ?? "" }
     }
 }
 
