@@ -102,6 +102,7 @@ android {
         getByName("test").resources.srcDir("../../shared")
         getByName("test").java.srcDir("src/sharedTest/java")
         getByName("androidTest").java.srcDir("src/sharedTest/java")
+        getByName("androidTest").assets.srcDir("../../shared/file-preview-tests")
     }
 
     // 单测跑在桌面上，`android.util.Log` 这类平台静态方法默认会抛“not mocked”。APP 里

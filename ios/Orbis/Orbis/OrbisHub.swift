@@ -410,6 +410,8 @@ final class OrbisStore: ObservableObject {
     #endif
     func archive(_ session: SessionSummary, archived: Bool) { activeConnection.archive(session, archived: archived) }
     func browseDirectory(_ path: String? = nil) { activeConnection.browseDirectory(path) }
+    func downloadBrowserPath() -> String? { activeConnection.downloadBrowserPath() }
+    func rememberDownloadBrowserPath(_ path: String?) { activeConnection.rememberDownloadBrowserPath(path) }
     func dismissBrowse() { activeConnection.dismissBrowse() }
     func executeSlash(_ name: String, args: String = "", composerDraft: String? = nil) -> Bool {
         activeConnection.executeSlash(name, args: args, composerDraft: composerDraft)

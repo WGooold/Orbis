@@ -3446,7 +3446,8 @@ final class HostConnection: ObservableObject {
             // continues to signal Desktop acceptance with the presence of its status key.
             let features = Set(message["hostFeatures"] as? [String] ?? [])
             if channel == "ctl", let host = selectedHost, message["deviceId"] as? String == host.relay.deviceId {
-                transfers.browserPreview.authenticated(host: host.hostId, supportsPreview: features.contains(ChatFilePreview.feature))
+                transfers.browserPreview.authenticated(host: host.hostId, supportsPreview: features.contains(ChatFilePreview.feature),
+                    supportsNativePreview: features.contains(ChatFilePreview.nativeFeature))
             }
             let supportsRender = features.contains(messageRenderFeature)
             let admittedOpenClaw = features.contains("agent.openclaw") && (message["deviceFeatures"] as? [String])?.contains("agent.openclaw") == true

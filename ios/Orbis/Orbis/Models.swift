@@ -472,6 +472,7 @@ struct ChatContent: Codable, Hashable {
     var arguments: RemoteJSONValue? = nil
     var renderKind: String? = nil
     var file: MessageFileReference? = nil
+    var purpose: String? = nil
 
     var renderLabel: String {
         guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return L10n.tr("内容暂不可显示") }
@@ -481,7 +482,7 @@ struct ChatContent: Codable, Hashable {
     var visibleText: String? { type == "render" ? renderLabel : text.map(copyableMessageText) }
 
     enum CodingKeys: String, CodingKey {
-        case type, text, toolName, artifact, summary, toolCallId, truncated, originalBytes, arguments, renderKind, file
+        case type, text, toolName, artifact, summary, toolCallId, truncated, originalBytes, arguments, renderKind, file, purpose
     }
 }
 
@@ -493,6 +494,7 @@ extension ChatContent {
         toolName = try values.decodeIfPresent(String.self, forKey: .toolName)
         artifact = try values.decodeIfPresent(RemoteArtifact.self, forKey: .artifact)
         renderKind = try values.decodeIfPresent(String.self, forKey: .renderKind)
+        purpose = try? values.decodeIfPresent(String.self, forKey: .purpose)
         file = renderKind == "file_reference" ? (try? values.decodeIfPresent(MessageFileReference.self, forKey: .file)) : nil
         summary = try values.decodeIfPresent(ToolSummary.self, forKey: .summary)
         toolCallId = try values.decodeIfPresent(String.self, forKey: .toolCallId)

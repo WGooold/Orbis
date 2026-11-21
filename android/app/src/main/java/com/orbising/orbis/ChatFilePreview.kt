@@ -34,13 +34,9 @@ internal class ChatFilePreview(
     companion object {
         const val FEATURE = "file.preview-v1"
         const val MAX_BYTES = 2 * 1024 * 1024
-        private const val DOCUMENT_BYTES = 1024 * 1024
+        const val NATIVE_FEATURE = "file.preview-v2"
         const val RANGE_BYTES = 128 * 1024
-        fun format(name: String): String? = when (name.substringAfterLast('.', "").lowercase()) {
-            "htm", "html" -> "html"
-            "svg" -> "svg"
-            else -> null
-        }
+        fun format(name: String): String? = FilePreviewFormat.fromName(name)?.wire
     }
 
     data class Source(val reference: String? = null, val artifactId: String? = null)
@@ -50,7 +46,7 @@ internal class ChatFilePreview(
         val document: ByteArray? = null, val fullScreen: Boolean = false)
 
     private data class Range(val id: String, val length: Int, val sentAt: Long, val retries: Int)
-    private class Request(val id: String, val key: Key, val format: String, val started: Long) {
+    private class Request(val id: String, val key: Key, val format: FilePreviewFormat, val started: Long) {
         val commandId get() = "preview:$id"
         var transfer: String? = null
         var range: Range? = null
@@ -68,6 +64,7 @@ internal class ChatFilePreview(
     private var request: Request? = null
     private val retired = LinkedHashMap<String, Long>()
     private var supported = false
+    private var nativeSupported = false
     private var timer: Job? = null
     private var verifier: Job? = null
     private val mutable = MutableStateFlow<Selection?>(null)
@@ -75,7 +72,7 @@ internal class ChatFilePreview(
 
     fun resetConnection() {
         synchronized(lock) {
-            supported = false
+            supported = false; nativeSupported = false
             val wasLoading = request != null
             stopLocked(retire = false)
             retired.clear()
@@ -85,21 +82,27 @@ internal class ChatFilePreview(
         }
     }
 
-    fun authenticated(supportsPreview: Boolean) {
+    fun authenticated(supportsPreview: Boolean, supportsNativePreview: Boolean = false) {
         val cancellation = synchronized(lock) {
-            supported = supportsPreview
-            if (!supported && mutable.value?.phase in setOf(Phase.LOADING, Phase.READY)) failLocked(Phase.UNAVAILABLE) else null
+            supported = supportsPreview; nativeSupported = supportsNativePreview
+            val current = mutable.value
+            val format = current?.key?.name?.let(FilePreviewFormat::fromName)
+            if (current != null && format != null && !supports(format) && current.phase in setOf(Phase.LOADING, Phase.READY)) {
+                failLocked(Phase.UNAVAILABLE)
+            } else null
         }
         cancel(cancellation)
     }
 
+    private fun supports(format: FilePreviewFormat) = if (format.web) supported else nativeSupported
+
     fun open(key: Key) {
-        val format = format(key.name) ?: return
+        val format = FilePreviewFormat.fromName(key.name) ?: return
         if ((key.source.reference == null) == (key.source.artifactId == null)) return
         val id = UUID.randomUUID().toString()
         val next = synchronized(lock) {
             val cancel = stopLocked()
-            val active = if (supported) Request(id, key, format, now()) else null
+            val active = if (supports(format)) Request(id, key, format, now()) else null
             request = active
             mutable.value = Selection(key, id, if (active != null) Phase.LOADING else Phase.UNAVAILABLE)
             active to cancel
@@ -109,7 +112,8 @@ internal class ChatFilePreview(
         if (!sendCommand(active.commandId) {
                 if (key.source.reference != null) { put("type", "file.download"); put("path", key.source.reference) }
                 else { put("type", "artifact.download"); put("artifactId", key.source.artifactId!!) }
-                put("maxBytes", MAX_BYTES)
+                put("maxBytes", if (format.web) MAX_BYTES else format.budget)
+                if (!format.web) put("previewFormat", format.wire)
             }) {
             fail(active, Phase.INTERRUPTED)
             return
@@ -171,7 +175,7 @@ internal class ChatFilePreview(
             val time = now()
             retired.entries.removeAll { it.value <= time }
             if (retired.size >= 16) retired.remove(retired.keys.first())
-            retired[active.commandId] = time + 40_000
+            retired[active.commandId] = time + if (active.format.web) 40_000 else 100_000
         }
         return active.transfer
     }
@@ -212,7 +216,7 @@ internal class ChatFilePreview(
             if (request !== active) return
             val transfer = active.transfer
             val last = active.range
-            val expired = time - active.started >= 30_000 || transfer == null && time - active.started >= 7_000
+            val expired = time - active.started >= (if (active.format.web) 30_000 else 90_000) || transfer == null && time - active.started >= 7_000
             val retryDue = last != null && time - last.sentAt >= 1_500L * (last.retries + 1)
             if (expired || retryDue && last!!.retries >= 2) {
                 cancellation = failLocked(Phase.INTERRUPTED)
@@ -268,7 +272,7 @@ internal class ChatFilePreview(
                         val matches = artifact != null && isPreviewUuid(artifact) &&
                             if (source.reference != null) text("referenceId") == source.reference
                             else artifact == source.artifactId && "referenceId" !in reply
-                        if (!matches || text("format") != active.format || size == null || size !in 1..DOCUMENT_BYTES ||
+                        if (!matches || text("format") != active.format.wire || size == null || size !in 1..active.format.budget ||
                             hash == null || !digestPattern.matches(hash)) failLocked(Phase.UNSUPPORTED)
                         else {
                             active.total = size; active.hash = hash; active.deferReadUntil = now() + 350
@@ -313,16 +317,14 @@ internal class ChatFilePreview(
                     part.copyInto(data, offset); digest.update(part); offset += part.size
                 }
                 check(digest.digest().joinToString("") { "%02x".format(it) } == hash)
-                val text = Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(data)).toString()
-                check(text.startsWith("<!doctype html>"))
+                check(active.format.matches(data))
                 data
             }.getOrNull()
             if (document == null) { fail(active, Phase.UNSUPPORTED); return@launch }
             synchronized(lock) {
                 if (request !== active) return@launch
                 timer?.cancel(); timer = null; verifier = null; request = null
-                mutable.value = mutable.value?.copy(document = document, phase = Phase.READY)
+                mutable.value = mutable.value?.copy(document = document, phase = Phase.READY, fullScreen = active.format == FilePreviewFormat.MP4)
             }
             control("artifact.done") { put("transferId", transfer) }
         }
@@ -333,7 +335,45 @@ private val digestPattern = Regex("[0-9a-f]{64}")
 private val previewUuidPattern = Regex("[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 private fun isPreviewUuid(value: String) = previewUuidPattern.matches(value)
 
-internal fun announcesFilePreview(ready: JsonObject?, deviceId: String): Boolean = ready != null &&
+internal fun announcesFilePreview(ready: JsonObject?, deviceId: String, feature: String = ChatFilePreview.FEATURE): Boolean = ready != null &&
     ready["type"] == JsonPrimitive("device.ready") && ready["deviceId"] == JsonPrimitive(deviceId) &&
     supportedProtocolVersion(ready["protocolVersion"]) != null &&
-    (ready["hostFeatures"] as? JsonArray)?.contains(JsonPrimitive(ChatFilePreview.FEATURE)) == true
+    (ready["hostFeatures"] as? JsonArray)?.contains(JsonPrimitive(feature)) == true
+
+internal fun nativeFilePreviewCommand(payload: JsonObject) = (payload["command"] as? JsonObject)?.containsKey("previewFormat") == true
+
+internal enum class FilePreviewFormat(val wire: String, val budget: Int) {
+    HTML("html", 1024 * 1024), SVG("svg", 1024 * 1024), JPEG("jpeg", 8 * 1024 * 1024), PNG("png", 8 * 1024 * 1024),
+    PDF("pdf", 12 * 1024 * 1024), TEXT("text", 256 * 1024), MP4("mp4", 16 * 1024 * 1024);
+
+    val web get() = this == HTML || this == SVG
+    fun matches(bytes: ByteArray): Boolean = when (this) {
+        HTML, SVG -> bytes.hasPrefix("<!doctype html>".encodeToByteArray()) && validPreviewText(bytes)
+        TEXT -> validPreviewText(bytes)
+        JPEG -> bytes.hasPrefix(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte()))
+        PNG -> bytes.hasPrefix(byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10))
+        PDF -> bytes.hasPrefix("%PDF-".encodeToByteArray())
+        MP4 -> bytes.size >= 12 && bytes.hasPrefix("ftyp".encodeToByteArray(), 4)
+    }
+
+    companion object {
+        fun fromName(name: String) = when (name.substringAfterLast('.', "").lowercase()) {
+            "html", "htm" -> HTML
+            "svg" -> SVG
+            "jpeg", "jpg" -> JPEG
+            "png" -> PNG
+            "pdf" -> PDF
+            "md", "txt", "log", "json", "csv" -> TEXT
+            "mp4" -> MP4
+            else -> null
+        }
+    }
+}
+
+private fun ByteArray.hasPrefix(prefix: ByteArray, offset: Int = 0) =
+    size - offset >= prefix.size && prefix.indices.all { this[offset + it] == prefix[it] }
+
+private fun validPreviewText(bytes: ByteArray) = bytes.none { it == 0.toByte() } && runCatching {
+    Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes))
+}.isSuccess

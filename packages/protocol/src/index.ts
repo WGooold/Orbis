@@ -31,6 +31,8 @@ export * from "./tool-message-projection.js";
 export * from "./tool-inventory-receiver.js";
 export * from "./tool-inventory-source.js";
 export * from "./message-rendering.js";
+import { NativePreviewFormatSchema, MAX_NATIVE_FILE_PREVIEW_BYTES, NATIVE_FILE_PREVIEW_BYTES, type NativePreviewFormat } from "./file-preview.js";
+export * from "./file-preview.js";
 
 /**
  * 内部业务 schema 修订（ADR-0064 / ADR-0032 §7）。
@@ -1104,13 +1106,20 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
 export type RuntimeEvent = z.infer<typeof RuntimeEventSchema>;
 
 const downloadOffset = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional();
-const previewMaxBytes = z.number().int().positive().max(FILE_PREVIEW_BYTES).optional();
+const previewDownloadFields = {
+  offset: downloadOffset,
+  maxBytes: z.number().int().positive().max(MAX_NATIVE_FILE_PREVIEW_BYTES).optional(),
+  previewFormat: NativePreviewFormatSchema.optional(),
+};
+const validPreviewLimit = ({ maxBytes, previewFormat }: { maxBytes?: number | undefined; previewFormat?: NativePreviewFormat | undefined }) =>
+  previewFormat === undefined ? maxBytes === undefined || maxBytes <= FILE_PREVIEW_BYTES
+    : maxBytes !== undefined && maxBytes <= NATIVE_FILE_PREVIEW_BYTES[previewFormat];
 
 export const RuntimeCommandSchema = z.discriminatedUnion("type", [
   TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema,
   ToolContentReadRequestSchema, ToolContentCancelSchema, ToolInventoryReadRequestSchema, ToolInventoryOpenRequestSchema,
-  z.strictObject({ type: z.literal("file.download"), path: z.string().min(1), offset: downloadOffset, maxBytes: previewMaxBytes }),
-  z.strictObject({ type: z.literal("artifact.download"), artifactId: z.string().uuid(), offset: downloadOffset, maxBytes: previewMaxBytes }),
+  z.strictObject({ type: z.literal("file.download"), path: z.string().min(1), ...previewDownloadFields }).refine(validPreviewLimit),
+  z.strictObject({ type: z.literal("artifact.download"), artifactId: z.string().uuid(), ...previewDownloadFields }).refine(validPreviewLimit),
   z.strictObject({
     type: z.literal("artifact.cancel"),
     transferId: TransferIdSchema,
@@ -1475,9 +1484,9 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("file.preview.started"), protocolVersion: z.literal(PROTOCOL_VERSION),
     runtimeId: z.string().min(1), commandId: z.string().min(1).max(128), transferId: TransferIdSchema,
     artifactId: z.string().uuid(), referenceId: z.string().min(1).optional(),
-    format: z.enum(["html", "svg"]), size: z.number().int().positive().max(FILE_PREVIEW_DOCUMENT_BYTES),
+    format: z.enum(["html", "svg", ...NativePreviewFormatSchema.options]), size: z.number().int().positive().max(MAX_NATIVE_FILE_PREVIEW_BYTES),
     sha256: z.string().regex(HASH_PATTERN),
-  }),
+  }).refine(({ format, size }) => size <= (format === "html" || format === "svg" ? FILE_PREVIEW_DOCUMENT_BYTES : NATIVE_FILE_PREVIEW_BYTES[format])),
   z.strictObject({
     type: z.literal("file.preview.failed"), protocolVersion: z.literal(PROTOCOL_VERSION),
     runtimeId: z.string().min(1), commandId: z.string().min(1).max(128),

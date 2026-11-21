@@ -25,9 +25,9 @@ class ChatFilePreviewTest {
         val commandId get() = sent.last().getValue("commandId").jsonPrimitive.content
         val reads get() = sent.filter { it["type"]?.jsonPrimitive?.content == "artifact.read" }
         fun offer(command: String, transfer: String, data: ByteArray, hash: String = digest(data),
-                  reference: String? = key.source.reference, size: Int = data.size) = buildJsonObject {
+                  reference: String? = key.source.reference, size: Int = data.size, format: String = "html") = buildJsonObject {
             put("type", "file.preview.started"); put("protocolVersion", PROTOCOL_VERSION); put("runtimeId", "host")
-            put("commandId", command); put("transferId", transfer); put("format", "html")
+            put("commandId", command); put("transferId", transfer); put("format", format)
             put("referenceId", reference); put("artifactId", UUID.randomUUID().toString()); put("size", size); put("sha256", hash)
         }
     }
@@ -91,6 +91,33 @@ class ChatFilePreviewTest {
         assertEquals(ChatFilePreview.Phase.INTERRUPTED, receiver.selection.value?.phase)
     }
 
+    // SC117: detach after a range was sent, then retry without letting old view events cancel it.
+    @Test fun leavingTheViewportCancelsAnAdmittedRange() = runBlocking {
+        val peer = Peer(this)
+        val receiver = peer.receiver
+        val bytes = "<!doctype html><p>Preview</p>".toByteArray()
+        val transfer = UUID.randomUUID().toString()
+        receiver.authenticated(true); receiver.open(peer.key)
+        val loading = checkNotNull(receiver.selection.value)
+        assertTrue(receiver.consume(peer.offer(peer.commandId, transfer, bytes)))
+        receiver.tick()
+        assertEquals(1, peer.reads.size)
+        receiver.fileHidden(loading.key, loading.id)
+        val cancel = peer.sent.last().getValue("command").jsonObject
+        assertEquals("artifact.cancel", cancel.getValue("type").jsonPrimitive.content)
+        assertEquals(transfer, cancel.getValue("transferId").jsonPrimitive.content)
+        assertFalse(receiver.consume(ArtifactChunkFrame("host", transfer, 0, bytes)))
+        receiver.tick()
+        assertEquals(1, peer.reads.size)
+        assertEquals(ChatFilePreview.Phase.INTERRUPTED, receiver.selection.value?.phase)
+        receiver.open(peer.key)
+        receiver.fileHidden(loading.key, loading.id)
+        assertEquals(ChatFilePreview.Phase.LOADING, receiver.selection.value?.phase)
+        assertNotEquals(loading.id, receiver.selection.value?.id)
+        receiver.closeSession(peer.key.session)
+        assertNull(receiver.selection.value)
+    }
+
     // SC118 / SC119: accept neither inconsistent metadata nor bytes with the wrong digest.
     @Test fun rejectsBadIdentityDigestAndBoundsRetries() = runBlocking {
         val peer = Peer(this)
@@ -115,6 +142,35 @@ class ChatFilePreviewTest {
         assertEquals(ChatFilePreview.Phase.INTERRUPTED, receiver.selection.value?.phase)
         assertTrue(peer.sent.none { it["type"]?.jsonPrimitive?.content == "artifact.done" })
     }
+
+    // SC122 / SC120: a v1 peer never sees native requests; matched transport hash alone does not admit the wrong file type.
+    @Test fun nativePreviewRequiresV2AndVideoOpensAfterVerification() = runBlocking {
+        val peer = Peer(this)
+        val preview = peer.receiver
+        val key = peer.key.copy(name = "Clip.MP4")
+        preview.authenticated(true)
+        preview.open(key)
+        assertTrue(peer.sent.isEmpty())
+        assertEquals(ChatFilePreview.Phase.UNAVAILABLE, preview.selection.value?.phase)
+        preview.authenticated(true, supportsNativePreview = true)
+        for ((bytes, admitted) in listOf("not an mp4!".encodeToByteArray() to false,
+            (byteArrayOf(0, 0, 0, 12) + "ftypisom".encodeToByteArray()) to true)) {
+            preview.open(key)
+            val command = peer.sent.last().getValue("command").jsonObject
+            assertEquals("mp4", command.getValue("previewFormat").jsonPrimitive.content)
+            assertEquals(16 * 1024 * 1024, command.getValue("maxBytes").jsonPrimitive.int)
+            val transfer = UUID.randomUUID().toString()
+            assertTrue(preview.consume(peer.offer(peer.commandId, transfer, bytes, format = "mp4")))
+            assertFalse(preview.selection.value!!.fullScreen)
+            preview.tick()
+            assertTrue(preview.consume(ArtifactChunkFrame("host", transfer, 0, bytes)))
+            withTimeout(2_000) { while (preview.selection.value?.phase == ChatFilePreview.Phase.LOADING) delay(5) }
+            val result = checkNotNull(preview.selection.value)
+            assertEquals(if (admitted) ChatFilePreview.Phase.READY else ChatFilePreview.Phase.UNSUPPORTED, result.phase)
+            assertEquals(admitted, result.fullScreen)
+        }
+    }
+
 }
 
 private fun digest(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

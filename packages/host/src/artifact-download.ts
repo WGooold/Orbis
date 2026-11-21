@@ -17,6 +17,9 @@ import {
   FILE_PREVIEW_BYTES,
   FILE_PREVIEW_DOCUMENT_BYTES,
   FILE_PREVIEW_CHUNK_BYTES,
+  NATIVE_FILE_PREVIEW_BYTES,
+  nativeFilePreviewFormat,
+  type NativePreviewFormat,
   MESSAGE_FILE_PREFIX,
   PROTOCOL_VERSION,
   encodeArtifactChunkFrame,
@@ -26,7 +29,7 @@ import {
   type RuntimeCommand,
   type RuntimeEvent,
 } from "@orbis/protocol";
-import { readStaticFilePreview, type StaticPreviewFormat } from "./static-file-preview.js";
+import { readNativeFilePreview, readStaticFilePreview, type StaticPreviewFormat } from "./static-file-preview.js";
 
 /** 同时在跑的下载条数上限。这是防手滑，不是安全边界。 */
 const DEFAULT_MAX_CONCURRENT = 4;
@@ -35,6 +38,7 @@ const MAX_INDEX_ENTRIES = 500;
 /** pull 传输多久没有任何 `artifact.read` 就回收（手机静默消失时的兜底）。 */
 const PULL_IDLE_TIMEOUT_MS = 60_000;
 const PREVIEW_TIMEOUT_MS = 40_000;
+const NATIVE_PREVIEW_TIMEOUT_MS = 100_000;
 const MAX_HOST_PREVIEWS = 2;
 type PreviewFailed = Extract<RelayToDeviceMessage, { type: "file.preview.failed" }>;
 
@@ -77,7 +81,7 @@ type ActivePull = {
   /** 已服务的范围请求数（含重传），用来在完成日志里说清「传了多少次」。 */
   reads: number;
   startedAt: number;
-  preview?: { format: StaticPreviewFormat; bytes: Uint8Array; deadline: ReturnType<typeof setTimeout> };
+  preview?: { format: StaticPreviewFormat | NativePreviewFormat; bytes: Uint8Array; deadline: ReturnType<typeof setTimeout> };
 };
 
 type PreparingPreview = {
@@ -93,6 +97,14 @@ type CommandRecord = {
 
 const MIME_TYPES: Record<string, string> = {
   ".apk": "application/vnd.android.package-archive",
+  ".csv": "text/csv",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".mp4": "video/mp4",
   ".gif": "image/gif",
   ".jpeg": "image/jpeg",
   ".jpg": "image/jpeg",
@@ -256,7 +268,7 @@ export class HostDownloadService {
     commandId: string,
     command: DownloadCommand,
   ): Promise<boolean> {
-    if (command.maxBytes !== undefined) return this.#offerPreview(deviceId, runtimeId, commandId, command, command.maxBytes);
+    if (command.maxBytes !== undefined || command.previewFormat !== undefined) return this.#offerPreview(deviceId, runtimeId, commandId, command, command.maxBytes ?? 0);
     const known = this.#commands.get(commandId);
     if (known !== undefined) {
       // 同一条命令重发（手机重连后重放）：把还活着的那次重新宣告一遍，不再开第二条。
@@ -321,7 +333,9 @@ export class HostDownloadService {
       return false;
     };
     if (!commandId || commandId.length > 128) return false;
-    if ((command.offset ?? 0) !== 0 || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > FILE_PREVIEW_BYTES) {
+    const native = command.previewFormat;
+    const limit = native ? NATIVE_FILE_PREVIEW_BYTES[native] : FILE_PREVIEW_BYTES;
+    if ((command.offset ?? 0) !== 0 || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > limit) {
       return fail("invalid_request");
     }
     const active = [...this.#pulls.values()].filter(pull => pull.preview);
@@ -353,20 +367,23 @@ export class HostDownloadService {
       if (!path) return fail("unavailable");
       const fileName = indexed?.fileName ?? safeDownloadFileName(path);
       const extension = extname(fileName).toLowerCase();
-      const format = extension === ".svg" ? "svg" : extension === ".html" || extension === ".htm" ? "html" : undefined;
-      if (!format) return fail("unsupported");
-      const result = await readStaticFilePreview(path, format, maxBytes, reference?.identity, Math.min(maxBytes, FILE_PREVIEW_DOCUMENT_BYTES));
+      const staticFormat = extension === ".svg" ? "svg" : extension === ".html" || extension === ".htm" ? "html" : undefined;
+      const format = native ?? staticFormat;
+      if (!format || (native && native !== nativeFilePreviewFormat(fileName))) return fail("unsupported");
+      const result = format === "html" || format === "svg"
+        ? await readStaticFilePreview(path, format, maxBytes, reference?.identity, Math.min(maxBytes, FILE_PREVIEW_DOCUMENT_BYTES))
+        : await readNativeFilePreview(path, format, maxBytes, reference?.identity);
       if (pending.abandoned) return false;
       if ("reason" in result) return fail(result.reason);
       const transferId = randomUUID();
       const deadline = setTimeout(() => {
         const pull = this.#pulls.get(transferId);
         if (pull) { this.#removePull(pull); fail("transfer_failed"); }
-      }, PREVIEW_TIMEOUT_MS);
+      }, native ? NATIVE_PREVIEW_TIMEOUT_MS : PREVIEW_TIMEOUT_MS);
       deadline.unref();
       const pull: ActivePull = {
         deviceId, runtimeId, commandId, transferId, startOffset: 0, cancelled: false,
-        artifact: { artifactId: indexed?.artifactId ?? randomUUID(), fileName, mimeType: "text/html", path,
+        artifact: { artifactId: indexed?.artifactId ?? randomUUID(), fileName, mimeType: native ? MIME_TYPES[extension] ?? "application/octet-stream" : "text/html", path,
           size: result.bytes.byteLength, sha256: result.sha256, ...(referenceId === undefined ? {} : { referenceId }) },
         lastActivityAt: Date.now(), startedAt: Date.now(), reads: 0, preview: { format, bytes: result.bytes, deadline },
       };

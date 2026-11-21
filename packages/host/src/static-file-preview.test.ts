@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
-import { FILE_PREVIEW_BYTES, FILE_PREVIEW_CHUNK_BYTES, RelayToDeviceMessageSchema, RuntimeCommandSchema, decodeArtifactChunkFrame,
+import { FILE_PREVIEW_BYTES, FILE_PREVIEW_CHUNK_BYTES, NATIVE_FILE_PREVIEW_BYTES, RelayToDeviceMessageSchema, RuntimeCommandSchema, decodeArtifactChunkFrame,
   type RelayToDeviceMessage, type RuntimeEvent } from "@orbis/protocol";
 import { HostDownloadService } from "./artifact-download.js";
 import { MessageFileReferences } from "./message-file-references.js";
@@ -143,5 +143,28 @@ describe("FILE-PREVIEW-01", () => {
     await mkdir(join(dir, "folder.html"));
     expect(await service.offerDownload("phone", "host", "preview:directory", { type: "file.download", path: ref("folder.html"), maxBytes: FILE_PREVIEW_BYTES })).toBe(false);
     expect(service.activeDownloads).toBe(0);
+  });
+});
+
+
+describe("FILE-PREVIEW-02", () => {
+  // SC122: each native format uses its own budget and only matching file bytes can be offered.
+  it("does not relax the v1 budget or let a media request become an unrestricted download", async () => {
+    const { dir, service, ref, replies, events, frames } = await fixture();
+    await writeFile(join(dir, "picture.png"), "not an image");
+    const png = { type: "file.download", path: ref("picture.png"), previewFormat: "png" } as const;
+    expect(RuntimeCommandSchema.safeParse(png).success).toBe(false);
+    expect(RuntimeCommandSchema.safeParse({ ...png, maxBytes: NATIVE_FILE_PREVIEW_BYTES.png + 1 }).success).toBe(false);
+    expect(await service.offerDownload("phone", "host", "native-without-bound", png)).toBe(false);
+    expect(replies.at(-1)).toMatchObject({ type: "file.preview.failed", reason: "invalid_request" });
+    expect(await service.offerDownload("phone", "host", "bad-signature", { ...png, maxBytes: NATIVE_FILE_PREVIEW_BYTES.png })).toBe(false);
+    expect(replies.at(-1)).toMatchObject({ type: "file.preview.failed", reason: "unsupported" });
+    expect(await service.offerDownload("phone", "host", "wrong-format", { ...png, previewFormat: "pdf", maxBytes: 100 })).toBe(false);
+    expect(replies.at(-1)).toMatchObject({ type: "file.preview.failed", reason: "unsupported" });
+    await writeFile(join(dir, "log.txt"), "x".repeat(NATIVE_FILE_PREVIEW_BYTES.text + 1));
+    expect(await service.offerDownload("phone", "host", "native-too-large", { type: "file.download", path: ref("log.txt"),
+      previewFormat: "text", maxBytes: NATIVE_FILE_PREVIEW_BYTES.text })).toBe(false);
+    expect(replies.at(-1)).toMatchObject({ type: "file.preview.failed", reason: "too_large" });
+    expect(events).toEqual([]); expect(frames).toEqual([]);
   });
 });

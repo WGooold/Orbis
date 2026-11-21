@@ -274,6 +274,11 @@ final class FileTransfers: ObservableObject {
         if let worker = diskWorkers[id], let previous { enqueueIO { try? await worker.pause(generation: previous) } }
     }
     var currentTasks: [FileTransfer] { tasks.filter { $0.hostKey == hostKey && $0.importTarget == nil } }
+    func completedLocalDownload(_ id: String) -> FileTransfer? {
+        guard let task = currentTasks.first(where: { $0.id == id && $0.direction == "download" && $0.status == "completed" }),
+              let path = task.localPath, URL(fileURLWithPath: path).deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL else { return nil }
+        return task
+    }
     var activeCount: Int { currentTasks.filter { ["queued", "downloading", "uploading", "verifying"].contains($0.status) }.count }
     var hostKey: String { pairing.map(Self.pairingKey) ?? "" }
     static func pairingKey(_ host: HostPairing) -> String {

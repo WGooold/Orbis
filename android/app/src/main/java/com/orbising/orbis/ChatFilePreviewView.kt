@@ -81,7 +81,7 @@ internal fun ChatFilePreviewHost(actions: FilePreviewActions?, content: @Composa
                     contentDescription = L10n.tr("返回"), size = 40.dp)
                 FileNameText(selection.key.name, Modifier.weight(1f))
             }
-            if (active) PreviewBrowser(preview, selection, fullScreen = true,
+            if (active) PreviewReader(preview, selection, fullScreen = true,
                 modifier = Modifier.weight(1f).fillMaxWidth().testTag("chat-file-preview-reader"))
         }
     }
@@ -89,9 +89,10 @@ internal fun ChatFilePreviewHost(actions: FilePreviewActions?, content: @Composa
 
 /** File cards collect only their own projection. Opening one never republishes the chat list. */
 @Composable
-internal fun ChatFilePreviewCard(block: String, source: ChatFilePreview.Source, name: String, download: @Composable () -> Unit) {
+internal fun ChatFilePreviewCard(block: String, source: ChatFilePreview.Source, name: String,
+    allowsPreview: Boolean = true, download: @Composable () -> Unit) {
     val actions = LocalFilePreviewActions.current
-    if (actions == null || ChatFilePreview.format(name) == null) { download(); return }
+    if (actions == null || !allowsPreview || LocalStreamingText.current || ChatFilePreview.format(name) == null) { download(); return }
     val preview = actions.preview
     val key = remember(actions.session, block, source, name) { ChatFilePreview.Key(actions.session, block, source, name) }
     val selection by remember(preview, key) {
@@ -118,7 +119,7 @@ internal fun ChatFilePreviewCard(block: String, source: ChatFilePreview.Source, 
                     modifier = Modifier.testTag("chat-file-preview-close"))
             }
         }
-        if (current != null) {
+        if (current != null && !(current.phase == ChatFilePreview.Phase.READY && FilePreviewFormat.fromName(name) == FilePreviewFormat.MP4)) {
             var panelVisible by remember(current.id) { mutableStateOf(false) }
             Box(Modifier.fillMaxWidth().height(240.dp).clipToBounds().testTag("chat-file-preview-panel")
                 .onGloballyPositioned { panelVisible = !it.boundsInWindow().isEmpty }, contentAlignment = Alignment.Center) {
@@ -126,7 +127,7 @@ internal fun ChatFilePreviewCard(block: String, source: ChatFilePreview.Source, 
                     ChatFilePreview.Phase.LOADING -> CircularProgressIndicator(
                         modifier = Modifier.testTag("chat-file-preview-loading"))
                     ChatFilePreview.Phase.READY -> if (active && panelVisible && !current.fullScreen) {
-                        PreviewBrowser(preview, current, fullScreen = false, Modifier.fillMaxSize())
+                        PreviewReader(preview, current, fullScreen = false, Modifier.fillMaxSize())
                     }
                     else -> Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(current.phase.label(), style = MaterialTheme.typography.labelMedium)
@@ -147,6 +148,18 @@ private fun ChatFilePreview.Phase.label() = when (this) {
     ChatFilePreview.Phase.TOO_LARGE -> L10n.tr("文件过大，无法预览")
     ChatFilePreview.Phase.INTERRUPTED -> L10n.tr("预览已中断")
     else -> L10n.tr("此文件无法预览")
+}
+
+@Composable
+private fun PreviewReader(preview: ChatFilePreview, selection: ChatFilePreview.Selection, fullScreen: Boolean, modifier: Modifier) {
+    val format = FilePreviewFormat.fromName(selection.key.name) ?: return
+    val document = selection.document ?: return
+    if (format.web) PreviewBrowser(preview, selection, fullScreen, modifier)
+    else androidx.compose.runtime.key(selection.id, fullScreen) {
+        NativeFileReader(NativeReaderSource.Snapshot(document), format, fullScreen, modifier) {
+            if (preview.selection.value?.let { it.id == selection.id && it.fullScreen == fullScreen } == true) preview.renderFailed(selection.id)
+        }
+    }
 }
 
 @Composable

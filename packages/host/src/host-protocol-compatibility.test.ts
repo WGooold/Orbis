@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { DeviceHandshake, E2eChannel, buildHandshakeEnvelope, loadOrCreateHostIdentity, saveDeviceStore, readHandshakeEnvelope } from "@orbis/e2e";
-import { AgentKindSchema, EnvelopeReassembler, fragmentEnvelope, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
+import { AgentKindSchema, EnvelopeReassembler, fragmentEnvelope, HOST_FEATURE_FILE_PREVIEW, HOST_FEATURE_NATIVE_FILE_PREVIEW, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
 import { createRelayServer as createLocalRelay, type RelayServer } from "@orbis/relay";
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 import { createBusinessRelayServer as createRelayServer, relayBusinessDeviceURL, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
@@ -227,6 +227,13 @@ const importReferenceRoot = process.env.ORBIS_IMPORT_REFERENCE_RUNTIME;
 const importReferenceProtocol = importReferenceRoot ? (await nativeRequire(join(importReferenceRoot, "packages/protocol/dist/index.js"))) as typeof import("@orbis/protocol") : undefined;
 const importReleasedHost = importReferenceRoot ? (await nativeImport(pathToFileURL(join(importReferenceRoot, "packages/host/dist/host-service.js")).href)).HostService : undefined;
 
+// SC120: use the released Host and its strict decoders, not a current build with a capability hidden.
+const previewReferenceRoot = process.env.ORBIS_FILE_PREVIEW_REFERENCE_RUNTIME;
+const previewRelease = previewReferenceRoot ? {
+  protocol: nativeRequire(join(previewReferenceRoot, "packages/protocol/dist/index.js")) as typeof import("@orbis/protocol"),
+  Host: (await nativeImport(pathToFileURL(join(previewReferenceRoot, "packages/host/dist/host-service.js")).href)).HostService,
+} : undefined;
+
 describe("unchanged legacy device behavior against a compatible Host", () => {
   let directory: string;
   let relay: RelayServer;
@@ -302,6 +309,53 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     phone.request({ type: "session.list", requestId: "legacy-after-reconnect" });
     await phone.take("session.list.result", "legacy-after-reconnect");
   });
+
+  // A client that only downloads must still parse the readiness and transfer responses after a fresh handshake.
+  const previewHosts: ("candidate" | "released")[] = previewRelease ? ["candidate", "released"] : ["candidate"];
+  it.each(previewHosts.flatMap(version => (["relay", "lan"] as const).map(path => [version, path] as const)))(
+    "keeps file-preview negotiation and ordinary downloads compatible with %s Host on %s", async (version, path) => {
+      await setup(false, version === "released" ? previewRelease!.Host : HostService);
+      const file = join(directory, "report.txt");
+      const bytes = Buffer.from("Saved report, unchanged by preview negotiation\n");
+      await writeFile(file, bytes);
+      const download = async (id: string) => {
+        const phone = await connect(19, path, 19, false);
+        if (path === "relay") phone.request({ type: "host.lan.request" });
+        const ready = await phone.take("device.ready");
+        previewRelease?.protocol.RelayToDeviceMessageSchema.parse(ready);
+        const features = ready.hostFeatures as string[];
+        expect(features.includes(HOST_FEATURE_FILE_PREVIEW)).toBe(version === "candidate");
+        expect(features.includes(HOST_FEATURE_NATIVE_FILE_PREVIEW)).toBe(version === "candidate");
+
+        const request = { protocolVersion: 19, type: "runtime.command", runtimeId: hostId, commandId: id,
+          command: { type: "file.download", path: file } };
+        previewRelease?.protocol.DeviceE2ePayloadSchema.parse(request);
+        phone.request(request);
+        const offer = await phone.take("runtime.event");
+        previewRelease?.protocol.RelayToDeviceMessageSchema.parse(offer);
+        expect(offer).toMatchObject({ event: { type: "artifact.started", commandId: id, artifact: {
+          size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"),
+        } } });
+        const { transferId } = offer.event as { transferId: string };
+        phone.request({ type: "artifact.read", requestId: id, transferId, offset: 0, length: bytes.length });
+        await vi.waitFor(() => expect(phone.binaries).toHaveLength(1));
+        const frame = phone.binaries[0]!;
+        const decode = previewRelease?.protocol.decodeArtifactChunkFrame ?? decodeArtifactChunkFrame;
+        expect(decode(frame, 19)).toMatchObject({ transferId, offset: 0 });
+        expect(Buffer.from(decode(frame, 19).data)).toEqual(bytes);
+        phone.request({ type: "artifact.done", transferId });
+        phone.request({ type: "artifact.read", requestId: `${id}-done`, transferId, offset: 0, length: 1 });
+        expect(await phone.take("artifact.read.failed", `${id}-done`)).toMatchObject({ reason: "unknown_transfer" });
+        expect(phone.messages.some(message => String(message.type).startsWith("file.preview."))).toBe(false);
+        return phone;
+      };
+      const phone = await download("before-reconnect");
+      const closed = once(phone.socket, "close");
+      phone.socket.close();
+      await closed;
+      await download("after-reconnect");
+    }, 30_000,
+  );
 
   it.each([[18, "relay"], [19, "relay"], [18, "lan"], [19, "lan"]] as const)("protocol %s on %s reads, receives correlated errors and transfers original bytes", async (version, path) => {
     await setup();

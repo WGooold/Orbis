@@ -261,6 +261,7 @@ data class RemoteContent(
     val summary: ToolSummary? = null,
     val renderKind: String? = null,
     val file: MessageFileReference? = null,
+    val purpose: String? = null,
 )
 
 @Serializable

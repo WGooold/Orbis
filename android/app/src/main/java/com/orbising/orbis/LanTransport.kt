@@ -94,7 +94,10 @@ internal class LanTransport(
         send("data", payload.withWireProtocolVersion(protocolVersion).toString().toByteArray(Charsets.UTF_8), "ctl")
     }
     fun sendFilePreview(payload: JsonObject): Boolean = synchronized(lock) {
-        if (attempt?.allowsFilePreview != true) return false
+        val current = attempt ?: return false
+        if (nativeFilePreviewCommand(payload)) {
+            if (!current.allowsNativeFilePreview) return false
+        } else if (!current.allowsFilePreview && !current.allowsNativeFilePreview) return false
         sendPayload(payload)
     }
     fun sendBinary(payload: ByteArray, channel: String, importChannel: Any? = null): Boolean = synchronized(lock) {
@@ -124,6 +127,7 @@ internal class LanTransport(
         var channel: E2eChannel? = null
         var importChannel: Any? = null
         var allowsFilePreview = false
+        var allowsNativeFilePreview = false
         val ready = CompletableDeferred<Boolean>()
         val down = CompletableDeferred<Unit>()
         private val handshake = DeviceHandshake(pskRoot)
@@ -168,6 +172,7 @@ internal class LanTransport(
                                     if (message?.get("type") == JsonPrimitive("device.ready")) {
                                         importChannel = if (announcesImportTarget(message)) importChannel ?: Any() else null
                                         allowsFilePreview = announcesFilePreview(message, deviceId)
+                                        allowsNativeFilePreview = announcesFilePreview(message, deviceId, ChatFilePreview.NATIVE_FEATURE)
                                     }
                                 }
                                 onPlaintext(text, envelope.hdr.ch)

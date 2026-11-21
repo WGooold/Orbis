@@ -10,6 +10,14 @@ const inside = (dir: string, file: string): boolean => {
   return path !== "" && path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 };
 
+export function validMessageFilePathText(path: string): boolean {
+  for (const ch of path) {
+    const code = ch.codePointAt(0)!;
+    if (code < 32 || code === 127 || code >= 0x202a && code <= 0x202e || code >= 0x2066 && code <= 0x2069) return false;
+  }
+  return true;
+}
+
 /** Bounded Host-owned handles. They keep paths out of the message's actions and cannot be invented by the App. */
 export class MessageFileReferences {
   readonly #key = randomBytes(32);

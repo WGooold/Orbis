@@ -37,7 +37,7 @@ export function normalizeCodexMessage(message: ChatMessage, resolve: ResolveFile
         ...(citation.line === undefined ? {} : { line: citation.line }),
         ...(citation.endLine === undefined ? {} : { endLine: citation.endLine }) };
       const label = citation.line === undefined ? fileName : `${fileName}:${citation.line}${citation.endLine === undefined ? "" : `–${citation.endLine}`}`;
-      if (citation.purpose === "output" && !streaming && (outputs.size < 32 || outputs.has(resolved?.key ?? citation.path))) {
+      if (citation.purpose === "output" && !streaming && !block.truncated && (outputs.size < 32 || outputs.has(resolved?.key ?? citation.path))) {
         const key = resolved?.key ?? citation.path;
         if (!outputs.has(key)) outputs.set(key, { type: "render", renderKind: "file_reference", purpose: "output", text: label, file });
         if (standalone) return "";

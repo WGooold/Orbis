@@ -7,26 +7,54 @@ import Foundation
 final class ChatFilePreview {
     nonisolated static let feature = "file.preview-v1"
     nonisolated static let maxBytes = 2 * 1024 * 1024
-    private static let documentBytes = 1024 * 1024
+    nonisolated static let nativeFeature = "file.preview-v2"
     nonisolated static let rangeBytes = 128 * 1024
 
     enum Format: String, Equatable, Sendable {
-        case html, svg
+        case html, svg, jpeg, png, pdf, text, mp4
         init?(fileName: String) {
             switch (fileName as NSString).pathExtension.lowercased() {
             case "html", "htm": self = .html
             case "svg": self = .svg
+            case "jpg", "jpeg": self = .jpeg
+            case "png": self = .png
+            case "pdf": self = .pdf
+            case "txt", "md", "log", "json", "csv": self = .text
+            case "mp4": self = .mp4
             default: return nil
+            }
+        }
+        var isWeb: Bool { self == .html || self == .svg }
+        var budget: Int {
+            switch self {
+            case .html, .svg: 1024 * 1024
+            case .jpeg, .png: 8 * 1024 * 1024
+            case .pdf: 12 * 1024 * 1024
+            case .text: 256 * 1024
+            case .mp4: 16 * 1024 * 1024
+            }
+        }
+        func matchesBytes(_ bytes: Data) -> Bool {
+            switch self {
+            case .html, .svg: bytes.starts(with: "<!doctype html>".utf8) && String(data: bytes, encoding: .utf8) != nil
+            case .text: !bytes.contains(0) && String(data: bytes, encoding: .utf8) != nil
+            case .jpeg: bytes.starts(with: [0xff, 0xd8, 0xff])
+            case .png: bytes.starts(with: [137, 80, 78, 71, 13, 10, 26, 10])
+            case .pdf: bytes.starts(with: "%PDF-".utf8)
+            case .mp4: bytes.count >= 12 && bytes.dropFirst(4).starts(with: "ftyp".utf8)
             }
         }
     }
     enum Source: Hashable {
         case reference(String), artifact(String)
-        func command() -> [String: Any] {
+        func command(format: Format) -> [String: Any] {
+            var body: [String: Any] = ["maxBytes": format.isWeb ? maxBytes : format.budget]
             switch self {
-            case .reference(let path): ["type": "file.download", "path": path, "maxBytes": maxBytes]
-            case .artifact(let id): ["type": "artifact.download", "artifactId": id, "maxBytes": maxBytes]
+            case .reference(let path): body["type"] = "file.download"; body["path"] = path
+            case .artifact(let id): body["type"] = "artifact.download"; body["artifactId"] = id
             }
+            if !format.isWeb { body["previewFormat"] = format.rawValue }
+            return body
         }
         func matches(_ reply: [String: Any]) -> Bool {
             switch self {
@@ -82,6 +110,7 @@ final class ChatFilePreview {
     private var verifier: Task<Data?, Never>?
     private var host: String?
     private var supported = false
+    private var nativeSupported = false
     var interactive = false
     var send: ([String: Any]) -> Bool = { _ in false }
     private var now: Duration { elapsed() }
@@ -98,25 +127,26 @@ final class ChatFilePreview {
     func resetConnection() {
         if request != nil { fail(.interrupted) }
         else if current?.phase == .ready { close() }
-        host = nil; supported = false; retired = [:]
+        host = nil; supported = false; nativeSupported = false; retired = [:]
     }
-    func authenticated(host: String, supportsPreview: Bool) {
+    func authenticated(host: String, supportsPreview: Bool, supportsNativePreview: Bool = false) {
         if self.host != host { resetConnection() }
-        self.host = host; supported = supportsPreview
-        if !supported, current?.phase == .loading || current?.phase == .ready { fail(.unavailable) }
+        self.host = host; supported = supportsPreview; nativeSupported = supportsNativePreview
+        if let current, let format = Format(fileName: current.key.name),
+           !(format.isWeb ? supported : nativeSupported), current.phase == .loading || current.phase == .ready { fail(.unavailable) }
     }
     func open(_ key: Key) {
         close()
         guard let format = Format(fileName: key.name) else { return }
         let id = UUID()
-        guard supported, let host else {
+        guard (format.isWeb ? supported : nativeSupported), let host else {
             selection.send(.init(key: key, id: id, phase: .failed(.unavailable))); return
         }
         let active = Request(id: id, host: host, source: key.source, format: format, now: now)
         request = active
         selection.send(.init(key: key, id: id))
         // The command is registered before sending; a rejected send is a local failure.
-        if !sendCommand(host, id: active.commandID, body: key.source.command()) { fail(.interrupted); return }
+        if !sendCommand(host, id: active.commandID, body: key.source.command(format: format)) { fail(.interrupted); return }
         guard automaticTick, request === active else { return }
         timer = Task { [weak self] in
             while !Task.isCancelled {
@@ -130,6 +160,10 @@ final class ChatFilePreview {
         guard key == nil || current?.key == key else { return }
         stop()
         if current != nil { selection.send(nil) }
+    }
+    func closeSession(_ session: String) {
+        guard current?.key.session == session else { return }
+        close()
     }
     func fileHidden(_ key: Key, id: UUID) {
         if let current, current.key == key, current.id == id, current.phase == .loading { fail(.interrupted) }
@@ -156,7 +190,7 @@ final class ChatFilePreview {
         request = nil // Revoke ownership before sending the best-effort cancellation.
         retired = retired.filter { $0.value > now }
         if retired.count >= 16, let oldest = retired.min(by: { $0.value < $1.value }) { retired[oldest.key] = nil }
-        retired[active.commandID] = now + .seconds(40)
+        retired[active.commandID] = now + (active.format.isWeb ? .seconds(40) : .seconds(100))
         if let transfer = active.transfer { cancel(host: active.host, transfer: transfer) }
     }
     private func sendCommand(_ host: String, id: String, body: [String: Any]) -> Bool {
@@ -168,7 +202,7 @@ final class ChatFilePreview {
     func tick() {
         guard let active = request else { return }
         let time = now
-        if time - active.started >= .seconds(30) || active.transfer == nil && time - active.started >= .seconds(7) {
+        if time - active.started >= (active.format.isWeb ? .seconds(30) : .seconds(90)) || active.transfer == nil && time - active.started >= .seconds(7) {
             fail(.interrupted); return
         }
         guard let transfer = active.transfer, !active.verifying else { return }
@@ -222,7 +256,7 @@ final class ChatFilePreview {
         }
         active.transfer = transfer
         guard active.source.matches(reply), reply["format"] as? String == active.format.rawValue,
-              let size = sessionInteger(reply["size"]), (1...Int64(Self.documentBytes)).contains(size),
+              let size = sessionInteger(reply["size"]), (1...Int64(active.format.budget)).contains(size),
               let hash = reply["sha256"] as? String, hash.utf8.count == 64, hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             fail(.unsupported); return true
         }
@@ -241,7 +275,7 @@ final class ChatFilePreview {
     }
     private func verify(_ active: Request) {
         active.verifying = true
-        let parts = active.parts, total = active.total, expected = active.hash
+        let parts = active.parts, total = active.total, expected = active.hash, format = active.format
         active.parts = []
         let worker = Task.detached(priority: .utility) { () -> Data? in
             var output = Data(capacity: total), hash = SHA256()
@@ -250,7 +284,7 @@ final class ChatFilePreview {
                 output.append(part); hash.update(data: part)
             }
             guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == expected,
-                  String(data: output, encoding: .utf8) != nil else { return nil }
+                  format.matchesBytes(output) else { return nil }
             return output
         }
         verifier = worker
@@ -259,7 +293,7 @@ final class ChatFilePreview {
             guard let self, let active, self.request === active, var current = self.current else { return }
             guard let result, let transfer = active.transfer else { self.fail(.unsupported); return }
             self.timer?.cancel(); self.timer = nil; self.verifier = nil; self.request = nil
-            current.document = result; current.phase = .ready
+            current.document = result; current.phase = .ready; current.fullScreen = format == .mp4
             self.selection.send(current)
             _ = self.send(["type": "artifact.done", "protocolVersion": orbisProtocolVersion, "transferId": transfer])
         }

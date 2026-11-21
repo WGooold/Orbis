@@ -34,6 +34,7 @@ struct FileTransferTests {
         await store.waitForPendingIO()
         #expect(store.tasks.first?.sessionId == nil)
         let task = try #require(store.tasks.first)
+        #expect(store.completedLocalDownload(task.id) == nil)
         #expect(sent.first?["runtimeId"] as? String == "host")
         #expect((sent.first?["command"] as? [String: Any])?["mode"] == nil)
         store.consume(["type": "artifact.started", "commandId": try #require(task.commandId), "transferId": "transfer-1",
@@ -58,6 +59,11 @@ struct FileTransferTests {
         let final = try #require(store.tasks.first?.localPath)
         #expect(try Data(contentsOf: URL(fileURLWithPath: final)) == body)
         #expect(sent.last?["type"] as? String == "artifact.done")
+        // SC123: the completed-file reader is local, even after losing the Host connection.
+        store.setConnection(host(), connected: false)
+        let beforeOpen = sent.count
+        #expect(store.completedLocalDownload(task.id)?.localPath == final)
+        #expect(sent.count == beforeOpen)
     }
 
     @Test func persistedDownloadResumesAndRejectsChangedSource() async throws {

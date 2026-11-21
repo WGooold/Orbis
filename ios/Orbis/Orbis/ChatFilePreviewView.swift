@@ -41,7 +41,7 @@ struct ChatFilePreviewCard<Download: View>: View {
                     }.accessibilityIdentifier("chat-file-preview-open")
                 }
             }
-            if let selection {
+            if let selection, !(selection.phase == .ready && ChatFilePreview.Format(fileName: key.name) == .mp4) {
                 Group {
                     switch selection.phase {
                     case .loading: ProgressView().accessibilityLabel(L10n.tr("正在加载预览"))
@@ -54,7 +54,7 @@ struct ChatFilePreviewCard<Download: View>: View {
                         }
                     case .ready:
                         if panelVisible, !selection.fullScreen, activity?.active != false, scenePhase == .active {
-                            ChatFileBrowser(preview: preview, selection: selection, fullScreen: false)
+                            ChatFileReader(preview: preview, selection: selection, fullScreen: false)
                                 .allowsHitTesting(false)
                         } else { Color.clear }
                     }
@@ -72,7 +72,15 @@ struct ChatFilePreviewCard<Download: View>: View {
                 PreviewViewportReader { visible in if !visible { preview.fileHidden(key, id: selection.id) } }
             }
         }
-        .onReceive(preview.changes.map { $0?.key == key ? $0 : nil }.removeDuplicates()) { selection = $0 }
+        .onReceive(preview.changes.map { $0?.key == key ? $0 : nil }.removeDuplicates()) { next in
+            let openingVideo = selection?.id == next?.id && selection?.phase == .loading && next?.phase == .ready &&
+                next?.fullScreen == true && ChatFilePreview.Format(fileName: key.name) == .mp4
+            selection = next
+            if openingVideo, let next {
+                if canOpen(), activity?.active != false, scenePhase == .active, let showPage { showPage(next.id) }
+                else { _ = preview.setFullScreen(next.id, false) }
+            }
+        }
         .onDisappear { if let selection { preview.fileHidden(key, id: selection.id) } }
     }
 }
@@ -129,19 +137,39 @@ struct ChatFilePreviewPage: View {
     var body: some View {
         VStack(spacing: 0) {
             OrbisPageHeader(title: selection?.key.name ?? L10n.tr("预览"), back: back) { EmptyView() }
-            if let selection, selection.phase == .ready, scenePhase == .active, activity.isTop {
-                ChatFileBrowser(preview: preview, selection: selection, fullScreen: true)
+            if let selection, scenePhase == .active, activity.isTop {
+                ChatFileReader(preview: preview, selection: selection, fullScreen: true)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityIdentifier("chat-file-preview-reader")
-            } else if let selection, case .failed(let failure) = selection.phase {
-                OrbisEmptyState(symbol: "doc", title: failure.label).frame(maxHeight: .infinity)
             }
         }
-        .onReceive(preview.changes.map { $0?.id == id ? $0 : nil }.removeDuplicates()) { next in
+        .onReceive(preview.changes.map { $0?.id == id && $0?.fullScreen == true ? $0 : nil }.removeDuplicates()) { next in
             selection = next
-            if next == nil, activity.isTop { back() }
+            if next == nil { returnToCardIfEnded() }
         }
+        .onChange(of: activity.isTop) { _, _ in returnToCardIfEnded() }
         .onDisappear { _ = preview.setFullScreen(id, false) }
+    }
+
+    private func returnToCardIfEnded() {
+        // A renderer failure leaves the selection (and the download button) on the card.
+        if activity.isTop, preview.current?.id != id || preview.current?.fullScreen != true { back() }
+    }
+}
+
+private struct ChatFileReader: View {
+    let preview: ChatFilePreview
+    let selection: ChatFilePreview.Selection
+    let fullScreen: Bool
+    var body: some View {
+        if let format = ChatFilePreview.Format(fileName: selection.key.name), let data = selection.document {
+            if format.isWeb { ChatFileBrowser(preview: preview, selection: selection, fullScreen: fullScreen) }
+            else {
+                NativeFileReader(source: .snapshot(data), format: format, fullScreen: fullScreen) {
+                    if preview.current?.id == selection.id, preview.current?.fullScreen == fullScreen { preview.renderFailed(selection.id) }
+                }.id(selection.id)
+            }
+        }
     }
 }
 

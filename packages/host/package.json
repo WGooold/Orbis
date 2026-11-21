@@ -25,6 +25,7 @@
     "@orbis/runtime-bridge": "0.1.0",
     "diff": "9.0.0",
     "eventsource-parser": "^3.0.6",
+    "marked": "18.0.5",
     "parse5": "7.3.0",
     "postcss": "8.5.26",
     "qrcode": "^1.5.4",

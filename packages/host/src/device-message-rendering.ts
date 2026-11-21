@@ -3,7 +3,8 @@ import {
   normalizeCodexMessage, projectDisplayEntries, renderStreamingMarkdown, hasCitationSuffix, hasCodexDirective,
   type ChatMessage, type RemoteSessionEntry, type RuntimeEvent,
 } from "@orbis/protocol";
-import { MessageFileReferences } from "./message-file-references.js";
+import { MessageFileReferences, validMessageFilePathText } from "./message-file-references.js";
+import { projectWorkspaceOutputs } from "./workspace-output-references.js";
 
 const maxStreams = 64;
 const maxStreamLength = 256 * 1024;
@@ -53,17 +54,34 @@ export class DeviceMessageRendering {
     const runtimeId = String(envelope.runtimeId);
     const resolve = (path: string) => options.rich ? this.#files.register(path, options.cwd, deviceId, runtimeId) : undefined;
     const project = (value: ChatMessage, streaming = false): ChatMessage => {
-      const normalized = options.codex ? normalizeCodexMessage(value, resolve, streaming) : value;
+      const registered = new Map<string, string>();
+      const register = (path: string) => {
+        const file = resolve(path);
+        if (file) registered.set(file.referenceId, file.key);
+        return file;
+      };
+      let normalized = options.codex ? normalizeCodexMessage(value, register, streaming) : value;
       if (!options.rich) return downgradeMessageForLegacy(normalized);
-      if (streaming || !options.generatedImagePath || !normalized.content.some(block => block.type === "render" && block.renderKind === "codex_generated_image")) return normalized;
-      const path = options.generatedImagePath(normalized.messageId);
-      const name = path?.split(/[\\/]/u).at(-1);
-      if (!path || !name || name.length > 255 || Array.from(path).some(ch => ch.codePointAt(0)! < 32 || /[\u007f\u202a-\u202e\u2066-\u2069]/u.test(ch))) return normalized;
-      const file = resolve(path);
-      if (!file) return normalized;
-      return { ...normalized, content: normalized.content.map(block => block.type === "render" && block.renderKind === "codex_generated_image"
-        ? { type: "render", renderKind: "file_reference", purpose: "output", text: name, file: { fileName: name, referenceId: file.referenceId } }
-        : block) };
+      if (streaming || value.role !== "assistant") return normalized;
+      const known = new Set(normalized.content.flatMap(block => {
+        const key = block.type === "render" && block.purpose === "output" && registered.get(block.file?.referenceId ?? "");
+        return key ? [key] : [];
+      }));
+      if (options.generatedImagePath && normalized.content.some(block => block.type === "render" && block.renderKind === "codex_generated_image")) {
+        const path = options.generatedImagePath(normalized.messageId);
+        const name = path?.split(/[\\/]/u).at(-1);
+        if (path && name && name.length <= 255 && validMessageFilePathText(path)) {
+          const file = resolve(path);
+          if (file) normalized = { ...normalized, content: normalized.content.flatMap((block): ChatMessage["content"] => {
+            if (block.type !== "render" || block.renderKind !== "codex_generated_image") return [block];
+            if (known.has(file.key)) return [];
+            known.add(file.key);
+            return [{ type: "render", renderKind: "file_reference", purpose: "output", text: name,
+              file: { fileName: name, referenceId: file.referenceId } }];
+          }) };
+        }
+      }
+      return options.cwd ? projectWorkspaceOutputs(normalized, options.cwd, resolve, known) : normalized;
     };
     let next: RuntimeEvent = event;
     switch (event.type) {
@@ -107,7 +125,7 @@ export class DeviceMessageRendering {
       }
       case "session.entry.result": {
         const entry = event.entry;
-        if (entry && (hasSpecialBlock(entry) || options.codex && entryContainsDirective(entry))) {
+        if (entry && (hasSpecialBlock(entry) || (options.cwd && options.rich) || (options.codex && entryContainsDirective(entry)))) {
           const original = projectEntry(entry);
           if (original) {
             const rendered = project(original);

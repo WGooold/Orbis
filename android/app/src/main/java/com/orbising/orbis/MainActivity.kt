@@ -710,20 +710,23 @@ private fun HostDownloadsScreen(state: RemoteState, model: RemoteViewModel, onBa
         model.setTransferFeedbackScope(downloads = active)
         onDispose { model.setTransferFeedbackScope(downloads = false) }
     }
-    AllDownloadsScreen(
-        state = state,
-        onBack = onBack,
-        onBrowse = model::browseSessions,
-        onBrowseInto = model::browseInto,
-        onBrowseUp = model::browseUp,
-        onDismissBrowse = model::dismissBrowse,
-        initialBrowsePath = model.downloadBrowserPath(),
-        onBrowsePathResolved = model::rememberDownloadBrowserPath,
-        onDownload = { path -> model.downloadFile(path) },
-        onRetry = { taskId -> model.retryDownload(taskId) },
-        onCancel = model::cancelDownload,
-        onDelete = model::deleteDownloads,
-    )
+    DownloadedFileReaderHost(state) { open ->
+        AllDownloadsScreen(
+            state = state,
+            onBack = onBack,
+            onBrowse = model::browseSessions,
+            onBrowseInto = model::browseInto,
+            onBrowseUp = model::browseUp,
+            onDismissBrowse = model::dismissBrowse,
+            initialBrowsePath = model.downloadBrowserPath(),
+            onBrowsePathResolved = model::rememberDownloadBrowserPath,
+            onDownload = { path -> model.downloadFile(path) },
+            onRetry = { taskId -> model.retryDownload(taskId) },
+            onCancel = model::cancelDownload,
+            onDelete = model::deleteDownloads,
+            onOpen = open,
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -3295,6 +3298,7 @@ internal fun AllDownloadsScreen(
     onDelete: (Set<String>) -> Unit,
     initialBrowsePath: String? = null,
     onBrowsePathResolved: (String?) -> Unit = {},
+    onOpen: (String) -> Unit = {},
 ) {
     var filePickerOpen by rememberSaveable { mutableStateOf(false) }
     var directDownloadPath by rememberSaveable { mutableStateOf("") }
@@ -3408,6 +3412,7 @@ internal fun AllDownloadsScreen(
                             connected = state.e2eReady,
                             selected = task.taskId in effectiveSelectedTaskIds,
                             selectionMode = selectionMode,
+                            onOpen = { onOpen(task.taskId) },
                             onClick = {
                                 selectionHaptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 selectedTaskIds = if (task.taskId in selectedTaskIds) {
@@ -3467,6 +3472,7 @@ private fun DownloadTaskCard(
     selectionMode: Boolean = false,
     onClick: () -> Unit = {},
     onLongClick: () -> Unit = {},
+    onOpen: () -> Unit = {},
 ) {
     val total = task.artifact?.size
     val progress = total?.takeIf { it > 0 }?.let { (task.receivedBytes.toFloat() / it).coerceIn(0f, 1f) }
@@ -3474,7 +3480,9 @@ private fun DownloadTaskCard(
     // 重试不看 runtime 在不在：文件在电脑磁盘上，Host 会直接读盘发分片（spec §8.1）。
     val canRetry = !active && task.status != "completed" &&
         (task.sourcePath != null || task.sourceArtifactId != null)
+    val canOpen = task.status == "completed" && task.savedLocation != null
     val actionHint = when {
+        canOpen -> L10n.tr("打开")
         !active && !canRetry -> null
         active -> L10n.tr("暂停")
         !connected -> L10n.tr("连接电脑后继续")
@@ -3493,6 +3501,7 @@ private fun DownloadTaskCard(
         onClick = {
             when {
                 selectionMode -> onClick()
+                canOpen -> onOpen()
                 active -> onCancel(task.taskId)
                 canRetry && connected -> onRetry(task.taskId)
             }
@@ -4447,7 +4456,7 @@ private fun MessageBlocks(
                 val action = block.messageFileAction()
                 if (action != null) {
                     ChatFilePreviewCard("${message.messageId}:$index", ChatFilePreview.Source(reference = action),
-                        block.file?.fileName ?: block.messageRenderLabel()) {
+                        block.file?.fileName ?: block.messageRenderLabel(), allowsPreview = message.role == "assistant" && block.purpose == "output") {
                         MessageReferenceCard(block, downloads.values.firstOrNull { it.sourcePath == action }, onDownload = { downloadFile(action) })
                     }
                 } else {
