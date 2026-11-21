@@ -1,357 +1,60 @@
 /**
- * Codex 桌面版包装器：让桌面版自己的 app-server 也能被 Orbis 接上。
+ * Codex Desktop wrapper entry (ADR-0022, ADR-0096). Codex runs this as its CLI through
+ * `CODEX_CLI_PATH`; the work happens in codex-desktop-invocation.ts.
  *
- * 为什么需要它：桌面版（Windows）永远用 stdio 与它自己的 `codex app-server` 说话，
- * 而那条唯一的 WebSocket/守护进程分支被 `process.platform !== "win32"` 关掉了
- * （见 ADR-0022 的 Known limitation）；macOS 上那条分支默认也不走（见
- * `codex-desktop-macos.ts`）。于是这个进程站在中间，给同一个 app-server
- * 多开一个本地 WebSocket：
- *
- *   桌面版 GUI <--stdio--> 本进程 <--websocket--> codex app-server --listen
- *
- * GUI 的行为一点不变（它仍然走 stdio），Orbis 作为**第二个** ws 客户端接同一个
- * app-server，于是手机与桌面版看到并驱动同一批 thread。
- *
- * 入口是 `codex-launcher.exe`（桌面版不带 shell 启动 CLI，`.cmd` 不可用；macOS 上是
- * Host 生成的 sh 脚本），
- * 它把同样的 argv 与继承来的 stdio 交给本文件。**除 `app-server` 外的任何调用
- * （`login`、`exec`、`--version` …）都原样转发**，因为桌面版也会用它们。
- *
- * 失败语义：桥接建立前失败可退回同一 CLI 的 stdio；Windows 上所有匹配文件均不可用时，
- * 暂停 Orbis 的入口并提示用户自行重开桌面版，以恢复原生启动流程。
+ * This file imports only Node built-ins and loads the implementation lazily, so a broken or
+ * half-updated Orbis install cannot stop Codex from starting: on macOS the invocation then runs on the
+ * Desktop's own CLI, and the reason reaches Codex's error line and the Host.
  */
-import { type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, Socket } from "node:net";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
-import WebSocket from "ws";
-import { resolveStateDir } from "@orbis/e2e";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-import { CodexAppServer, resolveCodexCommand, type CodexCommand } from "./codex-daemon.js";
-import { CodexDesktopRefreshBridge, type DesktopRefreshEndpoint } from "./codex-desktop-refresh-bridge.js";
-import { appBundleOf, bundledCodexCli, processExecutable, resolveMacCodexDesktopExecutable } from "./codex-desktop-macos.js";
-import { windowsDesktopCliCandidates, type DesktopCliCandidate, type WindowsDesktopCliOptions } from "./codex-desktop-cli.js";
-import { clearDesktopRecovery, desktopDigestCachePath, recoverNativeDesktop } from "./codex-desktop-recovery.js";
-import { DesktopCliSpawnError, desktopVersionFromArgs, isStartupPolicyQuery, passthroughCandidates, selectStartupCli, startDesktopCli, startupProbeArgs } from "./codex-desktop-startup.js";
+import { nativeLauncher, runWithoutOrbis } from "./codex-desktop-native-fallback.js";
 
-/** 端点描述文件：Host 每 2s 读它，所以它必须是原子、只属于当前桥接的一份。 */
-export type CodexDesktopEndpointFile = {
-  schema: 1;
-  url: string;
-  codexPid: number | undefined;
-  bridgePid: number;
-  startedAt: string;
-  refresh?: DesktopRefreshEndpoint;
-};
+type Main = typeof import("./codex-desktop-invocation.js").main;
 
-function log(line: string): void {
-  process.stderr.write(`[orbis-codex-wrapper] ${line}\n`);
+function say(line: string): void {
+  try { process.stderr.write(`[orbis-codex-wrapper] ${line}\n`); } catch { /* Codex closed the pipe. */ }
 }
 
-export function endpointFilePath(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.ORBIS_CODEX_DESKTOP_ENDPOINT?.trim();
-  if (explicit) return explicit;
-  const stateDir = resolveStateDir(env.ORBIS_HOST_STATE_DIR?.trim() || undefined);
-  return join(stateDir, "codex-desktop-endpoint.json");
-}
+let stdioGuarded = false;
 
-/**
- * 桌面版也会用 `app-server` 前缀跑**一次性**命令：`app-server --print-startup-config`
- * 是它启动时读策略的那次调用，输出一份 JSON 就退出。这类调用必须原样转发：当成常驻
- * 服务去桥接会把它的 stdout 收进 stderr，并在等端口 15s 后才回退，桌面版看到的是
- * 「协议失败」而不是策略，于是停在「组织设置无法加载」。
- */
-const ONE_SHOT_APP_SERVER_ARGS = new Set(["--print-startup-config", "--startup-sign-out"]);
-
-/** 桌面版是否在让它的 CLI 跑常驻 app-server（而不是 `login`、`exec`、一次性启动查询之类）。 */
-export function isAppServerInvocation(args: readonly string[]): boolean {
-  return args.includes("app-server") && !args.some(arg => ONE_SHOT_APP_SERVER_ARGS.has(arg));
-}
-
-/** The desktop CLI enables this when its app-server needs the separate code-mode host. */
-export function requestsCodeModeHost(args: readonly string[]): boolean {
-  return isAppServerInvocation(args) && args.some(arg => arg.replaceAll(" ", "") === "features.code_mode_host=true");
-}
-
-export type ResolveRealCodexOptions = WindowsDesktopCliOptions & {
-  platform?: NodeJS.Platform;
-  parentExecutable?: () => Promise<string | undefined>;
-};
-
-/** macOS keeps its existing bundle lookup; Windows only considers this Desktop's existing files. */
-export async function resolveRealCodex(
-  env: NodeJS.ProcessEnv = process.env,
-  options: ResolveRealCodexOptions = {},
-): Promise<CodexCommand> {
-  if ((options.platform ?? process.platform) === "win32") {
-    const candidates = await windowsDesktopCliCandidates(env, options);
-    const selected = candidates[0];
-    if (selected === undefined) throw new Error("没有与当前桌面版匹配的 Codex CLI");
-    return { command: selected.command, prefixArgs: selected.prefixArgs };
+export async function main(...args: Parameters<Main>): Promise<void> {
+  if (!stdioGuarded) {
+    // Codex may close our pipes first; a late write error must never crash past cleanup.
+    for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
+    stdioGuarded = true;
   }
-  const explicit = env.ORBIS_CODEX_REAL?.trim();
-  if (explicit) {
-    if (!existsSync(explicit)) throw new Error("ORBIS_CODEX_REAL 指向的文件不存在：" + explicit);
-    return { command: explicit, prefixArgs: [] };
-  }
-  if ((options.platform ?? process.platform) !== "darwin") return resolveCodexCommand(env);
-  const parent = await (options.parentExecutable ?? (() => processExecutable(process.ppid)))();
-  const fromParent = parent === undefined ? undefined : appBundleOf(parent);
-  const installed = fromParent === undefined ? await resolveMacCodexDesktopExecutable() : undefined;
-  const app = fromParent ?? (installed === undefined ? undefined : appBundleOf(installed));
-  if (app !== undefined && existsSync(bundledCodexCli(app))) return { command: bundledCodexCli(app), prefixArgs: [] };
-  return resolveCodexCommand(env);
-}
-
-async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  const port = (server.address() as { port: number }).port;
-  await new Promise<void>(resolve => server.close(() => resolve()));
-  return port;
-}
-
-/** 等 app-server 真的在监听：能连上才算。能 bind 这个端口恰恰说明它还没起来。 */
-async function waitForPort(port: number, child: ChildProcess, timeoutMs = 15_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null) throw new Error("app-server 在监听前退出");
-    const alive = await new Promise<boolean>(resolve => {
-      const socket = new Socket();
-      const settle = (value: boolean) => { socket.destroy(); resolve(value); };
-      socket.setTimeout(500, () => settle(false));
-      socket.once("connect", () => settle(true));
-      socket.once("error", () => settle(false));
-      socket.connect(port, "127.0.0.1");
-    });
-    if (alive) return;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error(`app-server 未在 ${port} 上监听`);
-}
-
-/** 原样转发：桌面版用的其他 CLI 调用（登录、exec、版本查询）不受包装器影响。 */
-export async function runPassthrough(codex: CodexCommand, args: readonly string[], env = process.env): Promise<void> {
-  const started = await startDesktopCli(codex, args, { env, stdio: "inherit", windowsHide: false });
-  process.exitCode = await started.closed;
-}
-
-type BridgeOptions = {
-  codex: CodexCommand;
-  args: readonly string[];
-  endpointFile: string;
-  env?: NodeJS.ProcessEnv;
-  maxPayloadBytes?: number;
-};
-
-/** Setup failed before any GUI requests were sent; the child has already stopped. */
-export class DesktopBridgeSetupError extends Error {}
-
-/**
- * 给 GUI 提供 stdio，同时把同一个 app-server 暴露成一个本地 ws 端点。
- * 返回的 promise 在会话结束时 resolve（进程退出由调用方决定）。
- */
-export async function runBridge({ codex, args, endpointFile, env = process.env, maxPayloadBytes = 64 * 1024 * 1024 }: BridgeOptions): Promise<void> {
-  let port: number;
-  try { port = await freePort(); }
-  catch (error) { throw new DesktopBridgeSetupError(String(error), { cause: error }); }
-  const url = `ws://127.0.0.1:${port}`;
-  const { child, closed } = await startDesktopCli(codex, [...args, "--listen", url], { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-  child.stdout?.on("data", chunk => process.stderr.write(chunk));
-  child.stderr?.on("data", chunk => process.stderr.write(chunk));
-  let socket: WebSocket;
-  try {
-    await waitForPort(port, child);
-    socket = await openSocket(url, maxPayloadBytes);
-  } catch (error) {
-    // Never start stdio fallback while the failed --listen process still owns threads.
-    child.kill();
-    await closed;
-    throw new DesktopBridgeSetupError(String(error), { cause: error });
-  }
-  const descriptor: CodexDesktopEndpointFile = { schema: 1, url, codexPid: child.pid, bridgePid: process.pid, startedAt: new Date().toISOString() };
-  let refresh: CodexDesktopRefreshBridge | undefined;
-  let controlServer: CodexAppServer | undefined;
-  try {
-    controlServer = await CodexAppServer.createExternal({ endpoint: url, clientName: "orbis-desktop-refresh" });
-    const server = controlServer;
-    refresh = new CodexDesktopRefreshBridge((method, params) => server.request(method, params, 0));
-    descriptor.refresh = await refresh.listen();
-  } catch (error) {
-    refresh?.close();
-    await controlServer?.stop();
-    refresh = undefined;
-    log(`桌面刷新控制不可用，仍保留正常桥接：${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (writeEndpointFile(endpointFile, descriptor)) clearDesktopRecovery(endpointFile);
-  log(`已就绪：桌面版走 stdio，Orbis 可接 ${url}`);
-  try { await bridgeStdio(child, socket, endpointFile, descriptor, refresh); }
-  finally { refresh?.close(); await controlServer?.stop().catch(() => {}); child.kill(); await closed; }
-}
-
-/** 读回自己发布的内容，用来判断是否需要重发。 */
-function readEndpointFile(path: string): string | undefined {
-  try { return readFileSync(path, "utf8"); }
-  catch { return undefined; }
-}
-
-/** The exact bytes written for an endpoint, so republishing can compare like with like. */
-function endpointText(value: CodexDesktopEndpointFile): string {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-function writeEndpointFile(path: string, value: CodexDesktopEndpointFile): boolean {
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    // 先写临时文件再改名：Host 每 2s 就会读一次，读到半截的 JSON 会让它误判端点消失。
-    const temporary = `${path}.tmp`;
-    writeFileSync(temporary, endpointText(value), { mode: 0o600 });
-    renameSync(temporary, path);
-    return true;
-  } catch (error) {
-    log(`无法写入端点文件（不影响桌面版使用）：${error instanceof Error ? error.message : String(error)}`);
-    return false;
-  }
-}
-
-function clearEndpointFile(path: string): void {
-  try { rmSync(path, { force: true }); } catch { /* 收尾失败不影响桌面版 */ }
-}
-
-function openSocket(url: string, maxPayload: number): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, { maxPayload, handshakeTimeout: 5_000 });
-    socket.once("open", () => resolve(socket));
-    socket.once("error", error => reject(error));
-  });
-}
-
-/** GUI 的 stdio 与 app-server 的 ws 帧一一对应：两边都是「一帧一行」。 */
-async function bridgeStdio(child: ChildProcess, socket: WebSocket, endpointFile: string, descriptor: CodexDesktopEndpointFile, refresh?: CodexDesktopRefreshBridge): Promise<void> {
-  await new Promise<void>(resolve => {
-    let pending = "";
-    let finished = false;
-    // 端点文件是 Host 找到我们的唯一线索：被删或被清理后就再也没人知道这个端点。
-    // 定期重发（内容一致则不重写），Host 的 2s 轮询就能自愈。
-    const republish = setInterval(() => {
-      if (readEndpointFile(endpointFile) === endpointText(descriptor)) return;
-      writeEndpointFile(endpointFile, descriptor);
-    }, 5_000);
-    republish.unref?.();
-    // 桌面版退出时给 CLI（也就是本进程）发 SIGTERM。node 默认直接退出、不跑 finish，
-    // app-server 带着 --listen 不看 stdin，于是变成孤儿继续握着会话的写锁，下一次打开的
-    // 桌面版就会提示「已在另一个应用中打开」。
-    const onSignal = (signal: NodeJS.Signals) => {
-      log(`收到 ${signal}，收起桥接`);
-      finish();
-      process.exit(128 + (signal === "SIGHUP" ? 1 : signal === "SIGINT" ? 2 : 15));
-    };
-    const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
-    for (const signal of signals) process.on(signal, onSignal);
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      for (const signal of signals) process.off(signal, onSignal);
-      clearInterval(republish);
-      process.stdin.off("data", onData);
-      process.stdin.off("end", onEnd);
-      process.stdin.pause();
-      clearEndpointFile(endpointFile);
-      try { socket.close(); } catch { /* 已经关了 */ }
-      child.kill();
-      resolve();
-    };
-
-    const onData = (chunk: string) => {
-      pending += chunk;
-      let index = pending.indexOf("\n");
-      while (index >= 0) {
-        const line = pending.slice(0, index).trim();
-        pending = pending.slice(index + 1);
-        if (line.length > 0 && socket.readyState === socket.OPEN) { refresh?.guiRequest(line); socket.send(line); }
-        index = pending.indexOf("\n");
-      }
-    };
-    const onEnd = () => { log("桌面版关闭了 stdio，收起桥接"); finish(); };
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", onData);
-    process.stdin.on("end", onEnd);
-    socket.on("message", data => {
-      const line = data.toString();
-      process.stdout.write(`${line}\n`, error => { if (error == null) refresh?.guiResponse(line); });
-    });
-    socket.on("close", () => { log("app-server 连接已关闭"); finish(); });
-    socket.on("error", error => { log(`WebSocket 错误：${error.message}`); finish(); });
-    child.on("exit", (code, signal) => {
-      log(`app-server 退出 code=${code ?? "signal"} signal=${signal ?? "-"}`);
-      process.exitCode = code ?? 0;
-      finish();
-    });
-    // Setup/control negotiation can finish after the child/socket already closed.
-    if (child.exitCode !== null || child.signalCode !== null || socket.readyState !== WebSocket.OPEN || process.stdin.readableEnded) {
-      if (child.exitCode !== null) process.exitCode = child.exitCode;
-      finish();
-    }
-  });
-}
-
-/** 入口：判断这是不是 app-server 调用，失败则退回原样转发。 */
-export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = process.env,
-  options: ResolveRealCodexOptions & { recover?: typeof recoverNativeDesktop } = {}): Promise<void> {
-  const endpointFile = endpointFilePath(env);
-  const windows = (options.platform ?? process.platform) === "win32";
-  try {
-    const version = desktopVersionFromArgs(argv);
-    const candidates: DesktopCliCandidate[] = windows
-      ? await windowsDesktopCliCandidates(env, { ...options, requireCodeModeHost: requestsCodeModeHost(argv),
-        ...(version === undefined ? {} : { desktopVersion: version }), digestCacheFile: desktopDigestCachePath(endpointFile), log })
-      : [{ ...await resolveRealCodex(env, options), source: "desktop" }];
-    if (windows && isStartupPolicyQuery(argv)) {
-      const { result } = await selectStartupCli(candidates, argv, env, log);
-      process.stdout.write(result.stdout);
-      process.stderr.write(result.stderr);
-      process.exitCode = result.code;
+  let run: Main;
+  try { run = (await import("./codex-desktop-invocation.js")).main; }
+  catch (error) {
+    const [argv, env = process.env] = args;
+    const cause = (error instanceof Error ? error.message : String(error)).split("\n")[0]!.slice(0, 160);
+    const launcher = nativeLauncher(env);
+    if (launcher !== undefined) say(`Orbis 包装器无法加载（${cause}），本次以 Codex 自带 CLI 运行，未接入 Orbis。请重新安装 Orbis Host。`);
+    const code = launcher === undefined ? undefined : await runWithoutOrbis(launcher, argv, env);
+    if (code !== undefined) {
+      process.exitCode = code;
       return;
     }
-    if (!isAppServerInvocation(argv) && !argv.includes("--startup-sign-out")) {
-      process.exitCode = await passthroughCandidates(candidates, argv, env, log);
-      return;
-    }
-    // Validate protocol using a read-only query; never probe sign-out by signing out.
-    let remaining = candidates;
-    while (remaining.length > 0) {
-      const selected = windows ? (await selectStartupCli(remaining, startupProbeArgs(argv), env, log)).cli : remaining[0]!;
-      remaining = remaining.slice(remaining.indexOf(selected) + 1);
-      try {
-        if (!isAppServerInvocation(argv)) {
-          const started = await startDesktopCli(selected, argv, { env, stdio: "inherit", windowsHide: false });
-          process.exitCode = await started.closed;
-        } else {
-          try { await runBridge({ codex: selected, args: argv, endpointFile, env }); }
-          catch (error) {
-            if (!(error instanceof DesktopBridgeSetupError)) throw error;
-            log("桥接建立失败，已停止本次子进程，回退到同一 CLI 的 stdio：" + error.message);
-            await runPassthrough(selected, argv, env);
-          }
-        }
-        return;
-      } catch (error) {
-        if (!(error instanceof DesktopCliSpawnError)) throw error;
-        log(error.message);
-      }
-    }
-    throw new Error("没有可启动的 Codex CLI");
-  } catch (error) {
-    log("桌面 CLI 启动失败：" + String(error));
-    if (windows) {
-      try { log(await (options.recover ?? recoverNativeDesktop)(endpointFile, error)); }
-      catch (recoveryError) { log("无法记录桌面恢复状态：" + String(recoveryError)); }
-    }
+    // Desktop shows the last stderr line: the next step goes there.
+    say(`Orbis 包装器无法加载（${cause}）。请重新安装 Orbis Host；需要立即使用 Codex 时，请完全退出 Codex 后从程序坞或开始菜单重新打开。`);
     process.exitCode = 127;
+    return;
   }
+  await run(...args);
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/** True when this module is the process entry, also through symlinked install paths. */
+function isEntry(url: string): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try { return realpathSync(entry) === realpathSync(fileURLToPath(url)); }
+  catch { return false; }
+}
+
+if (isEntry(import.meta.url)) {
   await main(process.argv.slice(2));
+  // Nothing should keep the wrapper alive after its session; never linger as a hidden process.
+  setTimeout(() => process.exit(), 3_000).unref();
 }

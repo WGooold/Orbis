@@ -1,13 +1,21 @@
+/**
+ * Wrapper entry on Windows (ADR-0022 2026-11-14, ADR-0096): candidates come from the launching Desktop's
+ * package; only the read-only startup probe may try another candidate, and a server start clears
+ * orphaned backends before it bridges.
+ */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
-const runtime = vi.hoisted(() => ({ candidates: vi.fn(), select: vi.fn(), passthrough: vi.fn(), start: vi.fn() }));
-vi.mock("./codex-desktop-cli.js", () => ({ windowsDesktopCliCandidates: runtime.candidates }));
+const runtime = vi.hoisted(() => ({ candidates: vi.fn(), select: vi.fn(), passthrough: vi.fn(), start: vi.fn(), bridge: vi.fn() }));
+vi.mock("./codex-desktop-cli.js", () => ({
+  resolveDesktopCli: async (env: NodeJS.ProcessEnv, options: unknown) => ({ candidates: await runtime.candidates(env, options), fromDesktop: true }),
+}));
 vi.mock("./codex-desktop-startup.js", async original => ({
   ...await original<typeof import("./codex-desktop-startup.js")>(),
   selectStartupCli: runtime.select, passthroughCandidates: runtime.passthrough, startDesktopCli: runtime.start,
 }));
+vi.mock("./codex-desktop-bridge.js", async original => ({ ...await original<typeof import("./codex-desktop-bridge.js")>(), runBridge: runtime.bridge }));
 import { main } from "./codex-desktop-wrapper.js";
 import { DesktopCliSpawnError } from "./codex-desktop-startup.js";
 
@@ -60,6 +68,20 @@ describe("wrapper entry integration", () => {
     expect(runtime.start).toHaveBeenCalledTimes(2);
     expect(runtime.select.mock.calls[1]?.[0]).toEqual([packaged]);
     expect(recover).not.toHaveBeenCalled();
+  });
+
+  it("clears orphaned backends before bridging, and bridges with the next CLI after a spawn failure", async () => {
+    runtime.candidates.mockResolvedValue([copy, packaged]);
+    runtime.select.mockResolvedValueOnce({ cli: copy }).mockResolvedValueOnce({ cli: packaged });
+    runtime.bridge.mockRejectedValueOnce(new DesktopCliSpawnError(copy.command, new Error("EPERM"))).mockResolvedValueOnce(5);
+    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const reap = vi.fn(async () => {});
+    const env = await environment();
+    await main(["app-server"], env, { platform: "win32", reap });
+    expect(reap).toHaveBeenCalledExactlyOnceWith(env.ORBIS_CODEX_DESKTOP_ENDPOINT);
+    expect(reap.mock.invocationCallOrder[0]).toBeLessThan(runtime.bridge.mock.invocationCallOrder[0]!);
+    expect(runtime.bridge.mock.calls.map(call => call[0].codex)).toEqual([copy, packaged]);
+    expect(process.exitCode).toBe(5);
   });
 
   it("persists recovery only after all startup candidates are unavailable, without fake success JSON", async () => {

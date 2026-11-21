@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { readLaunchdEnvironment, writeLaunchdEnvironment } from "./codex-desktop-macos.js";
+import { clearLaunchdEnvironment, readLaunchdEnvironment, writeLaunchdEnvironment } from "./codex-desktop-macos.js";
 
 const execFileAsync = promisify(execFile);
 function orbisBin(): string { return join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Orbis", "bin"); }
@@ -266,8 +266,7 @@ export async function ensureCodexDesktopEntry(launcher: string): Promise<CodexDe
 /** 只在值确实是我们的时候才删：用户自己设过别的 CLI，不该被顺手抹掉。 */
 export async function removeCodexDesktopEntry(): Promise<void> {
   if (process.platform === "darwin") {
-    const current = await readLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME);
-    if (current === undefined || looksLikeOrbisWrapperEntry(current)) await writeLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME, undefined).catch(() => {});
+    await suspendCodexDesktopEntry().catch(() => {});
     return;
   }
   if (process.platform !== "win32") return;
@@ -288,6 +287,15 @@ export async function readWindowsCodexDesktopEntry(): Promise<string | undefined
 
 /** Recovery must report a failed write rather than silently claiming native launch is restored. */
 export async function suspendCodexDesktopEntry(expectedLauncher?: string): Promise<void> {
+  if (process.platform === "darwin") {
+    const current = await readLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME);
+    const entry = current ?? expectedLauncher;
+    if (entry === undefined) return;
+    if (!looksLikeOrbisWrapperEntry(entry)) throw new Error("CODEX_CLI_PATH 不是 Orbis 入口，未修改");
+    if (expectedLauncher !== undefined && entry !== expectedLauncher) throw new Error("CODEX_CLI_PATH 已改变，未修改");
+    await clearLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME, entry);
+    return;
+  }
   if (process.platform !== "win32") return;
   const current = await readWindowsCodexDesktopEntry();
   if (current === undefined) return;
@@ -302,7 +310,10 @@ export async function suspendCodexDesktopEntry(expectedLauncher?: string): Promi
  */
 async function ensureMacCodexDesktopEntry(launcher: string): Promise<CodexDesktopEntry> {
   if (!existsSync(launcher)) return { state: "unsupported", detail: `Orbis 包装器 launcher 未就位（${launcher}）；桌面版暂时无法接入` };
-  const decision = codexDesktopEntryDecision(await readLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME), launcher, "darwin");
+  let current: string | undefined;
+  try { current = await readLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME); }
+  catch { return { state: "foreign", detail: "无法读取 launchd 环境变量 CODEX_CLI_PATH，未改动桌面入口" }; }
+  const decision = codexDesktopEntryDecision(current, launcher, "darwin");
   // 已经是我们的值也重写一次：它同时保证登录项（LaunchAgent）存在且一致。
   const write = decision.write ?? (decision.state === "enabled" ? launcher : undefined);
   if (write !== undefined) {

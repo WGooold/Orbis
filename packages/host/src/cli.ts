@@ -24,9 +24,8 @@ import { LoopbackDescriptorSchema, type AgentKind } from "@orbis/protocol";
 import { loadHostConfig } from "./config.js";
 import { CodexAppServer, resolveCodexCommand } from "./codex-daemon.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
-import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
-import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
-import { readDesktopRecoveryReason } from "./codex-desktop-recovery.js";
+import type { CodexDesktopLifecycle } from "./codex-desktop-lifecycle.js";
+import { createCodexDesktopLifecycle } from "./codex-desktop-integration.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
 import { resolveDshCommand } from "./dsh-client.js";
@@ -194,22 +193,13 @@ async function runHostUntilShutdown(
           return resolveCodexCommand().then(() => true, () => false);
         }
         if (!profile.launchDesktopAgents) return false;
-        const wrapper = resolveCodexWrapper();
-        const endpointPath = codexDesktopEndpointPath(stateDir);
-        const lifecycle = codexDesktop = new CodexDesktopLifecycle({
-          log, onReady: runtime => {
+        const lifecycle = codexDesktop = createCodexDesktopLifecycle({
+          stateDir, log,
+          onReady: runtime => {
             if (!lease.isCurrent() || codexDesktop !== lifecycle) throw new Error("Codex 桌面版接入已取消");
             service?.attachCodexDesktopRuntime(runtime);
           },
           onOffline: runtime => service?.detachCodexDesktopRuntime(runtime),
-          resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
-          resolveStartupFailure: waiting => readDesktopRecoveryReason(endpointPath, waiting),
-          desktopRefresh: { journalDirectory: join(stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
-          launchApp: async signal => {
-            if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath, undefined, signal)) return;
-            signal?.throwIfAborted();
-            await launchCodexDesktopApp();
-          },
         });
         const installed = await lifecycle.isInstalled();
         if (lease.isCurrent()) void lifecycle.probe().catch(() => {});

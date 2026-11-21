@@ -1,36 +1,51 @@
 /**
- * Codex 桌面版在 macOS 上的接线：找到应用包、它自带的 CLI、它的主进程，以及让它走 Orbis
- * 包装器的入口。
+ * Codex Desktop on macOS: the facts Orbis relies on, each checked against the installed bundle rather
+ * than inferred from a path shape (ADR-0096).
  *
- * 与 Windows 一样，macOS 桌面版默认用 stdio 起它自己的 app-server：WebSocket/守护进程分支
- * 只有在 `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1` 且**没有** `CODEX_CLI_PATH` 时才走（验证于
- * `com.openai.codex` 26.1023.50603）。所以接入方式与 Windows 相同——`CODEX_CLI_PATH` 指向
- * 包装器——只是三处不同：
- *
- * - 应用包叫 `ChatGPT.app`，但同名的还有普通 ChatGPT（`com.openai.chat`），只能按 bundle id 认；
- * - launcher 是一段 sh 脚本：macOS 上 `spawn` 能直接执行带 `#!` 的文件，不需要原生二进制；
- * - 入口是 launchd 的用户会话环境（`launchctl setenv`），从 Dock/Finder/Spotlight 打开的应用
- *   都从这里继承环境；再用一个 LaunchAgent 在每次登录时重设，重启后也不分先后。
+ * - The application is identified only by `CFBundleIdentifier` `com.openai.codex`. Its bundle is named
+ *   `ChatGPT.app`, like the plain ChatGPT app (`com.openai.chat`).
+ * - The GUI may start its CLI from any helper nested in the bundle. 26.1117 starts it from
+ *   `…/Frameworks/Codex Framework.framework/…/Helpers/Codex (Aperitif).app`, so the launching
+ *   installation is the outermost Codex bundle among the wrapper's ancestors, not its parent's bundle.
+ * - The bundled CLI is declared by `Contents/Resources/codex-cli/codex-package.json` (`entrypoint`).
+ *   Layouts shipped before that manifest remain fallbacks. A terminal or PATH CLI is never substituted:
+ *   its version need not match the GUI.
+ * - The entry is the launchd user-session `CODEX_CLI_PATH`; a LaunchAgent sets it again at login.
  */
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path/posix";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path/posix";
 import { promisify } from "node:util";
+
+import type { DesktopCliCandidate } from "./codex-desktop-cli.js";
 
 const execute = promisify(execFile);
 
 export const CODEX_DESKTOP_BUNDLE_ID = "com.openai.codex";
 
-/** 常见安装位置；都不是时才问 Spotlight（它可能被关掉，也可能还没建好索引）。 */
+/** Common install locations; Spotlight is consulted only when none of them is the Codex bundle. */
 export function codexDesktopAppCandidates(home = homedir()): string[] {
   return ["/Applications", join(home, "Applications")].flatMap(root => ["ChatGPT.app", "Codex.app"].map(name => join(root, name)));
 }
 
-async function bundleValue(app: string, key: string): Promise<string | undefined> {
+function xmlUnescape(value: string): string {
+  return value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", "\"").replaceAll("&apos;", "'").replaceAll("&amp;", "&");
+}
+
+/** XML plists are read in process (presence scans many bundles); binary ones go through plutil. */
+async function plistValue(file: string, key: string): Promise<string | undefined> {
   try {
-    const { stdout } = await execute("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", join(app, "Contents", "Info.plist")], { timeout: 5_000 });
+    const text = readFileSync(file);
+    if (!text.subarray(0, 6).equals(Buffer.from("bplist"))) {
+      const match = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`, "u").exec(text.toString("utf8"));
+      const value = match === null ? undefined : xmlUnescape(match[1]!).trim();
+      return value ? value : undefined;
+    }
+  } catch { return undefined; }
+  try {
+    const { stdout } = await execute("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", file], { timeout: 5_000 });
     const value = stdout.trim();
     return value.length > 0 ? value : undefined;
   } catch {
@@ -38,15 +53,54 @@ async function bundleValue(app: string, key: string): Promise<string | undefined
   }
 }
 
-/** 应用包主可执行文件（`<app>/Contents/MacOS/<CFBundleExecutable>`），只认 Codex 的 bundle id。 */
+const identifiers = new Map<string, { mtimeMs: number; value: Promise<string | undefined> }>();
+
+/** Cached by Info.plist modification time: Host polls presence every few seconds. */
+export function bundleIdentifier(app: string): Promise<string | undefined> {
+  const plist = join(app, "Contents", "Info.plist");
+  let mtimeMs: number;
+  try { mtimeMs = statSync(plist).mtimeMs; }
+  catch { return Promise.resolve(undefined); }
+  const cached = identifiers.get(app);
+  if (cached?.mtimeMs === mtimeMs) return cached.value;
+  const value = plistValue(plist, "CFBundleIdentifier");
+  identifiers.set(app, { mtimeMs, value });
+  return value;
+}
+
+/** Every `.app` directory containing a path, outermost first. */
+export function enclosingAppBundles(path: string): string[] {
+  const parts = resolve(path).split("/");
+  const result: string[] = [];
+  for (let index = 1; index < parts.length - 1; index++) {
+    if (parts[index]!.endsWith(".app")) result.push(parts.slice(0, index + 1).join("/"));
+  }
+  return result;
+}
+
+/** The outermost Codex bundle containing a path; helpers nest their own bundles inside it. */
+export async function codexBundleContaining(path: string, identify = bundleIdentifier): Promise<string | undefined> {
+  for (const app of enclosingAppBundles(path)) if (await identify(app) === CODEX_DESKTOP_BUNDLE_ID) return app;
+  return undefined;
+}
+
+/** `<app>/Contents/MacOS/<exe>` → `<app>`; anything else is not a bundle's main executable. */
+export function appBundleOf(executable: string): string | undefined {
+  const macos = dirname(executable);
+  const contents = dirname(macos);
+  if (!macos.endsWith("/Contents/MacOS") || !contents.endsWith(".app/Contents")) return undefined;
+  return dirname(contents);
+}
+
+/** Main executable of a Codex bundle (`<app>/Contents/MacOS/<CFBundleExecutable>`). */
 export async function codexDesktopExecutableOf(app: string): Promise<string | undefined> {
   if (!existsSync(join(app, "Contents", "Info.plist"))) return undefined;
-  if (await bundleValue(app, "CFBundleIdentifier") !== CODEX_DESKTOP_BUNDLE_ID) return undefined;
-  const name = await bundleValue(app, "CFBundleExecutable");
+  if (await bundleIdentifier(app) !== CODEX_DESKTOP_BUNDLE_ID) return undefined;
+  const name = await plistValue(join(app, "Contents", "Info.plist"), "CFBundleExecutable");
   return name === undefined ? undefined : join(app, "Contents", "MacOS", name);
 }
 
-/** 查不到是「没装」；Spotlight 查询出错也只算没找到，常见位置已经确定地查过了。 */
+/** Not finding the bundle means "not installed"; a failed Spotlight query is treated the same way. */
 export async function resolveMacCodexDesktopExecutable(candidates = codexDesktopAppCandidates()): Promise<string | undefined> {
   for (const app of candidates) {
     const executable = await codexDesktopExecutableOf(app);
@@ -55,8 +109,11 @@ export async function resolveMacCodexDesktopExecutable(candidates = codexDesktop
   let found: string[] = [];
   try {
     const { stdout } = await execute("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == "${CODEX_DESKTOP_BUNDLE_ID}"`], { timeout: 5_000 });
-    found = stdout.split("\n").map(line => line.trim()).filter(line => line.endsWith(".app"));
-  } catch { /* Spotlight 不可用 */ }
+    // Ignore copies nested in another bundle, in the Trash or kept as update backups.
+    found = stdout.split("\n").map(line => line.trim())
+      .filter(line => line.endsWith(".app") && enclosingAppBundles(join(line, "Contents")).length === 1
+        && !/\/\.Trash\/|\/Backups?\//iu.test(line));
+  } catch { /* Spotlight unavailable */ }
   for (const app of found) {
     const executable = await codexDesktopExecutableOf(app);
     if (executable !== undefined) return executable;
@@ -64,35 +121,71 @@ export async function resolveMacCodexDesktopExecutable(candidates = codexDesktop
   return undefined;
 }
 
-/** `<app>/Contents/MacOS/<exe>` → `<app>`；不是应用包里的可执行文件就返回 undefined。 */
-export function appBundleOf(executable: string): string | undefined {
-  const macos = dirname(executable);
-  const contents = dirname(macos);
-  if (!macos.endsWith("/Contents/MacOS") || !contents.endsWith(".app/Contents")) return undefined;
-  return dirname(contents);
+const CLI_ROOT = ["Contents", "Resources", "codex-cli"] as const;
+/** Entries shipped before `codex-package.json`: the forwarding script and the signed binary. */
+const LEGACY_CLI_ENTRIES = ["bin/codex", "CodexCLI.app/Contents/MacOS/codex"] as const;
+
+/** The CLI a Codex bundle declares, then the earlier layouts, all inside that bundle. */
+export function bundledCodexCliPaths(app: string): string[] {
+  const root = join(app, ...CLI_ROOT);
+  const paths: string[] = [];
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, "codex-package.json"), "utf8")) as { entrypoint?: unknown };
+    if (typeof manifest.entrypoint === "string" && manifest.entrypoint.length > 0 && !isAbsolute(manifest.entrypoint)) {
+      const entry = resolve(root, manifest.entrypoint);
+      if (entry.startsWith(`${root}/`)) paths.push(entry);
+    }
+  } catch { /* No manifest before layoutVersion 1. */ }
+  for (const entry of LEGACY_CLI_ENTRIES) {
+    const path = join(root, entry);
+    if (!paths.includes(path)) paths.push(path);
+  }
+  return paths;
 }
 
-/** 桌面版自己带的 CLI：没有覆盖时 GUI 用的就是它。 */
-export function bundledCodexCli(app: string): string {
-  return join(app, "Contents", "Resources", "codex-cli", "bin", "codex");
-}
+export type MacProcess = { pid: number; parent: number; executable: string };
 
-/**
- * 主进程才算「桌面版在运行」：Electron 的 Helper 进程住在 `Contents/Frameworks/…` 里，
- * 路径不同，自然不会被当成主进程。macOS 的 `ps -o comm=` 给的是完整可执行路径。
- */
-export async function listMacProcesses(): Promise<Array<{ pid: number; executable: string }>> {
-  const { stdout } = await execute("/bin/ps", ["-axww", "-o", "pid=,comm="], { timeout: 10_000, maxBuffer: 4_000_000 });
+/** One snapshot: `comm` is the full executable path on macOS. */
+export async function macProcessTable(): Promise<MacProcess[]> {
+  const { stdout } = await execute("/bin/ps", ["-axww", "-o", "pid=,ppid=,comm="], { timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
   return stdout.split("\n").flatMap(line => {
-    const match = /^\s*(\d+)\s+(.+)$/u.exec(line);
-    return match === null ? [] : [{ pid: Number(match[1]), executable: match[2]!.trim() }];
+    const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/u.exec(line);
+    return match === null ? [] : [{ pid: Number(match[1]), parent: Number(match[2]), executable: match[3]!.trim() }];
   });
 }
 
-/** 某个进程的可执行路径；包装器用它从父进程（桌面版 GUI）找回应用包。 */
+/** Ancestors of a process, nearest first, stopping before launchd. */
+export function processAncestry(table: readonly MacProcess[], start: number, limit = 16): MacProcess[] {
+  const byPid = new Map(table.map(row => [row.pid, row]));
+  const result: MacProcess[] = [];
+  const seen = new Set<number>();
+  for (let pid = start; pid > 1 && !seen.has(pid) && result.length < limit;) {
+    seen.add(pid);
+    const row = byPid.get(pid);
+    if (row === undefined) break;
+    result.push(row);
+    pid = row.parent;
+  }
+  return result;
+}
+
+/** Running Codex GUI main processes. Helpers live in nested bundles and never match. */
+export async function runningCodexDesktops(table?: readonly MacProcess[], identify = bundleIdentifier): Promise<Array<{ pid: number; executable: string; app: string }>> {
+  const rows = table ?? await macProcessTable();
+  const result: Array<{ pid: number; executable: string; app: string }> = [];
+  for (const row of rows) {
+    const app = appBundleOf(row.executable);
+    // Only outermost bundles: a helper's own bundle is never the application.
+    if (app === undefined || enclosingAppBundles(row.executable).length !== 1) continue;
+    if (await identify(app) === CODEX_DESKTOP_BUNDLE_ID) result.push({ pid: row.pid, executable: row.executable, app });
+  }
+  return result;
+}
+
+/** Kept for the terminal integration, which resolves a single process. */
 export async function processExecutable(pid: number): Promise<string | undefined> {
   try {
-    const { stdout } = await execute("/bin/ps", ["-o", "comm=", "-p", String(pid)], { timeout: 5_000 });
+    const { stdout } = await execute("/bin/ps", ["-ww", "-o", "comm=", "-p", String(pid)], { timeout: 5_000 });
     const value = stdout.trim();
     return value.length > 0 ? value : undefined;
   } catch {
@@ -100,39 +193,160 @@ export async function processExecutable(pid: number): Promise<string | undefined
   }
 }
 
+export type MacDesktopCliOptions = {
+  /** First process whose ancestry identifies the launching GUI; the wrapper's parent by default. */
+  launchingPid?: number;
+  processTable?: () => Promise<readonly MacProcess[]>;
+  identify?: (app: string) => Promise<string | undefined>;
+  installedExecutable?: () => Promise<string | undefined>;
+  log?: (message: string) => void;
+};
+
+export type MacDesktopCliResolution = {
+  candidates: DesktopCliCandidate[];
+  /** `ancestor`: this invocation descends from that Desktop; only such a backend may be published. */
+  origin: "ancestor" | "running" | "installed" | "explicit" | "none";
+  app?: string;
+  /** The process table could not be read, so whether a Desktop launched us is unknown. */
+  uncertain?: string;
+};
+
+async function launchingCodexBundle(options: MacDesktopCliOptions, log: (message: string) => void, unknown: (reason: string) => void): Promise<{ app: string; origin: "ancestor" | "running" | "installed" } | undefined> {
+  const identify = options.identify ?? bundleIdentifier;
+  let table: readonly MacProcess[] | undefined;
+  try { table = await (options.processTable ?? macProcessTable)(); }
+  catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    log(`无法读取进程表：${reason}`);
+    unknown(reason);
+  }
+  if (table !== undefined) {
+    for (const row of processAncestry(table, options.launchingPid ?? process.ppid)) {
+      const app = await codexBundleContaining(row.executable, identify);
+      if (app !== undefined) return { app, origin: "ancestor" };
+    }
+    // Started outside a Codex process tree (another tool honouring CODEX_CLI_PATH, or by hand).
+    const running = [...new Set((await runningCodexDesktops(table, identify)).map(entry => entry.app))];
+    if (running.length === 1) return { app: running[0]!, origin: "running" };
+    if (running.length > 1) log(`有多个 Codex 桌面版在运行，无法确定发起者：${running.join("，")}`);
+  }
+  const installed = await (options.installedExecutable ?? resolveMacCodexDesktopExecutable)().catch(() => undefined);
+  const app = installed === undefined ? undefined : appBundleOf(installed);
+  return app === undefined ? undefined : { app, origin: "installed" };
+}
+
+function realpathOrResolve(path: string): string {
+  try { return realpathSync(path); } catch { return resolve(path); }
+}
+
+/**
+ * CLI candidates for the launching Desktop, in the order the GUI itself would use them. Each candidate
+ * is an existing executable file inside that bundle; an explicit `ORBIS_CODEX_REAL` comes first.
+ */
+export async function macDesktopCliCandidates(env: NodeJS.ProcessEnv, options: MacDesktopCliOptions = {}): Promise<MacDesktopCliResolution> {
+  const log = options.log ?? (() => {});
+  const candidates: DesktopCliCandidate[] = [];
+  const seen = new Set<string>();
+  const entry = env.CODEX_CLI_PATH?.trim();
+  const self = entry ? realpathOrResolve(entry) : undefined;
+  const add = (command: string, source: string, bundleRoot?: string): void => {
+    let path: string;
+    try { path = realpathSync(command); }
+    catch (error) { log(`${source} 不可用：${command}（${(error as NodeJS.ErrnoException).code ?? String(error)}）`); return; }
+    if (path === self || basename(path) === "codex-launcher") { log(`忽略指回 Orbis 包装器的 CLI：${command}`); return; }
+    if (bundleRoot !== undefined && !path.startsWith(`${bundleRoot}/`)) { log(`${source} 指向应用包之外，跳过：${command}`); return; }
+    if (seen.has(path)) return;
+    try {
+      if (!statSync(path).isFile()) throw new Error("不是普通文件");
+      accessSync(path, constants.X_OK);
+    } catch (error) { log(`${source} 不可执行：${command}（${(error as NodeJS.ErrnoException).code ?? String(error)}）`); return; }
+    seen.add(path);
+    candidates.push({ command, prefixArgs: [], source });
+  };
+  const explicit = env.ORBIS_CODEX_REAL?.trim();
+  if (explicit) add(resolve(explicit), "ORBIS_CODEX_REAL");
+  let uncertain: string | undefined;
+  const launching = await launchingCodexBundle(options, log, reason => { uncertain = reason; });
+  const unknown = uncertain === undefined ? {} : { uncertain };
+  if (launching === undefined) {
+    if (candidates.length === 0) log("未找到 Codex 桌面版安装包");
+    return { candidates, origin: candidates.length > 0 ? "explicit" : "none", ...unknown };
+  }
+  const root = realpathOrResolve(launching.app);
+  const explicitFirst = candidates.length > 0;
+  for (const path of bundledCodexCliPaths(launching.app)) add(path, `desktop-${launching.origin}`, root);
+  // A deliberate override (development, isolated tests) is honoured even when another Codex runs.
+  const origin = launching.origin !== "ancestor" && explicitFirst ? "explicit" : launching.origin;
+  return { candidates, origin, app: launching.app, ...unknown };
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 /**
- * macOS 的 launcher：与 `codex-launcher.c` 同一套查找顺序，只多一条回退。
- *
- * node 或脚本不在了（Host 被移走、node 被卸载）时，从父进程——也就是桌面版 GUI——找回它
- * 自带的 CLI 直接执行：桌面版因此永远打得开，最坏情况只是这一轮接不上。
+ * The executable Codex runs through `CODEX_CLI_PATH`. It must never be the reason Codex cannot start:
+ * when Orbis's runtime is gone it executes the CLI of the launching Desktop, found with the same rule
+ * as the wrapper (outermost Codex bundle among its ancestors, manifest entry first).
  */
-export function renderMacCodexLauncher(node: string, script: string): string {
+export function renderMacCodexLauncher(options: { node: string; script: string; endpoint?: string }): string {
   return [
-    "#!/bin/sh",
-    "# 由 Orbis Host 生成：Codex 桌面版经 CODEX_CLI_PATH 执行这里，再交给 Orbis 包装器。",
-    // 默认值单独赋值：写进双引号里的 `${…:-'…'}` 会把单引号当成字面字符留下来。
-    `node=${shellQuote(node)}`,
-    `script=${shellQuote(script)}`,
-    "if [ -n \"${ORBIS_CODEX_WRAPPER_NODE:-}\" ]; then node=\"$ORBIS_CODEX_WRAPPER_NODE\"; fi",
-    "if [ -n \"${ORBIS_CODEX_WRAPPER_SCRIPT:-}\" ]; then script=\"$ORBIS_CODEX_WRAPPER_SCRIPT\"; fi",
-    "if [ -x \"$node\" ] && [ -f \"$script\" ]; then exec \"$node\" \"$script\" \"$@\"; fi",
-    "real=\"${ORBIS_CODEX_REAL:-}\"",
-    "if [ -z \"$real\" ]; then",
-    "  parent=$(/bin/ps -o comm= -p \"$PPID\" 2>/dev/null || true)",
-    "  case \"$parent\" in */Contents/MacOS/*) real=\"${parent%/Contents/MacOS/*}/Contents/Resources/codex-cli/bin/codex\" ;; esac",
+    "#!/bin/bash",
+    "# Generated by Orbis Host. Codex Desktop runs this through CODEX_CLI_PATH; see ADR-0096.",
+    // Continue only when the kernel refuses an exec; a started command's status is never replayed.
+    "set +e",
+    "shopt -s execfail",
+    `node=${shellQuote(options.node)}`,
+    `script=${shellQuote(options.script)}`,
+    ...(options.endpoint === undefined ? [] : [
+      `if [ -z "\${ORBIS_CODEX_DESKTOP_ENDPOINT:-}" ]; then export ORBIS_CODEX_DESKTOP_ENDPOINT=${shellQuote(options.endpoint)}; fi`,
+    ]),
+    // Native mode: the wrapper could not run this invocation and asked for the Desktop's own CLI.
+    'if [ "${ORBIS_CODEX_LAUNCHER_NATIVE:-}" != "1" ]; then',
+    '  if [ -f "$node" ] && [ -x "$node" ] && [ -f "$script" ] && [ -r "$script" ]; then exec "$node" "$script" "$@"; fi',
+    '  echo "[orbis-codex-launcher] Orbis runtime unavailable; starting the Codex CLI without Orbis" >&2',
     "fi",
-    "if [ -n \"$real\" ] && [ -x \"$real\" ]; then exec \"$real\" \"$@\"; fi",
-    "echo \"[orbis-codex-launcher] 找不到 node、包装器脚本或真实 Codex CLI\" >&2",
+    'run_cli() { local cli="$1"; shift; if [ -n "$cli" ] && [ -f "$cli" ] && [ -x "$cli" ] && ! [ "$cli" -ef "$0" ]; then exec "$cli" "$@"; fi; }',
+    'real="${ORBIS_CODEX_REAL:-}"',
+    'if [ -n "$real" ]; then run_cli "$real" "$@"; fi',
+    "codex_bundle() {",
+    '  local rest="$1" prefix="" head app',
+    '  while [[ "$rest" == *.app/* ]]; do',
+    '    head="${rest%%.app/*}.app"',
+    '    app="$prefix$head"',
+    `    if [ "$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist" 2>/dev/null)" = ${shellQuote(CODEX_DESKTOP_BUNDLE_ID)} ]; then printf '%s\\n' "$app"; return 0; fi`,
+    '    prefix="$app/"',
+    '    rest="${rest#"$head"/}"',
+    "  done",
+    "  return 1",
+    "}",
+    'pid=$PPID',
+    "for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do",
+    '  [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null || break',
+    '  exe=$(/bin/ps -ww -o comm= -p "$pid" 2>/dev/null)',
+    '  if app=$(codex_bundle "$exe"); then',
+    '    cli="$app/Contents/Resources/codex-cli"',
+    '    entry=$(/usr/bin/plutil -extract entrypoint raw -o - "$cli/codex-package.json" 2>/dev/null)',
+    '    case "$entry" in ""|/*|*..*) ;; *) run_cli "$cli/$entry" "$@" ;; esac',
+    ...LEGACY_CLI_ENTRIES.map(path => `    run_cli "$cli/${path}" "$@"`),
+    "    break",
+    "  fi",
+    '  pid=$(/bin/ps -o ppid= -p "$pid" 2>/dev/null | tr -d " ")',
+    "done",
+    'echo "[orbis-codex-launcher] no runnable Codex CLI found in the launching Codex Desktop bundle" >&2',
     "exit 127",
     "",
   ].join("\n");
 }
 
-/** 登录时重设入口的 LaunchAgent：`launchctl setenv` 只活到注销/重启。 */
+/** Read back the endpoint a generated launcher exports, so a refresh keeps a custom state directory. */
+export function launcherEndpoint(text: string | undefined): string | undefined {
+  const line = text?.split("\n").find(value => value.includes("export ORBIS_CODEX_DESKTOP_ENDPOINT="));
+  const match = line === undefined ? null : /export ORBIS_CODEX_DESKTOP_ENDPOINT='((?:[^']|'\\'')*)'/u.exec(line);
+  return match === null ? undefined : match[1]!.replaceAll(`'\\''`, "'");
+}
+
+/** The LaunchAgent that restores the entry at login: `launchctl setenv` lasts only for the session. */
 export const CODEX_DESKTOP_ENTRY_AGENT = "dev.orbis.codex-desktop-entry";
 
 export function codexDesktopEntryAgentPath(home = homedir()): string {
@@ -167,22 +381,30 @@ export function renderCodexDesktopEntryAgent(name: string, value: string): strin
 }
 
 export async function readLaunchdEnvironment(name: string): Promise<string | undefined> {
-  const { stdout } = await execute("/bin/launchctl", ["getenv", name], { timeout: 5_000 }).catch(() => ({ stdout: "" }));
+  const { stdout } = await execute("/bin/launchctl", ["getenv", name], { timeout: 5_000 });
   const value = stdout.trim();
   return value.length > 0 ? value : undefined;
 }
 
-/**
- * 写入（或清除）用户会话的环境，并让登录项保持一致。只有 `launchctl` 本身失败才抛出：
- * LaunchAgent 写不进去只影响下次登录，本次会话已经生效。
- */
-export async function writeLaunchdEnvironment(name: string, value: string | undefined, home = homedir()): Promise<void> {
+/** Only clear the exact environment value and generated login item this entry owns. */
+export async function clearLaunchdEnvironment(name: string, expected: string, home = homedir()): Promise<void> {
   const agent = codexDesktopEntryAgentPath(home);
-  if (value === undefined) {
-    await execute("/bin/launchctl", ["unsetenv", name], { timeout: 5_000 });
-    await rm(agent, { force: true }).catch(() => {});
-    return;
-  }
+  const saved = await readFile(agent, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (saved !== undefined && saved !== renderCodexDesktopEntryAgent(name, expected)) throw new Error("Codex 桌面登录项已改变，未修改");
+  const current = await readLaunchdEnvironment(name);
+  if (current !== undefined && current !== expected) throw new Error(`${name} 已改变，未修改`);
+  // Remove the login item first so it cannot restore a suspended entry at the next login.
+  if (saved !== undefined) await rm(agent, { force: true });
+  if (current !== undefined) await execute("/bin/launchctl", ["unsetenv", name], { timeout: 5_000 });
+  if (await readLaunchdEnvironment(name) !== undefined) throw new Error(`${name} 未成功移除`);
+}
+
+/** Register the session override, and persist it across logins on a best-effort basis. */
+export async function writeLaunchdEnvironment(name: string, value: string, home = homedir()): Promise<void> {
+  const agent = codexDesktopEntryAgentPath(home);
   await execute("/bin/launchctl", ["setenv", name, value], { timeout: 5_000 });
   const content = renderCodexDesktopEntryAgent(name, value);
   const current = await readFile(agent, "utf8").catch(() => undefined);
@@ -190,5 +412,5 @@ export async function writeLaunchdEnvironment(name: string, value: string | unde
   try {
     await mkdir(dirname(agent), { recursive: true });
     await writeFile(agent, content, { mode: 0o644 });
-  } catch { /* 下次登录前 Host 启动时还会再写一次 */ }
+  } catch { /* Host writes it again before the next login. */ }
 }

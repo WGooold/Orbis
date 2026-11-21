@@ -135,7 +135,12 @@ jobs:
         run: |
           npx vitest run \
             packages/host/src/agent-installation.test.ts \
+            packages/host/src/codex-desktop-backends.test.ts \
+            packages/host/src/codex-desktop-bridge.test.ts \
+            packages/host/src/codex-desktop-endpoint.test.ts \
+            packages/host/src/codex-desktop-integration.test.ts \
             packages/host/src/codex-desktop-launcher.test.ts \
+            packages/host/src/codex-desktop-lifecycle.test.ts \
             packages/host/src/codex-desktop-macos.test.ts \
             packages/host/src/codex-desktop-wrapper.test.ts \
             packages/host/src/codex-terminal-macos.test.ts \

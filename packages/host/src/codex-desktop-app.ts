@@ -44,7 +44,11 @@ export async function launchCodexDesktopApp(env: NodeJS.ProcessEnv = process.env
   signal?.throwIfAborted();
   if (process.platform === "darwin") {
     // 应用已经在跑时 `open` 只是把它带到前台，`--env` 不会改变它的环境。
-    const forwarded = DESKTOP_ENV_KEYS.flatMap(key => env[key]?.trim() ? ["--env", `${key}=${env[key]!.trim()}`] : []);
+    const forwarded = DESKTOP_ENV_KEYS.flatMap(key => {
+      const value = env[key]?.trim();
+      // An explicit empty CLI override bypasses Orbis's inherited launchd override for this launch only.
+      return value || key === "CODEX_CLI_PATH" && value === "" ? ["--env", `${key}=${value}`] : [];
+    });
     await runOpen(["-b", CODEX_DESKTOP_BUNDLE_ID, ...forwarded], "无法打开 Codex 桌面版", signal);
     return;
   }

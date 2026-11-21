@@ -3,7 +3,7 @@ import { platform } from "node:os";
 import { promisify } from "node:util";
 import { join } from "node:path";
 
-import { listMacProcesses, resolveMacCodexDesktopExecutable } from "./codex-desktop-macos.js";
+import { resolveMacCodexDesktopExecutable, runningCodexDesktops } from "./codex-desktop-macos.js";
 
 const execute = promisify(execFile);
 
@@ -12,6 +12,8 @@ export type CodexDesktopProcess = {
   executable: string;
   mainWindowHandle: number;
   title: string;
+  /** Verified by bundle identifier, so it matches wherever that copy of Codex is installed. */
+  codexBundle?: boolean;
 };
 
 export type CodexDesktopPresence = {
@@ -57,7 +59,7 @@ export async function detectCodexDesktopPresence(options: CodexDesktopPresenceOp
     return { ready: false, executable, reason: "无法查询 Codex 桌面版进程", scanError: describeError(error) };
   }
   const normalized = executable.toLowerCase().replaceAll("/", "\\");
-  const process = processes.find(candidate => candidate.executable.toLowerCase().replaceAll("/", "\\") === normalized
+  const process = processes.find(candidate => (candidate.codexBundle === true || candidate.executable.toLowerCase().replaceAll("/", "\\") === normalized)
     && candidate.mainWindowHandle !== 0);
   if (process === undefined) return { ready: false, executable, reason: target === "darwin" ? "Codex 桌面版未运行" : "Codex 桌面版未打开可见窗口" };
   return { ready: true, executable: process.executable, pid: process.pid, title: process.title, reason: "Codex 桌面版已就绪" };
@@ -83,11 +85,12 @@ function defaultResolver(target: NodeJS.Platform): () => Promise<string | undefi
 }
 
 /**
- * macOS 没有 Windows 那样廉价的「主窗口句柄」：主进程在跑就算就绪（关掉最后一个窗口的
- * Electron 应用仍持有 app-server，手机照样能驱动它）。句柄字段只为与 Windows 共用匹配规则。
+ * macOS has no cheap main-window handle: a running main process counts (an Electron app with its last
+ * window closed still owns its app-server). Only main executables of Codex bundles are listed, so a
+ * copy outside the usual install locations still counts; helpers live in nested bundles.
  */
 async function listMacCodexDesktopProcesses(): Promise<readonly CodexDesktopProcess[]> {
-  return (await listMacProcesses()).map(({ pid, executable }) => ({ pid, executable, mainWindowHandle: 1, title: "Codex" }));
+  return (await runningCodexDesktops()).map(({ pid, executable }) => ({ pid, executable, mainWindowHandle: 1, title: "Codex", codexBundle: true }));
 }
 
 /** 查不到安装位置是「没装」；查询本身报错必须抛出，那是两种不同的结论。 */

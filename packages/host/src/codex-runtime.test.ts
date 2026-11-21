@@ -17,7 +17,7 @@ import { ToolContentStore } from "@orbis/runtime-bridge";
 import { AgentStateFacts } from "./agent-state-facts.js";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { CODEX_RUNTIME_ID, CodexRequestError, type CodexAppServer, type CodexServerRequest } from "./codex-daemon.js";
-import { CodexRuntime, codexHeadWindowLaunch, type CodexRuntimeOptions } from "./codex-runtime.js";
+import { CODEX_WRITER_BUSY, CodexRuntime, codexHeadWindowLaunch, type CodexRuntimeOptions } from "./codex-runtime.js";
 import type { CodexTerminalConnectionInput } from "./codex-terminal-connection.js";
 
 function makeHarness(options?: {
@@ -36,6 +36,7 @@ function makeHarness(options?: {
   endpoint?: string;
   openHeadWindow?: CodexRuntimeOptions["openHeadWindow"];
   taskRegistry?: unknown[];
+  resolveWriterConflict?: CodexRuntimeOptions["resolveWriterConflict"];
 }): {
   runtime: CodexRuntime;
   server: CodexAppServer;
@@ -104,6 +105,7 @@ function makeHarness(options?: {
     rolloutRoot,
     sourceCoalesceMs: options?.sourceCoalesceMs ?? 0,
     ...(options?.openHeadWindow === undefined ? {} : { openHeadWindow: options.openHeadWindow }),
+    ...(options?.resolveWriterConflict === undefined ? {} : { resolveWriterConflict: options.resolveWriterConflict }),
   });
   return {
     runtime,
@@ -2001,6 +2003,38 @@ describe("CodexRuntime", () => {
     const entries = await pending;
     expect(entries.find((entry) => entry.sessionId === "owned")?.modelProvider).toBe("actual");
     expect(entries.find((entry) => entry.sessionId === "unknown")?.modelProvider).toBeUndefined();
+  });
+
+  // ADR-0096: "thread … already has an active writer" reached the phone verbatim. An orphaned Desktop
+  // backend is cleared once and the resume retried; a remaining writer gets an actionable reason.
+  it("resumes after clearing another writer once, and names a writer that remains", async () => {
+    const conflict = () => new CodexRequestError("thread th-1 already has an active writer（code=-32600）", "rejected");
+    const resumes = (h: ReturnType<typeof makeHarness>) => h.requests.mock.calls.filter(call => call[0] === "thread/resume").length;
+    const resolveWriterConflict = vi.fn(async () => true);
+    const h = makeHarness({ resolveWriterConflict });
+    const activating = h.runtime.activate({ type: "resume", sessionId: "th-1" });
+    await vi.waitFor(() => expect(resumes(h)).toBe(1));
+    h.rejectNext(conflict());
+    await vi.waitFor(() => expect(resumes(h)).toBe(2));
+    expect(resolveWriterConflict).toHaveBeenCalledOnce();
+    h.resolveNext({ thread: { id: "th-1", cwd: "D:/repo", turns: [] } });
+    await expect(activating).resolves.toMatchObject({ sessionId: "th-1" });
+
+    for (const cleared of [false, true]) {
+      const busy = makeHarness({ resolveWriterConflict: async () => cleared });
+      const failed = busy.runtime.activate({ type: "resume", sessionId: "th-1" }).catch((error: unknown) => error);
+      await vi.waitFor(() => expect(resumes(busy)).toBe(1));
+      busy.rejectNext(conflict());
+      if (cleared) { await vi.waitFor(() => expect(resumes(busy)).toBe(2)); busy.rejectNext(conflict()); }
+      expect(await failed).toMatchObject({ code: "session_busy", message: CODEX_WRITER_BUSY });
+    }
+    // Any other native error keeps its own meaning.
+    const other = makeHarness({ resolveWriterConflict });
+    const unrelated = other.runtime.activate({ type: "resume", sessionId: "th-1" }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(resumes(other)).toBe(1));
+    other.rejectNext(new CodexRequestError("no rollout found", "rejected"));
+    expect(await unrelated).toMatchObject({ message: "no rollout found" });
+    expect(resolveWriterConflict).toHaveBeenCalledOnce();
   });
 
   it("activate：thread/resume 后回放 turns 条目图并发布 replace 快照", async () => {

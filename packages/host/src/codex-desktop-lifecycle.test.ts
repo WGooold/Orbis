@@ -27,10 +27,79 @@ function gate<T>() {
 }
 
 describe("Codex desktop lifecycle", () => {
+  // ADR-0096: an open request for a Codex already running unattached used to wait 45 s and then give a
+  // generic reason. It waits only while a wrapper is still starting, then reports the precise cause.
+  it("explains a running Desktop without endpoint without holding the request for the full wait", async () => {
+    const present = [{ pid: 1, executable: "C:\\Codex\\ChatGPT.exe", mainWindowHandle: 1, title: "Codex" }];
+    let starting = true;
+    const diagnoseNoEndpoint = vi.fn(async () => starting
+      ? { status: { state: "closed" as const, reason: "wrapper starting" }, pending: true }
+      : { status: { state: "error" as const, reason: "entry owned by another program" } });
+    const launchApp = vi.fn(async () => {});
+    const lifecycle = new CodexDesktopLifecycle({
+      presence: { platform: "win32", resolveExecutable: async () => "C:\\Codex\\ChatGPT.exe", listProcesses: async () => present },
+      resolveEndpoint: async () => undefined, launchApp, diagnoseNoEndpoint,
+      endpointWaitMs: 10_000, runningWaitMs: 50, pollIntervalMs: 60_000,
+    });
+    const started = Date.now();
+    let settled = false;
+    const request = lifecycle.ensureReady().catch((error: unknown) => error).finally(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 400));
+    expect(settled).toBe(false);
+    starting = false;
+    expect(await request).toMatchObject({ message: "entry owned by another program" });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(launchApp).toHaveBeenCalledOnce();
+    expect(lifecycle.status).toEqual({ state: "error", reason: "entry owned by another program" });
+    await lifecycle.stop();
+  });
+
+  it("reports the diagnosis while probing a running Desktop without endpoint", async () => {
+    const present = [{ pid: 1, executable: "C:\\Codex\\ChatGPT.exe", mainWindowHandle: 1, title: "Codex" }];
+    const lifecycle = new CodexDesktopLifecycle({
+      presence: { platform: "win32", resolveExecutable: async () => "C:\\Codex\\ChatGPT.exe", listProcesses: async () => present },
+      resolveEndpoint: async () => undefined,
+      diagnoseNoEndpoint: async () => ({ status: { state: "closed", reason: "opened before the entry existed" } }),
+      pollIntervalMs: 60_000,
+    });
+    expect(await lifecycle.probe()).toBeUndefined();
+    expect(lifecycle.status).toEqual({ state: "closed", reason: "opened before the entry existed" });
+    await lifecycle.stop();
+  });
+
+  // ADR-0096: an orphaned backend holds thread writer locks; Host sweeps on its first probe, when the
+  // endpoint changes or disappears, and otherwise at most once per interval, never concurrently.
+  it("reaps orphaned backends on first probe and endpoint changes, single-flight and throttled", async () => {
+    let endpoint: string | undefined = "ws://127.0.0.1:55384";
+    let release!: () => void;
+    const reapBackends = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+    const lifecycle = new CodexDesktopLifecycle({
+      presence: { platform: "win32", resolveExecutable: async () => "C:\\Codex\\ChatGPT.exe", listProcesses: async () => [] },
+      resolveEndpoint: async () => endpoint,
+      createExternal: async () => server(),
+      reapBackends,
+      reapIntervalMs: 60_000,
+      pollIntervalMs: 5,
+    });
+    await lifecycle.probe();
+    expect(lifecycle.ready).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    // Still running: polls join it instead of starting another sweep.
+    expect(reapBackends).toHaveBeenCalledOnce();
+    release();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    // The endpoint is unchanged: the interval applies.
+    expect(reapBackends).toHaveBeenCalledOnce();
+    endpoint = "ws://127.0.0.1:55385";
+    await vi.waitFor(() => expect(reapBackends).toHaveBeenCalledTimes(2), { timeout: 500 });
+    release();
+    await lifecycle.stop();
+  });
+
   it("reports native recovery immediately instead of waiting or suggesting the same failed launch", async () => {
     const reason = "Orbis 已暂停桌面接入，请自行完全退出并重新打开 Codex";
     const lifecycle = new CodexDesktopLifecycle({ resolveEndpoint: async () => undefined,
-      resolveStartupFailure: () => reason, launchApp: async () => {}, endpointWaitMs: 45_000 });
+      resolveStartupFailure: () => ({ state: "error", reason }), launchApp: async () => {}, endpointWaitMs: 45_000 });
     try {
       expect(await lifecycle.probe()).toBeUndefined();
       expect(lifecycle.status).toEqual({ state: "error", reason });
@@ -39,10 +108,42 @@ describe("Codex desktop lifecycle", () => {
     } finally { await lifecycle.stop(); }
   });
 
+  // CODEX-DESKTOP-MAC-RECOVERY-01: working native stdio is a degraded attachment, not a failed Codex launch.
+  it("publishes the native fallback as closed, then publishes attached after a successful retry", async () => {
+    let endpoint: string | undefined;
+    let opened = false;
+    const reason = "Codex 已改用原生连接，未接入 Orbis";
+    const onStatusChange = vi.fn();
+    const lifecycle = new CodexDesktopLifecycle({ resolveEndpoint: async () => endpoint,
+      resolveStartupFailure: () => opened ? { state: "closed", reason } : undefined,
+      launchApp: async () => { opened = true; }, createExternal: async () => server(), onStatusChange });
+    try {
+      await expect(lifecycle.ensureReady()).rejects.toThrow(reason);
+      expect(lifecycle.status).toEqual({ state: "closed", reason });
+      expect(onStatusChange).toHaveBeenLastCalledWith({ state: "closed", reason });
+      endpoint = "ws://127.0.0.1:23457";
+      await lifecycle.ensureReady();
+      expect(onStatusChange).toHaveBeenLastCalledWith(expect.objectContaining({ state: "attached" }));
+    } finally { await lifecycle.stop(); }
+  });
+
+  it("opens Codex locally without making the Open button wait for a mobile attachment", async () => {
+    const reason = "Codex 使用原生连接，未接入 Orbis";
+    const launchApp = vi.fn(async () => {});
+    const lifecycle = new CodexDesktopLifecycle({ resolveEndpoint: async () => undefined,
+      resolveStartupFailure: () => ({ state: "closed", reason }), launchApp });
+    try {
+      await expect(lifecycle.openApp()).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(lifecycle.status).toEqual({ state: "closed", reason }));
+      expect(launchApp).toHaveBeenCalledOnce();
+      expect(lifecycle.ready).toBe(false);
+    } finally { await lifecycle.stop(); }
+  });
+
   it("lets a validated retry attach and gives a live endpoint precedence over a recovery marker", async () => {
     let endpoint: string | undefined;
     const lifecycle = new CodexDesktopLifecycle({ resolveEndpoint: async () => endpoint,
-      resolveStartupFailure: waiting => waiting ? undefined : "请重新打开 Codex",
+      resolveStartupFailure: waiting => waiting ? undefined : { state: "error", reason: "请重新打开 Codex" },
       launchApp: async () => { endpoint = "ws://127.0.0.1:23456"; }, createExternal: async () => server() });
     try {
       expect(await lifecycle.probe()).toBeUndefined();

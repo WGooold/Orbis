@@ -14,9 +14,10 @@ import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./open
 import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
 import { clearCodexSelection, readCodexSelection, saveCodexSelection } from "./codex-selection.js";
-import { CodexDesktopLifecycle, launchCodexDesktopApp } from "./codex-desktop-lifecycle.js";
-import { codexDesktopEndpointPath, launchCodexDesktopThroughWrapper, readCodexDesktopEndpoint, resolveCodexWrapper } from "./codex-desktop-launcher.js";
-import { readDesktopRecoveryReason } from "./codex-desktop-recovery.js";
+import { CodexDesktopLifecycle } from "./codex-desktop-lifecycle.js";
+import { codexDesktopEndpointPath } from "./codex-desktop-endpoint.js";
+import { createCodexDesktopLifecycle, openCodexDesktop } from "./codex-desktop-integration.js";
+import { readDesktopRecoveryStatus } from "./codex-desktop-recovery.js";
 import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexTerminalIntegration } from "./codex-shim-install.js";
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { loadKimiCodeConfig } from "./config.js";
@@ -163,6 +164,7 @@ export class DesktopRuntime {
   #codexPrepare: AbortController | undefined;
   #codexPending: Promise<CodexRuntime | undefined> | undefined;
   #codexDesktopLifecycle: CodexDesktopLifecycle | undefined;
+  #lastCodexDesktopRecovery: string | undefined;
   #dshRuntime: DshRuntime | undefined;
   /** DeepSeek Harness Desktop entry (ADR-0076); its app and backend stay owned by Desktop. */
   #dshDesktopLifecycle: DshDesktopLifecycle | undefined;
@@ -396,6 +398,7 @@ export class DesktopRuntime {
     if (!this.#qa) await adoptWindowsEnvironment();
     await this.#agentEnablement.read();
     const resolved = await this.#environment(settings);
+    this.#publishCodexDesktopRecovery();
     this.#scheduleClaudeDetection();
     void this.#detectHermes().catch(() => this.log("检测 Hermes Agent 失败"));
     if (checkLatest) this.#scheduleClaudeLatestCheck();
@@ -762,14 +765,12 @@ export class DesktopRuntime {
 
       // Codex Desktop is independent of the optional terminal backend. The Host only opens
       // it after an App session request; an already attached instance is reused by the lifecycle.
-      const wrapper = resolveCodexWrapper();
-      const endpointPath = codexDesktopEndpointPath(this.#stateDir);
-      if (wrapper === undefined) this.log("未找到 Orbis 包装器（codex-launcher 或 codex-desktop-wrapper.js），本轮无法接入 Codex 桌面版");
       // Closures below stay bound to this attempt's lifecycle. Disposal revokes
       // its field before draining the service; activation loss and retry can
       // keep the same settings while queued requests from that service settle.
       const createCodexDesktop = (): CodexDesktopLifecycle => {
-        const desktopLifecycle = new CodexDesktopLifecycle({
+        const desktopLifecycle = createCodexDesktopLifecycle({
+          stateDir: this.#stateDir,
           log: line => this.log(line),
           onReady: runtime => {
             if (this.#desired !== settings || this.#codexDesktopLifecycle !== desktopLifecycle || !this.#agentEnablement.allows("codexDesktop")) throw new Error("Host 正在暂停，已取消 Codex 桌面版接入");
@@ -777,14 +778,6 @@ export class DesktopRuntime {
           },
           onOffline: runtime => {
             if (this.#desired === settings && this.#codexDesktopLifecycle === desktopLifecycle) this.#service?.detachCodexDesktopRuntime(runtime);
-          },
-          resolveEndpoint: async () => readCodexDesktopEndpoint(endpointPath)?.url,
-          resolveStartupFailure: waiting => readDesktopRecoveryReason(endpointPath, waiting),
-          desktopRefresh: { journalDirectory: join(this.#stateDir, "codex-desktop-refresh"), resolveBridge: () => readCodexDesktopEndpoint(endpointPath)?.refresh },
-          launchApp: async signal => {
-            if (wrapper !== undefined && await launchCodexDesktopThroughWrapper(wrapper, endpointPath, undefined, signal)) return;
-            signal?.throwIfAborted();
-            await launchCodexDesktopApp(process.env, signal);
           },
           // 分档变了才回调（探测每 2s 一次，不能把它变成心跳）：一条给 Host 界面，
           // 一条给已配对的手机，否则手机上只能靠 device.ready 的偶然重播。
@@ -1095,7 +1088,21 @@ export class DesktopRuntime {
       message: "激活凭据已失效，请重新激活" });
   }
 
+  /** A wrapper can fall back after LaunchServices returns, even while the Host is paused. */
+  #publishCodexDesktopRecovery(): void {
+    if (this.#qa || this.#codexDesktopLifecycle !== undefined || !this.#agentEnablement.allows("codexDesktop")) {
+      this.#lastCodexDesktopRecovery = undefined;
+      return;
+    }
+    const status = readDesktopRecoveryStatus(codexDesktopEndpointPath(this.#stateDir)) ?? null;
+    const text = JSON.stringify(status);
+    if (text === this.#lastCodexDesktopRecovery) return;
+    this.#lastCodexDesktopRecovery = text;
+    this.#emit({ event: "codexDesktop", status });
+  }
+
   status(): void {
+    this.#publishCodexDesktopRecovery();
     const service = this.#service;
     if (!service) return;
     const devices = service.devices.filter(d => !d.revoked).map(d => {
@@ -1639,8 +1646,15 @@ export class DesktopRuntime {
     }
     if (kind === "codexDesktop") {
       if (mode !== "setup") throw new Error("未知打开方式");
-      if (this.#codexDesktopLifecycle !== undefined) await this.#codexDesktopLifecycle.ensureReady();
-      else await launchCodexDesktopApp();
+      // Opening Codex locally never waits for the phone attachment; its status follows as events.
+      const lifecycle = this.#codexDesktopLifecycle;
+      if (lifecycle !== undefined) { await lifecycle.openApp(); return; }
+      try {
+        await openCodexDesktop(this.#stateDir, lease?.signal);
+        requireCurrent();
+      } finally {
+        if (lease?.isCurrent() !== false) this.#publishCodexDesktopRecovery();
+      }
       return;
     }
     if (kind === "dshDesktop") {
@@ -1703,6 +1717,7 @@ export class DesktopRuntime {
     const dshDesktop = this.#dshDesktopRuntime; this.#dshDesktopRuntime = undefined;
     const desktopStopped = desktopLifecycle?.stop().catch(error => this.log(String(error)));
     this.#lastStatus = "";
+    this.#lastCodexDesktopRecovery = undefined;
     const drain = (async () => {
       await service?.stop().catch(error => this.log(String(error)));
       await codexRuntime?.stop().catch(error => this.log(String(error)));

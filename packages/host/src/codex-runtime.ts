@@ -141,6 +141,12 @@ const CODEX_SLASH_COMMANDS: readonly RuntimeSlashCommand[] = [
 
 export const CODEX_SOURCE_COALESCE_MS = 100;
 
+/** Codex refuses a second writer for one thread (`thread … already has an active writer`, -32600). */
+export function isCodexWriterConflict(error: unknown): boolean {
+  return error instanceof Error && /already has an active writer/iu.test(error.message);
+}
+export const CODEX_WRITER_BUSY = "这个会话正被另一个 Codex 进程使用（终端里的 codex、另一个 Codex 窗口或仍在运行的旧后端），暂时无法在这里继续。请先在那里结束或关闭它，再重试。";
+
 export type CodexRuntimeOptions = {
   server: CodexAppServer;
   /** Run every phone-created Codex thread through app-server without opening a local TUI. */
@@ -178,6 +184,11 @@ export type CodexRuntimeOptions = {
   createTerminalConnection?: (input: CodexTerminalConnectionInput) => Promise<CodexTerminalConnection>;
   /** Windows wrapper evidence and the Host-owned durable recovery journal. */
   desktopRefresh?: CodexDesktopRefreshOptions;
+  /**
+   * ADR-0096: called once when resuming hits another native writer. Returns true when something that
+   * could hold it (an orphaned Desktop backend) was stopped, so the resume is worth one retry.
+   */
+  resolveWriterConflict?: () => Promise<boolean>;
 };
 
 /** 只读 rollout 文件头部找 meta 和第一条用户消息；指令前导很长，128KB 足够覆盖。 */
@@ -1697,6 +1708,22 @@ export class CodexRuntime implements AgentBackend {
     } catch { return false; }
   }
 
+  /** Resume through the native writer lock, turning a conflict into an actionable reason. */
+  async #requestWriter(method: string, params: Record<string, unknown>, resume: boolean, context: AgentActivateContext | undefined): Promise<unknown> {
+    try { return await this.#server.request(method, params); }
+    catch (error) {
+      if (!resume || !isCodexWriterConflict(error)) throw error;
+      this.#options.log?.(`Codex 会话被其他写入者占用：${error instanceof Error ? error.message : String(error)}`);
+      const cleared = await this.#options.resolveWriterConflict?.().catch(() => false) ?? false;
+      context?.requireCurrent?.();
+      if (cleared) {
+        try { return await this.#server.request(method, params); }
+        catch (retry) { if (!isCodexWriterConflict(retry)) throw retry; }
+      }
+      throw new ActivationError("session_busy", CODEX_WRITER_BUSY);
+    }
+  }
+
   async #activateInner(target: AgentActivateTarget, context: AgentActivateContext | undefined,
     spawnMode: "tui" | "headless"): Promise<BackendActivation> {
     const existing = target.type === "resume" ? this.#threads.get(target.sessionId) : undefined;
@@ -1713,7 +1740,7 @@ export class CodexRuntime implements AgentBackend {
     const params = target.type === "resume" ? { threadId: target.sessionId }
       : { cwd: target.cwd, ...initial, config: { ...object(initial.config), [codexWorkspaceTrustKey(target.cwd)]: "trusted" } };
     context?.requireCurrent?.();
-    let result = (await this.#server.request(method, params)) as {
+    let result = (await this.#requestWriter(method, params, target.type === "resume", context)) as {
       thread?: Record<string, unknown>;
       model?: unknown;
       modelProvider?: unknown;
