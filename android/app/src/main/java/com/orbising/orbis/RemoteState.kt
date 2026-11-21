@@ -730,6 +730,91 @@ data class RemoteState(
     val historyReads: Map<String, SessionReadOperation> get() = sessionReads
 }
 
+/** In-memory graphs follow the Host's canonical directory identity when one is known.
+ * Runtime/session IDs remain the wire routing identity and are never rewritten. */
+internal fun RemoteState.sessionGraphKey(runtimeId: String?, sessionId: String): String =
+    runtimeId?.let(runtimes::get)?.takeIf { it.sessionId == sessionId }?.directorySessionId ?: sessionId
+
+internal fun RemoteState.sessionGraphForRuntime(runtimeId: String): SessionGraph? = runtimes[runtimeId]?.let { runtime ->
+    if (runtime.codexCatalogId != null) sessionGraphs[runtime.codexCatalogId]
+    else runtime.sessionId?.let(sessionGraphs::get)
+}
+
+/** Resolve the original launch path for a pending send; never pick an arbitrary Runtime with the same native ID. */
+internal fun RemoteState.runtimeForLaunch(launch: LaunchState, sessionId: String): RuntimeSummary? {
+    val targetKind = launch.codexLaunchMode?.let(::codexModeKind) ?: launch.target["agentKind"]
+    val candidates = runtimes.values.filter { runtime -> runtime.sessionId == sessionId &&
+        (launch.resumed?.takeIf(::isCodexCatalogId)?.let { runtime.codexCatalogId == it } ?: true) &&
+        (if (launch.codexLaunchMode != null) runtime.agentKind == targetKind
+            else targetKind == null || runtime.agentKind == null || runtime.agentKind == targetKind)
+    }
+    return candidates.singleOrNull()
+}
+
+internal fun RemoteState.runtimeForLaunch(provisionalId: String, sessionId: String): RuntimeSummary? {
+    val launch = launching?.takeIf { it.placeholder == provisionalId || it.resumed == provisionalId } ?: return null
+    if (launch.sessionId != sessionId) return null
+    return runtimeForLaunch(launch, sessionId)
+}
+
+internal fun RemoteState.bindLaunchPendingSends(runtime: RuntimeSummary): RemoteState {
+    val launch = launching ?: return this
+    val sessionId = runtime.sessionId ?: return this
+    if (launch.sessionId != sessionId || runtimeForLaunch(launch, sessionId)?.runtimeId != runtime.runtimeId) return this
+    val sourceSessionId = launch.resumed ?: launch.placeholder
+    val sourceSessionIds = setOf(sourceSessionId, sessionId)
+    val nextLaunchSessions = launchSessions + (launch.placeholder to sessionId) + (sourceSessionId to sessionId)
+    val next = pendingSends.mapValues { (_, send) ->
+        if (send.runtimeId == launch.placeholder && send.sessionId in sourceSessionIds) {
+            send.copy(runtimeId = runtime.runtimeId, sessionId = sessionId)
+        } else send
+    }
+    val directorySession = runtime.directorySessionId ?: sessionId
+    val nextLedger = ledger.operations.filter { operation ->
+        val send = operation.payload as? LedgerPayload.Send
+        send != null && send.runtimeId == launch.placeholder && send.sessionId in sourceSessionIds &&
+            next[send.messageId] != pendingSends[send.messageId]
+    }.fold(ledger) { current, operation ->
+        val send = operation.payload as LedgerPayload.Send
+        current.rebindWaiting(operation, send.copy(runtimeId = runtime.runtimeId, sessionId = sessionId),
+            OperationKinds.sendGroup(directorySession))
+    }
+    return if (next == pendingSends && nextLaunchSessions == launchSessions && nextLedger == ledger) this
+    else copy(pendingSends = next, launchSessions = nextLaunchSessions, ledger = nextLedger)
+}
+
+/** Record the Host-confirmed wire Session before its Runtime appears; ownership remains provisional. */
+internal fun RemoteState.bindLaunchSession(launch: LaunchState, sessionId: String): RemoteState {
+    val sourceSessionId = launch.resumed ?: launch.placeholder
+    val sourceSessionIds = setOf(sourceSessionId, sessionId)
+    val nextLaunchSessions = launchSessions + (launch.placeholder to sessionId) + (sourceSessionId to sessionId)
+    val next = pendingSends.mapValues { (_, send) ->
+        if (send.runtimeId == launch.placeholder && send.sessionId in sourceSessionIds) send.copy(sessionId = sessionId) else send
+    }
+    val nextLedger = ledger.operations.filter { operation ->
+        val send = operation.payload as? LedgerPayload.Send
+        send != null && send.runtimeId == launch.placeholder && send.sessionId in sourceSessionIds &&
+            next[send.messageId] != pendingSends[send.messageId]
+    }.fold(ledger) { current, operation ->
+        val send = operation.payload as LedgerPayload.Send
+        current.rebindWaiting(operation, send.copy(sessionId = sessionId), operation.group)
+    }
+    return if (next == pendingSends && nextLaunchSessions == launchSessions && nextLedger == ledger) this
+    else copy(pendingSends = next, launchSessions = nextLaunchSessions, ledger = nextLedger)
+}
+
+/** Resolve a directory or legacy session selector without guessing across duplicate native IDs. */
+internal fun RemoteState.sessionGraphForSession(sessionId: String): SessionGraph? {
+    val matching = runtimes.values.filter { it.sessionId == sessionId }
+    if (matching.size == 1) {
+        val runtime = matching.single()
+        return if (runtime.codexCatalogId != null) sessionGraphs[runtime.codexCatalogId]
+            else runtime.sessionId?.let(sessionGraphs::get)
+    }
+    if (matching.size > 1) return null
+    return sessionGraphs[sessionId]
+}
+
 data class PendingSessionSync(
     val runtimeId: String,
     val sessionId: String,
@@ -1126,9 +1211,11 @@ private fun RemoteState.isKnownBranchChange(
     sessionId: String?,
     previousLeafId: String?,
     nextLeafId: String?,
+    runtimeId: String? = null,
 ): Boolean {
     if (sessionId == null) return false
-    return (sessionGraphs[sessionId] ?: SessionGraph(sessionId)).isKnownBranchChange(previousLeafId, nextLeafId)
+    val graph = sessionGraphs[sessionGraphKey(runtimeId, sessionId)] ?: SessionGraph(sessionId)
+    return graph.isKnownBranchChange(previousLeafId, nextLeafId)
 }
 
 private fun SessionGraph.isKnownBranchChange(previousLeafId: String?, nextLeafId: String?): Boolean {
@@ -1238,7 +1325,7 @@ private fun RuntimeSummary.isSyncPending(
     graphs: Map<String, SessionGraph>,
 ): Boolean = sessionGraphSync &&
     runtimeId == selectedRuntimeId && sessionId != null && sessionLeafId != null &&
-    (graphs[sessionId]?.hasCompleteEntryChain(sessionLeafId) != true)
+    (graphs[directorySessionId ?: sessionId]?.hasCompleteEntryChain(sessionLeafId) != true)
 
 private fun previousViewNeedsRefresh(state: RemoteState, runtime: RuntimeSummary): Boolean =
     state.runtimeSessionViews[runtime.runtimeId]?.let { view ->
@@ -2088,8 +2175,6 @@ class RelayReducer(
                     !hasPrevious || previousSessionId != runtimes[runtimeId]?.sessionId ||
                         previousRuntime?.codexCatalogId != runtimes[runtimeId]?.codexCatalogId
                 }
-                val replacedStorage = runtimes.values.filter { it.codexCatalogId != state.runtimes[it.runtimeId]?.codexCatalogId }
-                    .flatMap { listOfNotNull(it.sessionId, state.runtimes[it.runtimeId]?.sessionId) }.toSet()
                 val branchChanged = runtimes.keys.associateWith { runtimeId ->
                     if (sessionChanged[runtimeId] == true || state.conversations[runtimeId]?.sourceEpoch != null) false else {
                         val runtime = runtimes[runtimeId]
@@ -2099,6 +2184,7 @@ class RelayReducer(
                             sessionId = runtime?.sessionId,
                             previousLeafId = previousLeaf,
                             nextLeafId = runtime?.sessionLeafId,
+                            runtimeId = runtime?.runtimeId,
                         )
                     }
                 }
@@ -2160,7 +2246,7 @@ class RelayReducer(
                     unifiedCodexHistory = unifiedCodexHistory,
                     prefersAutoSessionSpawn = (message["hostFeatures"] as? JsonArray)?.contains(JsonPrimitive("session.spawn.auto")) == true,
                     sessions = sessions,
-                    sessionGraphs = state.sessionGraphs - replacedStorage,
+                    sessionGraphs = state.sessionGraphs,
                     runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
                     agentModelEpoch = message.string("modelEpoch"),
@@ -2255,6 +2341,7 @@ class RelayReducer(
                     sessionId = runtime.sessionId,
                     previousLeafId = previousLeaf,
                     nextLeafId = runtime.sessionLeafId,
+                    runtimeId = runtime.runtimeId,
                 )
                 val invalidatedSessionSyncCommands = if (sessionChanged || branchChanged) {
                     state.sessionSyncCommands.filterValues { it.runtimeId == runtime.runtimeId }.keys
@@ -2296,12 +2383,16 @@ class RelayReducer(
                 } ?: state.sessions
                 state.copy(
                     sessions = sessions,
-                    sessionGraphs = if (storageChanged) state.sessionGraphs - listOfNotNull(previousSessionId, runtime.sessionId).toSet() else state.sessionGraphs,
+                    sessionGraphs = state.sessionGraphs,
                     sessionBranchGenerations = if (sessionChanged || branchChanged) {
                         state.sessionBranchGenerations + (runtime.runtimeId to ((state.sessionBranchGenerations[runtime.runtimeId] ?: 0) + 1))
                     } else state.sessionBranchGenerations,
-                    runtimes = state.runtimes + (runtime.runtimeId to runtime.carryingComposerStatus(previousRuntime)
-                        ),
+                    // Launch-mode arbitration uses this Host-observed route identity. Keep the
+                    // incoming kind (or the same-session last known kind) through the composer
+                    // projection; the latter must not erase a fresh explicit Runtime owner.
+                    runtimes = state.runtimes + (runtime.runtimeId to runtime.carryingComposerStatus(previousRuntime).copy(
+                        agentKind = runtime.agentKind ?: previousRuntime?.agentKind,
+                    )),
                     runtimeSessionViews = runtimeView?.let {
                         val previousView = state.runtimeSessionViews[runtime.runtimeId]
                         val keepPreviousView = previousView != null &&
@@ -2349,7 +2440,7 @@ class RelayReducer(
                     } else {
                         state.sessionSyncRequests - runtime.runtimeId
                     },
-                ).ledgerRuntimeList(read = null, complete = false)
+                ).bindLaunchPendingSends(runtime).ledgerRuntimeList(read = null, complete = false)
             }
             "host.offline" -> {
                 // 电脑端 Host 进程没了（Relay 按 hostId 过滤后才转发到这）。加密通道随之失效，
@@ -2392,7 +2483,7 @@ class RelayReducer(
                     selectedOfflineSessionId = state.selectedOfflineSessionId,
                     pendingCommands = state.pendingCommands.filterValues { it != runtimeId },
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith { CommandResult(ok = false, status = "cancelled") },
-                    pendingSends = state.pendingSends.runtimeLost(state.runtimes[runtimeId]?.sessionId ?: state.knownRuntimeSessions[runtimeId]),
+                    pendingSends = state.pendingSends.runtimeLost(runtimeId, state.runtimes[runtimeId]?.sessionId ?: state.knownRuntimeSessions[runtimeId]),
                     capabilities = state.capabilities - runtimeId,
                     pendingDownloads = state.pendingDownloads.filterValues { it.runtimeId != runtimeId },
                     // 下载由 Host 服务（§9.4）：任务上的 runtimeId 只是「文件来自哪个会话」的来源标记，
@@ -2650,7 +2741,7 @@ class RelayReducer(
                     conversation.sourceReady && patch.source.epoch == conversation.sourceEpoch && patch.seq > conversation.sourceSeq
                 ) {
                     runCatching {
-                        (state.sessionGraphs[patch.sessionId] ?: SessionGraph(patch.sessionId))
+                        (state.sessionGraphs[state.sessionGraphKey(runtimeId, patch.sessionId)] ?: SessionGraph(patch.sessionId))
                             .merge(cachePatches.last().canonicalPage(
                                 committed?.entries ?: mergedPatchEntries(emptyList(), cachePatches),
                                 committed?.display ?: mergedPatchDisplay(cachePatches),
@@ -2661,8 +2752,8 @@ class RelayReducer(
                             sessionSyncFailures = state.sessionSyncFailures + (runtimeId to failure),
                             conversations = state.conversations + (runtimeId to conversation.copy(chatSyncError = failure)),
                         )
-                    }.also { nextSessionGraphs = nextSessionGraphs + (patch.sessionId to it) }
-                } else state.sessionGraphs[patch.sessionId] ?: SessionGraph(patch.sessionId)
+                    }.also { nextSessionGraphs = nextSessionGraphs + (state.sessionGraphKey(runtimeId, patch.sessionId) to it) }
+                } else state.sessionGraphs[state.sessionGraphKey(runtimeId, patch.sessionId)] ?: SessionGraph(patch.sessionId)
                 fun requestRecovery(next: RuntimeConversation): Unit {
                     nextConversation = next.copy(isChatSyncing = true, chatSyncError = null)
                     nextSessionSyncRequests = state.sessionSyncRequests + runtimeId
@@ -2741,7 +2832,8 @@ class RelayReducer(
                 val sessionChanged = previousRuntime != null && (previousRuntime.sessionId != metadata.sessionId || storageChanged)
                 val previousLeaf = previousRuntime?.sessionLeafId
                     ?: previousView?.leafId
-                val graphForMetadata = state.sessionGraphs[metadata.sessionId]
+                val graphStorageId = metadata.directorySessionId ?: metadata.sessionId.orEmpty()
+                val graphForMetadata = state.sessionGraphs[graphStorageId]
                 val targetKnown = metadata.sessionLeafId == null ||
                     graphForMetadata?.hasCompleteEntryChain(metadata.sessionLeafId) == true
                 // A new leaf is not enough to prove a branch switch: normal turn completion
@@ -2749,12 +2841,11 @@ class RelayReducer(
                 // must prove the divergence before the previous branch is invalidated.
                 val versioned = conversation.sourceEpoch != null && !sessionChanged
                 val branchChanged = !versioned && !sessionChanged && metadata.sessionGraphSync && state.isKnownBranchChange(
-                    metadata.sessionId, previousLeaf, metadata.sessionLeafId,
+                    metadata.sessionId, previousLeaf, metadata.sessionLeafId, runtimeId,
                 )
                 nextRuntimes = state.runtimes + (runtimeId to metadata.carryingComposerStatus(previousRuntime)
                     )
                 if (sessionChanged || branchChanged) {
-                    if (storageChanged) nextSessionGraphs = nextSessionGraphs - listOfNotNull(previousRuntime?.sessionId, metadata.sessionId).toSet()
                     nextBranchGenerations = nextBranchGenerations + (runtimeId to ((nextBranchGenerations[runtimeId] ?: 0) + 1))
                     nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
                     nextRangeFailures = nextRangeFailures.filterKeys { !it.startsWith("$runtimeId\u0000") }
@@ -2778,7 +2869,7 @@ class RelayReducer(
                         previousView.leafId != incomingView.leafId
                     ) previousView else incomingView
                     nextRuntimeSessionViews = nextRuntimeSessionViews + (runtimeId to view)
-                    val graph = state.sessionGraphs[view.sessionId].takeUnless { storageChanged }
+                    val graph = state.sessionGraphs[graphStorageId].takeUnless { storageChanged }
                         ?: SessionGraph(view.sessionId).takeIf { view.leafId == null && metadata.sessionGraphSync }
                     if (graph != null && graph.hasCompleteEntryChain(view.leafId)) {
                         val oldLeaf = previousView?.takeIf { it.sessionId == view.sessionId }?.leafId
@@ -2992,7 +3083,8 @@ class RelayReducer(
                 // separate from the realtime overlay below.
                 val isCatchUp = pending.range == "catchup" && !isHistory
                 // Cache generation changes invalidate old edges, not the native Entry identity.
-                val currentGraph = state.sessionGraphs[snapshot.sessionId] ?: SessionGraph(snapshot.sessionId)
+                val graphStorageId = state.sessionGraphKey(runtimeId, snapshot.sessionId)
+                val currentGraph = state.sessionGraphs[graphStorageId] ?: SessionGraph(snapshot.sessionId)
                 val epochConversation = if (sourceEpochChanged && !sourceRetired) conversation.copy(
                     messages = emptyList(),
                     streamingMessageIds = emptySet(),
@@ -3091,9 +3183,9 @@ class RelayReducer(
                         nextSessionSyncBlockedTargets = nextSessionSyncBlockedTargets
                             .filterNot { it.startsWith("$runtimeId\u0000") }.toSet()
                     }
-                    nextSessionGraphs = state.sessionGraphs + (snapshot.sessionId to graphForProjection)
                     val owner = state.runtimes[runtimeId]
-                    val storage = owner?.codexCatalogId ?: snapshot.sessionId
+                    val storage = owner?.directorySessionId ?: snapshot.sessionId
+                    nextSessionGraphs = state.sessionGraphs + (storage to graphForProjection)
                     nextSessions = nextSessions + (storage to (nextSessions[storage] ?: owner?.catalogEntry() ?: SessionCatalogEntry(storage))
                         .withHistoryCache(owner?.hostname))
                 }

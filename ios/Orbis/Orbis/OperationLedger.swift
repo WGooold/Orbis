@@ -60,7 +60,7 @@ struct OperationLedger<Payload: Equatable>: Equatable {
         /// 目标键：同一目标同时只有一个未结算的冲突操作（L9）。
         let target: String
         /// 顺序组：同组按创建顺序写入通道，后创建的不越过仍在等待的前一条（L9）。
-        let group: String?
+        var group: String?
         let conflicts: Bool
         let policy: Policy
         /// 创建时已应用的权威序号，按领域记录；只有更新的权威状态才能作为证据（L2）。
@@ -167,6 +167,18 @@ struct OperationLedger<Payload: Equatable>: Equatable {
             }
             return []
         }
+    }
+
+    /// Rebind a waiting operation to a confirmed Runtime without changing its phase,
+    /// prerequisites, or receipt history. Used when a launch placeholder acquires its exact
+    /// native session owner before runtime-list evidence releases dependent sends.
+    @discardableResult
+    mutating func rebindWaiting(_ opId: String, expectedPayload: Payload, expectedGroup: String?,
+                                payload: Payload, group: String?) -> Bool {
+        guard let current = operation(opId), current.phase == .waiting,
+              current.payload == expectedPayload, current.group == expectedGroup else { return false }
+        update(opId) { op in op.payload = payload; op.group = group }
+        return true
     }
 
     /// 写入通道失败（本地未发送）：操作明确未执行。

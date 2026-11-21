@@ -93,7 +93,7 @@ internal class ChatPresentationWorker {
         val timings = if (source == null) request.timings else source.turnTimings.associateBy(TurnTiming::turnId)
         val byMessage = timings.values.mapNotNull { timing -> timing.messageId?.let { it to timing } }.toMap()
         val turns = byMessage.mapValues { it.value.turnId }
-        val presentation = buildConversationPresentation(mergePendingSends(base, request.pending.chatRows(request.identity.session)))
+        val presentation = buildConversationPresentation(mergePendingSends(base, request.pending.chatRows(request.identity.session, request.identity.runtime.takeUnless { it.startsWith("offline:") })))
         val old = previous?.takeIf { it.identity == request.identity }
         grouped = buildChatListItems(presentation.messages, turns, if (old == null) emptyList() else grouped)
         val items = chatViewportItems(grouped, old?.items.orEmpty())

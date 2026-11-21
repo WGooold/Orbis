@@ -432,6 +432,17 @@ enum CodexLaunchMode: String, Codable, CaseIterable {
     var title: String { L10n.tr(self == .desktop ? "桌面启动" : "终端启动") }
 }
 
+/// A launch acknowledgement is matched against the selected native history store, not just a
+/// thread ID: two CODEX_HOME stores can contain the same native ID.
+func runtimeMatchesLaunch(_ runtime: RuntimeSummary, sessionId: String, codexCatalogId: String?,
+                          launchMode: CodexLaunchMode?, agentKind: String?) -> Bool {
+    guard runtime.sessionId == sessionId else { return false }
+    if let codexCatalogId, runtime.codexCatalogId != codexCatalogId { return false }
+    if let launchMode, runtime.agentKind != launchMode.agentKind { return false }
+    if let agentKind, let runtimeKind = runtime.agentKind, runtimeKind != agentKind { return false }
+    return true
+}
+
 struct MessageFileReference: Codable, Hashable {
     let fileName: String
     let referenceId: String?

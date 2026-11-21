@@ -334,7 +334,7 @@ final class HostConnection: ObservableObject {
                pendingSends.item(messageId) == nil {
                 pendingSendHostId = selectedHostId
                 var send = PendingSend(messageId: messageId, commandId: saved["firstCommandId"] as? String ?? messageId,
-                    sessionId: placeholder, text: text, attachments: [], delivery: nil, createdAt: Date(), anchorMessageId: nil)
+                    sessionId: placeholder, runtimeId: placeholder, text: text, attachments: [], delivery: nil, createdAt: Date(), anchorMessageId: nil)
                 send.state = rejected ? .failed(saved["error"] as? String ?? L10n.tr("配置未确认")) : .unconfirmed
                 pendingSends.add(send); publishMessages()
             }
@@ -952,7 +952,7 @@ final class HostConnection: ObservableObject {
                 guard let input = self.transcriptInput else { break }
                 let next = await self.transcriptWorker.publish(identity: owner, input: input)
                 guard !Task.isCancelled else { break }
-                let pendingIds = self.pendingSends.chatRows(sessionId: self.selectedRuntime?.sessionId).map(\.messageId)
+                let pendingIds = self.pendingSends.chatRows(sessionId: self.selectedRuntime?.sessionId, runtimeId: self.selectedRuntime?.runtimeId).map(\.messageId)
                 if owner == self.transcriptIdentity && (!input.requiresPendingMatch || input.pending.map(\.messageId) == pendingIds) {
                     let trace = ChatSchedulingTrace.transcriptCommitBegan()
                     defer { ChatSchedulingTrace.transcriptCommitEnded(trace) }
@@ -1665,7 +1665,7 @@ final class HostConnection: ObservableObject {
         seedCachedHistory(runtime)
         let syncId = UUID().uuidString, commandId = "session-sync:" + UUID().uuidString
         var command: [String: Any] = ["type": "session.sync", "sessionId": sessionId, "syncId": syncId, "range": "preview", "maxEntries": 30]
-        let loadedProjection = graphs[sessionId]?.displayVersion
+        let loadedProjection = graphs[runtime.directorySessionId ?? sessionId]?.displayVersion
         let known = loadedProjection == nil || expectedMessageDisplayVersion == nil || loadedProjection == expectedMessageDisplayVersion
             ? appliedBaselines[runtime.runtimeId] : nil
         if let known { command["knownState"] = known.wire }
@@ -1748,8 +1748,9 @@ final class HostConnection: ObservableObject {
 
     private func automaticHistoryScope(_ runtime: RuntimeSummary) -> String? {
         guard let host = selectedHost, let session = runtime.sessionId else { return nil }
-        return [hostKeyPrefix(host), host.relay.deviceId, runtime.runtimeId, session,
-            String(branchGenerations[runtime.runtimeId] ?? 0), graphs[session]?.epoch ?? "",
+        let storage = runtime.directorySessionId ?? session
+        return [hostKeyPrefix(host), host.relay.deviceId, runtime.runtimeId, storage,
+            String(branchGenerations[runtime.runtimeId] ?? 0), graphs[storage]?.epoch ?? "",
             oldestEntries[runtime.runtimeId] ?? ""].joined(separator: "\u{0}")
     }
 
@@ -1831,7 +1832,7 @@ final class HostConnection: ObservableObject {
               (selectedOfflineSession?.sessionId == session && selectedRuntimeId == runtime.runtimeId) else { return nil }
         return SessionReadOwner(hostKey: hostKeyPrefix(host), deviceId: host.relay.deviceId,
             historyKey: runtime.runtimeId, sessionId: session, branchGeneration: branchGenerations[runtime.runtimeId] ?? 0,
-            cacheEpoch: graphs[session]?.epoch, connectionGeneration: historyGeneration, selected: selectedRuntimeId == runtime.runtimeId)
+            cacheEpoch: graphs[runtime.directorySessionId ?? session]?.epoch, connectionGeneration: historyGeneration, selected: selectedRuntimeId == runtime.runtimeId)
     }
 
     private func cancelForegroundReads(except key: String?) {
@@ -1893,7 +1894,8 @@ final class HostConnection: ObservableObject {
                 }
             } else if kind == .history || kind == .firstPage {
                 let generation = historyGeneration, branch = branchGenerations[runtime.runtimeId] ?? 0
-                let sourceRevision = sessionRevisions[session] ?? 0
+                let storageId = runtime.directorySessionId ?? session
+                let sourceRevision = sessionRevisions[storageId] ?? 0
                 runAsyncTransaction { [weak self] in
                     guard let self else { return }
                     defer {
@@ -1904,7 +1906,7 @@ final class HostConnection: ObservableObject {
                     }
                     guard generation == self.historyGeneration,
                           branch == self.branchGenerations[runtime.runtimeId] ?? 0,
-                          kind != .firstPage || sourceRevision == self.sessionRevisions[session] ?? 0,
+                          kind != .firstPage || sourceRevision == self.sessionRevisions[storageId] ?? 0,
                           await self.installCachedPage(page, runtimeId: runtime.runtimeId, sessionId: session,
                         replacing: kind == .firstPage) else { return }
                     if self.selectedOfflineSession?.sessionId == session { self.updateCachedOptions(page.graph) }
@@ -2054,23 +2056,25 @@ final class HostConnection: ObservableObject {
 
     private func installCachedPage(_ page: SessionHistoryPage, runtimeId: String, sessionId: String, replacing: Bool) async -> Bool {
         let generation = historyGeneration, branch = branchGenerations[runtimeId] ?? 0
-        let sourceRevision = sessionRevisions[sessionId] ?? 0
+        let runtime = runtimeIndex[runtimeId] ?? selectedRuntime.flatMap { $0.runtimeId == runtimeId ? $0 : nil }
+        let storageId = runtime?.sessionId == sessionId ? (runtime?.directorySessionId ?? sessionId) : sessionId
+        let sourceRevision = sessionRevisions[storageId] ?? 0
         while !Task.isCancelled {
-            if !replacing, let graph = graphs[sessionId],
+            if !replacing, let graph = graphs[storageId],
                graph.epoch != page.graph.epoch || graph.displayVersion != page.graph.displayVersion { return false }
             let revision = projectionInputRevision
-            let next = await sessionProjectionWorker.install(page: page, previousGraph: graphs[sessionId],
+            let next = await sessionProjectionWorker.install(page: page, previousGraph: graphs[storageId],
                 messages: conversations[runtimeId] ?? [], displayIds: displayMessageIds[runtimeId] ?? [:],
-                timings: timingsBySession[sessionId] ?? [:], replacing: replacing)
+                timings: timingsBySession[storageId] ?? [:], replacing: replacing)
             guard generation == historyGeneration, branch == branchGenerations[runtimeId] ?? 0,
                   runtimes.contains(where: { $0.runtimeId == runtimeId && $0.sessionId == sessionId }) ||
                     selectedOfflineSession?.sessionId == sessionId && selectedRuntimeId == runtimeId else { return false }
-            if replacing, sourceRevision != sessionRevisions[sessionId] ?? 0 { return false }
+            if replacing, sourceRevision != sessionRevisions[storageId] ?? 0 { return false }
             // A live source commit may arrive during a local read. Rebase the page on its
             // newer input, retaining newer messages rather than overwriting their array.
             if revision != projectionInputRevision { continue }
-            graphs[sessionId] = next.graph; conversations[runtimeId] = next.messages
-            displayMessageIds[runtimeId] = next.displayIds; timingsBySession[sessionId] = next.timings
+            graphs[storageId] = next.graph; conversations[runtimeId] = next.messages
+            displayMessageIds[runtimeId] = next.displayIds; timingsBySession[storageId] = next.timings
             oldestEntries[runtimeId] = page.entries.first?.entryId ?? oldestEntries[runtimeId]
             if replacing || sessionLeaves[runtimeId] == nil { sessionLeaves[runtimeId] = page.graph.leafId }
             hasOlderHistory[runtimeId] = page.hasOlder
@@ -2374,6 +2378,7 @@ final class HostConnection: ObservableObject {
     /// 启动成功：草稿迁到真实会话（V17），用户仍在启动页时切过去。
     private func launchLanded(_ runtime: RuntimeSummary) {
         guard let launch = launching else { return }
+        bindLaunchPendingSends(launch, to: runtime)
         let placeholderRuntime = RuntimeSummary(runtimeId: launch.placeholder, name: launch.title, cwd: launch.cwd, status: "starting",
                                                 sessionId: launch.resumed ?? launch.placeholder, agentKind: launch.agentKind)
         let cachedRuntime = launch.resumed.flatMap { id in selectedOfflineSession?.sessionId == id ? selectedRuntime : nil }
@@ -2388,6 +2393,83 @@ final class HostConnection: ObservableObject {
         launching = nil
         if following { selectedOfflineSession = nil; selectedRuntimeId = runtime.runtimeId; activationRevision += 1 }
         else if selectedRuntimeId == launch.placeholder { selectedRuntimeId = nil }
+    }
+
+    /// A launch acknowledgement alone does not own a Runtime. Bind only after the exact Runtime
+    /// is present, and do so before runtime-list evidence can release dependent sends.
+    private func launchRuntime(_ launch: LaunchState, sessionId: String) -> RuntimeSummary? {
+        let catalogId = launch.resumed?.hasPrefix("codex-history:") == true ? launch.resumed : nil
+        let candidates = runtimes.filter {
+            runtimeMatchesLaunch($0, sessionId: sessionId, codexCatalogId: catalogId,
+                                 launchMode: launch.codexLaunchMode,
+                                 agentKind: launch.codexLaunchMode?.agentKind ?? launch.agentKind)
+        }
+        return candidates.count == 1 ? candidates.first : nil
+    }
+
+    private func bindLaunchPendingSends(_ launch: LaunchState, to runtime: RuntimeSummary) {
+        guard let sessionId = launch.sessionId, sessionId == runtime.sessionId,
+              launchRuntime(launch, sessionId: sessionId)?.runtimeId == runtime.runtimeId else { return }
+        launchSessions[launch.placeholder] = sessionId
+        if let resumed = launch.resumed { launchSessions[resumed] = sessionId }
+
+        // A resumed catalog item can have been addressed as either the launch placeholder or the
+        // cached directory row. Both source pairs are exact; raw thread IDs are never used alone.
+        let sessionIds = Set([launch.resumed ?? launch.placeholder, sessionId])
+        var sourcePairs = sessionIds.map { (launch.placeholder, $0) }
+        if let resumed = launch.resumed { sourcePairs.append(contentsOf: sessionIds.map { ("cached:" + resumed, $0) }) }
+        for send in pendingSends.items {
+            guard let sourceRuntimeId = send.runtimeId,
+                  sourcePairs.contains(where: { $0.0 == sourceRuntimeId && $0.1 == send.sessionId }) else { continue }
+            let targetGroup = OperationKinds.sendGroup(runtime.directorySessionId ?? sessionId)
+            if let operation = ledger.operation(send.commandId),
+               case .send(let operationRuntimeId, let operationSessionId, let operationMessageId) = operation.payload,
+               operationRuntimeId == sourceRuntimeId, operationSessionId == send.sessionId,
+               operationMessageId == send.messageId {
+                _ = ledger.rebindWaiting(send.commandId,
+                    expectedPayload: operation.payload, expectedGroup: operation.group,
+                    payload: .send(runtimeId: runtime.runtimeId, sessionId: sessionId, messageId: send.messageId),
+                    group: targetGroup)
+            }
+            if pendingSends.rebind(messageId: send.messageId, fromRuntimeId: sourceRuntimeId, fromSessionId: send.sessionId,
+                                   toRuntimeId: runtime.runtimeId, toSessionId: sessionId) {
+                moveWaitingCopy(send.messageId, to: runtime)
+            }
+        }
+    }
+
+    /// `session.activated` establishes the wire Session but not yet its Runtime owner. Rebind only
+    /// that half now; the exact Runtime and canonical ordering group are bound before list evidence.
+    private func bindLaunchSession(_ launch: LaunchState, sessionId: String) {
+        launchSessions[launch.placeholder] = sessionId
+        if let resumed = launch.resumed { launchSessions[resumed] = sessionId }
+        let sourceIds = Set([launch.resumed ?? launch.placeholder, sessionId])
+        var sourcePairs = sourceIds.map { (launch.placeholder, $0) }
+        if let resumed = launch.resumed { sourcePairs.append(contentsOf: sourceIds.map { ("cached:" + resumed, $0) }) }
+        for send in pendingSends.items {
+            guard let runtimeId = send.runtimeId,
+                  sourcePairs.contains(where: { $0.0 == runtimeId && $0.1 == send.sessionId }) else { continue }
+            if let operation = ledger.operation(send.commandId),
+               case .send(let operationRuntimeId, let operationSessionId, let messageId) = operation.payload,
+               operationRuntimeId == runtimeId, operationSessionId == send.sessionId, messageId == send.messageId {
+                _ = ledger.rebindWaiting(send.commandId, expectedPayload: operation.payload, expectedGroup: operation.group,
+                    payload: .send(runtimeId: runtimeId, sessionId: sessionId, messageId: send.messageId), group: operation.group)
+            }
+            _ = pendingSends.rebind(messageId: send.messageId, fromRuntimeId: runtimeId, fromSessionId: send.sessionId,
+                                    toRuntimeId: runtimeId, toSessionId: sessionId)
+        }
+    }
+
+    private func moveWaitingCopy(_ messageId: String, to runtime: RuntimeSummary) {
+        guard var copies = preferences?.dictionary(forKey: Self.waitingCopiesKey) as? [String: [String: String]] else { return }
+        var text: String?
+        for key in Array(copies.keys) {
+            if text == nil { text = copies[key]?.removeValue(forKey: messageId) }
+            else { copies[key]?.removeValue(forKey: messageId) }
+            if copies[key]?.isEmpty == true { copies[key] = nil }
+        }
+        if let text { copies[localSessionKey(host: selectedHost, runtime: runtime), default: [:]][messageId] = text }
+        preferences?.set(copies, forKey: Self.waitingCopiesKey)
     }
 
     private func clearActivation() {
@@ -2497,7 +2579,7 @@ final class HostConnection: ObservableObject {
         transfers.clearUploadError(for: runtime)
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
-        var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: text, attachments: [],
+        var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, runtimeId: runtime.runtimeId, text: text, attachments: [],
                                delivery: nil, createdAt: Date(), anchorMessageId: anchor)
         send.slashName = name; send.slashArgs = args
         pendingSends.add(send)
@@ -2648,13 +2730,13 @@ final class HostConnection: ObservableObject {
     private func ledgerEvidence(_ domain: String) -> (AppLedger.Operation) -> AppLedger.Evidence {
         if domain == OperationKinds.runtimesDomain {
             let ids = Set(runtimes.map(\.runtimeId))
-            let sessions = Set(runtimes.compactMap(\.sessionId))
             let launch = launching
             return { op in
                 // `launch`：Host 给出的 Session 的 Runtime 已上线即落地。
                 if case .launch(let requestId, _) = op.payload {
                     guard launch?.requestId == requestId, let session = launch?.sessionId else { return .none }
-                    return sessions.contains(session) ? .landed : .none
+                    guard let launch, self.launchRuntime(launch, sessionId: session) != nil else { return .none }
+                    return .landed
                 }
                 return OperationKinds.evidence(op, runtimeIds: ids)
             }
@@ -2914,7 +2996,7 @@ final class HostConnection: ObservableObject {
         var configs = OperationKinds.activeConfigOps(ledger, runtimeId: runtime.runtimeId)
         // 启动中发送的消息等“会话启动”（ADR-0049 §6.8）。
         if isLaunchPage, let launch = launching, let op = ledger.operation(launch.requestId) { configs.append(op) }
-        if !uploaded || !configs.isEmpty || runtime.sessionId.map({ ledger.blocks(group: OperationKinds.sendGroup($0)) }) == true {
+        if !uploaded || !configs.isEmpty || runtime.sessionId.map({ ledger.blocks(group: OperationKinds.sendGroup(runtime.directorySessionId ?? $0)) }) == true {
             return sendWhenReady(body, delivery: delivery, uploads: attachments, runtime: runtime, configs: configs)
         }
         return sendUserMessage(body, delivery: delivery, attachments: attachments.compactMap(\.remotePath), runtime: runtime)
@@ -2936,7 +3018,7 @@ final class HostConnection: ObservableObject {
         transfers.clearUploadError(for: runtime)
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
-        pendingSends.add(PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: attachments,
+        pendingSends.add(PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, runtimeId: runtime.runtimeId, text: body, attachments: attachments,
                                      delivery: delivery, createdAt: Date(), anchorMessageId: anchor))
         publishMessages()
         return true
@@ -2951,7 +3033,7 @@ final class HostConnection: ObservableObject {
                                configs: [AppLedger.Operation] = [], id: String = UUID().uuidString, commandId: String = UUID().uuidString) -> Bool {
         guard let sessionId = runtime.sessionId else { return false }
         let pending = uploads.filter { $0.status != "completed" || $0.remotePath == nil }
-        let creation = ledger.create(opId: commandId, kind: OperationKinds.send, target: "message:" + id, group: OperationKinds.sendGroup(sessionId),
+        let creation = ledger.create(opId: commandId, kind: OperationKinds.send, target: "message:" + id, group: OperationKinds.sendGroup(runtime.directorySessionId ?? sessionId),
                                      conflicts: false, policy: OperationKinds.sendPolicy, basis: [:],
                                      prerequisites: Set(pending.map { OperationKinds.uploadPrerequisite($0.id) } + configs.map(\.opId)),
                                      payload: .send(runtimeId: runtime.runtimeId, sessionId: sessionId, messageId: id), written: false, now: Date())
@@ -2961,7 +3043,7 @@ final class HostConnection: ObservableObject {
         transfers.clearUploadError(for: runtime)
         if pendingSendHostId != selectedHostId { pendingSends.removeAll(); pendingSendHostId = selectedHostId }
         let anchor = runtime.runtimeId == selectedRuntimeId ? messages.last(where: { pendingSends.item($0.messageId) == nil })?.messageId : nil
-        var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, text: body, attachments: [],
+        var send = PendingSend(messageId: id, commandId: commandId, sessionId: sessionId, runtimeId: runtime.runtimeId, text: body, attachments: [],
                                delivery: delivery, createdAt: Date(), anchorMessageId: anchor)
         let config: String? = configs.first.flatMap { if case .config(_, let setting, _, _) = $0.payload { return OperationKinds.configTitle(setting) }; return nil }
         let launch = configs.contains { if case .launch = $0.payload { return true }; return false }
@@ -2985,8 +3067,9 @@ final class HostConnection: ObservableObject {
             for op in ledger.ready() {
                 guard case .send(_, let provisional, let messageId) = op.payload else { continue }
                 let sessionId = launchSessions[provisional] ?? provisional
-                guard let runtimeId = runtimes.first(where: { $0.sessionId == sessionId })?.runtimeId,
-                      let send = pendingSends.item(messageId) else { continue }
+                guard let send = pendingSends.item(messageId), send.sessionId == sessionId,
+                      let runtimeId = send.runtimeId,
+                      runtimes.contains(where: { $0.runtimeId == runtimeId && $0.sessionId == sessionId }) else { continue }
                 let paths = send.uploadIds.compactMap { id in transfers.tasks.first { $0.id == id && $0.status == "completed" }?.remotePath }
                 guard paths.count == send.uploadIds.count else { continue }
                 var command: [String: Any] = ["type": "user_message", "text": send.text, "messageId": messageId]
@@ -3044,7 +3127,8 @@ final class HostConnection: ObservableObject {
     /// 失败行重新发送：用新的 messageId，空闲直发不会被各后端当成同一条消息去重。
     @discardableResult
     func resendPendingSend(_ messageId: String) -> Bool {
-        guard canSend, let runtime = selectedRuntime, let send = pendingSends.item(messageId), send.sessionId == runtime.sessionId,
+        guard canSend, let runtime = selectedRuntime, let send = pendingSends.item(messageId), send.runtimeId == runtime.runtimeId,
+              send.sessionId == runtime.sessionId,
               case .failed = send.state else { return false }
         // Slash 产生的消息：再次执行同一命令，新的身份（L6）。
         if let name = send.slashName {
@@ -3100,7 +3184,7 @@ final class HostConnection: ObservableObject {
         let host = (queuedMessages[runtimeId] ?? []).filter {
             !pendingSends.hidesQueueItem($0.queueId) && !cancelling.contains($0.queueId) && $0.state != "cancelled"
         }
-        let local = pendingSends.queueRows(sessionId: sessionId).filter { send in !host.contains { $0.queueId == send.messageId } }
+        let local = pendingSends.queueRows(sessionId: sessionId, runtimeId: runtimeId).filter { send in !host.contains { $0.queueId == send.messageId } }
             .map { QueuedMessage(queueId: $0.messageId, text: $0.text, delivery: $0.delivery ?? "followUp", state: "submitting", error: nil) }
         return (host + local).map { row in QueuedMessage(queueId: row.queueId, text: row.text, delivery: row.delivery, state: row.state, error: queueErrors[runtimeId + "\u{0}" + row.queueId] ?? row.error) }
     }
@@ -3115,14 +3199,15 @@ final class HostConnection: ObservableObject {
         guard !pendingSends.isEmpty else { return }
         let connected = connection == .secured
         var recheck = false
-        for sessionId in pendingSends.sessionIds {
-            let runtime = runtimes.first { $0.sessionId == sessionId }
-            let runtimeId = runtime?.runtimeId
+        for scope in pendingSends.scopes {
+            let sessionId = scope.sessionId
+            let runtimeId = scope.runtimeId
+            let runtime = runtimeId.flatMap { id in runtimes.first { $0.runtimeId == id && $0.sessionId == sessionId } }
             let conversation = runtimeId.flatMap { conversations[$0] } ?? []
             let aliases = runtimeId.flatMap { messageAliases[$0] } ?? [:]
             let display = runtimeId.flatMap { displayMessageIds[$0] } ?? [:]
-            let needsSync = pendingSends.reconcile(sessionId: sessionId, status: runtime?.status,
-                queue: runtimeId.flatMap { queuedMessages[$0] } ?? [], revision: sessionRevisions[sessionId] ?? 0,
+            let needsSync = pendingSends.reconcile(runtimeId: runtimeId, sessionId: sessionId, status: runtime?.status,
+                queue: runtimeId.flatMap { queuedMessages[$0] } ?? [], revision: runtime.map { sessionRevisions[$0.directorySessionId ?? sessionId] ?? 0 } ?? 0,
                 connected: connected) { id in
                     conversation.contains { $0.materializesClientMessage(id) } || aliases[id].map { display[$0] != nil } == true
                 }
@@ -3139,8 +3224,8 @@ final class HostConnection: ObservableObject {
     }
 
     private func markAuthoritative(_ runtimeId: String) {
-        guard let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId else { return }
-        sessionRevisions[sessionId, default: 0] += 1
+        guard let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }), let sessionId = runtime.sessionId else { return }
+        sessionRevisions[runtime.directorySessionId ?? sessionId, default: 0] += 1
     }
 
     /// ADR-0049 §6.3 `queueCancel`：队列项立即退场；回执、断线、期限与核对全部交给账本。
@@ -3514,7 +3599,6 @@ final class HostConnection: ObservableObject {
             for runtime in next {
                 let previous = runtimes.first { $0.runtimeId == runtime.runtimeId }
                 if previous?.sessionId != runtime.sessionId || previous?.codexCatalogId != runtime.codexCatalogId {
-                    if let session = previous?.sessionId { graphs[session] = nil }
                     invalidateConversation(runtime.runtimeId)
                 }
             }
@@ -3560,11 +3644,20 @@ final class HostConnection: ObservableObject {
                     if runtimes[index].sessionId != runtime.sessionId { invalidateConversation(runtime.runtimeId) }
                     runtimes[index] = runtime
                 } else { runtimes.append(runtime) }
+                if let launch = launching, launch.sessionId == runtime.sessionId {
+                    bindLaunchPendingSends(launch, to: runtime)
+                }
                 ledgerAuthority(OperationKinds.runtimesDomain, read: nil, complete: false)
                 if pendingActivation == runtime.sessionId {
-                    if let session = runtime.sessionId, let text = pendingBranchDrafts.removeValue(forKey: offlineSessionKey(host: selectedHost, sessionId: session)) { saveDraft(text, for: runtime) }
-                    clearActivation()
-                    if launching != nil { launchLanded(runtime) } else { selectedRuntimeId = runtime.runtimeId; activationRevision += 1 }
+                    if let launch = launching {
+                        if launchRuntime(launch, sessionId: runtime.sessionId ?? "")?.runtimeId == runtime.runtimeId {
+                            if let session = runtime.sessionId, let text = pendingBranchDrafts.removeValue(forKey: offlineSessionKey(host: selectedHost, sessionId: session)) { saveDraft(text, for: runtime) }
+                            clearActivation(); launchLanded(runtime)
+                        }
+                    } else {
+                        if let session = runtime.sessionId, let text = pendingBranchDrafts.removeValue(forKey: offlineSessionKey(host: selectedHost, sessionId: session)) { saveDraft(text, for: runtime) }
+                        clearActivation(); selectedRuntimeId = runtime.runtimeId; activationRevision += 1
+                    }
                 } else if selectedRuntimeId == nil { selectedRuntimeId = runtime.runtimeId }
                 publishMessages()
                 agentState.subscribe(runtime: runtime); notifications.online(runtime)
@@ -3572,7 +3665,7 @@ final class HostConnection: ObservableObject {
             }
         case "runtime.offline":
             if let id = message["runtimeId"] as? String {
-                pendingSends.runtimeLost(sessionId: runtimes.first { $0.runtimeId == id }?.sessionId)
+                pendingSends.runtimeLost(runtimeId: id, sessionId: runtimes.first { $0.runtimeId == id }?.sessionId)
                 runtimes.removeAll { $0.runtimeId == id }
                 ledgerAuthority(OperationKinds.runtimesDomain, read: nil, complete: false)
                 notifications.offline(runtimeId: id)
@@ -3659,11 +3752,19 @@ final class HostConnection: ObservableObject {
                 // 同一 requestId 的 session.activated：Host 已给出 Session，等它的 Runtime 上线（ADR-0049 §7.5）。
                 if let launch = launching, launch.requestId == requestId {
                     launching?.sessionId = sessionId
-                    launchSessions[launch.placeholder] = sessionId
-                    pendingSends.rebind(sessionId: launch.placeholder, to: sessionId)
+                    var acknowledged = launch; acknowledged.sessionId = sessionId
+                    bindLaunchSession(acknowledged, sessionId: sessionId)
                 }
+                let launch = launching?.requestId == requestId ? launching : nil
+                let runtime = launch.flatMap { launchRuntime($0, sessionId: sessionId) }
+                    ?? (launch == nil ? runtimes.first(where: {
+                        runtimeMatchesLaunch($0, sessionId: sessionId,
+                            codexCatalogId: message["codexCatalogId"] as? String,
+                            launchMode: nil, agentKind: message["agentKind"] as? String)
+                    }) : nil)
+                if let launch, let runtime { bindLaunchPendingSends(launch, to: runtime) }
                 handleLedger(ledger.receipt(requestId, connection: ledger.connection, .succeeded, now: Date()))
-                if let runtime = runtimes.first(where: { $0.sessionId == sessionId }) {
+                if let runtime {
                     clearActivation()
                     // Runtime 先于回复上线（真实 Host 的顺序）：先让账本按 `launching` 的 Session 判定启动落地，
                     // 放行等它的消息，再切到真实会话；顺序反过来时 `launching` 已清空，启动永远不落地。
@@ -3816,7 +3917,6 @@ final class HostConnection: ObservableObject {
             runtimes[index] = next
             if fields["model"] != nil || fields["thinkingLevel"] != nil { ledgerAuthority(OperationKinds.modelDomain(runtimeId), read: nil, complete: true) }
             if previous.sessionId != next.sessionId || previous.codexCatalogId != next.codexCatalogId {
-                if previous.codexCatalogId != next.codexCatalogId, let session = previous.sessionId { graphs[session] = nil }
                 invalidateConversation(runtimeId)
                 notifications.online(next)
                 agentState.subscribe(runtime: next)
@@ -4177,13 +4277,14 @@ final class HostConnection: ObservableObject {
             let excluded = try await historyWorker.excludedDisplayEntries(host: host, sessionId: runtime.codexCatalogId ?? sessionId, entryIds: displayedIds + incomingIds)
             guard generation == historyGeneration, branchGeneration == branchGenerations[runtime.runtimeId] ?? 0,
                   historyConnected, runtimes.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == sessionId && $0.codexCatalogId == runtime.codexCatalogId }) else { return nil }
-            excludedDisplayEntries[sessionId] = excluded
+            let storageId = runtime.directorySessionId ?? sessionId
+            excludedDisplayEntries[storageId] = excluded
             let hiddenMessages = Set(excluded.compactMap { displayMessageIds[runtime.runtimeId]?[$0] })
             conversations[runtime.runtimeId]?.removeAll { hiddenMessages.contains($0.messageId) }
-            graphs[sessionId] = committed.graph
-            cachedSessionIds.insert(runtime.directorySessionId ?? sessionId)
-            if committed.epochChanged { timingsBySession[sessionId] = [:] }
-            for timing in committed.turnTimings { timingsBySession[sessionId, default: [:]][timing.turnId] = timing }
+            graphs[storageId] = committed.graph
+            cachedSessionIds.insert(storageId)
+            if committed.epochChanged { timingsBySession[storageId] = [:] }
+            for timing in committed.turnTimings { timingsBySession[storageId, default: [:]][timing.turnId] = timing }
             return committed
         } catch { return nil }
     }
@@ -4208,8 +4309,9 @@ final class HostConnection: ObservableObject {
               checkpoint["inventoryComplete"] as? Bool == true, let head = checkpoint["head"] as? [String: Any],
               (event["live"] as? [String: Any])?["complete"] as? Bool == true,
               head["leafId"] as? String == (event["cursor"] as? [String: Any])?["leafId"] as? String,
-              let sessionId = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId,
-              (head["leafId"] as? String).map({ graphs[sessionId]?.entries[$0] != nil }) ?? true else { return nil }
+              let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }),
+              let sessionId = runtime.sessionId,
+              (head["leafId"] as? String).map({ graphs[runtime.directorySessionId ?? sessionId]?.entries[$0] != nil }) ?? true else { return nil }
         return SessionAppliedBaseline(epoch: epoch, seq: seq, leaf: head["leafId"] as? String)
     }
 
@@ -4258,13 +4360,14 @@ final class HostConnection: ObservableObject {
     private func applyProjection(_ event: [String: Any], runtimeId: String) async -> Bool {
         let generation = historyGeneration, contentWorker = sharedSessionContent
         let branch = branchGenerations[runtimeId] ?? 0
-        guard let session = runtimes.first(where: { $0.runtimeId == runtimeId })?.sessionId else { return false }
+        guard let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }), let session = runtime.sessionId else { return false }
+        let storageId = runtime.directorySessionId ?? session
         // Local history hydration can finish while a source projection is being prepared. Rebase
         // on that newer immutable input; never publish an array captured before the cache page.
         while !Task.isCancelled {
             let revision = projectionInputRevision
-            let input = SessionChatProjectionInput(event: event, graph: graphs[session],
-                excludedEntries: excludedDisplayEntries[session] ?? [], messages: conversations[runtimeId] ?? [],
+            let input = SessionChatProjectionInput(event: event, graph: graphs[storageId],
+                excludedEntries: excludedDisplayEntries[storageId] ?? [], messages: conversations[runtimeId] ?? [],
                 displayIds: displayMessageIds[runtimeId] ?? [:], aliases: messageAliases[runtimeId] ?? [:],
                 liveIds: liveMessageIds[runtimeId] ?? [], unfinishedIds: unfinishedLiveMessageIds[runtimeId] ?? [],
                 orders: liveOrders[runtimeId] ?? [:])
@@ -4367,14 +4470,14 @@ final class HostConnection: ObservableObject {
     private func publishMessages() {
         reconcilePendingSends()
         guard let runtimeId = selectedRuntimeId else { messages = []; streamingMessageIds = []; updateSyncing(); return }
-        let visibleTimings = selectedRuntime?.sessionId.flatMap { timingsBySession[$0] } ?? [:]
+        let visibleTimings = selectedRuntime?.directorySessionId.flatMap { timingsBySession[$0] } ?? [:]
         if visibleTimings != turnTimings { turnTimings = visibleTimings }
         // 清单尚未追上本次投影时沿用上一次已确认的工具，避免卡片闪烁或用旧清单造出重复卡片。
         if let reference = liveToolReferences[runtimeId], toolInventories.covers(reference, runtime: runtimeId) {
             liveTools[runtimeId] = toolInventories.visible[runtimeId] ?? []
         }
         let identity = currentTranscriptIdentity
-        let pending = pendingSends.chatRows(sessionId: selectedRuntime?.sessionId)
+        let pending = pendingSends.chatRows(sessionId: selectedRuntime?.sessionId, runtimeId: selectedRuntime?.runtimeId)
         committingTranscript = true
         if renderedTranscriptIdentity != identity {
             let cached = cachedPublications[identity]

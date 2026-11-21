@@ -36,9 +36,9 @@ struct KimiCodeTests {
         let now = Date(timeIntervalSince1970: 1)
         var pending = PendingSendOutbox()
         for id in ["a", "b", "c"] {
-            pending.add(PendingSend(messageId: id, commandId: id, sessionId: session, text: "same", attachments: [], delivery: nil, createdAt: now, anchorMessageId: nil))
+            pending.add(PendingSend(messageId: id, commandId: id, sessionId: session, runtimeId: session, text: "same", attachments: [], delivery: nil, createdAt: now, anchorMessageId: nil))
         }
-        _ = pending.reconcile(sessionId: session, status: "idle", queue: [], revision: 0, connected: true, now: now, isMaterialized: message.materializesClientMessage)
+        _ = pending.reconcile(runtimeId: session, sessionId: session, status: "idle", queue: [], revision: 0, connected: true, now: now, isMaterialized: message.materializesClientMessage)
         #expect(pending.items.map(\.messageId) == ["c"])
         #expect(resolvedAgentKind(runtimeId: session, declared: nil, catalogKind: nil) == kimiCodeKind)
     }

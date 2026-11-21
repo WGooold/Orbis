@@ -26,6 +26,34 @@ class SessionSnapshotProjectionTest {
     }
 
     @Test
+    fun `equal Codex thread IDs in different history stores keep separate in-memory graphs`() {
+        val threadId = "same-native-thread"
+        val firstId = "codex-history:" + "a".repeat(64)
+        val secondId = "codex-history:" + "b".repeat(64)
+        val firstRuntime = runtime.copy(runtimeId = "codex:first", sessionId = threadId, codexCatalogId = firstId)
+        val secondRuntime = runtime.copy(runtimeId = "codexDesktop:second", sessionId = threadId, codexCatalogId = secondId)
+        val firstEntry = entry("first-home", null)
+        val secondEntry = entry("second-home", null)
+        var state = RemoteState(deviceId = "device", hostId = "host", e2eReady = true,
+            connection = RelayConnection.ONLINE, selectedRuntimeId = firstRuntime.runtimeId,
+            runtimes = mapOf(firstRuntime.runtimeId to firstRuntime, secondRuntime.runtimeId to secondRuntime),
+            sessionGraphs = mapOf(firstId to fixtureGraph(threadId, listOf(firstEntry)),
+                secondId to fixtureGraph(threadId, listOf(secondEntry))))
+
+        val first = state.beginSessionRead(firstRuntime.runtimeId, SessionReadKind.FIRST_PAGE, "first-read")
+        state = first.state.applyFirstSessionPage("first-read", fixtureGraph(threadId, listOf(firstEntry)))
+        state = state.copy(selectedRuntimeId = secondRuntime.runtimeId)
+        val second = state.beginSessionRead(secondRuntime.runtimeId, SessionReadKind.FIRST_PAGE, "second-read")
+        state = second.state.applyFirstSessionPage("second-read", fixtureGraph(threadId, listOf(secondEntry)))
+
+        assertEquals(setOf("first-home"), state.sessionGraphs[firstId]?.entries?.keys)
+        assertEquals(setOf("second-home"), state.sessionGraphs[secondId]?.entries?.keys)
+        assertNull(state.sessionGraphForSession(threadId)) // Ambiguous raw IDs are never guessed.
+        assertEquals(firstEntry, state.sessionGraphForRuntime(firstRuntime.runtimeId)?.entries?.get("first-home"))
+        assertEquals(secondEntry, state.sessionGraphForRuntime(secondRuntime.runtimeId)?.entries?.get("second-home"))
+    }
+
+    @Test
     fun `preview arriving after live tail growth cannot move the live or display leaf back`() {
         val pending = PendingSessionSync("r", "s", "sync", "preview", targetLeafId = null, viewLeafId = "root")
         val state = RemoteState(runtimes = mapOf("r" to runtime), sessionGraphs = mapOf("s" to graph.copy(cacheEpoch = "epoch")),

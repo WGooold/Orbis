@@ -3,10 +3,11 @@ package com.orbising.orbis
 internal val SESSION_CACHE_UPDATED_NOTICE get() = L10n.tr("聊天记录已更新，正在重新同步")
 
 /** A format migration invalidates one canonical graph, not its independent local interactions. */
-internal fun RemoteState.afterSessionCacheRebuild(sessionId: String): RemoteState {
-    val runtimeIds = runtimes.values.filter { it.sessionId == sessionId }.mapTo(mutableSetOf(), RuntimeSummary::runtimeId)
+internal fun RemoteState.afterSessionCacheRebuild(sessionId: String, storageId: String = sessionId): RemoteState {
+    val runtimeIds = runtimes.values.filter { it.sessionId == sessionId || it.directorySessionId == storageId }
+        .mapTo(mutableSetOf(), RuntimeSummary::runtimeId)
     runtimeIds += knownRuntimeSessions.filterValues { it == sessionId }.keys
-    runtimeIds += runtimeSessionViews.values.filter { it.sessionId == sessionId }.map(RuntimeSessionView::runtimeId)
+    runtimeIds += runtimeSessionViews.values.filter { it.runtimeId in runtimeIds && it.sessionId == sessionId }.map(RuntimeSessionView::runtimeId)
     val commandIds = sessionSyncCommands.filterValues { it.sessionId == sessionId }.keys
     val offlineKey = "offline:$sessionId"
     val affectedConversations = runtimeIds + offlineKey
@@ -32,19 +33,19 @@ internal fun RemoteState.afterSessionCacheRebuild(sessionId: String): RemoteStat
         )
     }
     return copy(
-        sessionGraphs = sessionGraphs - sessionId,
-        runtimeSessionViews = runtimeSessionViews.filterValues { it.sessionId != sessionId },
-        sessionHistory = sessionHistory.filterValues { it.sessionId != sessionId },
+        sessionGraphs = sessionGraphs - storageId,
+        runtimeSessionViews = runtimeSessionViews.filterValues { it.runtimeId !in runtimeIds },
+        sessionHistory = sessionHistory.filterKeys { it !in runtimeIds && it != offlineKey },
         sessionSyncCommands = sessionSyncCommands - commandIds,
         pendingCommands = pendingCommands - commandIds,
         sessionSyncFailures = sessionSyncFailures - runtimeIds,
         sessionRangeFailures = sessionRangeFailures.filterKeys { key -> runtimeIds.none { key.startsWith("$it\u0000") } },
         sessionSyncRequests = (sessionSyncRequests - runtimeIds) + runtimes.values
-            .filter { it.sessionId == sessionId && it.sessionGraphSync }.map(RuntimeSummary::runtimeId),
+            .filter { (it.sessionId == sessionId || it.directorySessionId == storageId) && it.sessionGraphSync }.map(RuntimeSummary::runtimeId),
         sessionBranchGenerations = sessionBranchGenerations + (runtimeIds + offlineKey).associateWith {
             (sessionBranchGenerations[it] ?: 0) + 1
         },
         conversations = conversations + refreshed,
-        sessions = sessions[sessionId]?.let { sessions + (sessionId to it.copy(hasHistoryCache = false)) } ?: sessions,
+        sessions = sessions[storageId]?.let { sessions + (storageId to it.copy(hasHistoryCache = false)) } ?: sessions,
     )
 }

@@ -462,7 +462,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
         is LedgerEvent.Landed -> (event.operation.payload as? LedgerPayload.Launch)?.let { payload ->
             // 启动成功：草稿迁到真实会话（V17），用户仍在启动页时切过去；离开了就不拉回，会话照常出现在首页。
             val current = launch?.takeIf { it.requestId == payload.requestId } ?: return@let
-            val real = runtimes.values.firstOrNull { it.sessionId == current.sessionId }
+            val real = current.sessionId?.let { runtimeForLaunch(current, it) }
             if (real != null) draftMove = current.runtime() to real
             if (current.following && selected == current.placeholder && real != null) selected = real.runtimeId
             else if (selected == current.placeholder) selected = null
@@ -506,13 +506,12 @@ internal fun RemoteState.ledgerBasis(domain: String): Map<String, Int> = mapOf(d
 private fun RemoteState.ledgerEvidence(domain: String): (LedgerOperation<LedgerPayload>) -> LedgerEvidence {
     if (domain == OperationKinds.RUNTIMES_DOMAIN) {
         val ids = runtimes.keys
-        val sessions = runtimes.values.mapNotNullTo(mutableSetOf()) { it.sessionId }
         val launch = launching
         return { op ->
             // `launch`：Host 给出的 Session 的 Runtime 已上线即落地。
             val payload = op.payload as? LedgerPayload.Launch
             if (payload == null) OperationKinds.evidence(op, ids)
-            else if (launch?.requestId == payload.requestId && launch.sessionId != null && launch.sessionId in sessions) LedgerEvidence.LANDED
+            else if (launch?.requestId == payload.requestId && launch.sessionId?.let { runtimeForLaunch(launch, it) } != null) LedgerEvidence.LANDED
             else LedgerEvidence.NONE
         }
     }
@@ -715,7 +714,8 @@ internal fun RemoteState.createWaitingSend(
     uploadIds: List<String>, pendingUploads: List<UploadTask>, now: Long,
     configs: List<LedgerOperation<LedgerPayload>> = emptyList(),
 ): Pair<RemoteState, LedgerCreation<LedgerPayload>> {
-    val (next, creation) = ledger.create(commandId, OperationKinds.SEND, "message:$messageId", group = OperationKinds.sendGroup(sessionId),
+    val sendScope = runtimes[runtimeId]?.directorySessionId ?: sessionId
+    val (next, creation) = ledger.create(commandId, OperationKinds.SEND, "message:$messageId", group = OperationKinds.sendGroup(sendScope),
         conflicts = false, policy = OperationKinds.sendPolicy, basis = emptyMap(),
         prerequisites = pendingUploads.map { OperationKinds.uploadPrerequisite(it.taskId) }.toSet() + configs.map { it.opId },
         payload = LedgerPayload.Send(runtimeId, sessionId, messageId), written = false, now = now)
@@ -729,7 +729,7 @@ internal fun RemoteState.createWaitingSend(
     }
     val anchor = conversations[runtimeId]?.messages?.lastOrNull()?.messageId
     val send = PendingSend(messageId, commandId, sessionId, text, emptyList(), delivery, now, anchor,
-        state = PendingSendState.Waiting(label), uploadIds = uploadIds)
+        state = PendingSendState.Waiting(label), uploadIds = uploadIds, runtimeId = runtimeId)
     return copy(ledger = next, pendingSends = pendingSends + (messageId to send)) to creation
 }
 
@@ -810,8 +810,12 @@ internal fun RemoteState.createLaunch(
 internal fun RemoteState.launchActivated(requestId: String, sessionId: String, now: Long): RemoteState {
     val launch = launching?.takeIf { it.requestId == requestId } ?: return this
     val provisional = launch.resumed ?: launch.placeholder
-    val rebound = pendingSends.mapValues { (_, send) -> if (send.sessionId == provisional) send.copy(sessionId = sessionId) else send }
-    return copy(launching = launch.copy(sessionId = sessionId), launchSessions = launchSessions + (provisional to sessionId), pendingSends = rebound)
+    val acknowledged = copy(launching = launch.copy(sessionId = sessionId),
+        launchSessions = launchSessions + (launch.placeholder to sessionId) + (provisional to sessionId))
+    val acknowledgedWithSends = acknowledged.bindLaunchSession(launch.copy(sessionId = sessionId), sessionId)
+    val runtime = acknowledgedWithSends.runtimeForLaunch(launch, sessionId)
+    val bound = runtime?.let(acknowledgedWithSends::bindLaunchPendingSends) ?: acknowledgedWithSends
+    return bound
         .ledgerReceipt(requestId, LedgerReceipt.Succeeded, now)
         .ledgerRuntimeList(read = null, complete = false)
 }

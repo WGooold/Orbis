@@ -7,7 +7,7 @@ struct PendingSendTests {
     private let start = Date(timeIntervalSince1970: 1_000)
 
     private func send(_ id: String, session: String = "s1", delivery: String? = nil, anchor: String? = nil, at offset: TimeInterval = 0) -> PendingSend {
-        PendingSend(messageId: id, commandId: "c-" + id, sessionId: session, text: "text " + id, attachments: [],
+        PendingSend(messageId: id, commandId: "c-" + id, sessionId: session, runtimeId: session, text: "text " + id, attachments: [],
                     delivery: delivery, createdAt: start.addingTimeInterval(offset), anchorMessageId: anchor)
     }
     private func message(_ id: String, role: String = "assistant", client: String? = nil) -> ChatMessage {
@@ -21,7 +21,7 @@ struct PendingSendTests {
     @discardableResult
     private func reconcile(_ outbox: inout PendingSendOutbox, status: String? = "idle", queue: [QueuedMessage] = [], revision: Int = 0,
                            connected: Bool = true, at offset: TimeInterval = 1, present: Set<String> = []) -> Bool {
-        outbox.reconcile(sessionId: "s1", status: status, queue: queue, revision: revision, connected: connected,
+        outbox.reconcile(runtimeId: "s1", sessionId: "s1", status: status, queue: queue, revision: revision, connected: connected,
                          now: start.addingTimeInterval(offset)) { present.contains($0) }
     }
 
@@ -36,6 +36,39 @@ struct PendingSendTests {
         // A later replace snapshot without the live row does not bring the local row back.
         reconcile(&outbox, present: [])
         #expect(outbox.isEmpty)
+    }
+
+    @Test func sameNativeThreadIdsRemainScopedToTheirRuntimeOwner() {
+        var outbox = PendingSendOutbox()
+        var terminal = send("terminal", session: "same-thread"); terminal.runtimeId = "codex:terminal"
+        var desktop = send("desktop", session: "same-thread"); desktop.runtimeId = "codex-desktop:desktop"
+        outbox.add(terminal); outbox.add(desktop)
+        #expect(outbox.chatRows(sessionId: "same-thread", runtimeId: "codex:terminal").map(\.messageId) == ["terminal"])
+        #expect(outbox.chatRows(sessionId: "same-thread", runtimeId: "codex-desktop:desktop").map(\.messageId) == ["desktop"])
+
+        outbox.runtimeLost(runtimeId: "codex:terminal", sessionId: "same-thread")
+        #expect(outbox.item("terminal")?.state == .unconfirmed)
+        #expect(outbox.item("desktop")?.state == .sending)
+    }
+
+    @Test func launchRebindingRequiresTheExactRuntimeAndSessionPair() {
+        let catalogId = "codex-history:" + String(repeating: "a", count: 64)
+        var send = PendingSend(messageId: "resume", commandId: "command-resume", sessionId: catalogId,
+            runtimeId: "launch:request", text: "resume", attachments: [], delivery: nil,
+            createdAt: start, anchorMessageId: nil, state: .unconfirmed)
+        send.uploadIds = ["upload"]
+        var outbox = PendingSendOutbox(); outbox.add(send)
+
+        let wrongOwner = outbox.rebind(messageId: "resume", fromRuntimeId: "launch:request", fromSessionId: "wrong-store",
+            toRuntimeId: "codex-desktop:thread", toSessionId: "same-thread")
+        #expect(!wrongOwner)
+        let exactOwner = outbox.rebind(messageId: "resume", fromRuntimeId: "launch:request", fromSessionId: catalogId,
+            toRuntimeId: "codex-desktop:thread", toSessionId: "same-thread")
+        #expect(exactOwner)
+        #expect(outbox.item("resume")?.runtimeId == "codex-desktop:thread")
+        #expect(outbox.item("resume")?.sessionId == "same-thread")
+        #expect(outbox.item("resume")?.state == .unconfirmed)
+        #expect(outbox.item("resume")?.uploadIds == ["upload"])
     }
 
     @Test func anchoredRowsStayBeforeAReplyThatArrivedFirst() {
@@ -97,7 +130,7 @@ struct PendingSendTests {
         outbox.connectionLost()
         #expect(outbox.item("sending")?.state == .unconfirmed)
         #expect(outbox.item("ok")?.state == .accepted)
-        outbox.runtimeLost(sessionId: "s1")
+        outbox.runtimeLost(runtimeId: "s1", sessionId: "s1")
         #expect(outbox.item("ok")?.state == .unconfirmed)
         #expect(outbox.item("busy")?.state == .failed("会话正在运行，请选择插入或完成后发送"))
     }

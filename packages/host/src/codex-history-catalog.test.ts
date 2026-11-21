@@ -32,6 +32,26 @@ describe("CodexHistoryCatalog", () => {
     expect(merged.sessions.find(session => session.sessionId === firstStore)?.codexLaunchModes).toEqual(["desktop", "terminal"]);
   });
 
+  it("retains previously verified launch routes across a partial source failure but honors disablement", () => {
+    const catalog = new CodexHistoryCatalog("host-a");
+    const initial = catalog.update([
+      read("codex", "/home/a/.codex", [row("thread-1")]),
+      read("codexDesktop", "/home/a/.codex", [row("thread-1", "codexDesktop")]),
+    ], new Set(["codex", "codexDesktop"]));
+    const id = catalog.id("/home/a/.codex", "thread-1");
+    expect(initial.sessions[0]?.codexLaunchModes).toEqual(["desktop", "terminal"]);
+
+    const partial = catalog.update([
+      read("codex", "/home/a/.codex", [], false),
+      read("codexDesktop", "/home/a/.codex", [], false),
+    ], new Set(["codex", "codexDesktop"]));
+    expect(partial.complete).toBe(false);
+    expect(partial.sessions.find(session => session.sessionId === id)?.codexLaunchModes).toEqual(["desktop", "terminal"]);
+
+    const disabled = catalog.update([read("codex", "/home/a/.codex", [row("thread-1")])], new Set(["codex"]));
+    expect(disabled.sessions.find(session => session.sessionId === id)?.codexLaunchModes).toEqual(["terminal"]);
+  });
+
   it("retains last verified rows when a later store read is incomplete", () => {
     const catalog = new CodexHistoryCatalog("host-a");
     const initial = catalog.update([read("codex", "/home/a/.codex", [row("thread-1")])], new Set(["codex"]));

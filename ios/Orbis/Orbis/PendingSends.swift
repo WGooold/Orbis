@@ -21,7 +21,9 @@ struct PendingSend: Equatable, Identifiable {
 
     let messageId: String
     let commandId: String
-    let sessionId: String
+    var sessionId: String
+    /// Local owner disambiguates equal native thread IDs from distinct Codex history stores.
+    var runtimeId: String? = nil
     let text: String
     var attachments: [String]
     let delivery: String?
@@ -52,30 +54,34 @@ struct PendingSend: Equatable, Identifiable {
 
 struct PendingSendOutbox: Equatable {
     static let acceptedIdleGrace: TimeInterval = 15
+    struct Scope: Hashable { let runtimeId: String?; let sessionId: String }
     private(set) var items: [PendingSend] = []
 
     var isEmpty: Bool { items.isEmpty }
-    var sessionIds: Set<String> { Set(items.map(\.sessionId)) }
+    var scopes: Set<Scope> { Set(items.map { Scope(runtimeId: $0.runtimeId, sessionId: $0.sessionId) }) }
     func item(_ messageId: String?) -> PendingSend? { messageId.flatMap { id in items.first { $0.messageId == id } } }
     func owns(commandId: String) -> Bool { items.contains { $0.commandId == commandId } }
-    func chatRows(sessionId: String?) -> [PendingSend] {
-        items.filter { $0.sessionId == sessionId && !$0.showsInQueue && !$0.queueOwned }.sorted { $0.createdAt < $1.createdAt }
+    func chatRows(sessionId: String?, runtimeId: String? = nil) -> [PendingSend] {
+        items.filter { $0.sessionId == sessionId && (runtimeId == nil || $0.runtimeId == runtimeId) && !$0.showsInQueue && !$0.queueOwned }
+            .sorted { $0.createdAt < $1.createdAt }
     }
-    func queueRows(sessionId: String?) -> [PendingSend] {
-        items.filter { $0.sessionId == sessionId && $0.showsInQueue }.sorted { $0.createdAt < $1.createdAt }
+    func queueRows(sessionId: String?, runtimeId: String? = nil) -> [PendingSend] {
+        items.filter { $0.sessionId == sessionId && (runtimeId == nil || $0.runtimeId == runtimeId) && $0.showsInQueue }
+            .sorted { $0.createdAt < $1.createdAt }
     }
     /// 聊天里的本地行已经代表这条消息，Host 队列里的同一项不再重复显示。
     func hidesQueueItem(_ queueId: String) -> Bool { items.contains { $0.messageId == queueId && !$0.showsInQueue && !$0.queueOwned } }
 
     /// 启动中的会话确认了 Session ID：占位 Session 下的消息转到真实会话（ADR-0049 §6.8）。
-    mutating func rebind(sessionId placeholder: String, to sessionId: String) {
-        for index in items.indices where items[index].sessionId == placeholder {
-            let item = items[index]
-            var moved = PendingSend(messageId: item.messageId, commandId: item.commandId, sessionId: sessionId, text: item.text,
-                                    attachments: item.attachments, delivery: item.delivery, createdAt: item.createdAt, anchorMessageId: item.anchorMessageId)
-            moved.state = item.state; moved.uploadIds = item.uploadIds
-            items[index] = moved
-        }
+    @discardableResult
+    mutating func rebind(messageId: String, fromRuntimeId: String, fromSessionId: String,
+                         toRuntimeId: String, toSessionId: String) -> Bool {
+        guard let index = items.firstIndex(where: {
+            $0.messageId == messageId && $0.runtimeId == fromRuntimeId && $0.sessionId == fromSessionId
+        }) else { return false }
+        items[index].runtimeId = toRuntimeId
+        items[index].sessionId = toSessionId
+        return true
     }
 
     /// 等待中的消息写入通道：换成 Host 附件路径，进入发送中（ADR-0049 §6.2）。
@@ -130,20 +136,21 @@ struct PendingSendOutbox: Equatable {
     }
 
     /// Runtime 离线：即使 Host 已接受，消息也可能没有进入 agent。
-    mutating func runtimeLost(sessionId: String?) {
-        for index in items.indices where items[index].sessionId == sessionId && (items[index].state == .sending || items[index].state == .accepted || items[index].state == .queued) {
+    mutating func runtimeLost(runtimeId: String, sessionId: String?) {
+        for index in items.indices where items[index].runtimeId == runtimeId && items[index].sessionId == sessionId &&
+            (items[index].state == .sending || items[index].state == .accepted || items[index].state == .queued) {
             items[index].state = .unconfirmed; items[index].needsDeliveryEvidence = true; items[index].queueOwned = false; items[index].settleRevision = nil
         }
     }
 
     /// 用源端事实核对一个 Session 的本地行；返回 true 表示兜底核对需要一次新的权威状态。
     /// `status` 为 nil 表示该 Session 当前没有在线 Runtime。
-    mutating func reconcile(sessionId: String, status: String?, queue: [QueuedMessage], revision: Int, connected: Bool,
+    mutating func reconcile(runtimeId: String?, sessionId: String, status: String?, queue: [QueuedMessage], revision: Int, connected: Bool,
                             now: Date = Date(), isMaterialized: (String) -> Bool) -> Bool {
         var needsSync = false
         let queued = Dictionary(queue.map { ($0.queueId, $0) }, uniquingKeysWith: { _, last in last })
         items = items.compactMap { original in
-            guard original.sessionId == sessionId else { return original }
+            guard original.runtimeId == runtimeId && original.sessionId == sessionId else { return original }
             var item = original
             if isMaterialized(item.messageId) { return nil }
             if let host = queued[item.messageId], host.state != "delivered" {

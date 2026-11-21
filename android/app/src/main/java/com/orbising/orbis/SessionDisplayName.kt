@@ -26,7 +26,9 @@ private fun RemoteState.resolveSessionDisplayName(
     }
     return runtime?.sessionName?.trim()?.takeIf(String::isNotEmpty)
         ?: session?.name?.trim()?.takeIf(String::isNotEmpty)
-        ?: sessionGraphs[sessionId]?.let(graphTitle)
+        ?: sessionId?.let { id ->
+            if (runtime?.sessionId == id) sessionGraphForRuntime(runtime.runtimeId) else sessionGraphForSession(id)
+        }?.let(graphTitle)
         ?: session?.firstMessage?.let(::sessionMessagePreview)
         ?: runtime?.let { liveTitle(conversations[it.runtimeId]?.messages.orEmpty()) }
         ?: sessionId?.trim()?.takeIf(String::isNotEmpty)
@@ -46,14 +48,16 @@ internal class SessionTitleCache(
     fun resolve(state: RemoteState, sessionId: String?, runtime: RuntimeSummary?, language: AppLanguage = AppLocalization.language): String {
         var usedGraph = false
         var usedLive = false
+        val graphKey = sessionId?.let { state.sessionGraphKey(runtime?.runtimeId, it) }
         val result = state.resolveSessionDisplayName(sessionId, runtime, { graph ->
             usedGraph = true
-            val old = graphs[graph.sessionId]
+            val key = graphKey ?: graph.sessionId
+            val old = graphs[key]
             if (old != null && old.graph.entries === graph.entries && old.graph.display === graph.display &&
                 old.graph.cursor.leafId == graph.cursor.leafId && old.graph.displayWindowStart == graph.displayWindowStart) {
-                old.title.also { graphs[graph.sessionId] = GraphTitle(graph, it) }
+                old.title.also { graphs[key] = GraphTitle(graph, it) }
             } else {
-                projectGraph(graph).also { graphs[graph.sessionId] = GraphTitle(graph, it) }
+                projectGraph(graph).also { graphs[key] = GraphTitle(graph, it) }
             }
         }, { messages ->
             usedLive = true

@@ -293,6 +293,14 @@ data class OperationLedger<P>(
     /** 用户处理了已拒绝或未确认的操作（删除、放回输入框、重新发送会生成新操作）。 */
     fun remove(opId: String): OperationLedger<P> = copy(operations = operations.filterNot { it.opId == opId })
 
+    /** Rebind an exact waiting operation without changing its lifecycle or prerequisites. */
+    fun rebindWaiting(expected: LedgerOperation<P>, payload: P, group: String?): OperationLedger<P> {
+        if (expected.phase != LedgerPhase.Waiting || operation(expected.opId) != expected) return this
+        return copy(operations = operations.map { op ->
+            if (op.opId == expected.opId) op.copy(payload = payload, group = group) else op
+        })
+    }
+
     // ---- 内部转移 ----
 
     private inline fun edit(block: Editor<P>.() -> Unit): LedgerStep<P> {

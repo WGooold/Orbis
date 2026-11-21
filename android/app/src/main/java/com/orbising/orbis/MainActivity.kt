@@ -1517,7 +1517,7 @@ internal fun OfflineHistoryScreen(
     model: RemoteViewModel,
     onBack: () -> Unit,
 ) {
-    val graph = sessionId?.let(state.sessionGraphs::get)
+    val graph = sessionId?.let(state::sessionGraphForSession)
     val projection = rememberChatPresentation(ChatPresentationRequest(
         ChatPresentationIdentity(state.hostId, "offline:$sessionId", sessionId, 0),
         emptyList(), emptyMap(), emptyMap(), emptyMap(), graph))
@@ -1685,9 +1685,9 @@ internal fun ChatScreen(
     val pageSessionId = sessionId ?: launch?.let { it.resumed ?: it.placeholder }
     val conversation = state.conversations[runtimeId] ?: RuntimeConversation()
     // V13：恢复已有会话的启动页先显示本地缓存的历史（与 iOS 沿用缓存会话页一致），会话上线后由真实会话接替。
-    val launchCache = launch?.resumed?.let(state.sessionGraphs::get)
+    val launchCache = launch?.resumed?.let(state::sessionGraphForSession)
     val rewindCommands = state.capabilities[runtimeId]?.commands.orEmpty()
-    val rewindGraph = sessionId?.let(state.sessionGraphs::get)
+    val rewindGraph = state.sessionGraphForRuntime(runtimeId) ?: sessionId?.let(state::sessionGraphForSession)
     val rewindOptions = remember(rewindCommands, rewindGraph?.display) { userMessageRewindOptions(rewindCommands, rewindGraph) }
     val activeTurn = conversation.activeTurnId?.let(conversation.turnTimings::get)
     var timerNow by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -2253,7 +2253,7 @@ internal fun ChatScreen(
                 runHistoryAction(
                     HistoryTreeAction.EditAndRestart(
                         nodeId = node.nodeId,
-                        fallbackText = sessionId?.let(state.sessionGraphs::get)?.historyNodeText(node.nodeId),
+                        fallbackText = (state.sessionGraphForRuntime(runtimeId) ?: sessionId?.let(state::sessionGraphForSession))?.historyNodeText(node.nodeId),
                     ),
                 )
             },

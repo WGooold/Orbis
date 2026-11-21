@@ -221,7 +221,8 @@ internal class HostConnection(
             if (text.isNotBlank() && messageId != null) updateState { current ->
                 if (current.pendingSends.containsKey(messageId)) current else current.copy(pendingSends = current.pendingSends + (messageId to PendingSend(
                     messageId, saved["firstCommandId"]?.jsonPrimitive?.contentOrNull ?: messageId, "launch:$id", text, emptyList(), null,
-                    System.currentTimeMillis(), null, if (rejected) PendingSendState.Failed(saved["error"]?.jsonPrimitive?.contentOrNull ?: L10n.tr("配置未确认")) else PendingSendState.Unconfirmed)))
+                    System.currentTimeMillis(), null, if (rejected) PendingSendState.Failed(saved["error"]?.jsonPrimitive?.contentOrNull ?: L10n.tr("配置未确认")) else PendingSendState.Unconfirmed,
+                    runtimeId = "launch:$id")))
             }
         }
         if (show) updateState { current -> current.launching?.takeIf { it.requestId == id }?.let { launch ->
@@ -1350,7 +1351,7 @@ internal class HostConnection(
         // V13 / ADR-0049 §6.8：恢复已有会话时，启动页先显示本地缓存的历史，会话上线后由真实会话接替。
         val pairedDevice = device
         if (sent && resumed != null && pairedDevice != null && mutableState.value.sessions[resumed]?.hasHistoryCache == true &&
-            mutableState.value.sessionGraphs[resumed] == null) {
+            mutableState.value.sessionGraphForSession(resumed) == null) {
             scope.launch(Dispatchers.IO) { loadCachedSessionGraph(pairedDevice, resumed) }
         }
         return sent
@@ -1596,7 +1597,7 @@ internal class HostConnection(
         updateState { latest ->
             val candidate = runtimeId?.let(latest.runtimes::get)
             val candidateConversation = runtimeId?.let(latest.conversations::get)
-            val candidateGraph = candidate?.sessionId?.let(latest.sessionGraphs::get)
+            val candidateGraph = candidate?.let { latest.sessionGraphForRuntime(it.runtimeId) }
             runtime = candidate
             conversation = candidateConversation
             graph = candidateGraph
@@ -1871,7 +1872,7 @@ internal class HostConnection(
         val state = mutableState.value
         val session = runtime.sessionId ?: return null
         return listOf(state.hostId ?: "", state.deviceId ?: "", runtime.runtimeId, session,
-            (state.sessionBranchGenerations[runtime.runtimeId] ?: 0).toString(), state.sessionGraphs[session]?.cacheEpoch ?: "",
+            (state.sessionBranchGenerations[runtime.runtimeId] ?: 0).toString(), state.sessionGraphs[state.sessionGraphKey(runtime.runtimeId, session)]?.cacheEpoch ?: "",
             state.sessionHistory[runtime.runtimeId]?.oldestEntryId ?: "").joinToString("\u0000")
     }
 
@@ -2121,7 +2122,7 @@ internal class HostConnection(
         // 启动中发送的消息等“会话启动”（ADR-0049 §6.8）。
         val configs = OperationKinds.activeConfigOps(state.ledger, runtimeId) +
             listOfNotNull(launch?.let { state.ledger.operation(it.requestId) }?.takeIf { !it.phase.isSettled })
-        if (sessionId != null && (pending.isNotEmpty() || configs.isNotEmpty() || state.ledger.blocks(OperationKinds.sendGroup(sessionId)))) {
+        if (sessionId != null && (pending.isNotEmpty() || configs.isNotEmpty() || state.ledger.blocks(OperationKinds.sendGroup(state.runtimes[runtimeId]?.directorySessionId ?: sessionId)))) {
             return sendWhenReady(runtimeId, sessionId, trimmed, delivery, uploadTaskIds, pending, configs)
         }
         return sendUserMessage(runtimeId, trimmed, delivery, attachments + uploads.mapNotNull(UploadTask::remotePath).filter { it !in attachments })
@@ -2161,8 +2162,11 @@ internal class HostConnection(
                 val (op, send, target) = state.readySends().firstNotNullOfOrNull { op ->
                     val payload = op.payload as LedgerPayload.Send
                     val session = state.launchSessions[payload.sessionId] ?: payload.sessionId
-                    val runtime = state.runtimes.values.firstOrNull { it.sessionId == session } ?: return@firstNotNullOfOrNull null
-                    val send = state.pendingSends[payload.messageId] ?: return@firstNotNullOfOrNull null
+                    val runtime = state.runtimes[payload.runtimeId]?.takeIf { it.sessionId == session }
+                        ?: state.runtimeForLaunch(payload.sessionId, session) ?: return@firstNotNullOfOrNull null
+                    val send = state.pendingSends[payload.messageId]?.takeIf {
+                        it.sessionId == session && (it.runtimeId == payload.runtimeId || it.runtimeId == runtime.runtimeId)
+                    } ?: return@firstNotNullOfOrNull null
                     val paths = send.uploadIds.mapNotNull { id -> state.uploads[id]?.takeIf { it.status == "completed" }?.remotePath }
                     if (paths.size != send.uploadIds.size) null else Triple(op, send, paths to runtime.runtimeId)
                 } ?: return
@@ -2193,7 +2197,7 @@ internal class HostConnection(
         updateState { state ->
             val anchor = state.conversations[runtimeId]?.messages?.lastOrNull()?.messageId
             state.copy(pendingSends = state.pendingSends + (messageId to PendingSend(messageId, commandId, sessionId, text,
-                attachments, delivery, System.currentTimeMillis(), anchor)))
+                attachments, delivery, System.currentTimeMillis(), anchor, runtimeId = runtimeId)))
         }
         return commandId
     }
@@ -2203,7 +2207,9 @@ internal class HostConnection(
         val state = mutableState.value
         val runtimeId = state.selectedRuntimeId ?: return null
         val runtime = state.runtimes[runtimeId] ?: return null
-        val send = state.pendingSends[messageId]?.takeIf { it.sessionId == runtime.sessionId && it.state is PendingSendState.Failed } ?: return null
+        val send = state.pendingSends[messageId]?.takeIf {
+            it.sessionId == runtime.sessionId && it.runtimeId == runtime.runtimeId && it.state is PendingSendState.Failed
+        } ?: return null
         if (!state.e2eReady) return null
         // Slash 产生的消息：再次执行同一命令，新的身份（L6）。
         send.slashName?.let { name ->
@@ -2364,7 +2370,7 @@ internal class HostConnection(
         updateState { state ->
             val anchor = state.conversations[runtime.runtimeId]?.messages?.lastOrNull()?.messageId
             state.copy(pendingSends = state.pendingSends + (messageId to PendingSend(messageId, commandId, sessionId, text,
-                emptyList(), null, System.currentTimeMillis(), anchor, slashName = name, slashArgs = args)))
+                emptyList(), null, System.currentTimeMillis(), anchor, slashName = name, slashArgs = args, runtimeId = runtime.runtimeId)))
         }
         return commandId
     }
@@ -3842,14 +3848,16 @@ internal class HostConnection(
         registerReadWorker(operationId, currentCoroutineContext()[Job]!!)
         try {
             currentCoroutineContext().ensureActive()
-            if (prepareSessionCache(pairedDevice, sessionId, mutableState.value.sessions[sessionId]?.agentKind)) return
+            val cacheId = sessionId.takeIf(::isCodexCatalogId)
+            if (prepareSessionCache(pairedDevice, sessionId, mutableState.value.sessions[sessionId]?.agentKind, cacheId)) return
+            val storage = cacheId ?: sessionId
             val graph = synchronized(sessionGraphStore) {
-                val leafId = sessionGraphStore.latestLeaf(pairedDevice, sessionId)
-                val range = sessionGraphStore.readBranch(pairedDevice, sessionId, leafId, maxEntries = previewPageSize)
+                val leafId = sessionGraphStore.latestLeaf(pairedDevice, storage)
+                val range = sessionGraphStore.readBranch(pairedDevice, storage, leafId, maxEntries = previewPageSize)
                 if (leafId == null || range.entries.isEmpty()) null else
                     sessionGraphStore.withCacheVersions(pairedDevice, SessionGraph(sessionId,
                         range.entries.associateBy(SessionGraphEntry::entryId), SessionBranchCursor(leafId),
-                        sessionGraphStore.readTurnTimings(pairedDevice, sessionId).associateBy(TurnTiming::turnId)))
+                        sessionGraphStore.readTurnTimings(pairedDevice, storage).associateBy(TurnTiming::turnId)))
             }
             currentCoroutineContext().ensureActive()
             updateState { if (device != pairedDevice) it else if (graph == null)
@@ -3954,7 +3962,7 @@ internal class HostConnection(
 
     /** Runs before any old canonical content can be seeded or validated in memory. */
     private fun prepareSessionCache(pairedDevice: DeviceCredential, sessionId: String, agentKind: String?, cacheId: String? = null): Boolean {
-        // 显示投影版本换代与 Codex 格式重建一样，都要先清掉旧缓存再让内容重新进来。
+        // 显示投影版本换代与 Codex 格式重建一样，都要先清掉该目录身份的缓存再让内容重新进来。
         val storage = cacheId ?: sessionId
         val codexRebuilt = sessionGraphStore.prepareSession(pairedDevice, storage, agentKind)
         val displayRebuilt = sessionGraphStore.prepareDisplayCache(pairedDevice, storage, expectedMessageDisplayVersion.takeIf { mutableState.value.e2eReady })
@@ -3965,7 +3973,7 @@ internal class HostConnection(
         if (device != pairedDevice || !(codexRebuilt || displayRebuilt)) return false
         val current = mutableState.value
         val affected = current.historyReads.values.filter { it.sessionId == sessionId && it.phase.active }.map { it.operationId }
-        updateState { state -> if (device != pairedDevice) state else state.afterSessionCacheRebuild(sessionId).reconcileHistoryReads() }
+        updateState { state -> if (device != pairedDevice) state else state.afterSessionCacheRebuild(sessionId, storage).reconcileHistoryReads() }
         synchronized(historyJobs) { affected.mapNotNull { historyJobs[it] } }.forEach(Job::cancel)
         scheduleSessionGraphLoad(pairedDevice, mutableState.value.runtimes.values.filter { it.sessionId == sessionId && it.sessionGraphSync })
         return true

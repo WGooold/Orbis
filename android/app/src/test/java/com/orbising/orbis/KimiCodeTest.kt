@@ -59,7 +59,7 @@ class KimiCodeTest {
         val native = Json.decodeFromString(ChatMessage.serializer(),
             """{"messageId":"native","role":"user","content":[{"type":"text","text":"same"}],"timestamp":1,"clientMessageId":"a","clientMessageIds":["a","b"]}""")
         val session = "kimi-code:fixture:session_inbox"
-        val sends = listOf("a", "b", "c").associateWith { id -> PendingSend(id, id, session, "same", emptyList(), null, 0, null) }
+        val sends = listOf("a", "b", "c").associateWith { id -> PendingSend(id, id, session, "same", emptyList(), null, 0, null, runtimeId = session) }
         val runtime = RuntimeSummary(session, "Kimi Code", "/repo", "idle", session).withKimiIdentity()
         val state = RemoteState(runtimes = mapOf(session to runtime), pendingSends = sends,
             conversations = mapOf(session to RuntimeConversation(messages = listOf(native))))

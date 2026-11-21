@@ -85,7 +85,7 @@ private fun RemoteState.readOwnerValid(operation: SessionReadOperation): Boolean
         (sessionBranchGenerations[operation.historyKey] ?: 0) != operation.branchGeneration) return false
     if ((operation.kind in setOf(SessionReadKind.HISTORY, SessionReadKind.PREFETCH, SessionReadKind.CATCHUP) ||
             operation.kind == SessionReadKind.FIRST_PAGE && operation.cacheEpoch != null) &&
-        sessionGraphs[operation.sessionId]?.cacheEpoch != operation.cacheEpoch) return false
+        sessionGraphs[sessionGraphKey(operation.historyKey, operation.sessionId)]?.cacheEpoch != operation.cacheEpoch) return false
     if (operation.historyKey == "offline:${operation.sessionId}") return selectedOfflineSessionId == operation.sessionId
     val source = conversations[operation.historyKey]
     if (operation.kind in setOf(SessionReadKind.HISTORY, SessionReadKind.PREFETCH) && source?.sourceReady == true && source.sourceEpoch != null &&
@@ -119,7 +119,7 @@ internal fun RemoteState.beginSessionRead(
     val sessionId = current.runtimes[key]?.sessionId ?: key.removePrefix("offline:").takeIf { key.startsWith("offline:") }
         ?: return SessionReadStart(current, SessionReadAcceptance(rejection = L10n.tr("没有可读取的会话")))
     val operation = SessionReadOperation(operationId, key, current.deviceId, current.hostId, sessionId, targetLeafId,
-        null, current.sessionBranchGenerations[key] ?: 0, current.sessionGraphs[sessionId]?.cacheEpoch,
+        null, current.sessionBranchGenerations[key] ?: 0, current.sessionGraphs[current.sessionGraphKey(key, sessionId)]?.cacheEpoch,
         phase = if (kind == SessionReadKind.FIRST_PAGE) SessionReadPhase.LOCAL else SessionReadPhase.QUEUED,
         kind = kind, demandGeneration = demandGeneration)
     if (!current.readOwnerValid(operation)) return SessionReadStart(current, SessionReadAcceptance(rejection = L10n.tr("读取归属已失效")))
@@ -157,7 +157,7 @@ internal fun RemoteState.beginHistoryRead(
     if (current.sessionSyncCommands.values.any { it.runtimeId == key && it.range == "history" }) return rejected(L10n.tr("历史页仍在等待响应"))
     val operation = SessionReadOperation(operationId, key, current.deviceId, current.hostId, sessionId,
         automatic?.targetLeafId ?: history.leafId, automatic?.beforeEntryId ?: history.oldestEntryId, current.sessionBranchGenerations[key] ?: 0,
-        current.sessionGraphs[sessionId]?.cacheEpoch, kind = kind, historyPrefetch = automatic)
+        current.sessionGraphs[current.sessionGraphKey(key, sessionId)]?.cacheEpoch, kind = kind, historyPrefetch = automatic)
     if (!current.readOwnerValid(operation)) return rejected(L10n.tr("该历史窗口已关闭"))
     return SessionReadStart(current.registerRead(operation).copy(
         sessionRangeFailures = current.sessionRangeFailures - sessionRangeFailureKey(key, "history")), SessionReadAcceptance(operationId))
@@ -211,8 +211,9 @@ internal fun SessionGraph.hasDisplayFor(entry: SessionGraphEntry, windowStart: S
 private fun RemoteState.reconcileHistoryDisplayCoverage(previous: RemoteState?): RemoteState {
     var histories = sessionHistory
     for ((key, history) in sessionHistory) {
-        val graph = sessionGraphs[history.sessionId] ?: continue
-        if (previous != null && history === previous.sessionHistory[key] && graph === previous.sessionGraphs[history.sessionId]) continue
+        val graphKey = sessionGraphKey(key, history.sessionId)
+        val graph = sessionGraphs[graphKey] ?: continue
+        if (previous != null && history === previous.sessionHistory[key] && graph === previous.sessionGraphs[graphKey]) continue
         val path = buildSessionPath(graph.entries, history.leafId)
         val boundary = path.indexOfFirst { it.entryId == history.oldestEntryId }
         // Older temporary pages can be outside the bounded graph; absence cannot revoke them.
@@ -298,7 +299,8 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
     if (page.entries.first().entryId == operation.beforeEntryId) {
         return finishHistoryRead(operationId, SessionReadPhase.FAILED, L10n.tr("历史范围未推进，请重试"))
     }
-    val graph = sessionGraphs[operation.sessionId] ?: SessionGraph(operation.sessionId)
+    val graphKey = sessionGraphKey(operation.historyKey, operation.sessionId)
+    val graph = sessionGraphs[graphKey] ?: SessionGraph(operation.sessionId)
     // 本地页自带显示结果：条目与解释同源，页面读进来就能渲染。
     val merged = graph.copy(
         entries = LinkedHashMap(graph.entries).apply { page.entries.forEach { putIfAbsent(it.entryId, it) } },
@@ -326,7 +328,7 @@ internal fun RemoteState.applyLocalHistoryRead(operationId: String, page: Sessio
         conversation.copy(messages = projection.messages + conversation.messages.filterNot { it.messageId in ids },
             turnTimings = projection.turnTimings.associateBy(TurnTiming::turnId) + conversation.turnTimings,
             revision = conversation.revision + 1))
-    return copy(sessionGraphs = sessionGraphs + (operation.sessionId to merged), conversations = nextConversations,
+    return copy(sessionGraphs = sessionGraphs + (graphKey to merged), conversations = nextConversations,
         sessionHistory = sessionHistory + (operation.historyKey to nextHistory)).finishHistoryRead(operationId, SessionReadPhase.SUCCEEDED)
 }
 
@@ -334,7 +336,8 @@ internal fun RemoteState.applyFirstSessionPage(operationId: String, loaded: Sess
     if (!ownsHistoryRead(operationId)) return reconcileHistoryReads()
     val operation = sessionReads.getValue(operationId)
     if (operation.kind != SessionReadKind.FIRST_PAGE || loaded.sessionId != operation.sessionId) return this
-    val existing = sessionGraphs[operation.sessionId]
+    val graphKey = sessionGraphKey(operation.historyKey, operation.sessionId)
+    val existing = sessionGraphs[graphKey]
     val source = conversations[operation.historyKey]
     if (source?.sourceReady == true && source.sourceEpoch != null && source.sourceEpoch != loaded.cacheEpoch)
         return finishHistoryRead(operationId, SessionReadPhase.SUPERSEDED)
@@ -358,8 +361,9 @@ internal fun RemoteState.applyFirstSessionPage(operationId: String, loaded: Sess
         timingVersions = (loaded.timingVersions.keys + compatible?.timingVersions.orEmpty().keys).associateWith {
             maxOf(loaded.timingVersions[it] ?: -1, compatible?.timingVersions?.get(it) ?: -1)
         })
-    var next = finishHistoryRead(operationId, SessionReadPhase.SUCCEEDED).copy(sessionGraphs = sessionGraphs + (operation.sessionId to graph),
-        sessions = sessions + (operation.sessionId to (sessions[operation.sessionId] ?: SessionCatalogEntry(operation.sessionId))
+    val catalogId = sessionGraphKey(operation.historyKey, operation.sessionId)
+    var next = finishHistoryRead(operationId, SessionReadPhase.SUCCEEDED).copy(sessionGraphs = sessionGraphs + (graphKey to graph),
+        sessions = sessions + (catalogId to (sessions[catalogId] ?: SessionCatalogEntry(catalogId))
             .withHistoryCache(runtimes[operation.historyKey]?.hostname)))
     next = if (operation.historyKey.startsWith("offline:")) {
         val branch = buildSessionPath(graph.entries, graph.cursor.leafId)

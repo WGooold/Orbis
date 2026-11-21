@@ -48,7 +48,7 @@ internal fun RemoteState.appliedSessionState(runtimeId: String): SessionAppliedS
     if (!conversation.sourceReady || !conversation.hasLiveSnapshot || conversation.isChatSyncing ||
         conversation.forceSourceSnapshot || conversation.sourceSeq < 0 || conversation.sourcePatchBuffer.isNotEmpty()) return null
     val sessionId = runtime.sessionId ?: return null
-    val graph = sessionGraphs[sessionId] ?: return null
+    val graph = sessionGraphs[sessionGraphKey(runtimeId, sessionId)] ?: return null
     if (graph.cacheEpoch != epoch || runtimeSessionViews[runtimeId]?.sessionId != sessionId ||
         runtimeSessionViews[runtimeId]?.leafId != conversation.sourceHeadLeafId ||
         conversation.sourceHeadLeafId?.let { it !in graph.entries } == true) return null

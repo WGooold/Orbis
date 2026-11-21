@@ -114,7 +114,7 @@ internal fun HistoryTreePage(
             .orEmpty()
     }
     val runtime = state.runtimes[runtimeId]
-    val graph = sessionId?.let(state.sessionGraphs::get)
+    val graph = state.sessionGraphForRuntime(runtimeId) ?: sessionId?.let(state::sessionGraphForSession)
     val busy = runtime?.status == "running"
     // 后端只发最近一段树（DSH 的整棵树上到命令词表里）。首条记录的 parentId 指向表外时，
     // 说明更早的历史还没读到——在聊天页往上翻，读到之后它自己会补进这张树。

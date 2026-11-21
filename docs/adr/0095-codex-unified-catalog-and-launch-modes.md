@@ -2,7 +2,7 @@
 
 日期：2026-11-20
 
-状态：实现中；Host 与 iOS／Android 首轮实现及定向自动验证已完成；旧版本兼容门禁、全量审查、部署与用户验收待完成。
+状态：代码实现及本轮定向自动验证已完成；最近发布版本兼容门禁、完整恢复矩阵、部署与用户验收仍待完成。
 
 关联：[ADR-0021](0021-codex-terminal-host-attachment.md)、[ADR-0022](0022-codex-desktop-daemon-attachment.md)、[ADR-0025](0025-native-history-authority-and-versioned-caches.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0069](0069-session-catalog-and-bounded-history-loading.md)、[ADR-0072](0072-session-configuration-and-recoverable-launch.md)、[ADR-0094](0094-host-agent-enablement.md)。
 
@@ -44,10 +44,18 @@
 
 ## 实现进度（2026-11-21）
 
-已接入首轮实现：Host 双路目录聚合与 `codex-history:<sha256>` 身份、按已核对存储域路由、旧协议视图降级、统一目录分页／搜索／归档、启动方式与 `spawnMode` 分离，以及配置启动账本持久化启动方式。iOS 和 Android 已协商统一目录、以统一身份选择目录记录与历史缓存、按可用模式恢复，并保留旧端回退投影。缺少可信存储身份时使用逐连接隔离，不把不同 `CODEX_HOME` 或不可核对的端点合并。
+已实现：Host 双路目录聚合与 `codex-history:<sha256>` 身份、按已核对存储域路由、旧协议视图降级、统一目录分页／搜索／归档、启动方式与 `spawnMode` 分离，以及配置启动账本持久化启动方式。iOS 和 Android 已协商统一目录、以统一身份选择目录记录与历史缓存、按可用模式恢复，并保留旧端回退投影。缺少可信存储身份时使用逐连接隔离，不把不同 `CODEX_HOME` 或不可核对的端点合并。
 
-代码与回归指针：[codex-history-catalog.ts](../../packages/host/src/codex-history-catalog.ts)、[host-state-facts.ts](../../packages/host/src/host-state-facts.ts)、[host-service.ts](../../packages/host/src/host-service.ts)、[session-configuration-store.ts](../../packages/host/src/session-configuration-store.ts)、[SessionHistoryStorage.swift](../../ios/Orbis/Orbis/SessionHistoryStorage.swift)、[OrbisStore.swift](../../ios/Orbis/Orbis/OrbisStore.swift)、[RemoteState.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt)、[HostConnection.kt](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)。
+启动确认先于或晚于 `runtime.online` 时，待发送消息都按已确认的原生会话与精确 Runtime 归属后才进入发送通道；同一 `threadId` 出现在不同历史存储时，恢复路由同时核对目录身份和启动方式。会话目录 ID 仍用于历史缓存与待发送顺序组，原生 `sessionId` 与 Runtime ID 仍用于写入路由。
 
-本轮定向自动验证：`npm run typecheck` 通过；Host catalog／launch／加密链路定向测试 18 项通过；Codex runtime / desktop 测试 258 项通过；HostService 测试 110 项通过、2 项跳过；Swift `SessionHistoryTests` 18 项通过；Android 四个定向单测类共 39 项通过。原始记录见 `.artifacts/codex-unified-20261121/`。这些结果不代表全部 App／Relay 兼容门禁或用户验收已完成。
+代码与回归指针：[codex-history-catalog.ts](../../packages/host/src/codex-history-catalog.ts)、[host-state-facts.ts](../../packages/host/src/host-state-facts.ts)、[host-service.ts](../../packages/host/src/host-service.ts)、[session-configuration-store.ts](../../packages/host/src/session-configuration-store.ts)、[SessionHistoryStorage.swift](../../ios/Orbis/Orbis/SessionHistoryStorage.swift)、[OrbisStore.swift](../../ios/Orbis/Orbis/OrbisStore.swift)、[PendingSends.swift](../../ios/Orbis/Orbis/PendingSends.swift)、[OperationLedger.swift](../../ios/Orbis/Orbis/OperationLedger.swift)、[RemoteState.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt)、[OperationKinds.kt](../../android/app/src/main/java/com/orbising/orbis/OperationKinds.kt)、[OperationLedger.kt](../../android/app/src/main/java/com/orbising/orbis/OperationLedger.kt)、[LaunchLedgerTests.swift](../../ios/Orbis/Tests/LaunchLedgerTests.swift)、[LaunchLedgerTest.kt](../../android/app/src/test/java/com/orbising/orbis/LaunchLedgerTest.kt)。
+
+本轮定向自动验证：
+
+- `npm run typecheck` 通过；Host catalog／runtime／desktop／service 定向测试 **371 项通过、2 项跳过**；Host 协议兼容与 protocol schema 测试 **31 项通过**。
+- iOS `LaunchLedgerTests`、`PendingSendTests`、`PresentationTests`、`SessionHistoryTests`、`KimiCodeTests` 定向测试 **110 项通过**，覆盖统一会话双存储同 `threadId`、两种事件顺序、配置式启动和 OpenClaw。
+- Android `LaunchLedgerTest`、`PendingSendsTest`、`SessionSnapshotProjectionTest`、`DraftStoreTest`、`KimiCodeTest` 定向测试 **60 项通过**，包含相同路由矩阵。
+
+记录见 `.artifacts/codex-unified-20261121/host-final/`、`swift-final/`、`android-final/`。这些自动测试不等同于真实已发布版本互通或用户验收。
 
 尚未完成：最近发布版本的真实旧 App／Host／Relay 互通与回退核对、双路运行时占用冲突的完整恢复矩阵、旧缓存／草稿别名的冲突处置审查、完整 iOS／Android 产品构建与设备验收、部署。设备验收由用户完成。

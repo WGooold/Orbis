@@ -39,6 +39,8 @@ data class PendingSend(
     /** ADR-0049 §6.1：由 prompt / skill Slash 产生的消息；重新发送时再次执行这个命令。 */
     val slashName: String? = null,
     val slashArgs: String? = null,
+    /** Local runtime owner disambiguates equal native thread IDs from separate history stores. */
+    val runtimeId: String? = null,
 ) {
     /** 带 `delivery` 且尚未被接受时，它在队列面板里显示「提交中」。 */
     val showsInQueue: Boolean get() = delivery != null && state == PendingSendState.Sending && !queueOwned
@@ -46,11 +48,13 @@ data class PendingSend(
 
 internal const val PENDING_SEND_ACCEPTED_IDLE_GRACE_MS = 15_000L
 
-internal fun Map<String, PendingSend>.chatRows(sessionId: String?): List<PendingSend> =
-    values.filter { it.sessionId == sessionId && !it.showsInQueue && !it.queueOwned }.sortedBy(PendingSend::createdAt)
+internal fun Map<String, PendingSend>.chatRows(sessionId: String?, runtimeId: String? = null): List<PendingSend> =
+    values.filter { it.sessionId == sessionId && (runtimeId == null || it.runtimeId == runtimeId) && !it.showsInQueue && !it.queueOwned }
+        .sortedBy(PendingSend::createdAt)
 
-internal fun Map<String, PendingSend>.queueRows(sessionId: String?): List<PendingSend> =
-    values.filter { it.sessionId == sessionId && it.showsInQueue }.sortedBy(PendingSend::createdAt)
+internal fun Map<String, PendingSend>.queueRows(sessionId: String?, runtimeId: String? = null): List<PendingSend> =
+    values.filter { it.sessionId == sessionId && (runtimeId == null || it.runtimeId == runtimeId) && it.showsInQueue }
+        .sortedBy(PendingSend::createdAt)
 
 /** 聊天里的本地行已经代表这条消息，Host 队列里的同一项不再重复显示。 */
 internal fun Map<String, PendingSend>.hidesQueueItem(queueId: String): Boolean =
@@ -79,12 +83,15 @@ internal fun Map<String, PendingSend>.connectionLost(): Map<String, PendingSend>
 }
 
 /** Runtime 离线：即使 Host 已接受，消息也可能没有进入 agent。 */
-internal fun Map<String, PendingSend>.runtimeLost(sessionId: String?): Map<String, PendingSend> = mapValues { (_, item) ->
-    if (item.sessionId == sessionId && (item.state == PendingSendState.Sending || item.state == PendingSendState.Accepted || item.state == PendingSendState.Queued))
+internal fun Map<String, PendingSend>.runtimeLost(runtimeId: String, sessionId: String?): Map<String, PendingSend> = mapValues { (_, item) ->
+    if (item.runtimeId == runtimeId && item.sessionId == sessionId &&
+        (item.state == PendingSendState.Sending || item.state == PendingSendState.Accepted || item.state == PendingSendState.Queued))
         item.copy(state = PendingSendState.Unconfirmed, needsDeliveryEvidence = true, queueOwned = false, settleRevision = null) else item
 }
 
 /** One Session's view of source facts; `status` is null when no Runtime serves the Session. */
+internal data class PendingSendScope(val runtimeId: String?, val sessionId: String)
+
 internal data class PendingSendObservation(
     val status: String?,
     val queue: Map<String, QueuedMessage>,
@@ -94,19 +101,21 @@ internal data class PendingSendObservation(
 )
 
 /**
- * 用源端事实核对本地行。返回新的集合，以及需要一份新权威状态才能完成兜底核对的 Session。
+ * 用源端事实核对本地行。返回新的集合，以及需要补读权威状态的精确 Runtime。
  * 对账只认 `messageId` / `clientMessageId` / Host alias，不按正文猜。
  */
 internal fun Map<String, PendingSend>.reconcile(
     now: Long,
-    observe: (sessionId: String) -> PendingSendObservation,
+    observe: (scope: PendingSendScope) -> PendingSendObservation,
 ): Pair<Map<String, PendingSend>, Set<String>> {
     if (isEmpty()) return this to emptySet()
-    val observations = values.map(PendingSend::sessionId).distinct().associateWith(observe)
+    val scopes = values.map { PendingSendScope(it.runtimeId, it.sessionId) }.distinct()
+    val observations = scopes.associateWith(observe)
     val needsSync = mutableSetOf<String>()
     val next = LinkedHashMap<String, PendingSend>()
     for (original in values) {
-        val seen = observations.getValue(original.sessionId)
+        val scope = PendingSendScope(original.runtimeId, original.sessionId)
+        val seen = observations.getValue(scope)
         if (seen.isMaterialized(original.messageId)) continue
         val host = seen.queue[original.messageId]
         if (host != null && host.state != "delivered") {
@@ -140,7 +149,7 @@ internal fun Map<String, PendingSend>.reconcile(
             !eligible -> next[item.messageId] = item.copy(settleRevision = null)
             started == null -> {
                 next[item.messageId] = item.copy(settleRevision = seen.revision)
-                needsSync += item.sessionId
+                item.runtimeId?.let(needsSync::add)
             }
             seen.revision <= started -> next[item.messageId] = item
             // 源端为准：已接受但无法对应的行退场；未确认的行变为可重发的失败。
@@ -189,19 +198,20 @@ internal fun pendingSendFailureText(status: String?, error: String?): String = w
 internal fun RemoteState.reconcilePendingSends(now: Long): Pair<RemoteState, Set<String>> {
     if (pendingSends.isEmpty()) return this to emptySet()
     val connected = e2eReady && connection == RelayConnection.ONLINE
-    val (next, sessions) = pendingSends.reconcile(now) { sessionId ->
-        val runtimeId = runtimes.entries.firstOrNull { it.value.sessionId == sessionId }?.key
+    val (next, runtimeIds) = pendingSends.reconcile(now) { scope ->
+        val runtimeId = scope.runtimeId ?: runtimes.entries.singleOrNull { it.value.sessionId == scope.sessionId }?.key
+        val runtime = runtimeId?.let(runtimes::get)?.takeIf { it.sessionId == scope.sessionId }
         val conversation = runtimeId?.let(conversations::get)
+        val storage = runtime?.directorySessionId ?: scope.sessionId
         PendingSendObservation(
             status = runtimeId?.let { runtimes[it]?.status },
             queue = conversation?.queuedMessages.orEmpty(),
-            revision = sessionRevisions[sessionId] ?: 0L,
+            revision = sessionRevisions[storage] ?: 0L,
             connected = connected,
             isMaterialized = { id -> conversation?.messages?.any { it.materializesClientMessage(id) } == true },
         )
     }
-    val syncs = sessions.mapNotNullTo(mutableSetOf()) { sessionId -> runtimes.entries.firstOrNull { it.value.sessionId == sessionId }?.key }
-    return (if (next === pendingSends) this else copy(pendingSends = next)) to syncs
+    return (if (next === pendingSends) this else copy(pendingSends = next)) to runtimeIds
 }
 
 /** 队列面板：Host 队列项，加上带 `delivery` 且仍在提交中的本地行。 */
@@ -211,7 +221,7 @@ internal fun RemoteState.queuePanelItems(runtimeId: String): List<QueuedMessage>
     val host = conversations[runtimeId]?.queuedMessages.orEmpty().values
         // `cancelled`：撤回已完成，不再显示（ADR-0049 §6.3）。
         .filterNot { pendingSends.hidesQueueItem(it.queueId) || it.queueId in cancelling || it.state == "cancelled" }
-    val local = pendingSends.queueRows(runtimes[runtimeId]?.sessionId)
+    val local = pendingSends.queueRows(runtimes[runtimeId]?.sessionId, runtimeId)
         .filter { send -> host.none { it.queueId == send.messageId } }
         .map { QueuedMessage(it.messageId, it.text, it.delivery ?: "followUp", "submitting") }
     return host + local

@@ -564,6 +564,51 @@ struct LaunchLedgerTests {
         #expect(host.ledger.operations.isEmpty)
     }
 
+    @Test(arguments: [false, true])
+    func unifiedResumeBindsWaitingSendToTheSelectedStoreBeforeRuntimeEvidence(runtimeArrivesBeforeAcknowledgement: Bool) async throws {
+        let fixture = await setup()
+        let selectedCatalog = "codex-history:" + String(repeating: "a", count: 64)
+        let otherCatalog = "codex-history:" + String(repeating: "b", count: 64)
+        func runtime(_ id: String, _ kind: String, _ catalog: String) -> [String: Any] {
+            ["runtimeId": id, "sessionId": "same-thread", "name": "Codex", "cwd": "/repo/app",
+             "status": "idle", "agentKind": kind, "codexCatalogId": catalog]
+        }
+        let features = ["device.features", codexUnifiedHistoryFeature]
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch",
+            "hostFeatures": features, "deviceFeatures": features,
+            "dshDesktop": NSNull(),
+            "agents": ["codex", "codexDesktop"], "launchableAgents": ["codex", "codexDesktop"],
+            "runtimes": runtimeArrivesBeforeAcknowledgement
+                ? [runtime("codex:same-thread", "codex", otherCatalog), runtime("codex-desktop:selected", "codexDesktop", selectedCatalog)]
+                : []])
+
+        let session = SessionSummary(sessionId: selectedCatalog, name: "Codex", cwd: "/repo/app", firstMessage: nil,
+            createdAt: 0, modifiedAt: 0, messageCount: 1, agentKind: "codex", archived: false,
+            codexLaunchModes: [.desktop, .terminal])
+        fixture.host.activate(session, codexLaunchMode: .desktop)
+        #expect(fixture.host.sendMessage("resume on desktop"))
+        #expect(fixture.transport.userMessages.isEmpty)
+        let requestId = try #require(fixture.host.launching?.requestId)
+
+        if !runtimeArrivesBeforeAcknowledgement {
+            try await fixture.transport.emit(["type": "session.activated", "requestId": requestId,
+                "sessionId": "same-thread", "codexCatalogId": selectedCatalog, "agentKind": "codexDesktop", "spawnMode": "tui"])
+            await fixture.transport.emit(["type": "runtime.online", "runtime": runtime("codex:same-thread", "codex", otherCatalog)])
+            #expect(fixture.transport.userMessages.isEmpty)
+            await fixture.transport.emit(["type": "runtime.online", "runtime": runtime("codex-desktop:selected", "codexDesktop", selectedCatalog)])
+        } else {
+            try await fixture.transport.emit(["type": "session.activated", "requestId": requestId,
+                "sessionId": "same-thread", "codexCatalogId": selectedCatalog, "agentKind": "codexDesktop", "spawnMode": "tui"])
+        }
+
+        let sent = try #require(fixture.transport.userMessages.first)
+        #expect(fixture.transport.userMessages.count == 1)
+        #expect(sent["runtimeId"] as? String == "codex-desktop:selected")
+        #expect(fixture.host.pendingSends.items.first?.runtimeId == "codex-desktop:selected")
+        #expect(fixture.host.pendingSends.items.first?.sessionId == "same-thread")
+        #expect(fixture.host.launching == nil)
+    }
+
     @Test func aFailureShowsInPlaceFailsWaitingMessagesAndCanRetry() async throws {
         let fixture = await setup(); let host = fixture.host
         host.createSession(agentKind: "codex", cwd: "/repo/app")

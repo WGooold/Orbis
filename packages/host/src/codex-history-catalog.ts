@@ -46,7 +46,17 @@ export class CodexHistoryCatalog {
       const previous = this.#slices.get(store);
       const routes = new Map<string, CodexHistoryRoute>();
       const byId = new Map<string, AgentSessionSummary>();
-      const modes = [...new Set(group.map(item => codexMode(item.kind)))].sort();
+      const availableKinds = new Set(group.map(item => item.kind));
+      // A failed/partial source read cannot revoke a previously verified launch
+      // route. Keep that route as long as the source remains enabled; an explicit
+      // disable removes it from enabled and therefore from the published modes.
+      for (const row of previous?.rows ?? []) {
+        for (const mode of row.codexLaunchModes ?? []) {
+          const kind: CodexRuntimeKind = mode === "desktop" ? "codexDesktop" : "codex";
+          if (enabled.has(kind)) availableKinds.add(kind);
+        }
+      }
+      const modes = [...availableKinds].filter(kind => enabled.has(kind)).map(codexMode).sort();
       for (const category of ["active", "archived"] as const) {
         const archived = category === "archived";
         const readings = group.flatMap(item => item[category] ? [item[category]] : []);

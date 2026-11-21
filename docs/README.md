@@ -6,7 +6,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 ## Current references
 
-- [ADR-0095](adr/0095-codex-unified-catalog-and-launch-modes.md)：App 使用一个 Codex 会话目录，桌面／终端只作为启动方式；Host 与 iOS／Android 首轮实现及定向自动验证已完成，旧版本兼容门禁、部署与用户验收待完成。
+- [ADR-0095](adr/0095-codex-unified-catalog-and-launch-modes.md)：App 使用一个 Codex 会话目录，桌面／终端只作为启动方式；Host 与 iOS／Android 实现及定向自动验证已完成，真实旧版本互通、部署与用户验收待完成。
 - [ADR-0094](adr/0094-host-agent-enablement.md)：Host 保存 Agent 启用状态，桌面与配对 App 均可修改并以 Host 结果对账；定义逐来源默认、设置、生命周期、显示及升级语义。桌面、iOS、Android 和十种来源的生命周期已接入；待设备验收。
 - [ADR-0093](adr/0093-on-demand-chat-browser-preview.md)：App 聊天气泡内按需预览 HTML / SVG；选中文件走有界 `bulk` 范围下载；首版已接入，未部署，待用户验收。
 - [ADR-0086](adr/0086-kimi-code-native-web-integration.md)：通过已开启的本机原生 Web 服务接入 Kimi Code；原生探针已完成，Orbis 适配未实施。

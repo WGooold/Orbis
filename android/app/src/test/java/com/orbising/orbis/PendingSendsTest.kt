@@ -17,8 +17,9 @@ class PendingSendsTest {
     private val start = 1_000_000L
     private val reducer = FixtureRelayReducer()
 
-    private fun send(id: String, session: String = "s1", delivery: String? = null, anchor: String? = null, at: Long = 0) =
-        PendingSend(id, "c-$id", session, "text $id", emptyList(), delivery, start + at, anchor)
+    private fun send(id: String, session: String = "s1", delivery: String? = null, anchor: String? = null, at: Long = 0,
+                     runtime: String = session) =
+        PendingSend(id, "c-$id", session, "text $id", emptyList(), delivery, start + at, anchor, runtimeId = runtime)
 
     private fun message(id: String, role: String = "assistant", client: String? = null) =
         ChatMessage(id, role, listOf(RemoteContent("text", id)), 1, clientMessageId = client)
@@ -37,6 +38,24 @@ class PendingSendsTest {
         pending = pending.observe(present = setOf("codex")).first
         assertTrue(pending.isEmpty())
         assertTrue(pending.observe().first.isEmpty())
+    }
+
+    @Test fun `same native thread ids remain scoped to their runtime owner`() {
+        var pending = outbox(send("terminal", session = "same-thread", runtime = "codex:terminal"),
+            send("desktop", session = "same-thread", runtime = "codex-desktop:desktop"))
+        assertEquals(listOf("terminal"), pending.chatRows("same-thread", "codex:terminal").map(PendingSend::messageId))
+        assertEquals(listOf("desktop"), pending.chatRows("same-thread", "codex-desktop:desktop").map(PendingSend::messageId))
+
+        pending = pending.runtimeLost("codex:terminal", "same-thread")
+        assertEquals(PendingSendState.Unconfirmed, pending["terminal"]?.state)
+        assertEquals(PendingSendState.Sending, pending["desktop"]?.state)
+
+        val observed = pending.reconcile(start + 1_000) { scope ->
+            PendingSendObservation(if (scope.runtimeId == "codex:terminal") "idle" else "running",
+                emptyMap(), 1, true) { id -> scope.runtimeId == "codex:terminal" && id == "terminal" }
+        }.first
+        assertTrue("terminal" !in observed)
+        assertTrue("desktop" in observed)
     }
 
     @Test fun `anchored rows stay before a reply that arrived first`() {
@@ -88,7 +107,7 @@ class PendingSendsTest {
         pending = pending.connectionLost()
         assertEquals(PendingSendState.Unconfirmed, pending["sending"]?.state)
         assertEquals(PendingSendState.Accepted, pending["ok"]?.state)
-        pending = pending.runtimeLost("s1")
+        pending = pending.runtimeLost("s1", "s1")
         assertEquals(PendingSendState.Unconfirmed, pending["ok"]?.state)
         assertEquals(PendingSendState.Failed("会话正在运行，请选择插入或完成后发送"), pending["busy"]?.state)
     }
@@ -174,8 +193,8 @@ class PendingSendsTest {
 
     @Test fun `sessions are isolated`() {
         val pending = outbox(send("mine"), send("other", session = "s2"))
-        val next = pending.reconcile(start) { session ->
-            PendingSendObservation("idle", emptyMap(), 0, true) { id -> session == "s1" && id == "mine" || session == "s2" && id == "nothing" }
+        val next = pending.reconcile(start) { scope ->
+            PendingSendObservation("idle", emptyMap(), 0, true) { id -> scope.sessionId == "s1" && id == "mine" || scope.sessionId == "s2" && id == "nothing" }
         }.first
         assertEquals(setOf("other"), next.keys)
         assertTrue(next.chatRows("s1").isEmpty())
@@ -185,7 +204,7 @@ class PendingSendsTest {
         val runtime = RuntimeSummary("runtime-a", "Agent", "/repo", "idle", "session-1", agentKind = "pi")
         var state = RemoteState(hostId = "host", selectedRuntimeId = "runtime-a", e2eReady = true, connection = RelayConnection.ONLINE,
             runtimes = mapOf("runtime-a" to runtime),
-            pendingSends = outbox(send("app-1", session = "session-1"), send("app-2", session = "session-1")))
+            pendingSends = outbox(send("app-1", session = "session-1", runtime = "runtime-a"), send("app-2", session = "session-1", runtime = "runtime-a")))
         state = reducer.reduce(state, """
           {"type":"runtime.event","runtimeId":"runtime-a","sequence":1,"event":{
             "type":"command.result","commandId":"c-app-2","ok":false,"status":"failure","error":"runtime_busy"}}
@@ -201,7 +220,7 @@ class PendingSendsTest {
         val reconciled = state.reconcilePendingSends(start).first
         assertEquals(setOf("app-2"), reconciled.pendingSends.keys)
 
-        val offline = reducer.reduce(reconciled.copy(pendingSends = reconciled.pendingSends + ("app-3" to send("app-3", session = "session-1"))),
+        val offline = reducer.reduce(reconciled.copy(pendingSends = reconciled.pendingSends + ("app-3" to send("app-3", session = "session-1", runtime = "runtime-a"))),
             """{"type":"runtime.offline","runtimeId":"runtime-a"}""")
         assertEquals(PendingSendState.Unconfirmed, offline.pendingSends["app-3"]?.state)
     }
@@ -219,7 +238,7 @@ class PendingSendsTest {
         val state = RemoteState(hostId = "host", selectedRuntimeId = "runtime-a", e2eReady = true, connection = RelayConnection.ONLINE,
             runtimes = mapOf("runtime-a" to RuntimeSummary("runtime-a", "Codex", "/repo", "running", "session-1", agentKind = "codex")),
             sessionSyncCommands = mapOf("sync-command" to PendingSessionSync("runtime-a", "session-1", "sync", "preview")),
-            pendingSends = outbox(send("app-1", session = "session-1")))
+            pendingSends = outbox(send("app-1", session = "session-1", runtime = "runtime-a")))
         val payload = buildJsonObject {
             put("type", "runtime.event"); put("runtimeId", "runtime-a"); put("sequence", 1)
             put("event", JsonObject((Json.encodeToJsonElement(SessionGraphSnapshot.serializer(), snapshot) as JsonObject) +
@@ -238,7 +257,7 @@ class PendingSendsTest {
     @Test fun `queue panel shows submitting rows until the host queue owns them`() {
         val state = RemoteState(runtimes = mapOf("r" to RuntimeSummary("r", "A", "/repo", "running", "s1")),
             conversations = mapOf("r" to RuntimeConversation(queuedMessages = mapOf("idle" to QueuedMessage("idle", "t", "followUp")))),
-            pendingSends = outbox(send("busy", delivery = "steer"), send("idle")))
+            pendingSends = outbox(send("busy", delivery = "steer", runtime = "r"), send("idle", runtime = "r")))
         assertEquals(listOf("busy" to "submitting"), state.queuePanelItems("r").map { it.queueId to it.state })
     }
 

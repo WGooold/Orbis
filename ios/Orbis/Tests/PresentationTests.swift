@@ -190,6 +190,36 @@ struct PresentationTests {
         #expect(key != localSessionKey(host: host("a", device: "new"), runtime: runtime))
         runtime.sessionId = "next"
         #expect(key != localSessionKey(host: host("a"), runtime: runtime))
+
+        let catalogId = "codex-history:" + String(repeating: "a", count: 64)
+        let terminal = RuntimeSummary(runtimeId: "codex:thread", name: "Codex", cwd: "/repo", status: "idle",
+            sessionId: "thread", agentKind: "codex", codexCatalogId: catalogId)
+        let desktop = RuntimeSummary(runtimeId: "codex-desktop:thread", name: "Codex", cwd: "/repo", status: "idle",
+            sessionId: "codex-desktop:thread", agentKind: "codexDesktop", codexCatalogId: catalogId)
+        #expect(localSessionKey(host: host("a"), runtime: terminal) == localSessionKey(host: host("a"), runtime: desktop))
+        var otherStore = desktop
+        otherStore.codexCatalogId = "codex-history:" + String(repeating: "b", count: 64)
+        #expect(localSessionKey(host: host("a"), runtime: terminal) != localSessionKey(host: host("a"), runtime: otherStore))
+    }
+
+    @Test func launchRuntimeResolutionUsesCatalogAndSelectedModeWhenNativeIdsCollide() {
+        let selectedCatalog = "codex-history:" + String(repeating: "a", count: 64)
+        let otherCatalog = "codex-history:" + String(repeating: "b", count: 64)
+        let terminal = RuntimeSummary(runtimeId: "codex:same-thread", name: "Codex", cwd: "/repo", status: "idle",
+            sessionId: "same-thread", agentKind: "codex", codexCatalogId: selectedCatalog)
+        let desktop = RuntimeSummary(runtimeId: "codex-desktop:same-thread", name: "Codex", cwd: "/repo", status: "idle",
+            sessionId: "same-thread", agentKind: "codexDesktop", codexCatalogId: otherCatalog)
+        #expect(runtimeMatchesLaunch(terminal, sessionId: "same-thread", codexCatalogId: selectedCatalog,
+            launchMode: .desktop, agentKind: "codexDesktop" ) == false)
+        #expect(runtimeMatchesLaunch(desktop, sessionId: "same-thread", codexCatalogId: selectedCatalog,
+            launchMode: .desktop, agentKind: "codexDesktop" ) == false)
+
+        let selectedDesktop = RuntimeSummary(runtimeId: "codex-desktop:selected", name: "Codex", cwd: "/repo", status: "idle",
+            sessionId: "same-thread", agentKind: "codexDesktop", codexCatalogId: selectedCatalog)
+        #expect(runtimeMatchesLaunch(selectedDesktop, sessionId: "same-thread", codexCatalogId: selectedCatalog,
+            launchMode: .desktop, agentKind: "codexDesktop"))
+        #expect(!runtimeMatchesLaunch(selectedDesktop, sessionId: "same-thread", codexCatalogId: selectedCatalog,
+            launchMode: .terminal, agentKind: "codex"))
     }
 
     @Test func fencedCodeStaysVerbatimEvenWhileStreaming() {

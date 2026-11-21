@@ -25,11 +25,12 @@ class LaunchLedgerTest {
         """{"type":"device.ready","deviceId":"phone-1","modelEpoch":"epoch","runtimes":[]}""")
 
     /** 与 HostConnection.activateTarget 相同：登记请求、创建启动操作并立即进入启动页，写入后登记。 */
-    private fun launch(state: RemoteState, target: Map<String, String>, title: String = "app"): Pair<RemoteState, String> {
+    private fun launch(state: RemoteState, target: Map<String, String>, title: String = "app",
+                       codexLaunchMode: String? = null): Pair<RemoteState, String> {
         val requestId = "launch-${++counter}"
         val registered = state.copy(sessionActivateRequests = state.sessionActivateRequests + requestId,
             sessionActivateTargets = target["sessionId"]?.takeIf { target["type"] == "resume" }?.let { mapOf(requestId to it) } ?: emptyMap())
-        val (created, creation) = registered.createLaunch(requestId, target, title, System.currentTimeMillis())
+        val (created, creation) = registered.createLaunch(requestId, target, title, System.currentTimeMillis(), codexLaunchMode = codexLaunchMode)
         assertTrue(creation is LedgerCreation.Created)
         return created.ledgerWritten(requestId, System.currentTimeMillis()) to requestId
     }
@@ -108,6 +109,50 @@ class LaunchLedgerTest {
         assertEquals("rt-native-configured", state.selectedRuntimeId)
         assertEquals(1, state.readySends().size)
         assertEquals("native-configured", state.pendingSends.getValue("first-message").sessionId)
+    }
+
+    @Test fun unifiedResumeBindsWaitingSendToExactCatalogAndLaunchModeForEitherEventOrder() {
+        val selectedCatalog = "codex-history:${"a".repeat(64)}"
+        val otherCatalog = "codex-history:${"b".repeat(64)}"
+        val selectedRuntime = RuntimeSummary("codex-desktop:selected", "Codex", "/repo/app", "idle",
+            sessionId = "same-thread", agentKind = "codexDesktop", codexCatalogId = selectedCatalog)
+        val otherRuntime = RuntimeSummary("codex:same-thread", "Codex", "/repo/app", "idle",
+            sessionId = "same-thread", agentKind = "codex", codexCatalogId = otherCatalog)
+
+        for (runtimeArrivesBeforeAcknowledgement in listOf(false, true)) {
+            var state = setup().copy(unifiedCodexHistory = true,
+                runtimes = if (runtimeArrivesBeforeAcknowledgement) mapOf(otherRuntime.runtimeId to otherRuntime,
+                    selectedRuntime.runtimeId to selectedRuntime) else emptyMap())
+            val (created, requestId) = launch(state,
+                mapOf("type" to "resume", "sessionId" to selectedCatalog, "agentKind" to "codex"),
+                codexLaunchMode = "desktop")
+            state = created
+            val launch = state.launching!!
+            state = state.createWaitingSend("resume-command", "resume-message", launch.placeholder, selectedCatalog,
+                "resume on desktop", null, emptyList(), emptyList(), 1_000, listOf(state.ledger.operation(requestId)!!)).first
+
+            state = reduce(state, """{"type":"session.activated","requestId":"$requestId","sessionId":"same-thread",
+                "codexCatalogId":"$selectedCatalog","agentKind":"codexDesktop","spawnMode":"tui"}""")
+            if (!runtimeArrivesBeforeAcknowledgement) {
+                state = reduce(state, """{"type":"runtime.online","runtime":{"runtimeId":"${otherRuntime.runtimeId}",
+                    "sessionId":"same-thread","name":"Codex","cwd":"/repo/app","status":"idle",
+                    "agentKind":"codex","codexCatalogId":"$otherCatalog"}}""")
+                assertTrue(state.readySends().isEmpty())
+                state = reduce(state, """{"type":"runtime.online","runtime":{"runtimeId":"${selectedRuntime.runtimeId}",
+                    "sessionId":"same-thread","name":"Codex","cwd":"/repo/app","status":"idle",
+                    "agentKind":"codexDesktop","codexCatalogId":"$selectedCatalog"}}""")
+            }
+
+            val readySends = state.readySends()
+            assertEquals("launch should release exactly one send after the selected Runtime is confirmed; " +
+                "runtimeArrivesBeforeAcknowledgement=$runtimeArrivesBeforeAcknowledgement", 1, readySends.size)
+            val operation = readySends.single()
+            assertEquals(LedgerPayload.Send(selectedRuntime.runtimeId, "same-thread", "resume-message"), operation.payload)
+            assertEquals(OperationKinds.sendGroup(selectedCatalog), operation.group)
+            assertEquals(selectedRuntime.runtimeId, state.pendingSends.getValue("resume-message").runtimeId)
+            assertEquals("same-thread", state.pendingSends.getValue("resume-message").sessionId)
+            assertEquals("same-thread", state.launchSessions[selectedCatalog])
+        }
     }
 
     // Leaving the failed page retains its ledger operation; admission deduplication must not hide it forever.
@@ -193,7 +238,8 @@ class LaunchLedgerTest {
         assertEquals("new-1", state.pendingSends.values.single().sessionId)
         state = online(state, "new-1")
         val ready = state.readySends().single().payload as LedgerPayload.Send
-        assertEquals("new-1", state.launchSessions[ready.sessionId])
+        assertEquals("new-1", ready.sessionId)
+        assertEquals("new-1", state.launchSessions[launch.placeholder])
     }
 
     /** 真实 Host 先广播 Runtime 上线，再回复同一 requestId 的 session.activated；等待中的消息同样要在上线后写入（iOS 同名用例）。 */
@@ -207,7 +253,8 @@ class LaunchLedgerTest {
         state = activated(state, id, "new-1")
         assertEquals("new-1", state.pendingSends.values.single().sessionId)
         val ready = state.readySends().single().payload as LedgerPayload.Send
-        assertEquals("new-1", state.launchSessions[ready.sessionId])
+        assertEquals("new-1", ready.sessionId)
+        assertEquals("new-1", state.launchSessions[launch.placeholder])
         assertEquals("rt-new-1", state.selectedRuntimeId)
     }
 
