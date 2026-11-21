@@ -112,23 +112,162 @@ struct LaunchLedgerTests {
         #expect(fixture.host.connection == .secured)
     }
 
-    // SC96: resolving a previous first sentence must allow a fresh launch using
-    // the still-valid configuration; the admission hint is not a configuration failure.
-    @Test func resolvingPreviousLaunchDoesNotLeaveConfigurationBlocked() async throws {
+    @Test func rejectedLaunchAllowsANewIdWithoutVerificationOrResending() async throws {
         let fixture = Fixture(); try await configured(fixture)
         #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first"))
         await fixture.store.waitForPendingEvents()
         let id = try #require(fixture.host.launching?.requestId)
-        let messageId = try #require(fixture.host.pendingSends.items.first?.messageId)
         await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "failed", "error": "launch unavailable"])
+        #expect(fixture.host.launching?.rejected == true)
         fixture.host.stopFollowingLaunch()
-        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
-        await fixture.store.waitForPendingEvents()
-        #expect(fixture.host.sessionConfigurationError == nil)
-        #expect(fixture.host.sessionLaunchError == L10n.tr("请先核对上一次启动及首句结果"))
-        fixture.host.discardPendingSend(messageId)
-        fixture.host.stopFollowingLaunch()
+        #expect(fixture.host.recoveredLaunchDraft?.text == "first")
         #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
+        await fixture.store.waitForPendingEvents()
+        let next = try #require(fixture.host.launching?.requestId)
+        #expect(next != id)
+        #expect(fixture.host.sessionConfigurationError == nil)
+        #expect(fixture.host.sessionLaunchError == nil)
+        #expect(fixture.host.pendingSends.items.map(\.text) == ["second"])
+        #expect(fixture.transport.sent.filter { $0["type"] as? String == "session.launch" }.count == 2)
+        #expect(!fixture.transport.sent.contains { $0["type"] as? String == "session.launch.read" })
+        #expect(fixture.transport.userMessages.isEmpty)
+    }
+
+    @Test func endingUnknownLaunchReturnsADraftAndIgnoresLateReadiness() async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "unsent first"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        #expect(await !fixture.host.endConfiguredLaunch(id))
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "unknown", "error": "launch timed out"])
+        #expect(await !fixture.host.endConfiguredLaunch("stale"))
+        #expect(await fixture.host.endConfiguredLaunch(id))
+        #expect(fixture.host.launching == nil)
+        #expect(fixture.host.pendingSends.items.isEmpty)
+        #expect(fixture.host.recoveredLaunchDraft?.text == "unsent first")
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "new input"))
+        await fixture.store.waitForPendingEvents()
+        let next = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "ready", "sessionId": "late-old-session"])
+        await fixture.transport.online("late-old-session")
+        #expect(fixture.host.launching?.requestId == next)
+        #expect(fixture.host.launching?.sessionId == nil)
+        #expect(fixture.transport.userMessages.isEmpty)
+    }
+
+    // LAUNCH-WAIT-02: failure to save abandonment leaves the same recovery record
+    // and first message. A successful explicit retry stops recovery across restart.
+    @Test func endWaitWriteFailureKeepsTheOriginalLaunchUntilDurableRetry() async throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("orbis-end-wait-io-" + UUID().uuidString)
+        defer { try? files.removeItem(at: root) }
+        let fixture = Fixture(root: root); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "keep my draft"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        let firstId = try #require(fixture.host.pendingSends.items.first?.messageId)
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "unknown"])
+        let directory = root.appendingPathComponent("ConfiguredLaunches", isDirectory: true)
+        let journal = try #require(files.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first)
+        let original = try Data(contentsOf: journal)
+        try files.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        defer { try? files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+
+        #expect(await !fixture.host.endConfiguredLaunch(id))
+        #expect(fixture.host.launching?.requestId == id)
+        #expect(fixture.host.launching?.failure == L10n.tr("无法保存启动恢复记录，请重试"))
+        #expect(fixture.host.pendingSends.item(firstId)?.text == "keep my draft")
+        #expect(fixture.host.recoveredLaunchDraft == nil)
+        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "invalid duplicate"))
+        await fixture.store.waitForPendingEvents()
+        #expect(try Data(contentsOf: journal) == original)
+
+        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        #expect(await fixture.host.endConfiguredLaunch(id))
+        #expect(fixture.host.launching == nil)
+        #expect(fixture.host.pendingSends.items.isEmpty)
+        let restarted = Fixture(root: root)
+        try await configured(restarted)
+        #expect(restarted.host.recoveredLaunchDraft?.text == "keep my draft")
+        #expect(!restarted.transport.sent.contains { $0["type"] as? String == "session.launch.read" })
+        await restarted.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "absent"])
+        #expect(!restarted.transport.sent.contains { $0["type"] as? String == "session.launch" })
+        #expect(restarted.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "edited draft"))
+        #expect(restarted.host.launching?.requestId != id)
+        await restarted.store.waitForPendingEvents()
+        #expect(restarted.transport.userMessages.isEmpty)
+    }
+
+    // LAUNCH-WAIT-02: replies already queued behind an IO write cannot release the
+    // first sentence or resend the launch once abandonment has been admitted.
+    @Test(arguments: ["ready", "absent"]) func endWaitFencesAResultAlreadyWaitingForDisk(phase: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-end-wait-late-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = MainThreadWorkGate()
+        let fixture = Fixture(root: root, localStores: HostLocalStores(io: HostLocalIO(beforeIO: { gate.work() })))
+        try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "never send me"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "unknown"])
+        await fixture.transport.online("native-before-confirmation")
+        let startCount = fixture.transport.sent.filter { $0["type"] as? String == "session.launch" }.count
+        gate.arm()
+        fixture.transport.receive?(["type": "session.launch.result", "launchId": id, "phase": phase,
+                                    "sessionId": "native-before-confirmation"], "ctl")
+        try #require(await gate.waitEntered())
+        let ending = Task { await fixture.host.endConfiguredLaunch(id) }
+        // Rendezvous with the admitted transition before unblocking the earlier write.
+        for _ in 0..<100 where fixture.host.launching?.endingWait != true { await Task.yield() }
+        #expect(fixture.host.launching?.endingWait == true)
+        #expect(fixture.host.recoveredLaunchDraft == nil)
+        #expect(await !fixture.host.endConfiguredLaunch(id))
+        if phase == "ready" {
+            fixture.host.selectRuntime("rt-native-before-confirmation")
+        }
+        gate.release.signal()
+        #expect(await ending.value == (phase == "absent"))
+        await fixture.store.waitForPendingEvents()
+        #expect(fixture.host.recoveredLaunchDraft?.text == "never send me")
+        #expect(fixture.host.pendingSends.items.isEmpty)
+        #expect(fixture.transport.userMessages.isEmpty)
+        #expect(fixture.transport.sent.filter { $0["type"] as? String == "session.launch" }.count == startCount)
+        if phase == "ready" { #expect(fixture.host.selectedRuntimeId == "rt-native-before-confirmation") }
+    }
+
+    // Host rollback can report the ledger record absent after it already supplied
+    // a native session identity. Keep verifying that identity; never create again.
+    @Test func absentReceiptCannotRecreateAKnownNativeSession() async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "keep waiting"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "ready", "sessionId": "known-native"])
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "absent"])
+        #expect(fixture.host.launching?.sessionId == "known-native")
+        #expect(fixture.host.launching?.unconfirmed == true)
+        #expect(fixture.transport.sent.filter { $0["type"] as? String == "session.launch" }.count == 1)
+        #expect(fixture.transport.userMessages.isEmpty)
+    }
+
+    // An older Host cannot query the original configured ID. The no-message entry
+    // still blocks while it is uncertain, then consumes the durable draft on a fresh launch.
+    @Test func legacyLaunchCannotBypassAnUncertainConfiguredRecord() async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "pending draft"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "unknown"])
+        await fixture.transport.ready()
+        fixture.host.createSession(agentKind: "codex", cwd: "/repo/app")
+        #expect(fixture.transport.activations.isEmpty)
+        #expect(await fixture.host.endConfiguredLaunch(id))
+        #expect(fixture.host.recoveredLaunchDraft?.text == "pending draft")
+        fixture.host.createSession(agentKind: "codex", cwd: "/repo/app")
+        #expect(fixture.transport.activations.count == 1)
+        #expect(fixture.host.recoveredLaunchDraft == nil)
+        await fixture.store.waitForPendingEvents()
+        #expect(fixture.transport.userMessages.isEmpty)
     }
 
     // SC97: invalid first-sentence text may be corrected immediately, without a
@@ -220,7 +359,7 @@ struct LaunchLedgerTests {
         await fixture.store.waitForPendingEvents()
         let id = try #require(fixture.host.launching?.requestId)
         await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id,
-            "phase": "failed", "error": "launch unavailable"])
+            "phase": "unknown", "error": "launch unavailable"])
         fixture.host.stopFollowingLaunch()
         #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
         await fixture.store.waitForPendingEvents()
@@ -241,7 +380,7 @@ struct LaunchLedgerTests {
         await fixture.store.waitForPendingEvents()
         let id = try #require(fixture.host.launching?.requestId)
         await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id,
-            "phase": "failed", "error": "launch unavailable"])
+            "phase": "unknown", "error": "launch unavailable"])
         fixture.host.stopFollowingLaunch()
         #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
         await fixture.store.waitForPendingEvents()
@@ -425,8 +564,9 @@ struct LaunchLedgerTests {
         #expect(original.host.pendingSends.items.first?.state == .failed("会话启动未完成，消息未发送"))
         let recovered = Fixture(root: root)
         await recovered.transport.emit(["type": "device.ready", "modelEpoch": "new-epoch", "sessionConfiguration": 1, "runtimes": []])
-        #expect(recovered.host.pendingSends.items.first?.text == "preserve rejected sentence")
-        #expect(recovered.host.launching?.failure == "stale catalog")
+        #expect(recovered.host.recoveredLaunchDraft?.text == "preserve rejected sentence")
+        #expect(recovered.host.pendingSends.items.isEmpty)
+        #expect(recovered.host.launching == nil)
         #expect(recovered.transport.sent.allSatisfy { !["session.launch", "session.launch.read", "session.activate"].contains($0["type"] as? String ?? "") })
     }
 

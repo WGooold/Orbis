@@ -41,13 +41,27 @@ actor HostLocalIO {
 /// accepted write; identity checks prevent late cleanup from erasing a new launch.
 @MainActor
 final class ConfiguredLaunchJournal {
+    struct RecoveredDraft {
+        let agentKind: String
+        let cwd: String
+        let text: String
+    }
     private(set) var snapshot: [String: Any]?
     private(set) var loaded = false
     private var loadTask: Task<Void, Never>?
     private var tail: Task<Bool, Never>?
     private let io: HostLocalIO
     private let url: URL
+    private(set) var retiringId: String?
     var launchId: String? { snapshot?["launchId"] as? String }
+    var pendingId: String? { isDraft ? nil : launchId }
+    var blocksNewLaunch: Bool { !loaded || retiringId != nil || (snapshot != nil && !isDraft) }
+    func acceptsResult(for id: String) -> Bool { pendingId == id && retiringId == nil }
+    private var isDraft: Bool { snapshot?["rejected"] as? Bool == true || snapshot?["abandoned"] as? Bool == true }
+    var recoveredDraft: RecoveredDraft? {
+        guard isDraft, let agent = snapshot?["agentKind"] as? String, let cwd = snapshot?["cwd"] as? String else { return nil }
+        return RecoveredDraft(agentKind: agent, cwd: cwd, text: snapshot?["firstMessage"] as? String ?? "")
+    }
 
     init(url: URL, io: HostLocalIO = HostLocalIO()) {
         self.url = url; self.io = io
@@ -60,9 +74,44 @@ final class ConfiguredLaunchJournal {
     func waitLoaded() async { await loadTask?.value }
     func flush() async { await waitLoaded(); _ = await tail?.value }
 
+    /// A failed or explicitly abandoned record remains recoverable as a draft, but can be replaced by a new launch.
+    func reserve(_ value: [String: Any]) -> Task<Bool, Never>? {
+        guard !blocksNewLaunch else { return nil }
+        return update(expectedId: launchId, value: value)
+    }
+
+    /// Freeze recovery immediately, but do not release the old launch or publish a draft
+    /// until the replacement is durable. A failed write leaves the original snapshot intact.
+    func abandon(_ id: String) -> Task<Bool, Never>? {
+        guard loaded, launchId == id, retiringId == nil else { return nil }
+        if isDraft { return Task { true } }
+        return retire(id, adding: ["abandoned": true])
+    }
+
+    func reject(_ id: String, error: String) -> Task<Bool, Never>? {
+        guard acceptsResult(for: id), snapshot?["sessionId"] == nil else { return nil }
+        return retire(id, adding: ["rejected": true, "error": error])
+    }
+
+    private func retire(_ id: String, adding fields: [String: Any]) -> Task<Bool, Never>? {
+        guard loaded, launchId == id, retiringId == nil, let saved = snapshot else { return nil }
+        let draft = saved.merging(fields) { _, new in new }
+        retiringId = id
+        let prior = tail, io = io, url = url
+        let task = Task { [weak self] in
+            _ = await prior?.value
+            let saved = await io.writeJournal(draft, to: url)
+            if saved { self?.snapshot = draft }
+            self?.retiringId = nil
+            return saved
+        }
+        tail = task
+        return task
+    }
+
     @discardableResult
     func update(expectedId: String?, value: [String: Any]?) -> Task<Bool, Never>? {
-        guard loaded, launchId == expectedId else { return nil }
+        guard loaded, launchId == expectedId, retiringId == nil else { return nil }
         snapshot = value
         let prior = tail, io = io, url = url
         let task = Task {

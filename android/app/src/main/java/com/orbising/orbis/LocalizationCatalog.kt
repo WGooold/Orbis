@@ -1304,6 +1304,7 @@ internal object LocalizationCatalog {
         "查询时间：" to "Queried at: ",
         "查询订阅配额" to "Check subscription quota",
         "核对会话状态" to "Check session status",
+        "核对原启动" to "Check previous launch",
         "核对结果" to "Check result",
         "核对送达状态" to "Check delivery status",
         "核对配置" to "Check configuration",
@@ -1383,9 +1384,9 @@ internal object LocalizationCatalog {
         "此交互需要在电脑端完成。" to "Complete this interaction on the computer.",
         "此会话属于 {0}，当前使用 {1}。请在设置页切换到 {2}，再打开会话。" to "This session belongs to {0}, but {1} is active. Switch to {2} in Settings, then open the session.",
         "此会话正在运行，请从会话列表进入" to "This session is running. Open it from the session list.",
-        "此内容已加入其他会话草稿" to "This import already belongs to another session draft",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "此内容已加入其他会话草稿" to "This import already belongs to another session draft",
         "此提问已超时" to "This question timed out",
         "此文件无法预览" to "This file can’t be previewed",
         "此文件没有文本差异" to "No text diff for this file",
@@ -1535,9 +1536,9 @@ internal object LocalizationCatalog {
         "电脑端默认" to "Computer default",
         "电脑路径" to "Computer path",
         "电脑连接信息已变化，请重新配对" to "Your computer's connection information has changed. Pair again.",
-        "电脑，当前 {0}" to "Computer, currently {0}",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "电脑，当前 {0}" to "Computer, currently {0}",
         "监听" to "Monitor",
         "目录" to "Folder",
         "目录不可读" to "Folder cannot be read",
@@ -1687,9 +1688,9 @@ internal object LocalizationCatalog {
         "该工具所属会话当前未连接，无法读取未缓存的详情" to "This tool's session is disconnected. Uncached details cannot be loaded.",
         "该节点没有可预览的消息内容。" to "No message content to preview at this node.",
         "详情所属会话已变化，请重新打开" to "The details' session changed. Reopen them.",
-        "详情所属会话已变化，请重新打开。" to "The details' session changed. Reopen them.",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "详情所属会话已变化，请重新打开。" to "The details' session changed. Reopen them.",
         "详情范围或版本无效" to "Invalid details range or version",
         "详情读取已取消" to "Details read cancelled",
         "详情读取已取消。" to "Details read cancelled.",
@@ -1799,6 +1800,7 @@ internal object LocalizationCatalog {
         "返回" to "Back",
         "返回会话目录" to "Back to sessions",
         "返回会话筛选" to "Back to session filters",
+        "返回新建" to "Back to new session",
         "返回电脑菜单" to "Back to computer menu",
         "返回聊天" to "Back to chat",
         "还原识别原文" to "Restore original transcript",
@@ -1838,10 +1840,10 @@ internal object LocalizationCatalog {
         "连接已断开，草稿已保留，连接后可重试" to "Disconnected. Draft saved. Retry after reconnecting.",
         "连接已断开，请刷新以确认操作结果" to "Disconnected. Refresh to check the operation's result.",
         "连接已断开，请重新查询配额" to "Disconnected. Check quota again.",
-        "连接已断开，请重新读取" to "Disconnected. Reload.",
-        "连接已断开，请重试。" to "Disconnected. Try again.",
     )
     private fun part12(): Map<String, String> = mapOf(
+        "连接已断开，请重新读取" to "Disconnected. Reload.",
+        "连接已断开，请重试。" to "Disconnected. Try again.",
         "连接已断开，连接后可应用设置" to "Disconnected. Apply settings after reconnecting.",
         "连接已断开，连接后可重试" to "Disconnected. Retry after reconnecting.",
         "连接延迟" to "Connection latency",

@@ -79,48 +79,72 @@ internal fun RemoteState.configuredSessionLaunchRequest(id: String, config: Sess
 internal fun LaunchState.canAbandonConfiguredLaunch(journalLaunchId: String?): Boolean =
     requestId == journalLaunchId && (failure != null || unconfirmed)
 
+internal fun RemoteState.markConfiguredLaunchUnconfirmed(id: String, reason: String? = null): RemoteState = copy(
+    launching = launching?.let { if (it.requestId == id) it.copy(unconfirmed = true, failure = reason) else it },
+    sessionActivateRequests = sessionActivateRequests - id,
+)
+
 /** Leaving an uncertain page preserves its ledger identity; reopening must not attempt to create it again. */
-internal fun RemoteState.restoreConfiguredLaunch(id: String, fields: Map<String, String>, now: Long): RemoteState {
+internal fun RemoteState.restoreConfiguredLaunch(id: String, fields: Map<String, String>, now: Long, codexLaunchMode: String? = null): RemoteState {
     if (launching != null) return this
     val existing = ledger.operation(id)
-    if (existing == null) return createLaunch(id, fields, L10n.tr("新会话"), now).first
+    if (existing == null) {
+        val restored = createLaunch(id, fields, L10n.tr("新会话"), now, codexLaunchMode = codexLaunchMode).first
+        return restored.copy(launching = restored.launching?.copy(unconfirmed = true))
+    }
     val launch = LaunchState(id, "launch:$id", fields, L10n.tr("新会话"), fields["cwd"].orEmpty(), fields["agentKind"], null,
-        unconfirmed = true)
-    return copy(launching = launch, selectedRuntimeId = launch.placeholder)
+        unconfirmed = true, codexLaunchMode = codexLaunchMode)
+    return copy(launching = launch, selectedRuntimeId = launch.placeholder, selectedOfflineSessionId = null)
 }
 
 /** Only explicit abandonment releases an uncertain launch; an unreported native identity is not absence. */
 internal fun RemoteState.abandonConfiguredLaunchState(id: String, firstId: String?): RemoteState {
     val launch = launching?.takeIf { it.requestId == id } ?: return this
     if (launch.failure == null && !launch.unconfirmed) return this
+    return retireConfiguredLaunchState(id, firstId)
+}
+
+/** Remove only the superseded attempt, even when its launch page has already closed. */
+internal fun RemoteState.retireConfiguredLaunchState(id: String, firstId: String?): RemoteState {
+    val placeholder = "launch:$id"
     // Send operations use command IDs, not message IDs. Release every send owned
     // by this placeholder, including restored rows without a ledger operation.
     val abandonedSends = ledger.operations.filter { op ->
         val send = op.payload as? LedgerPayload.Send
-        send != null && (send.sessionId == launch.placeholder || send.messageId == firstId && id in op.prerequisites)
+        send != null && (send.sessionId == placeholder || send.runtimeId == placeholder || id in op.prerequisites)
     }
     val messageIds = abandonedSends.map { (it.payload as LedgerPayload.Send).messageId }.toSet() +
-        pendingSends.values.filter { it.sessionId == launch.placeholder }.map { it.messageId }
+        pendingSends.values.filter { it.sessionId == placeholder || it.runtimeId == placeholder || it.messageId == firstId }.map { it.messageId }
     val remainingLedger = abandonedSends.fold(ledger.remove(id)) { current, op -> current.remove(op.opId) }
-    return copy(launching = null, ledger = remainingLedger, sessionActivateRequests = sessionActivateRequests - id,
-        pendingSends = pendingSends - messageIds,
-        selectedRuntimeId = selectedRuntimeId.takeUnless { it == launch.placeholder }, activatedSessionToOpen = null)
+    return copy(launching = launching?.takeUnless { it.requestId == id }, ledger = remainingLedger,
+        sessionActivateRequests = sessionActivateRequests - id, pendingSends = pendingSends - messageIds,
+        launchSessions = launchSessions - placeholder,
+        selectedRuntimeId = selectedRuntimeId.takeUnless { it == placeholder },
+        activatedSessionToOpen = if (launching?.requestId == id) null else activatedSessionToOpen)
 }
 
 /** S51: only the matching native configuration confirmation can release the optimistic launch. */
 internal fun RemoteState.withConfiguredLaunchResult(message: JsonObject): RemoteState {
-    val id = message["launchId"]?.jsonPrimitive?.contentOrNull ?: return this
-    val current = launching?.takeIf { it.requestId == id } ?: return this
-    val phase = message["phase"]?.jsonPrimitive?.contentOrNull
+    val id = (message["launchId"] as? JsonPrimitive)?.contentOrNull ?: return this
+    val current = launching?.takeIf { it.requestId == id && !it.endingWait } ?: return this
+    val phase = (message["phase"] as? JsonPrimitive)?.contentOrNull
+    val now = System.currentTimeMillis()
     if (phase == "ready") {
-        val session = message["sessionId"]?.jsonPrimitive?.contentOrNull ?: return this
-        return reduceSessionActivated(this, buildJsonObject {
+        val session = (message["sessionId"] as? JsonPrimitive)?.contentOrNull ?: return this
+        // A recovery reply can be the first proof of the operation after a process restart.
+        return reduceSessionActivated(ledgerWritten(id, now), buildJsonObject {
             put("type", "session.activated"); put("requestId", id); put("sessionId", session)
-            put("agentKind", current.agentKind ?: "codex"); put("spawnMode", message["spawnMode"] ?: JsonPrimitive("tui"))
+            put("agentKind", current.agentKind ?: "codex"); put("spawnMode", (message["spawnMode"] as? JsonPrimitive)?.contentOrNull ?: "tui")
         })
     }
-    if (phase in setOf("unknown", "failed", "absent")) return copy(launching = current.copy(unconfirmed = true,
-        failure = message["error"]?.jsonPrimitive?.contentOrNull))
+    val error = (message["error"] as? JsonPrimitive)?.contentOrNull
+    if (phase == "failed") {
+        val failure = error ?: L10n.tr("启动失败")
+        return copy(launching = current.copy(unconfirmed = false, failure = failure), sessionActivateRequests = sessionActivateRequests - id)
+            .ledgerWritten(id, now).ledgerReceipt(id, LedgerReceipt.Failed(LedgerRejection("configuration_rejected", failure)), now)
+    }
+    if (phase == "unknown") return markConfiguredLaunchUnconfirmed(id, error)
+    if (phase == "absent") return copy(launching = current.copy(unconfirmed = true, failure = error))
     return this
 }
 

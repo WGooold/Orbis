@@ -782,8 +782,9 @@ data class LaunchState(
     val following: Boolean = true,
     val spawnModeOverride: String? = null,
     val codexLaunchMode: String? = null,
+    val endingWait: Boolean = false,
 ) {
-    val status: String get() = if (failure != null) "error" else if (unconfirmed) "launch_unconfirmed" else "starting"
+    val status: String get() = if (unconfirmed) "launch_unconfirmed" else if (failure != null) "error" else "starting"
     /** 启动期间聊天页的占位 Runtime：草稿与消息归属它。 */
     fun runtime() = RuntimeSummary(placeholder, title, cwd, status, resumed ?: placeholder, agentKind = agentKind,
         codexCatalogId = resumed?.takeIf(::isCodexCatalogId))

@@ -23,6 +23,7 @@ struct ChatTranscriptMount: Equatable {
     let sendFlight: MessageSendFlight
     let acceptedSends: PassthroughSubject<Set<String>, Never>
     let onBack: () -> Void
+    let onReturnToNewSession: () -> Void
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.mountToken == rhs.mountToken &&
@@ -38,10 +39,10 @@ private struct ChatTranscriptRegion: View {
 
     init(model: ChatScreenModel, actions: ChatSessionActions, mountToken: UUID,
          setComposerFocused: @escaping (Bool) -> Void, sendFlight: MessageSendFlight,
-         acceptedSends: PassthroughSubject<Set<String>, Never>, onBack: @escaping () -> Void) {
+         acceptedSends: PassthroughSubject<Set<String>, Never>, onBack: @escaping () -> Void, onReturnToNewSession: @escaping () -> Void) {
         let mount = ChatTranscriptMount(model: model, actions: actions, mountToken: mountToken,
             setComposerFocused: setComposerFocused, sendFlight: sendFlight,
-            acceptedSends: acceptedSends, onBack: onBack)
+            acceptedSends: acceptedSends, onBack: onBack, onReturnToNewSession: onReturnToNewSession)
         proposedMount = mount
         _content = State(initialValue: ChatTranscriptView(mount: mount).equatable())
     }
@@ -68,6 +69,7 @@ struct ChatView: View {
     let onBack: () -> Void
     let onHistory: () -> Void
     let onDownloads: () -> Void
+    let onReturnToNewSession: () -> Void
     @State private var sendFlight = MessageSendFlight()
     @State private var downloadFlight = DownloadFlight()
     @State private var acceptedSends = PassthroughSubject<Set<String>, Never>()
@@ -76,11 +78,12 @@ struct ChatView: View {
     @State private var composerFocus = ChatComposerFocus()
     private var accent: Color { OrbisPalette(scheme).agent(model.shell.kind) }
 
-    init?(model: ChatScreenModel, onBack: @escaping () -> Void, onHistory: @escaping () -> Void, onDownloads: @escaping () -> Void) {
+    init?(model: ChatScreenModel, onBack: @escaping () -> Void, onHistory: @escaping () -> Void,
+          onDownloads: @escaping () -> Void, onReturnToNewSession: @escaping () -> Void) {
         let actions = model.actions
         guard let runtime = actions.runtime else { return nil }
         self.model = model; self.actions = actions; fallbackRuntime = runtime
-        self.onBack = onBack; self.onHistory = onHistory; self.onDownloads = onDownloads
+        self.onBack = onBack; self.onHistory = onHistory; self.onDownloads = onDownloads; self.onReturnToNewSession = onReturnToNewSession
     }
     var body: some View {
         let _ = ChatSchedulingTrace.regionBody(.page)
@@ -104,7 +107,7 @@ struct ChatView: View {
                     .accessibilityHidden(reading && !controlsVisible)
                 ChatTranscriptRegion(model: model, actions: actions, mountToken: mountToken,
                                      setComposerFocused: { composerFocus.focused = $0 }, sendFlight: sendFlight,
-                                     acceptedSends: acceptedSends, onBack: onBack).id(mountToken)
+                                     acceptedSends: acceptedSends, onBack: onBack, onReturnToNewSession: onReturnToNewSession).id(mountToken)
                 ChatComposerView(model: model, actions: actions, fallbackRuntime: fallbackRuntime,
                                  composerFocus: composerFocus, sendFlight: sendFlight, onHistory: onHistory,
                                  onAcceptedSend: { acceptedSends.send($0) }).equatable()

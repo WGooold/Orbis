@@ -1749,6 +1749,8 @@
   "结束本次等待？": "Stop waiting for this launch?",
   "电脑上的会话可能仍在启动。结束等待后首句会保留为草稿；再次创建可能打开另一个会话。": "The session on your computer may still be starting. Your first message will be kept as a draft. Creating again may open another session.",
   "结束等待": "Stop waiting",
+  "返回新建": "Back to new session",
+  "核对原启动": "Check previous launch",
   "后台任务清单不完整，暂不能关闭会话。": "The background task list is incomplete. This session cannot be closed yet.",
   "后台任务状态待核对，暂不能关闭会话。": "Background task status is unconfirmed. This session cannot be closed yet.",
   "后台任务尚未结束，暂不能关闭会话。": "Background tasks are still active. This session cannot be closed yet.",

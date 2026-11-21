@@ -744,6 +744,7 @@ internal fun RemoteState.sessionGraphForRuntime(runtimeId: String): SessionGraph
 
 /** Resolve the original launch path for a pending send; never pick an arbitrary Runtime with the same native ID. */
 internal fun RemoteState.runtimeForLaunch(launch: LaunchState, sessionId: String): RuntimeSummary? {
+    if (launch.endingWait) return null
     val targetKind = launch.codexLaunchMode?.let(::codexModeKind) ?: launch.target["agentKind"]
     val candidates = runtimes.values.filter { runtime -> runtime.sessionId == sessionId &&
         (launch.resumed?.takeIf(::isCodexCatalogId)?.let { runtime.codexCatalogId == it } ?: true) &&
@@ -986,6 +987,7 @@ internal fun reduceSessionActivated(state: RemoteState, message: JsonObject): Re
     val requestId = message["requestId"]?.jsonPrimitive?.contentOrNull
     // ADR-0049 §6.8：启动中的会话即使已转为未确认，迟到的同一 requestId 仍可结算。
     val launch = state.launching?.takeIf { it.requestId == requestId }
+    if (launch?.endingWait == true) return state
     val requested = launch?.resumed ?: requestId?.let(state.sessionActivateTargets::get)
     if (isCodexCatalogId(requested) && (message["codexCatalogId"] as? JsonPrimitive)?.contentOrNull != requested) return state
     if (launch != null && requestId !in state.sessionActivateRequests) {

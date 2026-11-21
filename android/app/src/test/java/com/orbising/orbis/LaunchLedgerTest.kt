@@ -176,6 +176,8 @@ class LaunchLedgerTest {
         assertEquals(state, state.abandonConfiguredLaunchState(id, "first-message"))
         state = reduce(state, """{"type":"session.launch.result","launchId":"$id","phase":"unknown","error":"native consent pending"}""")
         assertEquals(state, state.abandonConfiguredLaunchState("stale-launch", "first-message"))
+        assertTrue(state.canCreateSessionOn("host-1")) // Verification is not an in-flight transport request.
+        assertTrue(state.launching!!.unconfirmed)
         val cleared = state.abandonConfiguredLaunchState(id, "first-message")
         assertNull(cleared.launching)
         assertNull(cleared.selectedRuntimeId)
@@ -185,6 +187,48 @@ class LaunchLedgerTest {
         assertNull(cleared.ledger.operation("first-command"))
         assertTrue(cleared.ledger.hasCapacity(256))
         assertTrue(cleared.canCreateSessionOn("host-1"))
+        val (fresh, freshId) = newSession(cleared)
+        val late = reduce(fresh, """{"type":"session.launch.result","launchId":"$id","phase":"ready","sessionId":"late-old-session"}""")
+        assertEquals(freshId, late.launchPage?.requestId)
+        assertNull(late.launchPage?.sessionId)
+        assertTrue(late.readySends().isEmpty())
+    }
+
+    // LAUNCH-WAIT-02: while a confirmed abandonment is being persisted, neither a
+    // delayed configuration result nor the acknowledged native Runtime can release a send.
+    @Test fun lateRepliesCannotReleaseASendWhileEndingWait() {
+        var (state, id) = newSession(setup())
+        val placeholder = state.launching!!.placeholder
+        state = state.createWaitingSend("first-command", "first-message", placeholder, placeholder,
+            "still a draft", null, emptyList(), emptyList(), 1000, listOf(state.ledger.operation(id)!!)).first
+        state = reduce(state, """{"type":"session.launch.result","launchId":"$id","phase":"unknown"}""")
+        state = state.copy(launching = state.launching!!.copy(endingWait = true))
+        val ready = """{"type":"session.launch.result","launchId":"$id","phase":"ready","sessionId":"late"}"""
+        assertEquals(state, reduce(state, ready))
+        assertEquals(state, activated(state, id, "late"))
+
+        state = state.copy(launching = state.launching!!.copy(sessionId = "late"))
+        val online = online(state, "late")
+        assertEquals(placeholder, online.selectedRuntimeId)
+        assertTrue(online.readySends().isEmpty())
+        assertEquals(placeholder, online.pendingSends.getValue("first-message").runtimeId)
+        assertTrue(online.retireConfiguredLaunchState(id, "first-message").pendingSends.isEmpty())
+    }
+
+    // A cold recovery has no in-process write receipt. It must use the saved Codex mode,
+    // settle only against the exact Runtime, and not turn a recovered first sentence into a send.
+    @Test fun recoveredConfiguredLaunchCanSettleOnlyAgainstItsRecordedMode() {
+        val id = "recovered"
+        var state = setup().restoreConfiguredLaunch(id, mapOf("agentKind" to "codexDesktop", "cwd" to "/repo/app"), 1000, "desktop")
+        state = reduce(state, """{"type":"session.launch.result","launchId":"$id","phase":"ready","sessionId":"same-thread"}""")
+        state = reduce(state, """{"type":"runtime.online","runtime":{"runtimeId":"terminal","name":"Codex","cwd":"/repo/app","status":"idle","sessionId":"same-thread","agentKind":"codex"}}""")
+        assertEquals(id, state.launchPage?.requestId)
+        assertTrue(state.readySends().isEmpty())
+        state = reduce(state, """{"type":"runtime.online","runtime":{"runtimeId":"desktop","name":"Codex Desktop","cwd":"/repo/app","status":"idle","sessionId":"same-thread","agentKind":"codexDesktop"}}""")
+        assertEquals("desktop", state.selectedRuntimeId)
+        assertNull(state.launching)
+        assertNull(state.ledger.operation(id))
+        assertTrue(state.readySends().isEmpty())
     }
 
     // R2: abandonment owns a launch placeholder, not the rest of the outbox. Missing
@@ -199,7 +243,11 @@ class LaunchLedgerTest {
         val restored = state.pendingSends.getValue("first-message").copy(messageId = "restored-message", commandId = "restored-command")
         state = state.copy(pendingSends = state.pendingSends + (restored.messageId to restored))
         state = reduce(state, """{"type":"session.launch.result","launchId":"$id","phase":"failed","error":"login required"}""")
-        val cleared = state.abandonConfiguredLaunchState(id, null)
+        assertEquals("login required", state.launchPage?.failure)
+        assertFalse(state.launchPage!!.unconfirmed)
+        val left = state.stopFollowingLaunch().copy(selectedRuntimeId = "rt-s1")
+        val cleared = left.retireConfiguredLaunchState(id, "first-message")
+        assertEquals("rt-s1", cleared.selectedRuntimeId)
         assertEquals(listOf(state.ledger.operation("other-command")), cleared.ledger.operations)
         assertEquals(mapOf("other-message" to state.pendingSends.getValue("other-message")), cleared.pendingSends)
         assertTrue(cleared.ledger.hasCapacity(255))

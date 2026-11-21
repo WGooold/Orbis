@@ -48,6 +48,10 @@ struct ChatSessionActions: Equatable {
     @MainActor func refreshWorkingBranch() { if isCurrent { connection.refreshWorkingBranch() } }
     @MainActor func refresh() { if isCurrent { connection.refresh() } }
     @MainActor func retryLaunch() { if isCurrent { connection.retryLaunch() } }
+    @MainActor func endConfiguredLaunch(_ id: String, mayReturnToDraft: () -> Bool) async -> Bool {
+        guard isCurrent else { return false }
+        return await connection.endConfiguredLaunch(id) { isCurrent && mayReturnToDraft() }
+    }
     @MainActor func codexResumeModes(_ session: SessionSummary) -> [CodexLaunchMode] { isCurrent ? connection.codexResumeModes(session) : [] }
     @MainActor func activate(_ session: SessionSummary, codexLaunchMode: CodexLaunchMode? = nil) {
         if isCurrent { connection.activate(session, codexLaunchMode: codexLaunchMode) }

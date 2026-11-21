@@ -518,7 +518,14 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun retryLaunch() { active()?.retryLaunch() }
     fun canAbandonConfiguredLaunch(requestId: String): Boolean = active()?.canAbandonConfiguredLaunch(requestId) == true
-    fun abandonConfiguredLaunch(): String? = active()?.abandonConfiguredLaunch()
+    fun isRejectedConfiguredLaunch(requestId: String): Boolean = active()?.isRejectedConfiguredLaunch(requestId) == true
+    suspend fun abandonConfiguredLaunch(hostId: String?, requestId: String, mayReturnToDraft: () -> Boolean): Boolean {
+        val owner = active()?.takeIf { it.hostId == hostId } ?: return false
+        return owner.abandonConfiguredLaunch(requestId) { active() === owner && mayReturnToDraft() }
+    }
+    internal fun recoveredLaunchDraft(hostId: String?): RecoveredLaunchDraft? = synchronized(lock) {
+        hostId?.takeIf { it == activeHostId.value }?.let(connections::get)?.recoveredLaunchDraft()
+    }
 
     fun producesMessage(command: RuntimeSlashCommand, runtime: RuntimeSummary?): Boolean =
         runtime != null && active()?.producesMessage(command, runtime) == true

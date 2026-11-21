@@ -1178,6 +1178,15 @@ class RelayClient internal constructor(
         sealAndSend(state, payload)
     }
 
+    /** Launch recovery belongs to the current ready connection, never a future handshake's queue. */
+    internal fun sendReadyDeviceMessage(payload: JsonObject, admit: () -> Boolean): Boolean = synchronized(relayLock) {
+        val direct = lan
+        if (activePath == "lan" && direct?.isReady == true) return admit() && direct.sendPayload(payload)
+        val state = e2e ?: return false
+        if (!synchronized(state.lock) { state.bootstrapReady } || !admit()) return false
+        sealAndSend(state, payload)
+    }
+
     fun sendDeviceMessage(payload: kotlinx.serialization.json.JsonObject): Boolean {
         val state = e2e ?: return false
         val label = "type=${payload["type"]?.jsonPrimitive?.contentOrNull ?: "<missing>"} requestId=${payload["requestId"]?.jsonPrimitive?.contentOrNull ?: "<none>"}"

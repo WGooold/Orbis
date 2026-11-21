@@ -158,7 +158,8 @@ struct ChatTranscriptView: View, Equatable {
         conversation(state: state, revision: revision).overlay(alignment: .top) {
             ChatNoticesRegion(model: model, actions: actions, mountToken: mountToken, viewport: viewport,
                 setComposerFocused: setComposerFocused, onBack: onBack,
-                retryHistory: { _ = loadOlder(retrying: true, hapticOnAcceptance: true) }).equatable()
+                retryHistory: { _ = loadOlder(retrying: true, hapticOnAcceptance: true) },
+                onReturnToNewSession: mount.onReturnToNewSession).equatable()
         }
         .onReceive(acceptedSends) { beginSendFeedback(existing: $0) }
         .onDisappear {

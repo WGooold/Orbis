@@ -409,8 +409,10 @@ private struct NavigationRoot: View, Equatable {
     @ViewBuilder private func pageView(_ page: AppPage) -> some View {
         switch page {
         case .chat:
+            let entry = navigation.entries.last(where: { $0.page == .chat })?.id
             if facts.runtime != nil,
-               let chat = ChatView(model: store.chatScreens, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) }) {
+               let chat = ChatView(model: store.chatScreens, onBack: back, onHistory: { push(.history) },
+                   onDownloads: { push(.downloads) }, onReturnToNewSession: { openRecoveredSessionDraft(from: entry) }) {
                 chat
                     .environment(\.openChatFilePreview, { id in push(.filePreview(id)) })
                     .id(facts.target.pageIdentity)
@@ -540,6 +542,14 @@ private struct NavigationRoot: View, Equatable {
                           onUnpair: { confirmUnpair($0) }).equatable()
     }
 
+    private func openRecoveredSessionDraft(from entry: UUID?) {
+        guard let entry, navigation.entries.last?.id == entry, navigation.motion.phase == .idle else { return }
+        LiveActivityCoordinator.shared.cancelQueuedOpen()
+        navigation.replace(with: [])
+        selectRoot(.chat)
+        newSessionCwd = nil
+        withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
+    }
     /// A page's own back control runs the same slide as a released swipe and reveals the same source.
     private func back() { LiveActivityCoordinator.shared.cancelQueuedOpen(); navigation.requestBack() }
     private func push(_ page: AppPage) { LiveActivityCoordinator.shared.cancelQueuedOpen(); navigation.push(page) }
