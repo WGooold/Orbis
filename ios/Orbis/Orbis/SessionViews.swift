@@ -759,6 +759,12 @@ struct SessionDraftView: View {
                 text = owner.draft(for: draftRuntime)
                 let rememberedPath = owner.draft(for: pathRuntime)
                 if presetCwd == nil && !rememberedPath.isEmpty { path = rememberedPath }
+                if presetCwd == nil, text.isEmpty, let draft = owner.recoveredLaunchDraft {
+                    path = draft.cwd
+                    if allowed.contains(draft.agentKind) { agent = draft.agentKind }
+                    text = draft.text
+                    owner.editDraft(text, for: draftRuntime)
+                }
                 if currentPath == nil { path = store.selectedRuntime?.cwd ?? store.sessions.first?.cwd }
                 if !allowed.contains(agent), let first = allowed.first { agent = first }
                 if currentPath == nil { store.browseDirectory() }

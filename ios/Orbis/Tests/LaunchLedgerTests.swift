@@ -90,23 +90,47 @@ struct LaunchLedgerTests {
         #expect(fixture.host.connection == .secured)
     }
 
-    // SC96: resolving a previous first sentence must allow a fresh launch using
-    // the still-valid configuration; the admission hint is not a configuration failure.
-    @Test func resolvingPreviousLaunchDoesNotLeaveConfigurationBlocked() async throws {
+    @Test func rejectedLaunchAllowsANewIdWithoutVerificationOrResending() async throws {
         let fixture = Fixture(); try await configured(fixture)
         #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first"))
         await fixture.store.waitForPendingEvents()
         let id = try #require(fixture.host.launching?.requestId)
-        let messageId = try #require(fixture.host.pendingSends.items.first?.messageId)
         await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "failed", "error": "launch unavailable"])
+        #expect(fixture.host.launching?.rejected == true)
         fixture.host.stopFollowingLaunch()
-        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
-        await fixture.store.waitForPendingEvents()
-        #expect(fixture.host.sessionConfigurationError == nil)
-        #expect(fixture.host.sessionLaunchError == L10n.tr("请先核对上一次启动及首句结果"))
-        fixture.host.discardPendingSend(messageId)
-        fixture.host.stopFollowingLaunch()
+        #expect(fixture.host.recoveredLaunchDraft?.text == "first")
         #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
+        await fixture.store.waitForPendingEvents()
+        let next = try #require(fixture.host.launching?.requestId)
+        #expect(next != id)
+        #expect(fixture.host.sessionConfigurationError == nil)
+        #expect(fixture.host.sessionLaunchError == nil)
+        #expect(fixture.host.pendingSends.items.map(\.text) == ["second"])
+        #expect(fixture.transport.sent.filter { $0["type"] as? String == "session.launch" }.count == 2)
+        #expect(!fixture.transport.sent.contains { $0["type"] as? String == "session.launch.read" })
+        #expect(fixture.transport.userMessages.isEmpty)
+    }
+
+    @Test func endingUnknownLaunchReturnsADraftAndIgnoresLateReadiness() async throws {
+        let fixture = Fixture(); try await configured(fixture)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "unsent first"))
+        await fixture.store.waitForPendingEvents()
+        let id = try #require(fixture.host.launching?.requestId)
+        #expect(!fixture.host.endConfiguredLaunch(id))
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "unknown", "error": "launch timed out"])
+        #expect(!fixture.host.endConfiguredLaunch("stale"))
+        #expect(fixture.host.endConfiguredLaunch(id))
+        #expect(fixture.host.launching == nil)
+        #expect(fixture.host.pendingSends.items.isEmpty)
+        #expect(fixture.host.recoveredLaunchDraft?.text == "unsent first")
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "new input"))
+        await fixture.store.waitForPendingEvents()
+        let next = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "ready", "sessionId": "late-old-session"])
+        await fixture.transport.online("late-old-session")
+        #expect(fixture.host.launching?.requestId == next)
+        #expect(fixture.host.launching?.sessionId == nil)
+        #expect(fixture.transport.userMessages.isEmpty)
     }
 
     // SC97: invalid first-sentence text may be corrected immediately, without a
@@ -198,7 +222,7 @@ struct LaunchLedgerTests {
         await fixture.store.waitForPendingEvents()
         let id = try #require(fixture.host.launching?.requestId)
         await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id,
-            "phase": "failed", "error": "launch unavailable"])
+            "phase": "unknown", "error": "launch unavailable"])
         fixture.host.stopFollowingLaunch()
         #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
         await fixture.store.waitForPendingEvents()
@@ -219,7 +243,7 @@ struct LaunchLedgerTests {
         await fixture.store.waitForPendingEvents()
         let id = try #require(fixture.host.launching?.requestId)
         await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id,
-            "phase": "failed", "error": "launch unavailable"])
+            "phase": "unknown", "error": "launch unavailable"])
         fixture.host.stopFollowingLaunch()
         #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
         await fixture.store.waitForPendingEvents()
@@ -369,8 +393,9 @@ struct LaunchLedgerTests {
         #expect(original.host.pendingSends.items.first?.state == .failed("会话启动未完成，消息未发送"))
         let recovered = Fixture(root: root)
         await recovered.transport.emit(["type": "device.ready", "modelEpoch": "new-epoch", "sessionConfiguration": 1, "runtimes": []])
-        #expect(recovered.host.pendingSends.items.first?.text == "preserve rejected sentence")
-        #expect(recovered.host.launching?.failure == "stale catalog")
+        #expect(recovered.host.recoveredLaunchDraft?.text == "preserve rejected sentence")
+        #expect(recovered.host.pendingSends.items.isEmpty)
+        #expect(recovered.host.launching == nil)
         #expect(recovered.transport.sent.allSatisfy { !["session.launch", "session.launch.read", "session.activate"].contains($0["type"] as? String ?? "") })
     }
 

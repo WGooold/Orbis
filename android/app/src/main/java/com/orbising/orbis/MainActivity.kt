@@ -370,6 +370,13 @@ internal fun RemoteApp(
             model.dismissBrowse()
         }
     }
+    fun openNewSessionDraft() {
+        val draft = sessionDrafts.draft(state.hostId)
+        model.recoveredLaunchDraft(state.hostId)?.takeIf { draft.text.value.isBlank() }?.let {
+            draft.agent.value = it.agentKind; draft.cwd.value = it.cwd; draft.text.value = it.text
+        }
+        newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true
+    }
     fun cancelLaunchIntro() {
         if (launchIntro == null) return
         launchIntro = null
@@ -389,7 +396,7 @@ internal fun RemoteApp(
                 draftOpen = newSessionOpen && state.hostId == newSessionHostId,
                 onToggleDraft = {
                     if (newSessionOpen) closeSessionDraft()
-                    else { newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true }
+                    else openNewSessionDraft()
                 },
                 draftContent = { open -> SessionDraftCard(state, open, newSessionCwd,
                     model::browseSessions, model::browseInto, model::browseUp, onCancel = ::closeSessionDraft, drafts = sessionDrafts,
@@ -587,12 +594,7 @@ internal fun RemoteApp(
                     HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?: state.launchPage?.agentKind ?:
                         state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
                         ChatScreen(state, model, firstDraftSend = firstDraftSend, onFirstDraftSend = { firstDraftSend = null },
-                            onAbandonLaunch = { text ->
-                                val draft = sessionDrafts.draft(state.hostId)
-                                state.launchPage?.let { pending -> draft.agent.value = pending.agentKind ?: draft.agent.value; draft.cwd.value = pending.cwd }
-                                if (text.isNotBlank()) draft.text.value = text
-                                newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true
-                            })
+                            onAbandonLaunch = ::openNewSessionDraft)
                     }
                     HomeOverlay.Downloads -> HostDownloadsScreen(state, model, onBack = { allDownloadsOpen = false })
                     null -> Unit
@@ -1581,7 +1583,7 @@ internal fun ChatScreen(
     executeSlash: (String, String) -> String? = model::executeSlashCommand,
     firstDraftSend: FirstDraftSend? = null,
     onFirstDraftSend: () -> Unit = {},
-    onAbandonLaunch: (String) -> Unit = {},
+    onAbandonLaunch: () -> Unit = {},
 ) {
     val runtimeId = state.selectedRuntimeId ?: return
     val actionHaptic = rememberActionHaptic()
@@ -2588,8 +2590,9 @@ internal fun ChatScreen(
             Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
                 if (failedLaunch != null) {
                     LaunchNotice(failedLaunch, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) },
+                        rejected = model.isRejectedConfiguredLaunch(failedLaunch.requestId),
                         onAbandon = if (model.canAbandonConfiguredLaunch(failedLaunch.requestId)) {
-                            { model.abandonConfiguredLaunch()?.let(onAbandonLaunch); Unit }
+                            { if (model.abandonConfiguredLaunch(failedLaunch.requestId)) onAbandonLaunch() }
                         } else null)
                 } else if (showHistoryRetry) {
                     ChatHistoryRetry(loading = retryingHistory || historyRead?.phase?.active == true,
@@ -4691,9 +4694,11 @@ private fun fullEntryText(entry: SessionGraphEntry): String {
 }
 
 /** ADR-0049 §6.8：启动失败或未确认时在聊天页原位说明，提供“重试”“返回”，草稿保留。 */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -> Unit, onAbandon: (() -> Unit)? = null) {
-    var confirmAbandon by remember { mutableStateOf(false) }
+internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -> Unit,
+    onAbandon: (() -> Unit)? = null, rejected: Boolean = false) {
+    var confirmAbandon by remember(launch.requestId) { mutableStateOf(false) }
     if (confirmAbandon) AlertDialog(onDismissRequest = { confirmAbandon = false },
         title = { Text(L10n.tr("结束本次等待？")) },
         text = { Text(L10n.tr("电脑上的会话可能仍在启动。结束等待后首句会保留为草稿；再次创建可能打开另一个会话。")) },
@@ -4704,12 +4709,18 @@ internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -
         shape = RemoteUi.ControlShape, style = NeumorphStyle.Pressed,
     ) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            StatusWithInfo(L10n.tr(if (launch.failure != null) "启动失败" else "启动未确认"),
-                launch.failure ?: L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error = launch.failure != null)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                NeumorphTextButton(L10n.tr("重试"), onClick = onRetry, icon = OrbisSymbols.Refresh, modifier = Modifier.testTag("launch-retry"))
+            val unconfirmed = launch.unconfirmed && !rejected
+            StatusWithInfo(if (unconfirmed) L10n.tr("启动未确认") else L10n.tr("启动失败"),
+                launch.failure ?: L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error = !unconfirmed)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (rejected && onAbandon != null) {
+                    NeumorphTextButton(L10n.tr("返回新建"), onClick = onAbandon, modifier = Modifier.testTag("launch-abandon"))
+                } else {
+                    NeumorphTextButton(if (onAbandon == null) L10n.tr("重试") else L10n.tr("核对原启动"),
+                        onClick = onRetry, icon = OrbisSymbols.Refresh, modifier = Modifier.testTag("launch-retry"))
+                    if (onAbandon != null) NeumorphTextButton(L10n.tr("结束等待"), onClick = { confirmAbandon = true }, modifier = Modifier.testTag("launch-abandon"))
+                }
                 NeumorphTextButton(L10n.tr("返回"), onClick = onBack, modifier = Modifier.testTag("launch-back"))
-                if (onAbandon != null) NeumorphTextButton(L10n.tr("结束等待"), onClick = { confirmAbandon = true }, modifier = Modifier.testTag("launch-abandon"))
             }
         }
     }

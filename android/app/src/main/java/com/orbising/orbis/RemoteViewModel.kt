@@ -450,7 +450,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun retryLaunch() { active()?.retryLaunch() }
     fun canAbandonConfiguredLaunch(requestId: String): Boolean = active()?.canAbandonConfiguredLaunch(requestId) == true
-    fun abandonConfiguredLaunch(): String? = active()?.abandonConfiguredLaunch()
+    fun isRejectedConfiguredLaunch(requestId: String): Boolean = active()?.isRejectedConfiguredLaunch(requestId) == true
+    fun abandonConfiguredLaunch(requestId: String): Boolean = active()?.abandonConfiguredLaunch(requestId) == true
+    internal fun recoveredLaunchDraft(hostId: String?): RecoveredLaunchDraft? = synchronized(lock) {
+        hostId?.takeIf { it == activeHostId.value }?.let(connections::get)?.recoveredLaunchDraft()
+    }
 
     fun producesMessage(command: RuntimeSlashCommand, runtime: RuntimeSummary?): Boolean =
         runtime != null && active()?.producesMessage(command, runtime) == true

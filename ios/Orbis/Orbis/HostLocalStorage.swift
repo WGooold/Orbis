@@ -41,6 +41,11 @@ actor HostLocalIO {
 /// accepted write; identity checks prevent late cleanup from erasing a new launch.
 @MainActor
 final class ConfiguredLaunchJournal {
+    struct RecoveredDraft {
+        let agentKind: String
+        let cwd: String
+        let text: String
+    }
     private(set) var snapshot: [String: Any]?
     private(set) var loaded = false
     private var loadTask: Task<Void, Never>?
@@ -48,6 +53,13 @@ final class ConfiguredLaunchJournal {
     private let io: HostLocalIO
     private let url: URL
     var launchId: String? { snapshot?["launchId"] as? String }
+    var pendingId: String? { isDraft ? nil : launchId }
+    var blocksNewLaunch: Bool { !loaded || snapshot != nil && !isDraft }
+    private var isDraft: Bool { snapshot?["rejected"] as? Bool == true || snapshot?["abandoned"] as? Bool == true }
+    var recoveredDraft: RecoveredDraft? {
+        guard isDraft, let agent = snapshot?["agentKind"] as? String, let cwd = snapshot?["cwd"] as? String else { return nil }
+        return RecoveredDraft(agentKind: agent, cwd: cwd, text: snapshot?["firstMessage"] as? String ?? "")
+    }
 
     init(url: URL, io: HostLocalIO = HostLocalIO()) {
         self.url = url; self.io = io
@@ -59,6 +71,12 @@ final class ConfiguredLaunchJournal {
     }
     func waitLoaded() async { await loadTask?.value }
     func flush() async { await waitLoaded(); _ = await tail?.value }
+
+    /// A failed or explicitly abandoned record remains recoverable as a draft, but can be replaced by a new launch.
+    func reserve(_ value: [String: Any]) -> Task<Bool, Never>? {
+        guard !blocksNewLaunch else { return nil }
+        return update(expectedId: launchId, value: value)
+    }
 
     @discardableResult
     func update(expectedId: String?, value: [String: Any]?) -> Task<Bool, Never>? {

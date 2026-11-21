@@ -156,24 +156,24 @@ final class HostConnection: ObservableObject {
     /// SC102: an activation that never reached the computer is resolved by the
     /// next ready connection or successful activation write.
     private var sessionLaunchErrorAwaitsConnection = false
-    private var configuredLaunchId: String?
+    private var configuredLaunchId: String? { launchJournal.pendingId }
     private var configurationTimeout: Task<Void, Never>?
     private let launchJournalRoot: URL
     private var launchJournalURL: URL { launchJournalRoot.appendingPathComponent((selectedHostId ?? "unpaired").addingPercentEncoding(withAllowedCharacters: .alphanumerics)! + ".json") }
     private let localStores: HostLocalStores
     private var launchJournal: ConfiguredLaunchJournal { localStores.journal(at: launchJournalURL) }
-    private var hasLaunchJournal: Bool { !launchJournal.loaded || launchJournal.snapshot != nil }
+    var recoveredLaunchDraft: ConfiguredLaunchJournal.RecoveredDraft? { launchJournal.recoveredDraft }
     private func readLaunchJournal() -> [String: Any]? { launchJournal.snapshot }
     private func writeLaunchJournal(_ value: [String: Any], creating: Bool = false) -> Task<Bool, Never>? {
         let journal = launchJournal
-        guard let task = journal.update(expectedId: creating ? nil : value["launchId"] as? String, value: value) else { return nil }
+        let write = creating ? journal.reserve(value) : journal.update(expectedId: value["launchId"] as? String, value: value)
+        guard let task = write else { return nil }
         let id = value["launchId"] as? String
         runAsyncTransaction { [weak self] in
-            if await !task.value, self?.launchJournal === journal, journal.launchId == id {
+            if await !task.value, self?.launchJournal === journal, journal.pendingId == id {
                 self?.sessionLaunchError = L10n.tr("无法保存启动恢复记录，请重试")
                 if self?.launching?.requestId == id {
-                    self?.launching?.unconfirmed = true
-                    self?.launching?.failure = L10n.tr("无法保存启动恢复记录，请重试")
+                    self?.markConfiguredLaunchUnconfirmed(id, reason: L10n.tr("无法保存启动恢复记录，请重试"))
                 }
             }
         }
@@ -182,7 +182,6 @@ final class HostConnection: ObservableObject {
     private func clearLaunchJournal() {
         let journal = launchJournal
         journal.update(expectedId: journal.launchId, value: nil)
-        configuredLaunchId = nil
         sessionLaunchError = nil
     }
     private func startConfigurationTimeout(_ id: String) {
@@ -214,52 +213,57 @@ final class HostConnection: ObservableObject {
         }
     }
 
-    private func recoverConfiguredLaunch() {
+    private func canReadConfiguredLaunch(_ agent: String) -> Bool {
+        sessionConfigurationSupported && connection == .secured && (agent != kimiCodeKind || kimiCodeSupported)
+    }
+
+    private func recoverConfiguredLaunch(show: Bool = false) {
         let journal = launchJournal, generation = connectionGeneration
         runAsyncTransaction { [weak self] in
             await journal.waitLoaded()
             guard let self, !Task.isCancelled, generation == self.connectionGeneration,
-                  let saved = journal.snapshot, let id = journal.launchId,
-                  let persisted = self.writeLaunchJournal(saved), await persisted.value,
-                  !Task.isCancelled, generation == self.connectionGeneration, journal.launchId == id else { return }
-            self.restoreConfiguredLaunch()
+                  let saved = journal.snapshot, let id = journal.pendingId, let agent = saved["agentKind"] as? String,
+                  show || self.canReadConfiguredLaunch(agent) else { return }
+            self.restoreConfiguredLaunch(saved, id: id, show: show)
+            guard self.canReadConfiguredLaunch(agent), let persisted = self.writeLaunchJournal(saved), await persisted.value,
+                  !Task.isCancelled, generation == self.connectionGeneration, self.configuredLaunchId == id,
+                  self.canReadConfiguredLaunch(agent) else { return }
+            _ = self.transport.send(["type": "session.launch.read", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id])
         }
     }
-    private func restoreConfiguredLaunch() {
-        guard sessionConfigurationSupported, let saved = readLaunchJournal(), let id = saved["launchId"] as? String,
-              let agent = saved["agentKind"] as? String, let cwd = saved["cwd"] as? String,
-              connection == .secured, agent != kimiCodeKind || kimiCodeSupported else { return }
-        configuredLaunchId = id
-        let rejected = saved["rejected"] as? Bool == true
+    private func restoreConfiguredLaunch(_ saved: [String: Any], id: String, show: Bool) {
+        guard let agent = saved["agentKind"] as? String, let cwd = saved["cwd"] as? String else { return }
         if launching == nil && (saved["sessionId"] == nil || (saved["firstMessageId"] as? String).flatMap { pendingSends.item($0) } == nil) {
             let placeholder = "launch:" + id
             _ = ledger.create(opId: id, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
                               basis: ledgerBasis(OperationKinds.runtimesDomain), payload: .launch(requestId: id, placeholder: placeholder), written: true, now: Date())
             launching = LaunchState(requestId: id, placeholder: placeholder, target: ["type": "new", "agentKind": agent, "cwd": cwd],
-                                    title: L10n.tr("新会话"), cwd: cwd, agentKind: agent, resumed: nil, sessionId: nil)
-            if saved["following"] as? Bool == false { launching?.following = false }
-            else { selectedRuntimeId = placeholder }
-            activationRequestId = rejected ? nil : id
+                                    title: L10n.tr("新会话"), cwd: cwd, agentKind: agent, resumed: nil, sessionId: nil,
+                                    unconfirmed: true, configured: true)
+            if !show {
+                if saved["following"] as? Bool == false { launching?.following = false }
+                else { selectedRuntimeId = placeholder }
+            }
             if let text = saved["firstMessage"] as? String, !text.isEmpty, let messageId = saved["firstMessageId"] as? String,
                pendingSends.item(messageId) == nil {
                 pendingSendHostId = selectedHostId
                 var send = PendingSend(messageId: messageId, commandId: saved["firstCommandId"] as? String ?? messageId,
                     sessionId: placeholder, text: text, attachments: [], delivery: nil, createdAt: Date(), anchorMessageId: nil)
-                send.state = rejected ? .failed(saved["error"] as? String ?? L10n.tr("配置未确认")) : .unconfirmed
+                send.state = .unconfirmed
                 pendingSends.add(send); publishMessages()
             }
         }
-        if rejected {
-            launching?.failure = saved["error"] as? String ?? L10n.tr("配置未确认"); launching?.unconfirmed = false
-            return
+        if show, let launch = launching, launch.requestId == id, selectedRuntimeId != launch.placeholder {
+            launching?.following = true
+            selectedOfflineSession = nil; selectedRuntimeId = launch.placeholder
+            activationRevision += 1
         }
-        _ = transport.send(["type": "session.launch.read", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id])
     }
 
     private func createConfiguredSession(agent: String, cwd: String, firstMessage: String) -> Bool {
         guard connection == .secured, activationRequestId == nil, let config = sessionConfiguration,
               config.agentKind == agent, config.cwd == cwd, sessionConfigurationError == nil, agent != kimiCodeKind || kimiCodeSupported else { return false }
-        guard !hasLaunchJournal else { recoverConfiguredLaunch(); sessionLaunchError = L10n.tr("请先核对上一次启动及首句结果"); return false }
+        let previous = readLaunchJournal()
         let id = UUID().uuidString, placeholder = "launch:" + id
         let creation = ledger.create(opId: id, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
             basis: ledgerBasis(OperationKinds.runtimesDomain), payload: .launch(requestId: id, placeholder: placeholder), written: false, now: Date())
@@ -270,11 +274,14 @@ final class HostConnection: ObservableObject {
         guard let persisted = writeLaunchJournal(payload.merging(["firstMessage": firstMessage, "firstMessageId": firstId, "firstCommandId": firstCommand]) { _, new in new }, creating: true) else {
             ledger.remove(id); return false
         }
+        if let previous, let retired = previous["launchId"] as? String {
+            retireConfiguredLaunch(retired, firstId: previous["firstMessageId"] as? String)
+        }
         sessionLaunchError = nil
-        configuredLaunchId = id; activationRequestId = id; pendingActivation = "new"; activatingSessionId = "new"
+        activationRequestId = id; pendingActivation = "new"; activatingSessionId = "new"
         launching = LaunchState(requestId: id, placeholder: placeholder, target: ["type": "new", "agentKind": agent, "cwd": cwd],
                                 title: firstMessage.isEmpty ? (cwd.split(separator: "/").last.map(String.init) ?? L10n.tr("新会话")) : String(firstMessage.prefix(22)),
-                                cwd: cwd, agentKind: agent, resumed: nil, sessionId: nil)
+                                cwd: cwd, agentKind: agent, resumed: nil, sessionId: nil, configured: true)
         toolContent.close(); turnFileChanges.clear(); dismissPreview(); selectedOfflineSession = nil; selectedRuntimeId = placeholder; messages = []
         activationRevision += 1
         if !firstMessage.isEmpty, let runtime = selectedRuntime, let operation = ledger.operation(id) {
@@ -285,7 +292,7 @@ final class HostConnection: ObservableObject {
             guard await persisted.value, let self, !Task.isCancelled, generation == self.connectionGeneration,
                   self.configuredLaunchId == id, self.connection == .secured, agent != kimiCodeKind || self.kimiCodeSupported else { return }
             if self.transport.send(payload) { self.handleLedger(self.ledger.written(id, now: Date())) }
-            else { self.launching?.unconfirmed = true }
+            else { self.markConfiguredLaunchUnconfirmed(id) }
         }
         return true
     }
@@ -350,6 +357,9 @@ final class HostConnection: ObservableObject {
         var sessionId: String?
         var failure: String?
         var unconfirmed = false
+        var configured = false
+        var rejected = false
+        var canEndConfiguredLaunch: Bool { configured && (unconfirmed || failure != nil) }
         /// 用户仍停在这个启动页：成功后切到真实会话；离开后不再把用户拉回，会话照常出现在首页。
         var following = true
     }
@@ -844,7 +854,7 @@ final class HostConnection: ObservableObject {
         if let launch = launching, selectedRuntimeId == launch.placeholder || launch.resumed != nil && selectedOfflineSession?.sessionId == launch.resumed {
             let session = selectedOfflineSession
             return RuntimeSummary(runtimeId: session.map { "cached:" + $0.sessionId } ?? launch.placeholder, name: session?.name ?? launch.title,
-                cwd: session?.cwd ?? launch.cwd, status: launch.failure != nil ? "error" : launch.unconfirmed ? "launch_unconfirmed" : "starting",
+                cwd: session?.cwd ?? launch.cwd, status: launch.unconfirmed ? "launch_unconfirmed" : launch.failure != nil ? "error" : "starting",
                 // 标题用启动目标的名称；sessionName 为空时 sessionTitle 会退回到占位 id。
                 sessionId: session?.sessionId ?? launch.resumed ?? launch.placeholder, sessionName: session?.name ?? launch.title,
                 hostname: session?.hostname, agentKind: session?.agentKind ?? launch.agentKind)
@@ -1857,11 +1867,13 @@ final class HostConnection: ObservableObject {
     /// S49 / SC70: an empty draft reuses the original windowed launch; a first sentence also queues a send.
     func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
         reconcilePendingSends()
-        guard !cwd.isEmpty, connection == .secured, activationRequestId == nil,
+        guard !cwd.isEmpty, connection == .secured,
               agentKind != kimiCodeKind || kimiCodeSupported && sessionConfigurationSupported else { return false }
-        if !sessionConfigurationSupported && hasLaunchJournal {
+        if launchJournal.blocksNewLaunch {
+            recoverConfiguredLaunch(show: true)
             sessionLaunchError = L10n.tr("请先核对上一次启动及首句结果"); return false
         }
+        guard activationRequestId == nil else { return false }
         if sessionConfigurationSupported {
             let text = firstMessage.trimmingCharacters(in: .whitespacesAndNewlines)
             guard text.isEmpty || validatedMessageBody(text, newSession: true) != nil else { return false }
@@ -1905,7 +1917,13 @@ final class HostConnection: ObservableObject {
         }
         // SC100: only a new-session admission resolves the previous-launch hint;
         // resuming another session leaves it for reconciliation (as on Android).
-        if target["type"] as? String == "new" || sessionLaunchErrorAwaitsConnection { sessionLaunchError = nil }
+        if target["type"] as? String == "new" {
+            if !launchJournal.blocksNewLaunch, let old = readLaunchJournal(), let id = old["launchId"] as? String {
+                clearLaunchJournal()
+                retireConfiguredLaunch(id, firstId: old["firstMessageId"] as? String)
+            }
+            sessionLaunchError = nil
+        } else if sessionLaunchErrorAwaitsConnection { sessionLaunchError = nil }
         activationRequestId = requestId; pendingActivation = sessionId; activatingSessionId = sessionId
         handleLedger(ledger.written(requestId, now: Date()))
         // ADR-0049 §6.8：立即进入该会话的聊天页并显示“启动中”；恢复已有会话时先显示缓存历史（V13）。
@@ -1922,13 +1940,52 @@ final class HostConnection: ObservableObject {
         activationRevision += 1
     }
 
+    private func markConfiguredLaunchUnconfirmed(_ id: String?, reason: String? = nil) {
+        guard let id, let launch = launching, launch.requestId == id, launch.configured else { return }
+        launching?.unconfirmed = true
+        if let reason { launching?.failure = reason }
+        if activationRequestId == id || launch.sessionId.map({ pendingActivation == $0 }) == true { clearActivation() }
+    }
+
+    private func retireConfiguredLaunch(_ id: String, firstId: String?) {
+        let placeholder = "launch:" + id
+        // Remove local sends for this placeholder only. No native cancellation or resubmission.
+        var messages = Set(pendingSends.items.filter { $0.sessionId == placeholder }.map(\.messageId))
+        if let firstId { messages.insert(firstId) }
+        for op in ledger.operations {
+            if case .send(_, let sessionId, let messageId) = op.payload, sessionId == placeholder || op.prerequisites.contains(id) {
+                messages.insert(messageId); ledger.remove(op.opId)
+            }
+        }
+        for messageId in messages {
+            pendingSends.remove(messageId); removeWaitingCopy(messageId)
+        }
+        ledger.remove(id)
+        let session = launchSessions.removeValue(forKey: placeholder)
+        if activationRequestId == id || session.map({ pendingActivation == $0 }) == true { clearActivation() }
+        if launching?.requestId == id { launching = nil }
+        if selectedRuntimeId == placeholder { selectedRuntimeId = nil }
+        publishMessages()
+        scheduleLedgerClock()
+    }
+
+    func endConfiguredLaunch(_ id: String) -> Bool {
+        guard let launch = launching, launch.requestId == id, launch.placeholder == selectedRuntimeId,
+              launch.canEndConfiguredLaunch, var saved = readLaunchJournal(), saved["launchId"] as? String == id else { return false }
+        saved["abandoned"] = true
+        guard writeLaunchJournal(saved) != nil else { return false }
+        retireConfiguredLaunch(id, firstId: saved["firstMessageId"] as? String)
+        sessionLaunchError = nil
+        return true
+    }
+
     /// 启动失败后在聊天页原位重试：同一目标、新的请求（L6）。
     func retryLaunch() {
         guard let launch = launching, launch.failure != nil || launch.unconfirmed else { return }
-        if readLaunchJournal()?["rejected"] as? Bool == true {
-            launching?.failure = L10n.tr("启动配置已失效，请返回新建卡片刷新"); return
+        if launch.configured {
+            if launch.requestId == configuredLaunchId { recoverConfiguredLaunch() }
+            return
         }
-        if launch.requestId == configuredLaunchId { recoverConfiguredLaunch(); return }
         let kind = isKimiCode(kind: launch.agentKind, id: launch.resumed) ? kimiCodeKind : launch.agentKind
         guard kind != kimiCodeKind || kimiCodeSupported && launch.resumed != nil else { return }
         var target: [String: Any] = launch.target
@@ -2320,7 +2377,10 @@ final class HostConnection: ObservableObject {
             case .landed(let op): showInteractionOutcome(op); configSettled(op)
             case .ready: readySends = true
             case .unconfirmed(let op):
-                if case .launch(let requestId, _) = op.payload, launching?.requestId == requestId { launching?.unconfirmed = true }
+                if case .launch(let requestId, _) = op.payload, launching?.requestId == requestId {
+                    if launching?.configured == true { markConfiguredLaunchUnconfirmed(requestId) }
+                    else { launching?.unconfirmed = true }
+                }
             case .unknown, .expired: break
             }
         }
@@ -2635,7 +2695,7 @@ final class HostConnection: ObservableObject {
         guard let send = pendingSends.item(messageId) else { return nil }
         switch send.state { case .failed, .unconfirmed: break; default: return nil }
         pendingSends.remove(messageId); removeWaitingCopy(messageId)
-        if readLaunchJournal()?["firstMessageId"] as? String == messageId { clearLaunchJournal() }
+        clearConfiguredFirstMessage(messageId, restoring: true)
         publishMessages()
         // 附件没传成：正文和附件都回到输入框（ADR-0049 §6.1）。
         if !send.uploadIds.isEmpty, send.attachments.isEmpty { transfers.reattach(Set(send.uploadIds)); return send.text }
@@ -2646,8 +2706,16 @@ final class HostConnection: ObservableObject {
         guard let send = pendingSends.item(messageId) else { return }
         switch send.state { case .failed, .unconfirmed: break; default: return }
         pendingSends.remove(messageId); removeWaitingCopy(messageId)
-        if readLaunchJournal()?["firstMessageId"] as? String == messageId { clearLaunchJournal() }
+        clearConfiguredFirstMessage(messageId)
         publishMessages()
+    }
+
+    private func clearConfiguredFirstMessage(_ messageId: String, restoring: Bool = false) {
+        guard var saved = readLaunchJournal(), saved["firstMessageId"] as? String == messageId else { return }
+        if configuredLaunchId != nil && saved["sessionId"] != nil { clearLaunchJournal(); return }
+        guard !restoring else { return }
+        for key in ["firstMessage", "firstMessageId", "firstCommandId"] { saved.removeValue(forKey: key) }
+        _ = writeLaunchJournal(saved)
     }
 
     /// 队列面板：Host 队列项，加上带 `delivery` 且仍在提交中的本地行。
@@ -2665,7 +2733,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func reconcilePendingSends() {
-        if let saved = readLaunchJournal(), let sessionId = saved["sessionId"] as? String, launching == nil {
+        if configuredLaunchId != nil, let saved = readLaunchJournal(), let sessionId = saved["sessionId"] as? String, launching == nil {
             let text = saved["firstMessage"] as? String ?? ""
             let messageId = saved["firstMessageId"] as? String ?? ""
             let rows = runtimes.filter { $0.sessionId == sessionId }.flatMap { conversations[$0.runtimeId] ?? [] }
@@ -3147,9 +3215,9 @@ final class HostConnection: ObservableObject {
             guard let id = message["launchId"] as? String, id == configuredLaunchId, launching?.requestId == id,
                   readLaunchJournal()?["agentKind"] as? String != kimiCodeKind || kimiCodeSupported else { return }
             if message["phase"] as? String == "ready" {
+                guard let sessionId = message["sessionId"] as? String, var saved = readLaunchJournal() else { return }
                 var activated = message; activated["type"] = "session.activated"; activated["requestId"] = id
-                guard var saved = readLaunchJournal() else { return }
-                saved["sessionId"] = message["sessionId"]
+                saved["sessionId"] = sessionId
                 let generation = connectionGeneration
                 guard let persisted = writeLaunchJournal(saved), await persisted.value,
                       !Task.isCancelled, generation == connectionGeneration, configuredLaunchId == id else { return }
@@ -3164,11 +3232,14 @@ final class HostConnection: ObservableObject {
                 if saved["agentKind"] as? String != kimiCodeKind || kimiCodeSupported { _ = transport.send(payload) }
             } else if message["phase"] as? String == "failed" {
                 let error = message["error"] as? String ?? L10n.tr("配置未确认")
-                if var saved = readLaunchJournal() { saved["rejected"] = true; saved["error"] = error; _ = writeLaunchJournal(saved) }
+                guard var saved = readLaunchJournal(), saved["sessionId"] == nil else { return }
+                saved["rejected"] = true; saved["error"] = error
+                guard writeLaunchJournal(saved) != nil else { return }
+                launching?.rejected = true; launching?.unconfirmed = false; launching?.failure = error
                 handleLedger(ledger.receipt(id, connection: ledger.connection, .failed(AppLedger.Rejection("configuration_rejected", error)), now: Date()))
-                if (readLaunchJournal()?["firstMessage"] as? String ?? "").isEmpty { clearLaunchJournal() }
+                if activationRequestId == id { clearActivation() }
             } else if message["phase"] as? String == "unknown" {
-                launching?.unconfirmed = true; launching?.failure = message["error"] as? String
+                markConfiguredLaunchUnconfirmed(id, reason: message["error"] as? String)
             }
         case "session.activated":
             if let requestId = message["requestId"] as? String, requestId == activationRequestId || requestId == launching?.requestId,

@@ -781,7 +781,7 @@ data class LaunchState(
     /** 用户仍停在这个启动页：成功后切到真实会话；离开后不再把用户拉回。 */
     val following: Boolean = true,
 ) {
-    val status: String get() = if (failure != null) "error" else if (unconfirmed) "launch_unconfirmed" else "starting"
+    val status: String get() = if (unconfirmed) "launch_unconfirmed" else if (failure != null) "error" else "starting"
     /** 启动期间聊天页的占位 Runtime：草稿与消息归属它。 */
     fun runtime() = RuntimeSummary(placeholder, title, cwd, status, resumed ?: placeholder, agentKind = agentKind)
 }

@@ -1217,6 +1217,7 @@ internal object LocalizationCatalog {
         "查询时间：" to "Queried at: ",
         "查询订阅配额" to "Check subscription quota",
         "核对会话状态" to "Check session status",
+        "核对原启动" to "Check previous launch",
         "核对送达状态" to "Check delivery status",
         "核对配置" to "Check configuration",
         "桌面版" to "Desktop",
@@ -1230,9 +1231,9 @@ internal object LocalizationCatalog {
         "模型快照里的领域不是对象" to "Model snapshot domain is not an object",
         "模型快照里的领域缺少 envelope 字段" to "Model snapshot domain is missing envelope fields",
         "模型未确认" to "Model unconfirmed",
-        "模板" to "Template",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "模板" to "Template",
         "正在下载" to "Downloading",
         "正在下载 {0}/{1}" to "Downloading {0}/{1}",
         "正在使用" to "In use",
@@ -1382,9 +1383,9 @@ internal object LocalizationCatalog {
         "电脑没有报任何供应商" to "The computer reported no providers",
         "电脑没有报告此 Agent 的供应商配置" to "The computer has not reported this Agent's provider configuration",
         "电脑没有报这个领域" to "The computer has not reported this domain",
-        "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。" to "Orbis Host is not responding: the phone is connected to the relay, but the computer has not answered the encryption handshake.",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。" to "Orbis Host is not responding: the phone is connected to the relay, but the computer has not answered the encryption handshake.",
         "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。请在电脑上启动 Orbis Host，打开后 APP 会自动重新连上" to "Orbis Host is not responding to the secure handshake. Start Orbis Host on the computer. The app will reconnect automatically.",
         "电脑端 Orbis 未打开，打开后会自动连接" to "Orbis is not open on your computer. Open it to connect automatically.",
         "电脑端不支持该命令" to "The computer does not support this command",
@@ -1534,9 +1535,9 @@ internal object LocalizationCatalog {
         "让 {0} 做什么？" to "What should {0} do?",
         "记录" to "Record",
         "记录不完整" to "Incomplete capture",
-        "记录不是对象" to "Record is not an object",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "记录不是对象" to "Record is not an object",
         "记录缺少字段" to "Record is missing fields",
         "记录范围" to "Capture scope",
         "记录范围未确认" to "Record range unconfirmed",
@@ -1654,6 +1655,7 @@ internal object LocalizationCatalog {
         "返回" to "Back",
         "返回会话目录" to "Back to sessions",
         "返回会话筛选" to "Back to session filters",
+        "返回新建" to "Back to new session",
         "返回电脑菜单" to "Back to computer menu",
         "返回聊天" to "Back to chat",
         "还有 {0} 个文件" to "{0} more files",
@@ -1685,10 +1687,10 @@ internal object LocalizationCatalog {
         "连接协议" to "Connection protocol",
         "连接已关闭" to "Connection closed",
         "连接已断开，仅显示已缓存内容" to "Disconnected. Showing cached content only.",
-        "连接已断开，可在重连后继续" to "Disconnected. Continue after reconnecting.",
-        "连接已断开，权限设置尚未确认；重新连接后请检查当前权限" to "Disconnected. Permissions remain unconfirmed. Check them after reconnecting.",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "连接已断开，可在重连后继续" to "Disconnected. Continue after reconnecting.",
+        "连接已断开，权限设置尚未确认；重新连接后请检查当前权限" to "Disconnected. Permissions remain unconfirmed. Check them after reconnecting.",
         "连接已断开，草稿已保留，连接后可重试" to "Disconnected. Draft saved. Retry after reconnecting.",
         "连接已断开，请刷新以确认操作结果" to "Disconnected. Refresh to check the operation's result.",
         "连接已断开，请重新查询配额" to "Disconnected. Check quota again.",

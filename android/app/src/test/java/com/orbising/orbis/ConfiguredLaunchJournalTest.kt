@@ -107,6 +107,55 @@ class ConfiguredLaunchJournalTest {
         } finally { scope.cancel() }
     }
 
+    @Test fun `a rejected launch reopens as a draft and does not block a fresh attempt`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val failed = buildJsonObject {
+            put("launchId", "failed"); put("rejected", true)
+            put("agentKind", "claude"); put("cwd", "/project"); put("firstMessage", "unsent original input")
+        }
+        val journal = ConfiguredLaunchJournal(scope, read = { failed }, persist = { true })
+        try {
+            journal.awaitLoaded()
+            assertNull(journal.pendingId)
+            assertEquals(RecoveredLaunchDraft("claude", "/project", "unsent original input"), journal.snapshot?.recoveredLaunchDraft())
+            assertTrue(journal.reserve(record("new"))!!.await())
+            assertEquals("new", journal.pendingId)
+            assertNull(journal.update("failed") { null })
+            assertNull(journal.reserve(record("duplicate")))
+        } finally { scope.cancel() }
+    }
+
+    @Test fun `an uncertain launch needs explicit abandonment before a fresh attempt`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val initial = JsonObject(record("uncertain") + mapOf("agentKind" to JsonPrimitive("codex"), "cwd" to JsonPrimitive("/project")))
+        var persisted: JsonObject? = initial
+        try {
+            val journal = ConfiguredLaunchJournal(scope, read = { persisted }, persist = { persisted = it; true })
+            journal.awaitLoaded()
+            assertNull(journal.reserve(record("duplicate")))
+            assertNull(journal.abandon("stale"))
+            assertTrue(journal.abandon("uncertain")!!.await())
+            val restarted = ConfiguredLaunchJournal(scope, read = { persisted }, persist = { true })
+            restarted.awaitLoaded()
+            assertNull(restarted.pendingId)
+            assertEquals("first input", restarted.snapshot?.recoveredLaunchDraft()?.text)
+            assertTrue(restarted.reserve(record("fresh"))!!.await())
+            assertNull(restarted.update("uncertain") { record("wrong-session") })
+            assertEquals("fresh", restarted.pendingId)
+        } finally { scope.cancel() }
+    }
+
+    @Test fun `ending a matching launch with an offline native identity stores only an editable draft`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val journal = ConfiguredLaunchJournal(scope, read = { JsonObject(record("ready") + ("sessionId" to JsonPrimitive("native"))) }, persist = { true })
+            journal.awaitLoaded()
+            assertNull(journal.abandon("different"))
+            assertTrue(journal.abandon("ready")!!.await())
+            assertNull(journal.pendingId)
+        } finally { scope.cancel() }
+    }
+
     @Test fun `restart loads existing identity before admitting a new launch`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val existing = record("recovered")

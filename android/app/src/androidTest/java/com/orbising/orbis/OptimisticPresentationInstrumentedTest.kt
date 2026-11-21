@@ -172,6 +172,18 @@ class OptimisticPresentationInstrumentedTest {
         compose.runOnIdle { assertEquals(1, abandons) }
     }
 
+    @Test fun confirmedFailureReturnsDirectlyToNewSession() {
+        val launch = LaunchState("request", "launch:request", emptyMap(), "app", "/repo", "claude", null, failure = "login required")
+        var openedDraft = false
+        compose.setContent { OrbisTheme {
+            LaunchNotice(launch, { error("A rejected launch must not retry the old request") }, {},
+                onAbandon = { openedDraft = true }, rejected = true)
+        } }
+        compose.onNodeWithTag("launch-retry").assertDoesNotExist()
+        compose.onNodeWithTag("launch-abandon").performClick()
+        compose.runOnIdle { assertEquals(true, openedDraft) }
+    }
+
     @Test fun aFailedLaunchOffersRetryAndBackInPlace() {
         val launch = LaunchState("request", "launch:request", mapOf("type" to "new", "agentKind" to "codex", "cwd" to "/repo/app"),
             "app", "/repo/app", "codex", resumed = null, failure = "对应的 agent 后端未就绪")

@@ -68,7 +68,10 @@ internal fun LaunchState.canAbandonConfiguredLaunch(journalLaunchId: String?): B
 internal fun RemoteState.restoreConfiguredLaunch(id: String, fields: Map<String, String>, now: Long): RemoteState {
     if (launching != null) return this
     val existing = ledger.operation(id)
-    if (existing == null) return createLaunch(id, fields, L10n.tr("新会话"), now).first
+    if (existing == null) {
+        val restored = createLaunch(id, fields, L10n.tr("新会话"), now).first
+        return restored.copy(launching = restored.launching?.copy(unconfirmed = true))
+    }
     val launch = LaunchState(id, "launch:$id", fields, L10n.tr("新会话"), fields["cwd"].orEmpty(), fields["agentKind"], null,
         unconfirmed = true)
     return copy(launching = launch, selectedRuntimeId = launch.placeholder)
@@ -78,18 +81,25 @@ internal fun RemoteState.restoreConfiguredLaunch(id: String, fields: Map<String,
 internal fun RemoteState.abandonConfiguredLaunchState(id: String, firstId: String?): RemoteState {
     val launch = launching?.takeIf { it.requestId == id } ?: return this
     if (launch.failure == null && !launch.unconfirmed) return this
+    return retireConfiguredLaunchState(id, firstId)
+}
+
+/** Remove only the superseded attempt, even when its launch page has already closed. */
+internal fun RemoteState.retireConfiguredLaunchState(id: String, firstId: String?): RemoteState {
+    val placeholder = "launch:$id"
     // Send operations use command IDs, not message IDs. Release every send owned
     // by this placeholder, including restored rows without a ledger operation.
     val abandonedSends = ledger.operations.filter { op ->
         val send = op.payload as? LedgerPayload.Send
-        send != null && (send.sessionId == launch.placeholder || send.messageId == firstId && id in op.prerequisites)
+        send != null && (send.sessionId == placeholder || id in op.prerequisites)
     }
     val messageIds = abandonedSends.map { (it.payload as LedgerPayload.Send).messageId }.toSet() +
-        pendingSends.values.filter { it.sessionId == launch.placeholder }.map { it.messageId }
+        pendingSends.values.filter { it.sessionId == placeholder || it.messageId == firstId }.map { it.messageId }
     val remainingLedger = abandonedSends.fold(ledger.remove(id)) { current, op -> current.remove(op.opId) }
-    return copy(launching = null, ledger = remainingLedger, sessionActivateRequests = sessionActivateRequests - id,
-        pendingSends = pendingSends - messageIds,
-        selectedRuntimeId = selectedRuntimeId.takeUnless { it == launch.placeholder }, activatedSessionToOpen = null)
+    return copy(launching = launching?.takeUnless { it.requestId == id }, ledger = remainingLedger,
+        sessionActivateRequests = sessionActivateRequests - id, pendingSends = pendingSends - messageIds,
+        selectedRuntimeId = selectedRuntimeId.takeUnless { it == placeholder },
+        activatedSessionToOpen = if (launching?.requestId == id) null else activatedSessionToOpen)
 }
 
 /** S51: only the matching native configuration confirmation can release the optimistic launch. */
@@ -104,7 +114,11 @@ internal fun RemoteState.withConfiguredLaunchResult(message: JsonObject): Remote
             put("agentKind", current.agentKind ?: "codex"); put("spawnMode", message["spawnMode"] ?: JsonPrimitive("tui"))
         })
     }
-    if (phase in setOf("unknown", "failed", "absent")) return copy(launching = current.copy(unconfirmed = true,
-        failure = message["error"]?.jsonPrimitive?.contentOrNull))
+    if (phase == "unknown" || phase == "absent" || phase == "failed") {
+        val error = message["error"]?.jsonPrimitive?.contentOrNull
+        return copy(launching = current.copy(unconfirmed = phase != "failed",
+            failure = error ?: if (phase == "failed") L10n.tr("启动失败") else null),
+            sessionActivateRequests = if (phase == "absent") sessionActivateRequests else sessionActivateRequests - id)
+    }
     return this
 }

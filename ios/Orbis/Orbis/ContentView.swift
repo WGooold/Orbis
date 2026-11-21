@@ -372,7 +372,8 @@ private struct NavigationRoot: View, Equatable {
         switch page {
         case .chat:
             if facts.runtime != nil,
-               let chat = ChatView(model: store.chatScreens, onBack: back, onHistory: { push(.history) }, onDownloads: { push(.downloads) }) {
+               let chat = ChatView(model: store.chatScreens, onBack: back, onHistory: { push(.history) },
+                   onDownloads: { push(.downloads) }, onReturnToNewSession: openRecoveredSessionDraft) {
                 chat
                     .id(facts.target.pageIdentity)
             } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
@@ -489,6 +490,13 @@ private struct NavigationRoot: View, Equatable {
     }
 
     /// A page's own back control runs the same slide as a released swipe and reveals the same source.
+    private func openRecoveredSessionDraft() {
+        LiveActivityCoordinator.shared.cancelQueuedOpen()
+        navigation.replace(with: [])
+        selectRoot(.chat)
+        newSessionCwd = nil; draftNotice = false
+        withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
+    }
     private func back() { LiveActivityCoordinator.shared.cancelQueuedOpen(); navigation.requestBack() }
     private func push(_ page: AppPage) { LiveActivityCoordinator.shared.cancelQueuedOpen(); navigation.push(page) }
     private func setDrawer(_ open: Bool) {

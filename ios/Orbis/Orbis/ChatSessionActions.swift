@@ -48,6 +48,7 @@ struct ChatSessionActions: Equatable {
     @MainActor func refreshWorkingBranch() { if isCurrent { connection.refreshWorkingBranch() } }
     @MainActor func refresh() { if isCurrent { connection.refresh() } }
     @MainActor func retryLaunch() { if isCurrent { connection.retryLaunch() } }
+    @MainActor func endConfiguredLaunch(_ id: String) -> Bool { isCurrent && connection.endConfiguredLaunch(id) }
     @MainActor func activate(_ session: SessionSummary) { if isCurrent { connection.activate(session) } }
     @MainActor func loadOlderHistory() -> Bool { isCurrent && connection.loadOlderHistory() }
     @MainActor func moveHistory(to option: RuntimeOption, fallbackText: String? = nil) -> Bool {
