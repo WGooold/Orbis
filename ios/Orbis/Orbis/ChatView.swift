@@ -131,10 +131,10 @@ struct ChatView: View {
             }
             .onChange(of: pageActivity.isTop) { _, isTop in
                 let preview = actions.connection.transfers.browserPreview
-                if !isTop, preview.current?.fullScreen != true { preview.close() }
+                if !isTop, preview.current?.fullScreen != true { preview.closeSession(target.identity) }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase != .active { actions.connection.transfers.browserPreview.close() }
+                if phase != .active { actions.connection.transfers.browserPreview.closeSession(target.identity) }
                 model.visibilityChanged(target: target, token: mountToken, visible: visualActive, foreground: phase == .active)
             }
             .modifier(ChatTurnReviewRegion(model: model, actions: actions))
@@ -145,7 +145,8 @@ struct ChatView: View {
                 visualActive: visualActive, sendFlight: sendFlight))
             .onAppear { model.mount(target: target, token: mountToken, visible: visualActive, foreground: scenePhase == .active) }
             .onDisappear {
-                actions.connection.transfers.browserPreview.close()
+                // A delayed disappearance belongs to this page, not the new session.
+                actions.connection.transfers.browserPreview.closeSession(target.identity)
                 releaseInterest()
                 model.unmount(target: target, token: mountToken)
             }

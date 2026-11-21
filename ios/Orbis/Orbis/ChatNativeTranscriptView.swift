@@ -78,6 +78,10 @@ final class ChatNativeCellGeometry {
         }
     }
 
+    fileprivate func invalidateHostedContentSize() {
+        onContentSizeChange?()
+    }
+
     fileprivate func contentSizeChanged(_ size: CGSize) {
         guard size.width.isFinite, size.height.isFinite, size != contentSize else { return }
         contentSize = size
@@ -1234,6 +1238,7 @@ final class NativeTranscriptCell: UICollectionViewCell {
 /// the implicit SwiftUI animation's final height and expands the cell before its row.
 /// The original non-native OrbisCollapse keeps its implicit animation path.
 struct ChatNativeCollapse<Content: View>: View {
+    @Environment(\.chatNativeCellGeometry) private var cellGeometry
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.chatVisualActivity) private var activity
     private var visualActive: Bool { activity?.active ?? true }
@@ -1279,15 +1284,15 @@ struct ChatNativeCollapse<Content: View>: View {
             }
         }
         .background {
-            // Only the small native disclosure owns this clock. The content stays in
-            // the same parent across start/stop, preserving its retained child state.
+            // Only the small native disclosure owns a display clock. TimelineView can
+            // coalesce ticks inside UIHostingConfiguration, turning the measured resize
+            // into a jump; CADisplayLink keeps one height update per rendered frame.
+            // The content stays in the same parent across start/stop, preserving state.
             if motion != nil, visualActive, !reduceMotion {
-                TimelineView(.animation) { clock in
-                    let now = max(clock.date.timeIntervalSinceReferenceDate,
-                                  Date.timeIntervalSinceReferenceDate)
-                    Color.clear.frame(width: 0, height: 0)
-                        .onChange(of: now, initial: true) { _, value in advance(to: value) }
-                }.allowsHitTesting(false).accessibilityHidden(true)
+                ChatNativeCollapseDisplayLink { advance(to: $0) }
+                    .frame(width: 1, height: 1)
+                    .opacity(0)
+                    .allowsHitTesting(false).accessibilityHidden(true)
             }
         }
         .onChange(of: expanded) { _, value in
@@ -1341,6 +1346,10 @@ struct ChatNativeCollapse<Content: View>: View {
                 presentationOpacity = min(1, max(0, motion.opacity(at: now)))
             }
         }
+        // UIHostingConfiguration does not reliably re-run self-sizing from the hosted
+        // root's geometry alone while a child clip changes. Invalidate the owning cell
+        // on this same display frame so collection sizing follows the visible height.
+        cellGeometry?.invalidateHostedContentSize()
     }
 
     private func settle() {
@@ -1358,6 +1367,68 @@ struct ChatNativeCollapse<Content: View>: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction, action)
+    }
+}
+
+private struct ChatNativeCollapseDisplayLink: UIViewRepresentable {
+    let onFrame: (TimeInterval) -> Void
+
+    func makeUIView(context: Context) -> ChatNativeCollapseDisplayLinkView {
+        let view = ChatNativeCollapseDisplayLinkView()
+        view.onFrame = onFrame
+        return view
+    }
+
+    func updateUIView(_ view: ChatNativeCollapseDisplayLinkView, context: Context) {
+        view.onFrame = onFrame
+        view.startIfNeeded()
+    }
+
+    static func dismantleUIView(_ view: ChatNativeCollapseDisplayLinkView, coordinator: ()) {
+        view.stop()
+    }
+}
+
+@MainActor
+private final class ChatNativeCollapseDisplayLinkView: UIView {
+    private final class Target: NSObject {
+        weak var owner: ChatNativeCollapseDisplayLinkView?
+
+        @MainActor @objc func tick(_ link: CADisplayLink) {
+            owner?.onFrame?(Date.timeIntervalSinceReferenceDate)
+        }
+    }
+
+    var onFrame: ((TimeInterval) -> Void)?
+    private let target = Target()
+    private var displayLink: CADisplayLink?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        target.owner = self
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { stop() } else { startIfNeeded() }
+    }
+
+    func startIfNeeded() {
+        guard displayLink == nil else { return }
+        let link = CADisplayLink(target: target, selector: #selector(Target.tick(_:)))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    func stop() {
+        displayLink?.invalidate()
+        displayLink = nil
     }
 }
 

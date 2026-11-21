@@ -55,7 +55,8 @@ import {
   CODEX_UNIFIED_HISTORY,
   HOST_FEATURE_DEVICE_FEATURES,
   HOST_FEATURE_IMPORT_TARGET,
-  HOST_FEATURE_FILE_PREVIEW,
+  HOST_FEATURE_WEB_PREVIEW,
+  HOST_FEATURE_NATIVE_FILE_PREVIEW,
   HOST_FEATURE_SESSION_SPAWN_AUTO,
   AGENT_ENABLEMENT_FEATURE,
   PROTOCOL_VERSION,
@@ -1957,7 +1958,8 @@ export class HostService {
         ...(this.#managedPolicy || this.#codexRuntimes().length || this.#options.ensureCodexRuntime || this.#options.ensureCodexDesktop ? [CODEX_UNIFIED_HISTORY] : []),
         ...(this.#managedPolicy ? [AGENT_ENABLEMENT_FEATURE] : []),
         HOST_FEATURE_IMPORT_TARGET,
-        HOST_FEATURE_FILE_PREVIEW,
+        HOST_FEATURE_WEB_PREVIEW,
+        HOST_FEATURE_NATIVE_FILE_PREVIEW,
         ...(this.#options.preferAutoSessionSpawn === true ? [HOST_FEATURE_SESSION_SPAWN_AUTO] : []),
         DEVICE_FEATURE_MESSAGE_RENDER,
         DEVICE_FEATURE_OPENCLAW,
@@ -2900,7 +2902,7 @@ export class HostService {
       return;
     }
     if (command.type === "file.download" || command.type === "artifact.download") {
-      if (command.maxBytes !== undefined && message.runtimeId !== this.hostId) {
+      if ((command.maxBytes !== undefined || command.previewFormat !== undefined || command.web !== undefined) && message.runtimeId !== this.hostId) {
         this.#sendToDeviceOn(deviceId, path, { type: "protocol.error", code: "invalid_command", commandId: message.commandId,
           message: "预览必须请求文件所在的电脑" });
         return;
@@ -3928,7 +3930,8 @@ export class HostService {
     const codex = runtimeId !== undefined && this.#isCodexRuntime(runtimeId);
     const rich = this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_MESSAGE_RENDER) === true;
     const identity = scope?.kind === "agent" ? this.#agentStateRegistry.read(scope, "identity")?.value as { cwd?: string } | undefined : undefined;
-    const cwd = codex ? identity?.cwd : undefined;
+    // A remote Gateway's cwd is a label, not permission to open the same path on this Host.
+    const cwd = runtimeId?.startsWith(OPENCLAW_PREFIX) || runtimeId?.startsWith("hermes:") ? undefined : identity?.cwd;
     const backend = codex && rich && scope?.kind === "agent" ? this.#backends.find(candidate => candidate.kind === scope.key.agentKind) as CodexRuntime | undefined : undefined;
     const rendered = this.#deviceMessageRendering.project(deviceId, message, { rich, codex, ...(cwd === undefined ? {} : { cwd }),
       ...(backend && runtimeId ? { generatedImagePath: (id: string) => backend.generatedImagePath?.(runtimeId, id) } : {}) });

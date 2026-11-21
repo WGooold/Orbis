@@ -14,9 +14,11 @@ import { basename, extname, join } from "node:path";
 
 import {
   ARTIFACT_CHUNK_BYTES,
-  FILE_PREVIEW_BYTES,
-  FILE_PREVIEW_DOCUMENT_BYTES,
   FILE_PREVIEW_CHUNK_BYTES,
+  NATIVE_FILE_PREVIEW_BYTES,
+  nativeFilePreviewFormat,
+  type NativePreviewFormat,
+  type WebPreviewRequest,
   MESSAGE_FILE_PREFIX,
   PROTOCOL_VERSION,
   encodeArtifactChunkFrame,
@@ -26,7 +28,7 @@ import {
   type RuntimeCommand,
   type RuntimeEvent,
 } from "@orbis/protocol";
-import { readStaticFilePreview, type StaticPreviewFormat } from "./static-file-preview.js";
+import { locateWebPreview, readNativeFilePreview, readWebPreview } from "./file-preview-source.js";
 
 /** 同时在跑的下载条数上限。这是防手滑，不是安全边界。 */
 const DEFAULT_MAX_CONCURRENT = 4;
@@ -34,9 +36,16 @@ const DEFAULT_MAX_CONCURRENT = 4;
 const MAX_INDEX_ENTRIES = 500;
 /** pull 传输多久没有任何 `artifact.read` 就回收（手机静默消失时的兜底）。 */
 const PULL_IDLE_TIMEOUT_MS = 60_000;
-const PREVIEW_TIMEOUT_MS = 40_000;
+/** A preview transfer is released when its receiver stops asking for ranges; slow links keep it alive. */
+const PREVIEW_IDLE_MS = 30_000;
+/** Devices that may hold preview bodies at once. */
 const MAX_HOST_PREVIEWS = 2;
+/** FILE-PREVIEW-03: concurrent responses for one open page (entry plus what its WebView requested). */
+const MAX_WEB_TRANSFERS_PER_DEVICE = 6;
+/** Prepared web bodies held in Host memory across all devices. */
+const MAX_WEB_PREVIEW_HOST_BYTES = 48 * 1024 * 1024;
 type PreviewFailed = Extract<RelayToDeviceMessage, { type: "file.preview.failed" }>;
+type PreviewStarted = Extract<RelayToDeviceMessage, { type: "file.preview.started" }>;
 
 type DownloadCommand = Extract<RuntimeCommand, { type: "file.download" | "artifact.download" }>;
 
@@ -50,7 +59,7 @@ export type HostDownloadServiceOptions = {
   /** artifact 索引落盘位置（`<stateDir>/artifacts.json`）。 */
   indexPath: string;
   resolveMessageReference?: (id: string, deviceId: string) => Promise<string>;
-  resolvePreviewReference?: (id: string, deviceId: string) => Promise<{ path: string; identity: string }>;
+  resolvePreviewReference?: (id: string, deviceId: string) => Promise<{ path: string; identity: string; site?: string }>;
   log?: (line: string) => void;
   maxConcurrent?: number;
 };
@@ -77,8 +86,10 @@ type ActivePull = {
   /** 已服务的范围请求数（含重传），用来在完成日志里说清「传了多少次」。 */
   reads: number;
   startedAt: number;
-  preview?: { format: StaticPreviewFormat; bytes: Uint8Array; deadline: ReturnType<typeof setTimeout> };
+  preview?: { format: "web" | NativePreviewFormat; bytes: Uint8Array; deadline: ReturnType<typeof setTimeout>; page?: string; reply?: PreviewStarted };
 };
+
+type PreparingWebPreview = { deviceId: string; page: string; commandId: string; abandoned: boolean };
 
 type PreparingPreview = {
   commandId: string;
@@ -93,6 +104,14 @@ type CommandRecord = {
 
 const MIME_TYPES: Record<string, string> = {
   ".apk": "application/vnd.android.package-archive",
+  ".csv": "text/csv",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".mp4": "video/mp4",
   ".gif": "image/gif",
   ".jpeg": "image/jpeg",
   ".jpg": "image/jpeg",
@@ -166,6 +185,8 @@ export class HostDownloadService {
   readonly #pulls = new Map<string, ActivePull>();
   readonly #commands = new Map<string, CommandRecord>();
   readonly #preparingPreviews = new Map<string, PreparingPreview>();
+  /** Keyed by the App-chosen transfer id. */
+  readonly #preparingWeb = new Map<string, PreparingWebPreview>();
   /** artifactId → 元数据（含 path）。来源是各个 runtime 上报的 `artifact.started`。 */
   readonly #index = new Map<string, IndexedArtifact>();
   #indexWriteChain: Promise<void> = Promise.resolve();
@@ -256,7 +277,8 @@ export class HostDownloadService {
     commandId: string,
     command: DownloadCommand,
   ): Promise<boolean> {
-    if (command.maxBytes !== undefined) return this.#offerPreview(deviceId, runtimeId, commandId, command, command.maxBytes);
+    if (command.web !== undefined) return this.#offerWebPreview(deviceId, runtimeId, commandId, command, command.web);
+    if (command.maxBytes !== undefined || command.previewFormat !== undefined) return this.#offerPreview(deviceId, runtimeId, commandId, command, command.maxBytes ?? 0);
     const known = this.#commands.get(commandId);
     if (known !== undefined) {
       // 同一条命令重发（手机重连后重放）：把还活着的那次重新宣告一遍，不再开第二条。
@@ -321,7 +343,8 @@ export class HostDownloadService {
       return false;
     };
     if (!commandId || commandId.length > 128) return false;
-    if ((command.offset ?? 0) !== 0 || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > FILE_PREVIEW_BYTES) {
+    const native = command.previewFormat;
+    if (!native || (command.offset ?? 0) !== 0 || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > NATIVE_FILE_PREVIEW_BYTES[native]) {
       return fail("invalid_request");
     }
     const active = [...this.#pulls.values()].filter(pull => pull.preview);
@@ -338,9 +361,10 @@ export class HostDownloadService {
           run: () => { void this.#offerPreview(deviceId, runtimeId, commandId, command, maxBytes).then(resolve); } };
       });
     }
-    if (this.#preparingPreviews.size + active.filter(pull => pull.deviceId !== deviceId).length >= MAX_HOST_PREVIEWS) return fail("busy");
+    if (this.#previewDevices(deviceId) >= MAX_HOST_PREVIEWS) return fail("busy");
     // A new explicit selection supersedes only this device's previous *preview*, never its downloads.
     for (const pull of active) if (pull.deviceId === deviceId) this.#removePull(pull);
+    this.#abandonWeb(deviceId);
     const pending: PreparingPreview = { commandId, abandoned: false };
     this.#preparingPreviews.set(deviceId, pending);
     try {
@@ -353,22 +377,16 @@ export class HostDownloadService {
       if (!path) return fail("unavailable");
       const fileName = indexed?.fileName ?? safeDownloadFileName(path);
       const extension = extname(fileName).toLowerCase();
-      const format = extension === ".svg" ? "svg" : extension === ".html" || extension === ".htm" ? "html" : undefined;
-      if (!format) return fail("unsupported");
-      const result = await readStaticFilePreview(path, format, maxBytes, reference?.identity, Math.min(maxBytes, FILE_PREVIEW_DOCUMENT_BYTES));
+      if (native !== nativeFilePreviewFormat(fileName)) return fail("unsupported");
+      const result = await readNativeFilePreview(path, native, maxBytes, reference?.identity);
       if (pending.abandoned) return false;
       if ("reason" in result) return fail(result.reason);
       const transferId = randomUUID();
-      const deadline = setTimeout(() => {
-        const pull = this.#pulls.get(transferId);
-        if (pull) { this.#removePull(pull); fail("transfer_failed"); }
-      }, PREVIEW_TIMEOUT_MS);
-      deadline.unref();
       const pull: ActivePull = {
         deviceId, runtimeId, commandId, transferId, startOffset: 0, cancelled: false,
-        artifact: { artifactId: indexed?.artifactId ?? randomUUID(), fileName, mimeType: "text/html", path,
+        artifact: { artifactId: indexed?.artifactId ?? randomUUID(), fileName, mimeType: MIME_TYPES[extension] ?? "application/octet-stream", path,
           size: result.bytes.byteLength, sha256: result.sha256, ...(referenceId === undefined ? {} : { referenceId }) },
-        lastActivityAt: Date.now(), startedAt: Date.now(), reads: 0, preview: { format, bytes: result.bytes, deadline },
+        lastActivityAt: Date.now(), startedAt: Date.now(), reads: 0, preview: { format: native, bytes: result.bytes, deadline: this.#previewDeadline(transferId) },
       };
       this.#pulls.set(transferId, pull);
       this.#publishPullStarted(pull);
@@ -378,6 +396,99 @@ export class HostDownloadService {
       this.#preparingPreviews.delete(deviceId);
       pending.next?.run();
     }
+  }
+
+  /**
+   * FILE-PREVIEW-03. One response of an open page: the entry, or one file its offline WebView asked for.
+   * The reply carries the first range, so a small resource costs one round trip; the rest is receiver-driven.
+   */
+  async #offerWebPreview(deviceId: string, runtimeId: string, commandId: string, command: DownloadCommand, web: WebPreviewRequest): Promise<boolean> {
+    const fail = (reason: PreviewFailed["reason"]): false => {
+      this.#options.publishMessage?.(deviceId, { type: "file.preview.failed", protocolVersion: PROTOCOL_VERSION, runtimeId, commandId, reason });
+      return false;
+    };
+    if (!commandId || commandId.length > 128) return false;
+    const existing = this.#pulls.get(web.transferId);
+    if (existing !== undefined || this.#preparingWeb.has(web.transferId)) {
+      if (existing?.deviceId === deviceId && existing.commandId === commandId) { this.#publishPullStarted(existing); return true; }
+      return this.#preparingWeb.get(web.transferId)?.commandId === commandId ? true : fail("invalid_request");
+    }
+    if ((command.offset ?? 0) !== 0) return fail("invalid_request");
+    // Opening another page (or another file) supersedes every earlier preview of this device, never its downloads.
+    for (const pull of this.#pulls.values()) if (pull.deviceId === deviceId && pull.preview && pull.preview.page !== web.page) this.#removePull(pull);
+    this.#abandonWeb(deviceId, web.page);
+    const pending = this.#preparingPreviews.get(deviceId);
+    if (pending) { pending.abandoned = true; pending.next?.discard(); delete pending.next; }
+    const sameDevice = [...this.#pulls.values()].filter(pull => pull.deviceId === deviceId && pull.preview).length +
+      [...this.#preparingWeb.values()].filter(entry => entry.deviceId === deviceId).length;
+    const held = [...this.#pulls.values()].reduce((total, pull) => total + (pull.preview?.page !== undefined ? pull.preview.bytes.byteLength : 0), 0);
+    if (sameDevice >= MAX_WEB_TRANSFERS_PER_DEVICE || held >= MAX_WEB_PREVIEW_HOST_BYTES || this.#previewDevices(deviceId) >= MAX_HOST_PREVIEWS) return fail("busy");
+    const preparing: PreparingWebPreview = { deviceId, page: web.page, commandId, abandoned: false };
+    this.#preparingWeb.set(web.transferId, preparing);
+    try {
+      const referenceId = command.type === "file.download" ? command.path : undefined;
+      const indexed = command.type === "artifact.download" ? this.#index.get(command.artifactId) : undefined;
+      const reference = referenceId?.startsWith(MESSAGE_FILE_PREFIX)
+        ? await this.#options.resolvePreviewReference?.(referenceId, deviceId) : undefined;
+      if (preparing.abandoned) return false;
+      const entry = indexed?.path ?? reference?.path;
+      if (!entry) return fail("unavailable");
+      const target = await locateWebPreview(entry, reference?.site, web.resource);
+      if (preparing.abandoned) return false;
+      if ("reason" in target) return fail(target.reason);
+      const result = await readWebPreview(target, web.resource === undefined ? reference?.identity : undefined);
+      if (preparing.abandoned) return false;
+      if ("reason" in result) return fail(result.reason);
+      const artifactId = indexed?.artifactId ?? randomUUID();
+      const reply: PreviewStarted = { type: "file.preview.started", protocolVersion: PROTOCOL_VERSION, runtimeId, commandId, transferId: web.transferId,
+        artifactId, format: "web", size: result.body.byteLength, sha256: result.sha256, contentSize: result.contentSize,
+        encoding: result.encoding, mimeType: result.mimeType, resource: target.resource,
+        ...(referenceId === undefined ? {} : { referenceId }) };
+      if (web.ifNoneMatch === result.sha256) {
+        this.#options.publishMessage?.(deviceId, { ...reply, notModified: true });
+        return true;
+      }
+      const pull: ActivePull = {
+        deviceId, runtimeId, commandId, transferId: web.transferId, startOffset: 0, cancelled: false,
+        artifact: { artifactId, fileName: safeDownloadFileName(target.path), mimeType: result.mimeType, path: target.path,
+          size: result.body.byteLength, sha256: result.sha256, ...(referenceId === undefined ? {} : { referenceId }) },
+        lastActivityAt: Date.now(), startedAt: Date.now(), reads: 1,
+        preview: { format: "web", bytes: result.body, deadline: this.#previewDeadline(web.transferId), page: web.page, reply },
+      };
+      this.#pulls.set(web.transferId, pull);
+      this.#options.publishMessage?.(deviceId, reply);
+      this.#options.publishBinary(deviceId, encodeArtifactChunkFrame({ runtimeId, transferId: web.transferId, offset: 0,
+        data: result.body.subarray(0, Math.min(FILE_PREVIEW_CHUNK_BYTES, result.body.byteLength)) }));
+      return true;
+    } catch { return preparing.abandoned ? false : fail("unavailable"); }
+    finally { this.#preparingWeb.delete(web.transferId); }
+  }
+
+  /** Other devices currently holding or preparing preview bodies. */
+  #previewDevices(deviceId: string): number {
+    const devices = new Set<string>();
+    for (const pull of this.#pulls.values()) if (pull.preview) devices.add(pull.deviceId);
+    for (const key of this.#preparingPreviews.keys()) devices.add(key);
+    for (const entry of this.#preparingWeb.values()) devices.add(entry.deviceId);
+    devices.delete(deviceId);
+    return devices.size;
+  }
+
+  /** Abandon this device's web responses still being prepared, except those of `keepPage`. */
+  #abandonWeb(deviceId: string, keepPage?: string): void {
+    for (const entry of this.#preparingWeb.values()) if (entry.deviceId === deviceId && entry.page !== keepPage) entry.abandoned = true;
+  }
+
+  #previewDeadline(transferId: string): ReturnType<typeof setTimeout> {
+    const timer = setTimeout(() => {
+      const pull = this.#pulls.get(transferId);
+      if (!pull?.preview) return;
+      this.#removePull(pull);
+      this.#options.publishMessage?.(pull.deviceId, { type: "file.preview.failed", protocolVersion: PROTOCOL_VERSION,
+        runtimeId: pull.runtimeId, commandId: pull.commandId, reason: "transfer_failed" });
+    }, PREVIEW_IDLE_MS);
+    timer.unref();
+    return timer;
   }
 
   #removePull(pull: ActivePull): void {
@@ -415,6 +526,7 @@ export class HostDownloadService {
     }
     if (active.deviceId !== deviceId) return;
     active.lastActivityAt = Date.now();
+    if (active.preview) { clearTimeout(active.preview.deadline); active.preview.deadline = this.#previewDeadline(active.transferId); }
     const end = request.offset + request.length;
     if (request.offset < 0 || request.length < 1 || request.length > (active.preview ? FILE_PREVIEW_CHUNK_BYTES : ARTIFACT_CHUNK_BYTES) || end > active.artifact.size) {
       this.#publishReadFailed(active, request.requestId, "range_out_of_bounds");
@@ -460,6 +572,7 @@ export class HostDownloadService {
   }
 
   #publishPullStarted(active: ActivePull): void {
+    if (active.preview?.reply) { this.#options.publishMessage?.(active.deviceId, active.preview.reply); return; }
     if (active.preview) {
       this.#options.publishMessage?.(active.deviceId, { type: "file.preview.started", protocolVersion: PROTOCOL_VERSION,
         runtimeId: active.runtimeId, commandId: active.commandId, transferId: active.transferId,
@@ -519,6 +632,7 @@ export class HostDownloadService {
 
   /** 一台设备的链路没了：它名下的下载提前收场。 */
   releaseDevice(deviceId: string): void {
+    this.#abandonWeb(deviceId);
     const pending = this.#preparingPreviews.get(deviceId);
     if (pending) {
       pending.abandoned = true;
@@ -563,6 +677,7 @@ export class HostDownloadService {
    */
   failDeviceTransfers(deviceId: string, reason: string): number {
     let failed = 0;
+    this.#abandonWeb(deviceId);
     const pending = this.#preparingPreviews.get(deviceId);
     if (pending) {
       pending.abandoned = true;

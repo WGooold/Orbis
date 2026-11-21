@@ -6,7 +6,7 @@ private enum RootTab: String, CaseIterable {
     var symbol: String { switch self { case .chat: "bubble.left"; case .providers: "slider.horizontal.3"; case .settings: "gearshape" } }
 }
 
-private enum AppPage: Hashable { case chat, pairing, status, providers, history, downloads, filePreview(UUID) }
+private enum AppPage: Hashable { case chat, pairing, status, providers, history, downloads, filePreview(UUID), downloadedFile(String) }
 
 /// The legacy Hub may still publish for other pages; this wrapper does no page construction.
 struct ContentView: View {
@@ -70,7 +70,7 @@ private struct NavigationRoot: View, Equatable {
         case .chat: return .chat
         case .history: return .history
         case nil: return .root
-        case .downloads, .pairing, .status, .providers, .filePreview: return nil
+        case .downloads, .pairing, .status, .providers, .filePreview, .downloadedFile: return nil
         }
     }
 
@@ -421,7 +421,8 @@ private struct NavigationRoot: View, Equatable {
         case .status: ConnectionStatusView(onBack: back)
         case .providers: AgentProvidersView(onBack: back)
         case .history: HistoryBranchView(onBack: back)
-        case .downloads: DownloadsView(onBack: back)
+        case .downloads: DownloadsView(onBack: back, onOpen: { push(.downloadedFile($0)) })
+        case .downloadedFile(let id): DownloadedFilePage(task: facts.source.transfers.completedLocalDownload(id), back: back)
         case .filePreview(let id):
             ChatFilePreviewPage(preview: facts.source.transfers.browserPreview, id: id) {
                 if navigation.pages.last == .filePreview(id) { back() }

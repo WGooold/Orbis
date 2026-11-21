@@ -3042,6 +3042,7 @@ internal class HostConnection(
 
     internal fun setTransferFeedbackScope(downloads: Boolean, uploadIds: Set<String>) { transferFeedbackScope = TransferFeedbackScope(downloads, uploadIds) }
     fun setFeedbackVisible(visible: Boolean) {
+        if (!visible) browserPreview.close()
         updateState { it.copy(feedback = it.feedback.visible(visible)) }
     }
     fun clearFeedbackScope() {
@@ -3189,7 +3190,8 @@ internal class HostConnection(
                             val features = (incomingMessage["hostFeatures"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
                             voiceProviderGeneration = if ("voice.cleanup.provider.v1" in features) currentGeneration else -1
                             if (interactiveChannel == "ctl" && incomingMessage["deviceId"] == JsonPrimitive(credential.deviceId)) {
-                                browserPreview.authenticated(announcesFilePreview(incomingMessage, credential.deviceId))
+                                browserPreview.authenticated(announcesFilePreview(incomingMessage, credential.deviceId),
+                                    announcesFilePreview(incomingMessage, credential.deviceId, ChatFilePreview.NATIVE_FEATURE))
                             }
                         }
                         "voice.cleanup.provider.result" -> {

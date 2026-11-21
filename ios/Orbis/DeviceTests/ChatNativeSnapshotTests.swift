@@ -299,8 +299,9 @@ import XCTest
         coordinator.update(superseded, snapshot: superseded.snapshot())
         var latestViewportIDs: [[String]] = []
         let latestIDs = (0..<5).map { "latest-\($0)" }
-        let latest = input(latestIDs, revision: 4, owner: UUID(), viewport: ChatViewportController()) { frames, _ in
-            latestViewportIDs.append(Array(frames.keys))
+        // Each viewport report names the reading row it measured (none is an empty report).
+        let latest = input(latestIDs, revision: 4, owner: UUID(), viewport: ChatViewportController()) { row in
+            latestViewportIDs.append(row.map { [$0] } ?? [])
         }
         coordinator.update(latest, snapshot: latest.snapshot())
 
@@ -508,10 +509,11 @@ import XCTest
     // animation that lags behind SwiftUI and shifts the cell content upward.
     func testHostedDisclosureResizesCellWithoutSelfSizingAnimation() async throws {
         let state = ChatTranscriptInteractionState.Disclosure()
+        let disclosureProbe = HostedDisclosureHeightProbe()
         let viewport = ChatViewportController()
         let snapshot = ChatNativeTranscriptView.Snapshot(items: [
             .init(id: "above", revision: UUID(), content: AnyView(Text("Above").frame(height: 60)), kind: .message),
-            .init(id: "tool", revision: UUID(), content: AnyView(HostedDisclosureCellFixture(state: state)), kind: .message),
+            .init(id: "tool", revision: UUID(), content: AnyView(HostedDisclosureCellFixture(state: state, probe: disclosureProbe)), kind: .message),
             .init(id: "tail", revision: UUID(), content: AnyView(Color.clear.frame(height: 4)))
         ], revision: 1)
         let view = ChatNativeTranscriptView(snapshot: { snapshot }, viewport: viewport,
@@ -536,7 +538,7 @@ import XCTest
         print("HOSTED_DISCLOSURE_ENV reduceMotion=\(UIAccessibility.isReduceMotionEnabled) animationsEnabled=\(UIView.areAnimationsEnabled)")
 
         state.expanded = true
-        var observedHeights: [CGFloat] = []
+        var observedHeights: [(time: TimeInterval, height: CGFloat)] = []
         let deadline = Date().addingTimeInterval(1.0)
         while Date() < deadline {
             CATransaction.flush()
@@ -550,38 +552,45 @@ import XCTest
             let expectedRect = collection.convert(cell.frame, to: window)
             XCTAssertEqual(cellRect.minY, expectedRect.minY, accuracy: 1)
             XCTAssertEqual(cellRect.height, expectedRect.height, accuracy: 1)
-            if let hosting = cell.contentView.subviews.first {
+            if let hosting = cell.contentView.subviews.first(where: { $0.bounds.width > 1 && $0.bounds.height > 1 }) {
                 XCTAssertTrue((hosting.layer.animationKeys() ?? []).isEmpty,
                               "Hosted root view must not inherit UIKit self-sizing animations")
                 let hostingRect = (hosting.layer.presentation() ?? hosting.layer).convert(hosting.bounds, to: windowLayer)
                 XCTAssertEqual(hostingRect.minY, expectedRect.minY, accuracy: 1)
             }
-            observedHeights.append(cell.frame.height)
-            if cell.frame.height > 250 && observedHeights.suffix(4).allSatisfy({ abs($0 - cell.frame.height) <= 0.5 }) {
+            observedHeights.append((ProcessInfo.processInfo.systemUptime, cell.frame.height))
+            if cell.frame.height > 250 && observedHeights.suffix(4).allSatisfy({ abs($0.height - cell.frame.height) <= 0.5 }) {
                 break
             }
             try await Task.sleep(nanoseconds: 16_000_000)
         }
         let finalCell = try XCTUnwrap(toolCell())
-        let attachment = XCTAttachment(string: "reduceMotion=\(UIAccessibility.isReduceMotionEnabled); initial=\(initialFrame.height); final=\(finalCell.frame.height); sampled=\(observedHeights)")
+        let attachment = XCTAttachment(string: "reduceMotion=\(UIAccessibility.isReduceMotionEnabled); initial=\(initialFrame.height); final=\(finalCell.frame.height); cell=\(observedHeights); disclosure=\(disclosureProbe.samples)")
         attachment.name = "HOSTED_DISCLOSURE_HEIGHTS"
         attachment.lifetime = .keepAlways
         add(attachment)
         XCTAssertEqual(finalCell.frame.minY, initialFrame.minY, accuracy: 1)
         XCTAssertGreaterThan(finalCell.frame.height, 250)
-        XCTAssertGreaterThan(observedHeights.filter { $0 > initialFrame.height + 5 && $0 < finalCell.frame.height - 5 }.count, 1)
+        XCTAssertGreaterThan(observedHeights.filter { $0.height > initialFrame.height + 5 && $0.height < finalCell.frame.height - 5 }.count, 1)
     }
+}
+
+@MainActor
+private final class HostedDisclosureHeightProbe {
+    var samples: [(time: TimeInterval, height: CGFloat)] = []
+    func record(_ height: CGFloat) { samples.append((ProcessInfo.processInfo.systemUptime, height)) }
 }
 
 private struct HostedDisclosureCellFixture: View {
     let state: ChatTranscriptInteractionState.Disclosure
+    let probe: HostedDisclosureHeightProbe
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Tool header").frame(height: 44)
             OrbisCollapse(expanded: state.expanded) {
                 Text((1...16).map { "Line \($0)" }.joined(separator: "\n"))
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            }.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { probe.record($0) }
         }
     }
 }

@@ -7,6 +7,7 @@ struct DownloadsView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     let onBack: () -> Void
+    let onOpen: (String) -> Void
     @State private var browserOpen = false
     @State private var browserOwner: HostConnection?
     @State private var selected: Set<String> = []
@@ -74,23 +75,19 @@ struct DownloadsView: View {
 
     @ViewBuilder
     private func transferCard(_ task: FileTransfer) -> some View {
-        Group {
-            if selected.isEmpty, task.status == "completed", let path = task.localPath {
-                ShareLink(item: URL(fileURLWithPath: path)) { transferCardContent(task) }
-            } else {
-                OrbisMotionButton {
-                    if !selected.isEmpty {
-                        OrbisHaptics.selectionChanged()
-                        if !selected.insert(task.id).inserted { selected.remove(task.id) }
-                    } else if ["queued", "downloading", "verifying"].contains(task.status) {
-                        // Cancellation preserves the partial file and prevents automatic resumption.
-                        transfers.cancel(task.id)
-                    } else if task.status != "completed", store.connection == .secured {
-                        transfers.restart(task.id)
-                    }
-                } label: { transferCardContent(task) }
+        OrbisMotionButton {
+            if !selected.isEmpty {
+                OrbisHaptics.selectionChanged()
+                if !selected.insert(task.id).inserted { selected.remove(task.id) }
+            } else if task.status == "completed" {
+                if transfers.completedLocalDownload(task.id) != nil { onOpen(task.id) }
+            } else if ["queued", "downloading", "verifying"].contains(task.status) {
+                // Cancellation preserves the partial file and prevents automatic resumption.
+                transfers.cancel(task.id)
+            } else if store.connection == .secured {
+                transfers.restart(task.id)
             }
-        }
+        } label: { transferCardContent(task) }
         .buttonStyle(OrbisSelectionButtonStyle(selected: selected.contains(task.id), selecting: !selected.isEmpty))
         .highPriorityGesture(LongPressGesture().onEnded { _ in beginSelection(task.id) })
         .accessibilityIdentifier("download-card-\(task.id)")
@@ -107,7 +104,7 @@ struct DownloadsView: View {
         let actionHint: String = {
             if !selected.isEmpty { return selected.contains(task.id) ? L10n.tr("已选择") : L10n.tr("选择") }
             if active { return L10n.tr("暂停") }
-            if task.status == "completed" { return task.localPath == nil ? "" : L10n.tr("分享") }
+            if task.status == "completed" { return task.localPath == nil ? "" : L10n.tr("打开") }
             if store.connection != .secured { return L10n.tr("连接电脑后继续") }
             return failed ? L10n.tr("重试") : L10n.tr("继续")
         }()
@@ -203,15 +200,10 @@ private struct DownloadBrowserView: View {
     }
 
     private var pathEntry: some View {
-        HStack(spacing: 10) {
-            TextField(L10n.tr("电脑路径"), text: $pathInput)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .font(.orbisCaption(mono: true)).focused($pathFocused).orbisInput(focused: pathFocused)
-                .submitLabel(.go).onSubmit(jumpToPath)
-                .accessibilityIdentifier("download-browser-path")
-            OrbisIconButton(symbol: "magnifyingglass", label: L10n.tr("跳转"), action: jumpToPath)
-                .disabled(trimmedPath.isEmpty || owner.connection != .secured || directory?.loading == true)
-                .accessibilityIdentifier("download-browser-jump")
+        RemotePathField(text: $pathInput, current: directory?.path, loading: directory?.loading == true,
+                        enabled: owner.connection == .secured, identifier: "download-browser-path",
+                        jumpIdentifier: "download-browser-jump", focus: $pathFocused, go: jumpToPath) {
+            owner.browseDownloadDirectory(directory?.path)
         }
         .padding(.horizontal, 24)
     }
@@ -219,20 +211,6 @@ private struct DownloadBrowserView: View {
     private var browserContents: some View {
         ScrollView {
             VStack(spacing: 14) {
-                HStack {
-                    Text(directory?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
-                        .font(.orbisCaption(mono: true))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    ZStack {
-                        if directory?.loading == true { ProgressView().controlSize(.small) }
-                        else {
-                            OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) {
-                                owner.browseDownloadDirectory(directory?.path)
-                            }
-                        }
-                    }
-                    .frame(width: 48, height: 48)
-                }
                 if directory?.path?.isEmpty == false {
                     OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") {
                         selected.removeAll()

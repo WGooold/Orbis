@@ -995,6 +995,40 @@ struct SessionDraftView: View {
     }
 }
 
+/// FILE-BROWSER-01: one row for where the browser is and where to go next. The field shows the current folder
+/// (empty at the computer's root); its button refreshes that folder, or opens the typed path once the text differs.
+struct RemotePathField: View {
+    @Binding var text: String
+    let current: String?
+    let loading: Bool
+    let enabled: Bool
+    let identifier: String
+    let jumpIdentifier: String
+    let focus: FocusState<Bool>.Binding
+    let go: () -> Void
+    let refresh: () -> Void
+    private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    var body: some View {
+        HStack(spacing: 10) {
+            TextField(current?.isEmpty == false ? L10n.tr("电脑路径") : L10n.tr("电脑根目录"), text: $text)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .font(.orbisCaption(mono: true)).focused(focus).orbisInput(focused: focus.wrappedValue)
+                .submitLabel(.go).onSubmit(go)
+                .accessibilityIdentifier(identifier)
+            // Spinner and actions share one fixed slot so the field never reflows while loading.
+            ZStack {
+                if loading { ProgressView().controlSize(.small) }
+                else if trimmed != (current ?? "") {
+                    OrbisIconButton(symbol: "magnifyingglass", label: L10n.tr("跳转"), action: go)
+                        .disabled(!enabled || trimmed.isEmpty).accessibilityIdentifier(jumpIdentifier)
+                } else {
+                    OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录"), action: refresh).disabled(!enabled)
+                }
+            }.frame(width: 48, height: 48)
+        }
+    }
+}
+
 /// FILE-BROWSER-01: directory selection accepts typed paths as well as row navigation.
 struct RemoteDirectoryView: View {
     @ObservedObject var owner: HostConnection
@@ -1010,25 +1044,11 @@ struct RemoteDirectoryView: View {
     }
     var body: some View {
         VStack(spacing: 14) {
-            HStack(spacing: 10) {
-                TextField(L10n.tr("电脑路径"), text: $pathInput)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .font(.orbisCaption(mono: true)).focused($pathFocused).orbisInput(focused: pathFocused)
-                    .submitLabel(.go).onSubmit(jumpToPath)
-                    .accessibilityIdentifier("session-directory-path")
-                OrbisIconButton(symbol: "magnifyingglass", label: L10n.tr("跳转"), action: jumpToPath)
-                    .disabled(trimmedPath.isEmpty || owner.connection != .secured || owner.workDirectoryBrowse?.loading == true)
-                    .accessibilityIdentifier("session-directory-jump")
-            }
-            HStack(spacing: 8) {
-                OrbisActionSymbol(systemName: "folder").foregroundStyle(OrbisPalette(scheme).accent)
-                Text(owner.workDirectoryBrowse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
-                    .font(.orbisCaption(mono: true)).frame(maxWidth: .infinity, alignment: .leading)
-                // Spinner and refresh share one fixed slot so the path never reflows while loading.
-                ZStack {
-                    if owner.workDirectoryBrowse?.loading == true { ProgressView().controlSize(.small) }
-                    else { OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) { owner.browseDirectory(owner.workDirectoryBrowse?.path) }.disabled(owner.connection != .secured) }
-                }.frame(width: 48, height: 48)
+            RemotePathField(text: $pathInput, current: owner.workDirectoryBrowse?.path,
+                            loading: owner.workDirectoryBrowse?.loading == true,
+                            enabled: owner.connection == .secured, identifier: "session-directory-path",
+                            jumpIdentifier: "session-directory-jump", focus: $pathFocused, go: jumpToPath) {
+                owner.browseDirectory(owner.workDirectoryBrowse?.path)
             }
             if owner.workDirectoryBrowse?.path?.isEmpty == false {
                 OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") { owner.browseDirectory(owner.workDirectoryBrowse?.parent) }

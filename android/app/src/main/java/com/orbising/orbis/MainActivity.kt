@@ -716,19 +716,22 @@ private fun HostDownloadsScreen(state: RemoteState, model: RemoteViewModel, onBa
     DisposableEffect(owner) {
         onDispose { owner?.dismissBrowse(forDownload = true) }
     }
-    AllDownloadsScreen(
-        state = state,
-        onBack = onBack,
-        onOpenBrowse = { owner?.openDownloadBrowser() },
-        onBrowse = { owner?.browseDownloadDirectory(it) },
-        onBrowseInto = { owner?.browseInto(it, forDownload = true) },
-        onBrowseUp = { owner?.browseUp(forDownload = true) },
-        onDismissBrowse = { owner?.dismissBrowse(forDownload = true) },
-        onDownload = { owner?.downloadFile(it) },
-        onRetry = { owner?.retryDownload(it) },
-        onCancel = { owner?.cancelDownload(it) },
-        onDelete = { owner?.deleteDownloads(it) },
-    )
+    DownloadedFileReaderHost(state) { open ->
+        AllDownloadsScreen(
+            state = state,
+            onBack = onBack,
+            onOpenBrowse = { owner?.openDownloadBrowser() },
+            onBrowse = { owner?.browseDownloadDirectory(it) },
+            onBrowseInto = { owner?.browseInto(it, forDownload = true) },
+            onBrowseUp = { owner?.browseUp(forDownload = true) },
+            onDismissBrowse = { owner?.dismissBrowse(forDownload = true) },
+            onDownload = { owner?.downloadFile(it) },
+            onRetry = { owner?.retryDownload(it) },
+            onCancel = { owner?.cancelDownload(it) },
+            onDelete = { owner?.deleteDownloads(it) },
+            onOpen = open,
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -3307,6 +3310,7 @@ internal fun AllDownloadsScreen(
     onCancel: (String) -> Unit,
     onDelete: (Set<String>) -> Unit,
     onOpenBrowse: () -> Unit = { onBrowse(null) },
+    onOpen: (String) -> Unit = {},
 ) {
     var filePickerOpen by rememberSaveable(state.hostId) { mutableStateOf(false) }
     var directDownloadPath by rememberSaveable(state.hostId) { mutableStateOf("") }
@@ -3420,6 +3424,7 @@ internal fun AllDownloadsScreen(
                             connected = state.e2eReady,
                             selected = task.taskId in effectiveSelectedTaskIds,
                             selectionMode = selectionMode,
+                            onOpen = { onOpen(task.taskId) },
                             onClick = {
                                 selectionHaptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 selectedTaskIds = if (task.taskId in selectedTaskIds) {
@@ -3478,6 +3483,7 @@ private fun DownloadTaskCard(
     selectionMode: Boolean = false,
     onClick: () -> Unit = {},
     onLongClick: () -> Unit = {},
+    onOpen: () -> Unit = {},
 ) {
     val total = task.artifact?.size
     val progress = total?.takeIf { it > 0 }?.let { (task.receivedBytes.toFloat() / it).coerceIn(0f, 1f) }
@@ -3485,7 +3491,9 @@ private fun DownloadTaskCard(
     // 重试不看 runtime 在不在：文件在电脑磁盘上，Host 会直接读盘发分片（spec §8.1）。
     val canRetry = !active && task.status != "completed" &&
         (task.sourcePath != null || task.sourceArtifactId != null)
+    val canOpen = task.status == "completed" && task.savedLocation != null
     val actionHint = when {
+        canOpen -> L10n.tr("打开")
         !active && !canRetry -> null
         active -> L10n.tr("暂停")
         !connected -> L10n.tr("连接电脑后继续")
@@ -3504,6 +3512,7 @@ private fun DownloadTaskCard(
         onClick = {
             when {
                 selectionMode -> onClick()
+                canOpen -> onOpen()
                 active -> onCancel(task.taskId)
                 canRetry && connected -> onRetry(task.taskId)
             }
@@ -4457,19 +4466,24 @@ private fun MessageBlocks(
             if (block.type == "render") {
                 val action = block.messageFileAction()
                 if (action != null) {
+                    val download = downloads.values.firstOrNull { it.sourcePath == action }
                     ChatFilePreviewCard("${message.messageId}:$index", ChatFilePreview.Source(reference = action),
-                        block.file?.fileName ?: block.messageRenderLabel()) {
-                        MessageReferenceCard(block, downloads.values.firstOrNull { it.sourcePath == action }, onDownload = { downloadFile(action) })
+                        block.file?.fileName ?: block.messageRenderLabel(), allowsPreview = message.role == "assistant" && block.purpose == "output",
+                        downloading = download?.status == "downloading" || download?.status == "queued", onDownload = { downloadFile(action) }) {
+                        MessageReferenceCard(block, download, onDownload = { downloadFile(action) })
                     }
                 } else {
                     Text(block.messageRenderLabel(), color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.labelMedium, modifier = Modifier.testTag("message-content-placeholder"))
                 }
             } else if (block.type == "artifact" && block.artifact != null) {
-                ChatFilePreviewCard("${message.messageId}:$index", ChatFilePreview.Source(artifactId = block.artifact.artifactId), block.artifact.fileName) {
+                val download = downloads[artifactDownloadKey(block.artifact)]
+                ChatFilePreviewCard("${message.messageId}:$index", ChatFilePreview.Source(artifactId = block.artifact.artifactId), block.artifact.fileName,
+                    downloading = download?.status == "downloading" || download?.status == "queued", downloadTag = "message-artifact",
+                    onDownload = { downloadArtifact(block.artifact) }) {
                     ArtifactCard(
                         artifact = block.artifact,
-                        download = downloads[artifactDownloadKey(block.artifact)],
+                        download = download,
                         onDownload = { downloadArtifact(block.artifact) },
                     )
                 }

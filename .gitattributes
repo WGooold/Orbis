@@ -26,6 +26,7 @@
 *.ico binary
 *.webp binary
 *.pdf binary
+*.mp4 binary
 *.zip binary
 *.gz binary
 *.apk binary

@@ -31,6 +31,9 @@ export * from "./tool-message-projection.js";
 export * from "./tool-inventory-receiver.js";
 export * from "./tool-inventory-source.js";
 export * from "./message-rendering.js";
+import { NativePreviewFormatSchema, MAX_NATIVE_FILE_PREVIEW_BYTES, NATIVE_FILE_PREVIEW_BYTES, WEB_PREVIEW_RESOURCE_BYTES,
+  WebPreviewEncodingSchema, WebPreviewRequestSchema, type NativePreviewFormat, type WebPreviewRequest } from "./file-preview.js";
+export * from "./file-preview.js";
 
 /**
  * 内部业务 schema 修订（ADR-0064 / ADR-0032 §7）。
@@ -52,12 +55,8 @@ export const PROTOCOL_VERSION = 19 as const;
  */
 export const PROTOCOL_VERSION_ERROR_CODE = "protocol_version";
 export const ARTIFACT_CHUNK_BYTES = 1024 * 1024;
-/** ADR-0093: independent of the ordinary download window and file size. */
-export const FILE_PREVIEW_BYTES = 2 * 1024 * 1024;
-/** Keep prepared documents small enough for mobile memory-only browser entry points. */
-export const FILE_PREVIEW_DOCUMENT_BYTES = 1024 * 1024;
+/** ADR-0093: one preview range, independent of the ordinary download window and file size. */
 export const FILE_PREVIEW_CHUNK_BYTES = 128 * 1024;
-export const HOST_FEATURE_FILE_PREVIEW = "file.preview-v1";
 
 /**
  * 手机上传到电脑的单文件上限。
@@ -1104,13 +1103,23 @@ export const RuntimeEventSchema = z.discriminatedUnion("type", [
 export type RuntimeEvent = z.infer<typeof RuntimeEventSchema>;
 
 const downloadOffset = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional();
-const previewMaxBytes = z.number().int().positive().max(FILE_PREVIEW_BYTES).optional();
+const previewDownloadFields = {
+  offset: downloadOffset,
+  maxBytes: z.number().int().positive().max(MAX_NATIVE_FILE_PREVIEW_BYTES).optional(),
+  previewFormat: NativePreviewFormatSchema.optional(),
+  web: WebPreviewRequestSchema.optional(),
+};
+/** An ordinary download carries no preview field; a native preview names its bound; a web preview uses the Host's fixed bounds. */
+const validPreviewLimit = ({ maxBytes, previewFormat, web }: { maxBytes?: number | undefined; previewFormat?: NativePreviewFormat | undefined; web?: WebPreviewRequest | undefined }) =>
+  web !== undefined ? maxBytes === undefined && previewFormat === undefined
+    : previewFormat === undefined ? maxBytes === undefined
+      : maxBytes !== undefined && maxBytes <= NATIVE_FILE_PREVIEW_BYTES[previewFormat];
 
 export const RuntimeCommandSchema = z.discriminatedUnion("type", [
   TurnChangesListRequestSchema, TurnChangesReadRequestSchema, FileChangeDetailReadRequestSchema, FileChangeDetailCancelSchema,
   ToolContentReadRequestSchema, ToolContentCancelSchema, ToolInventoryReadRequestSchema, ToolInventoryOpenRequestSchema,
-  z.strictObject({ type: z.literal("file.download"), path: z.string().min(1), offset: downloadOffset, maxBytes: previewMaxBytes }),
-  z.strictObject({ type: z.literal("artifact.download"), artifactId: z.string().uuid(), offset: downloadOffset, maxBytes: previewMaxBytes }),
+  z.strictObject({ type: z.literal("file.download"), path: z.string().min(1), ...previewDownloadFields }).refine(validPreviewLimit),
+  z.strictObject({ type: z.literal("artifact.download"), artifactId: z.string().uuid(), ...previewDownloadFields }).refine(validPreviewLimit),
   z.strictObject({
     type: z.literal("artifact.cancel"),
     transferId: TransferIdSchema,
@@ -1475,9 +1484,17 @@ export const RelayToDeviceMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("file.preview.started"), protocolVersion: z.literal(PROTOCOL_VERSION),
     runtimeId: z.string().min(1), commandId: z.string().min(1).max(128), transferId: TransferIdSchema,
     artifactId: z.string().uuid(), referenceId: z.string().min(1).optional(),
-    format: z.enum(["html", "svg"]), size: z.number().int().positive().max(FILE_PREVIEW_DOCUMENT_BYTES),
+    format: z.enum(["web", ...NativePreviewFormatSchema.options]), size: z.number().int().positive().max(MAX_NATIVE_FILE_PREVIEW_BYTES),
     sha256: z.string().regex(HASH_PATTERN),
-  }),
+    // FILE-PREVIEW-03 web responses: `size` is the encoded transfer length, `sha256` and `contentSize` describe the decoded body.
+    contentSize: z.number().int().positive().max(WEB_PREVIEW_RESOURCE_BYTES).optional(),
+    encoding: WebPreviewEncodingSchema.optional(),
+    mimeType: z.string().min(1).max(128).optional(),
+    resource: z.string().min(1).max(1024).optional(),
+    notModified: z.literal(true).optional(),
+  }).refine(({ format, size, contentSize, encoding, mimeType, resource }) => format === "web"
+    ? contentSize !== undefined && encoding !== undefined && mimeType !== undefined && resource !== undefined && size <= contentSize
+    : size <= NATIVE_FILE_PREVIEW_BYTES[format] && contentSize === undefined && encoding === undefined),
   z.strictObject({
     type: z.literal("file.preview.failed"), protocolVersion: z.literal(PROTOCOL_VERSION),
     runtimeId: z.string().min(1), commandId: z.string().min(1).max(128),

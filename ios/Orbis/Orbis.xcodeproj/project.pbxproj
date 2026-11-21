@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F09300010000000000000005 /* preview.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000005; };
+		F09300010000000000000004 /* NativeFileReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000004; };
 		F09300010000000000000003 /* ChatFilePreviewRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000003; };
 		F09300010000000000000002 /* ChatFilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000002; };
 		F09300010000000000000001 /* ChatFilePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000001; };
@@ -122,6 +124,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		F09310010000000000000005 /* preview.mp4 */ = {isa = PBXFileReference; lastKnownFileType = file; path = ../../shared/file-preview-tests/preview.mp4; sourceTree = SOURCE_ROOT; };
+		F09310010000000000000004 /* NativeFileReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFileReader.swift; sourceTree = "<group>"; };
 		F09310010000000000000003 /* ChatFilePreviewRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/ChatFilePreviewRendererTests.swift; sourceTree = SOURCE_ROOT; };
 		F09310010000000000000002 /* ChatFilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFilePreviewView.swift; sourceTree = "<group>"; };
 		F09310010000000000000001 /* ChatFilePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFilePreview.swift; sourceTree = "<group>"; };
@@ -327,6 +331,7 @@
 				A00110010000000000000029 /* DownloadView.swift */,
 				F09310010000000000000001 /* ChatFilePreview.swift */,
 				F09310010000000000000002 /* ChatFilePreviewView.swift */,
+				F09310010000000000000004 /* NativeFileReader.swift */,
 				A00110010000000000000028 /* FileTransfers.swift */,
 				A00110010000000000000027 /* InteractionView.swift */,
 				A00110010000000000000026 /* PreviewSupport.swift */,
@@ -500,7 +505,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
         B00140010000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-        C06440010000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C06440010000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (F09300010000000000000005 /* preview.mp4 in Resources */); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
@@ -575,6 +580,7 @@
 				A00100010000000000000029 /* DownloadView.swift in Sources */,
 				F09300010000000000000001 /* ChatFilePreview.swift in Sources */,
 				F09300010000000000000002 /* ChatFilePreviewView.swift in Sources */,
+				F09300010000000000000004 /* NativeFileReader.swift in Sources */,
 				A00100010000000000000028 /* FileTransfers.swift in Sources */,
 				A00100010000000000000027 /* InteractionView.swift in Sources */,
 				A00100010000000000000026 /* PreviewSupport.swift in Sources */,

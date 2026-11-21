@@ -314,7 +314,8 @@ export class HostStateFacts {
     }
     const view = this.#hiddenInventory(inventory, hidden, unified);
     if (unified) {
-      const { sessions: _, ...state } = view.state;
+      // Every use below replaces `sessions` with the bounded page.
+      const { state } = view;
       const sessions = boundedArray(view.sessions.slice(0, 2_000), CATALOG_PAGE_VALUE_BYTES,
         rows => ({ ...state, sessions: rows, snapshotId: inventory.snapshotId }));
       return { ...value, ...state, sessions, nextCursor: sessions.length < view.sessions.length

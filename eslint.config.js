@@ -7,8 +7,9 @@ export default tseslint.config(
       "**/dist/**",
       // Unmodified third-party GSAP runtime; license retained alongside it.
       "packages/relay/src/web/vendor/gsap.min.js",
-      // Pinned KaTeX distribution, with upstream license and integrity manifest.
+      // Pinned KaTeX distributions, with upstream license and integrity manifest.
       "shared/math/katex.min.js",
+      "docs/assets/promo2/source/assets/math/katex.min.js",
       "node_modules/**",
       "agent/**",
       "android/**",
@@ -76,6 +77,20 @@ export default tseslint.config(
         URL: "readonly",
         URLSearchParams: "readonly",
         WebSocket: "readonly",
+      },
+    },
+  },
+  {
+    files: ["docs/assets/promo2/source/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        document: "readonly",
+        Image: "readonly",
+        katex: "readonly",
+        Node: "readonly",
+        process: "readonly",
+        requestAnimationFrame: "readonly",
       },
     },
   },
