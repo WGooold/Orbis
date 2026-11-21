@@ -1,5 +1,6 @@
 package com.orbising.orbis
 
+import android.widget.FrameLayout
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -475,14 +476,16 @@ internal fun DownloadedFileReaderPage(task: ArtifactDownload, onBack: () -> Unit
             }
         }
         val local = uri
-        val format = FilePreviewFormat.fromName(task.artifact?.fileName ?: task.displayName)?.takeUnless { it.web }
+        val kind = FilePreviewFormat.fromName(task.artifact?.fileName ?: task.displayName)
+        val format = kind?.takeUnless { it.web }
         Box(Modifier.weight(1f).fillMaxWidth().testTag("download-local-reader"), contentAlignment = Alignment.Center) {
             when {
                 !checked -> CircularProgressIndicator()
                 local == null -> Text(L10n.tr("此文件无法预览"))
                 !active -> Unit
                 format != null -> NativeFileReader(NativeReaderSource.Download(local, task.artifact?.sha256), format, true, Modifier.fillMaxSize())
-                else -> Unit // Original remains available for explicit handoff; never give it to a WebView.
+                kind != null -> DownloadedWebPage(local, kind, task.artifact?.sha256, Modifier.fillMaxSize())
+                else -> Unit // Original remains available for explicit handoff.
             }
         }
         if (local != null && active) {
@@ -490,6 +493,52 @@ internal fun DownloadedFileReaderPage(task: ArtifactDownload, onBack: () -> Unit
             NeumorphTextButton(L10n.tr("用其他 App 打开"), onClick = { cannotOpen = !handOffDownload(context, local, task, share = false) },
                 modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 12.dp))
         }
+    }
+}
+
+/**
+ * FILE-PREVIEW-03: a saved page in the same offline reader as chat previews, from a digest-checked copy of the
+ * local file. Only the file itself is served; files it references are missing rather than fetched.
+ */
+@Composable
+private fun DownloadedWebPage(uri: Uri, format: FilePreviewFormat, sha256: String?, modifier: Modifier) {
+    val context = LocalContext.current
+    var page by remember(uri) { mutableStateOf<ChatFilePreview.WebResource?>(null) }
+    var failed by remember(uri) { mutableStateOf(false) }
+    var painted by remember(uri) { mutableStateOf(false) }
+    LaunchedEffect(uri, sha256) {
+        page = withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes = context.contentResolver.openInputStream(uri)!!.use { input ->
+                    val buffer = ByteArray(format.budget + 1)
+                    var count = 0
+                    while (count < buffer.size) { val read = input.read(buffer, count, buffer.size - count); if (read < 0) break; count += read }
+                    check(count in 1..format.budget)
+                    buffer.copyOf(count)
+                }
+                val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+                check(sha256 == null || digest == sha256)
+                val type = if (format == FilePreviewFormat.SVG) "image/svg+xml" else "text/html"
+                val utf8 = runCatching { Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)) }.isSuccess
+                ChatFilePreview.WebResource(if (format == FilePreviewFormat.SVG) "page.svg" else "page.html",
+                    if (utf8) "$type; charset=utf-8" else type, bytes, digest)
+            }.getOrNull()
+        }
+        failed = page == null
+    }
+    val entry = page
+    Box(modifier.testTag("downloaded-web-page"), contentAlignment = Alignment.Center) {
+        if (failed) Text(L10n.tr("此文件无法预览"))
+        else if (entry != null) AndroidView(
+            factory = { FrameLayout(it) }, modifier = Modifier.fillMaxSize(),
+            update = { container ->
+                if (container.childCount == 0) PreviewWebOwner.load(container, entry, fullScreen = true,
+                    resources = { path, done -> done(entry.takeIf { path.trimStart('/') == it.path }) },
+                    painted = { painted = true }, captured = {}, failed = { failed = true })
+            },
+            onRelease = PreviewWebOwner::release,
+        )
+        if (!painted && !failed) CircularProgressIndicator()
     }
 }
 

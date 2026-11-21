@@ -3,6 +3,7 @@ import CryptoKit
 import ImageIO
 import QuickLook
 import SwiftUI
+import WebKit
 
 /// FILE-PREVIEW-02. Live chat supplies the verified snapshot; Downloads supplies an owned local file.
 enum NativeFileReaderSource: Equatable, Sendable {
@@ -35,6 +36,17 @@ actor FileReaderWorker {
     static let shared = FileReaderWorker()
     private let unsupported = CocoaError(.fileReadCorruptFile)
     private var sweptTemporaryFiles = false
+
+    /// FILE-PREVIEW-03: a saved page opens in the offline reader from a digest-checked copy of the local file.
+    func webPage(_ url: URL, name: String, sha256: String?) throws -> ChatFilePreview.WebResource {
+        guard let format = ChatFilePreview.Format(fileName: name), format.isWeb else { throw unsupported }
+        let bytes = try snapshot(url, limit: format.budget, sha256: sha256)
+        guard !bytes.isEmpty else { throw unsupported }
+        let text = format == .svg ? "image/svg+xml" : "text/html"
+        let mime = String(data: bytes, encoding: .utf8) != nil ? text + "; charset=utf-8" : text
+        return .init(path: "page." + (format == .svg ? "svg" : "html"), mimeType: mime, body: bytes,
+                     sha256: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+    }
 
     func read(_ source: NativeFileReaderSource, format: ChatFilePreview.Format, fullScreen: Bool) async throws -> FileReaderContent {
         try Task.checkCancellation()
@@ -324,6 +336,8 @@ struct DownloadedFilePage: View {
                 if let file, let task, activity.isTop, phase == .active {
                     if let format = ChatFilePreview.Format(fileName: task.name), !format.isWeb {
                         NativeFileReader(source: .download(file, sha256: task.sha256), format: format, fullScreen: true)
+                    } else if ChatFilePreview.Format(fileName: task.name)?.isWeb == true {
+                        DownloadedWebPage(file: file, task: task)
                     } else if let officeCopy, QLPreviewController.canPreview(officeCopy.url as NSURL) {
                         OfficeQuickLook(file: officeCopy)
                     } else if preparingOffice {
@@ -347,6 +361,39 @@ struct DownloadedFilePage: View {
                 let copy = try? await FileReaderWorker.shared.office(url, name: task.name, sha256: task.sha256)
                 if !Task.isCancelled { officeCopy = copy; preparingOffice = false }
             }
+        }
+    }
+}
+
+/// A saved page in the same offline reader as chat previews. Only the file itself is served; it has no Host,
+/// so files it references are missing rather than fetched.
+private struct DownloadedWebPage: View {
+    let file: URL
+    let task: FileTransfer
+    @State private var page: ChatFilePreview.WebResource?
+    @State private var policy: WKContentRuleList?
+    @State private var painted = false
+    @State private var failed = false
+    @State private var id = UUID()
+    var body: some View {
+        ZStack {
+            if failed { Text(L10n.tr("此文件无法预览")).font(.orbisLabel()) }
+            else if let page, let policy {
+                PreviewWebSurface(page: id, entry: page, resources: { path, done in
+                    done(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == page.path ? page : nil)
+                }, policy: policy, interactive: true, admitted: { true }, painted: { painted = true }, captured: { _ in },
+                    failed: { failed = true })
+                .opacity(painted ? 1 : 0)
+                .accessibilityIdentifier("downloaded-web-page")
+            }
+            if !painted && !failed { ProgressView().accessibilityLabel(L10n.tr("正在加载预览")) }
+        }
+        .task(id: task.id) {
+            do {
+                let verified = try await FileReaderWorker.shared.webPage(file, name: task.name, sha256: task.sha256)
+                let compiled = try await PreviewWebSurface.compilePolicy()
+                if !Task.isCancelled { page = verified; policy = compiled }
+            } catch { if !Task.isCancelled { failed = true } }
         }
     }
 }

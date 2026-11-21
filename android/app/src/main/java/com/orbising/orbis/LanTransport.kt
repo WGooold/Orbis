@@ -95,8 +95,11 @@ internal class LanTransport(
     }
     fun sendFilePreview(payload: JsonObject): Boolean = synchronized(lock) {
         val current = attempt ?: return false
+        // Opening commands need their own capability; ranges, completion and cancellation follow either.
         if (nativeFilePreviewCommand(payload)) {
             if (!current.allowsNativeFilePreview) return false
+        } else if (webFilePreviewCommand(payload)) {
+            if (!current.allowsFilePreview) return false
         } else if (!current.allowsFilePreview && !current.allowsNativeFilePreview) return false
         sendPayload(payload)
     }

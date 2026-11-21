@@ -99,6 +99,41 @@ class NativeFileReaderInstrumentedTest {
         } finally { resolver.delete(uri, null, null) }
     }
 
+    // SC130: a saved page opens offline in the preview reader; a copy that no longer matches its digest does not.
+    @Test fun savedPageOpensInTheOfflineReaderOnlyWhenItMatches() {
+        val resolver = compose.activity.contentResolver
+        val bytes = "<!doctype html><title>Saved page</title><link rel=\"stylesheet\" href=\"theme.css\"><script>document.title += '|js'</script>".encodeToByteArray()
+        val uri = checkNotNull(resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, "orbis-saved-page-fixture.html")
+            put(MediaStore.Downloads.MIME_TYPE, "text/html")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }))
+        try {
+            checkNotNull(resolver.openOutputStream(uri)).use { it.write(bytes) }
+            resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            val task = ArtifactDownload("page", "host", displayName = "saved.html", status = "completed", savedLocation = uri.toString(),
+                artifact = RemoteArtifact("page", "saved.html", "text/html", bytes.size.toLong(), hash))
+            val changed = task.copy(taskId = "changed", artifact = task.artifact!!.copy(sha256 = "0".repeat(64)))
+            val state = RemoteState(hostId = "host", e2eReady = false, downloads = listOf(task, changed).associateBy { it.taskId })
+            compose.setContent { OrbisTheme {
+                DownloadedFileReaderHost(state) { open -> AllDownloadsScreen(state, onBack = {}, onBrowse = {}, onBrowseInto = {}, onBrowseUp = {},
+                    onDismissBrowse = {}, onDownload = {}, onRetry = {}, onCancel = {}, onDelete = {}, onOpen = open) }
+            } }
+            compose.onNodeWithTag("download-card-page").performClick()
+            compose.waitUntil(15_000) { compose.runOnIdle { webView(compose.activity.window.decorView)?.title == "Saved page|js" } }
+            compose.onNodeWithContentDescription(L10n.tr("返回")).performClick()
+            compose.waitUntil(5_000) { compose.runOnIdle { webView(compose.activity.window.decorView) == null } }
+            compose.onNodeWithTag("download-card-changed").performClick()
+            compose.waitUntil(15_000) { compose.onAllNodes(hasText(L10n.tr("此文件无法预览"))).fetchSemanticsNodes().isNotEmpty() }
+            compose.runOnIdle { assertNull(webView(compose.activity.window.decorView)) }
+        } finally { resolver.delete(uri, null, null) }
+    }
+
+    private fun webView(view: View): WebView? = view as? WebView ?: (view as? ViewGroup)?.let { group ->
+        (0 until group.childCount).firstNotNullOfOrNull { webView(group.getChildAt(it)) }
+    }
+
     private fun hasWebView(view: View): Boolean = view is WebView || view is ViewGroup &&
         (0 until view.childCount).any { hasWebView(view.getChildAt(it)) }
 }

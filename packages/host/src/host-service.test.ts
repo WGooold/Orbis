@@ -16,6 +16,7 @@ import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { inflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { type RawData } from "ws";
 
@@ -44,7 +45,7 @@ import {
   CODEX_UNIFIED_HISTORY,
   PROTOCOL_VERSION,
   HOST_FEATURE_IMPORT_TARGET,
-  HOST_FEATURE_FILE_PREVIEW, HOST_FEATURE_NATIVE_FILE_PREVIEW, NATIVE_FILE_PREVIEW_BYTES, FILE_PREVIEW_BYTES, FILE_PREVIEW_CHUNK_BYTES,
+  HOST_FEATURE_WEB_PREVIEW, HOST_FEATURE_NATIVE_FILE_PREVIEW, NATIVE_FILE_PREVIEW_BYTES, FILE_PREVIEW_CHUNK_BYTES,
   RelayToDeviceMessageSchema,
   ToolInventorySource, createToolSummary, createToolContentPage,
   selectSessionSyncSnapshot,
@@ -1920,17 +1921,18 @@ describe("host end-to-end over relay", () => {
     expect(Buffer.from(decodeArtifactChunkFrame(data.payload).data).toString()).toEqual(text);
   }, 15_000);
 
-  // FILE-PREVIEW-01/02 / SC116, SC118, SC122: exercise actual E2E envelopes and the existing receiver-driven path.
+  // FILE-PREVIEW-02/03 / SC116, SC118, SC122, SC126: exercise actual E2E envelopes and the existing receiver-driven path.
   it.each([
-    ["relay", "html"], ["lan", "html"], ["relay", "text"], ["lan", "text"],
+    ["relay", "web"], ["lan", "web"], ["relay", "text"], ["lan", "text"],
   ] as const)("serves selected preview ranges over %s (%s) on bulk only", async (path, format) => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-preview-wire-"));
     relay = await startRelay(stateDir);
     const artifactId = randomUUID();
-    const web = format === "html";
+    const web = format === "web";
     const fileName = web ? "report.html" : "report.txt";
     const file = join(stateDir, fileName);
-    const body = "x".repeat(FILE_PREVIEW_CHUNK_BYTES);
+    // Web bodies are compressed; random text still needs more than the range sent with the reply.
+    const body = web ? randomBytes(200 * 1024).toString("base64") : "x".repeat(FILE_PREVIEW_CHUNK_BYTES);
     const original = web ? `<h1>Preview fixture</h1><pre>${body}</pre>` : `Preview fixture\n${body}`;
     await writeFile(file, original);
     await writeFile(join(stateDir, "artifacts.json"), JSON.stringify({ version: 1, artifacts: [{
@@ -1947,23 +1949,37 @@ describe("host end-to-end over relay", () => {
     device = paired.device;
     if (path === "lan") await device.openLanPath(`ws://127.0.0.1:${lan[0]!.port}/v1/lan`);
     await device.openChannel(path, paired.pskRoot, host.hostId, host.hostId);
-    expect(await device.receiveMessage()).toMatchObject({ type: "device.ready", hostFeatures: expect.arrayContaining([HOST_FEATURE_FILE_PREVIEW, HOST_FEATURE_NATIVE_FILE_PREVIEW]) });
+    expect(await device.receiveMessage()).toMatchObject({ type: "device.ready", hostFeatures: expect.arrayContaining([HOST_FEATURE_WEB_PREVIEW, HOST_FEATURE_NATIVE_FILE_PREVIEW]) });
     expect(await device.receiveMessage()).toMatchObject({ type: "device.path", path });
     await expect(device.nextIncoming(100)).rejects.toThrow("超时");
     const request = (message: Record<string, unknown>) => device!.sendData(JSON.stringify({ protocolVersion: PROTOCOL_VERSION, ...message }));
     device.sendCommand(host.hostId, "ordinary-before", { type: "artifact.download", artifactId });
     const before = await device.receiveMessage();
     expect(before).toMatchObject({ type: "runtime.event", sequence: expect.any(Number), event: { type: "artifact.started" } });
-    device.sendCommand(host.hostId, "preview:fixture", { type: "artifact.download", artifactId, ...(web ? { maxBytes: FILE_PREVIEW_BYTES } : { maxBytes: NATIVE_FILE_PREVIEW_BYTES.text, previewFormat: format }) });
+    const transferId = randomUUID();
+    device.sendCommand(host.hostId, "preview:fixture", { type: "artifact.download", artifactId,
+      ...(web ? { web: { page: randomUUID(), transferId } } : { maxBytes: NATIVE_FILE_PREVIEW_BYTES.text, previewFormat: format }) });
     const offer = await device.nextIncoming();
     if (!("payload" in offer)) throw new Error("preview offer not received");
     expect(offer.channel).toBe("ctl"); expect(offer.kind).toBe(path);
     const ready = RelayToDeviceMessageSchema.parse(JSON.parse(offer.payload.toString()));
     expect(ready).toMatchObject({ type: "file.preview.started", commandId: "preview:fixture", artifactId, format });
     if (ready.type !== "file.preview.started") throw new Error("preview rejected");
-    await expect(device.nextIncoming(100)).rejects.toThrow("超时");
     const chunks: Uint8Array[] = [];
-    for (let offset = 0; offset < ready.size; offset += FILE_PREVIEW_CHUNK_BYTES) {
+    let start = 0;
+    if (web) {
+      // FILE-PREVIEW-03: the first range follows the reply on bulk, owned by the transfer id the device chose.
+      expect(ready).toMatchObject({ transferId, encoding: "deflate-raw", resource: fileName, contentSize: Buffer.byteLength(original) });
+      const pushed = await device.nextIncoming();
+      if (!("payload" in pushed)) throw new Error("first preview range not received");
+      expect(pushed.channel).toBe("bulk");
+      const chunk = decodeArtifactChunkFrame(pushed.payload);
+      expect(chunk).toMatchObject({ transferId, offset: 0 });
+      chunks.push(chunk.data); start = chunk.data.byteLength;
+      expect(start).toBe(FILE_PREVIEW_CHUNK_BYTES);
+    }
+    await expect(device.nextIncoming(100)).rejects.toThrow("超时");
+    for (let offset = start; offset < ready.size; offset += FILE_PREVIEW_CHUNK_BYTES) {
       const length = Math.min(FILE_PREVIEW_CHUNK_BYTES, ready.size - offset);
       request({ type: "artifact.read", transferId: ready.transferId, requestId: `range:${offset}`, offset, length });
       const incoming = await device.nextIncoming();
@@ -1974,10 +1990,10 @@ describe("host end-to-end over relay", () => {
       expect(chunk.data.byteLength).toBe(length);
       chunks.push(chunk.data);
     }
-    const prepared = Buffer.concat(chunks);
+    const received = Buffer.concat(chunks);
+    const prepared = web ? inflateRawSync(received) : received;
     expect(createHash("sha256").update(prepared).digest("hex")).toBe(ready.sha256);
-    if (web) expect(prepared.toString()).toContain("<h1>Preview fixture</h1>");
-    else expect(prepared.toString()).toBe(original);
+    expect(prepared.toString()).toBe(original);
     request({ type: "artifact.done", transferId: ready.transferId });
     request({ type: "artifact.read", transferId: ready.transferId, requestId: "after-done", offset: 0, length: 1 });
     expect(await device.receiveMessage()).toMatchObject({ type: "artifact.read.failed", reason: "unknown_transfer" });
@@ -4217,7 +4233,8 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(initial.hostFeatures).toEqual([
       "device.features",
       HOST_FEATURE_IMPORT_TARGET,
-      HOST_FEATURE_FILE_PREVIEW,
+      HOST_FEATURE_WEB_PREVIEW,
+      HOST_FEATURE_NATIVE_FILE_PREVIEW,
       "message.content-render.v1",
       "agent.openclaw",
       "agent.hermes",

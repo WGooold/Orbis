@@ -592,7 +592,9 @@ S12／S17／SC55、IOS-CHAT-01／03：共用编辑器按软回车提交配置显
 
 回归为 `ChatNativeSnapshotTests.testChangingSystemBarSafeAreaKeepsMessageWidthHeightAndPosition`、旧配置对照 `testLegacySafeAreaReferenceReproducesMessageWidthChange` 及 `OrbisUITests.testSystemTabChatReentryKeepsMessageGeometryStable`。后者从滑入开始记录原生单元格逐帧几何，覆盖连续三次进入；预览开关只选用系统 TabView 路径，不代表实际 Duo 竖向侧栏或折叠姿态。
 
-证据：[round2/verification.json](../../.artifacts/iphone-duo-chat-entry-20261117/round2/verification.json)。共享 iPhone 17／iOS 27.0 上，同一租约内修改前源码的安全区用例失败，最终候选通过；三种视口共 45 个采样点的消息宽度、行高、纵向位置不变，窄屏对照的纵向变化为 53.67 点。原生选集 9 项通过，已有 `testHostedDisclosureResizesCellWithoutSelfSizingAnimation` 的中间帧数量断言在对照和候选均失败，原断言与证据保留；完整页面的连续进出、阅读位置／跳到最新及工具展开 3 项通过。编译通过，候选源码、产物及资源清理分别记录。
+证据：[round2/verification.json](../../.artifacts/iphone-duo-chat-entry-20261117/round2/verification.json)。共享 iPhone 17／iOS 27.0 上，同一租约内修改前源码的安全区用例失败，最终候选通过；三种视口共 45 个采样点的消息宽度、行高、纵向位置不变，窄屏对照的纵向变化为 53.67 点。原生选集 9 项通过，已有 `testHostedDisclosureResizesCellWithoutSelfSizingAnimation` 的中间帧数量断言在对照和候选均失败，原断言与证据保留（2026-11-21 修复该文件自 `0d9d4fd4` 起的编译错误后复测仍失败：单元格高度停在 44 点约 5 帧后一次跳到 293.67 点，中间无过渡，[采样](../../.artifacts/file-preview-03/ios-snapshot-attachments/)；同类其余 9 项通过）；完整页面的连续进出、阅读位置／跳到最新及工具展开 3 项通过。编译通过，候选源码、产物及资源清理分别记录。
+
+2026-11-22 后续修复：`ChatNativeCollapse` 改用 `CADisplayLink` 逐帧驱动，并在每一帧直接失效 hosted cell 的 intrinsic size；原 `TimelineView(.animation)` 时钟在 `UIHostingConfiguration` 中会合并更新，混入 `Date.now` 还触发 SwiftUI 的 per-frame `onChange` 限流。保留真实 cell／hosted root 的无隐式动画与对齐断言后，`testHostedDisclosureResizesCellWithoutSelfSizingAnimation` 连续 3/3 通过，`ChatNativeSnapshotTests` 全组 10/10 通过。证据：[三轮展开逐帧结果](../../.artifacts/file-preview-04/ios-test-fix-6-repeat-device/tests.xcresult)、[原生快照全组结果](../../.artifacts/file-preview-04/ios-test-full-device/tests.xcresult)、[展开高度与时间采样](../../.artifacts/file-preview-04/diag-attachments-fix-6-repeat/)。
 
 本轮直接模拟器验证已获授权。Duo 设备因既有 PosterBoard 崩溃处于共享池隔离状态，未启动；QA 服务拒绝连接，登记草案保留本轮要求。仅在隔离预览环境安装模拟器包，未部署到用户设备；实际 Duo 侧栏下三个姿态及键盘交互待用户验证。
 

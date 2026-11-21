@@ -395,10 +395,9 @@ final class RelayTransport: NSObject, OrbisTransport {
 
     // A replacement path must receive its own authenticated capability before a bounded command.
     func sendFilePreviewControl(_ object: [String: Any]) -> Bool {
-        let nativeRequest = (object["command"] as? [String: Any])?["previewFormat"] != nil
-        func allows(_ features: Set<String>) -> Bool {
-            nativeRequest ? features.contains(ChatFilePreview.nativeFeature) : !features.isEmpty
-        }
+        let command = object["command"] as? [String: Any]
+        let required = command?["previewFormat"] != nil ? ChatFilePreview.nativeFeature : command?["web"] != nil ? ChatFilePreview.webFeature : nil
+        func allows(_ features: Set<String>) -> Bool { required.map(features.contains) ?? !features.isEmpty }
         if activePath == "lan", let lan, lan.isReady { return allows(lan.filePreviewFeatures) && lan.send(object) }
         return allows(relayFilePreviewFeatures) && sendRelay(object)
     }
@@ -741,7 +740,7 @@ final class RelayTransport: NSObject, OrbisTransport {
     fileprivate static func filePreviewFeatures(_ ready: [String: Any], deviceID: String) -> Set<String> {
         guard ready["type"] as? String == "device.ready", sessionInteger(ready["protocolVersion"]) == Int64(orbisProtocolVersion),
               ready["deviceId"] as? String == deviceID else { return [] }
-        return Set(ready["hostFeatures"] as? [String] ?? []).intersection([ChatFilePreview.feature, ChatFilePreview.nativeFeature])
+        return Set(ready["hostFeatures"] as? [String] ?? []).intersection([ChatFilePreview.webFeature, ChatFilePreview.nativeFeature])
     }
 
     private func activateRelay() {

@@ -199,15 +199,10 @@ private struct DownloadBrowserView: View {
     }
 
     private var pathEntry: some View {
-        HStack(spacing: 10) {
-            TextField(L10n.tr("电脑路径"), text: $pathInput)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .font(.orbisCaption(mono: true)).focused($pathFocused).orbisInput(focused: pathFocused)
-                .submitLabel(.go).onSubmit(jumpToPath)
-                .accessibilityIdentifier("download-browser-path")
-            OrbisIconButton(symbol: "magnifyingglass", label: L10n.tr("跳转"), action: jumpToPath)
-                .disabled(trimmedPath.isEmpty || store.connection != .secured || store.browse?.loading == true)
-                .accessibilityIdentifier("download-browser-jump")
+        RemotePathField(text: $pathInput, current: store.browse?.path, loading: store.browse?.loading == true,
+                        enabled: store.connection == .secured, identifier: "download-browser-path",
+                        jumpIdentifier: "download-browser-jump", focus: $pathFocused, go: jumpToPath) {
+            browse(store.browse?.path)
         }
         .padding(.horizontal, 24)
     }
@@ -215,20 +210,6 @@ private struct DownloadBrowserView: View {
     private var browserContents: some View {
         ScrollView {
             VStack(spacing: 14) {
-                HStack {
-                    Text(store.browse?.path.flatMap { $0.isEmpty ? nil : $0 } ?? L10n.tr("电脑根目录"))
-                        .font(.orbisCaption(mono: true))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    ZStack {
-                        if store.browse?.loading == true { ProgressView().controlSize(.small) }
-                        else {
-                            OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新目录")) {
-                                browse(store.browse?.path)
-                            }
-                        }
-                    }
-                    .frame(width: 48, height: 48)
-                }
                 if store.browse?.path?.isEmpty == false {
                     OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") {
                         selected.removeAll()

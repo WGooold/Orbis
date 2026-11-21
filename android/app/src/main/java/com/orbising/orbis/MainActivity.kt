@@ -4455,19 +4455,24 @@ private fun MessageBlocks(
             if (block.type == "render") {
                 val action = block.messageFileAction()
                 if (action != null) {
+                    val download = downloads.values.firstOrNull { it.sourcePath == action }
                     ChatFilePreviewCard("${message.messageId}:$index", ChatFilePreview.Source(reference = action),
-                        block.file?.fileName ?: block.messageRenderLabel(), allowsPreview = message.role == "assistant" && block.purpose == "output") {
-                        MessageReferenceCard(block, downloads.values.firstOrNull { it.sourcePath == action }, onDownload = { downloadFile(action) })
+                        block.file?.fileName ?: block.messageRenderLabel(), allowsPreview = message.role == "assistant" && block.purpose == "output",
+                        downloading = download?.status == "downloading" || download?.status == "queued", onDownload = { downloadFile(action) }) {
+                        MessageReferenceCard(block, download, onDownload = { downloadFile(action) })
                     }
                 } else {
                     Text(block.messageRenderLabel(), color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.labelMedium, modifier = Modifier.testTag("message-content-placeholder"))
                 }
             } else if (block.type == "artifact" && block.artifact != null) {
-                ChatFilePreviewCard("${message.messageId}:$index", ChatFilePreview.Source(artifactId = block.artifact.artifactId), block.artifact.fileName) {
+                val download = downloads[artifactDownloadKey(block.artifact)]
+                ChatFilePreviewCard("${message.messageId}:$index", ChatFilePreview.Source(artifactId = block.artifact.artifactId), block.artifact.fileName,
+                    downloading = download?.status == "downloading" || download?.status == "queued", downloadTag = "message-artifact",
+                    onDownload = { downloadArtifact(block.artifact) }) {
                     ArtifactCard(
                         artifact = block.artifact,
-                        download = downloads[artifactDownloadKey(block.artifact)],
+                        download = download,
                         onDownload = { downloadArtifact(block.artifact) },
                     )
                 }

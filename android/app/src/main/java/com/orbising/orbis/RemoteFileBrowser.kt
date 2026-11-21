@@ -1,6 +1,7 @@
 package com.orbising.orbis
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -81,42 +82,33 @@ internal fun RemoteDirectoryBrowser(
         }
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(OrbisSymbols.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Text(
-                browse?.path?.takeIf(String::isNotBlank) ?: L10n.tr("电脑根目录"),
-                fontFamily = FontFamily.Monospace,
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            if (loading) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else {
-                NeumorphIconButton(
-                    onClick = { onBrowse(browse?.path) }, icon = OrbisSymbols.Refresh,
-                    contentDescription = L10n.tr("刷新目录"), enabled = connected,
-                )
-            }
-        }
+        // FILE-BROWSER-01: one row for where the browser is and where to go next. The field shows the current
+        // folder (empty at the root); its button refreshes it, or opens the typed path once the text differs.
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             NeumorphTextField(
                 value = pathInput,
                 onValueChange = { pathInput = it },
                 modifier = Modifier.weight(1f).testTag("remote-directory-path"),
-                placeholder = { Text(L10n.tr("电脑路径")) },
+                placeholder = { Text(if (browse?.path.isNullOrBlank()) L10n.tr("电脑根目录") else L10n.tr("电脑路径")) },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go, autoCorrectEnabled = false),
                 keyboardActions = KeyboardActions(onGo = { jumpToPath() }),
             )
-            NeumorphIconButton(
-                onClick = jumpToPath,
-                icon = OrbisSymbols.Search,
-                contentDescription = L10n.tr("跳转"),
-                enabled = enabled && pathInput.isNotBlank(),
-                modifier = Modifier.testTag("remote-directory-jump"),
-            )
+            // Spinner and actions share one fixed slot so the field never reflows while loading.
+            Box(Modifier.size(RemoteUi.IconButtonSize + 8.dp), contentAlignment = Alignment.Center) {
+                when {
+                    loading -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    pathInput.trim() != browse?.path.orEmpty() -> NeumorphIconButton(
+                        onClick = jumpToPath, icon = OrbisSymbols.Search, contentDescription = L10n.tr("跳转"),
+                        enabled = enabled && pathInput.isNotBlank(), modifier = Modifier.testTag("remote-directory-jump"),
+                    )
+                    else -> NeumorphIconButton(
+                        onClick = { onBrowse(browse?.path) }, icon = OrbisSymbols.Refresh,
+                        contentDescription = L10n.tr("刷新目录"), enabled = connected,
+                    )
+                }
+            }
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         // In-sheet navigation stays inside the browser: a committing control would run the sheet's

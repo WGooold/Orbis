@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { DeviceHandshake, E2eChannel, buildHandshakeEnvelope, loadOrCreateHostIdentity, saveDeviceStore, readHandshakeEnvelope } from "@orbis/e2e";
-import { AgentKindSchema, EnvelopeReassembler, fragmentEnvelope, HOST_FEATURE_FILE_PREVIEW, HOST_FEATURE_NATIVE_FILE_PREVIEW, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
+import { AgentKindSchema, EnvelopeReassembler, fragmentEnvelope, HOST_FEATURE_WEB_PREVIEW, HOST_FEATURE_NATIVE_FILE_PREVIEW, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
 import { createRelayServer as createLocalRelay, type RelayServer } from "@orbis/relay";
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 import { createBusinessRelayServer as createRelayServer, relayBusinessDeviceURL, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
@@ -324,7 +324,7 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
         const ready = await phone.take("device.ready");
         previewRelease?.protocol.RelayToDeviceMessageSchema.parse(ready);
         const features = ready.hostFeatures as string[];
-        expect(features.includes(HOST_FEATURE_FILE_PREVIEW)).toBe(version === "candidate");
+        expect(features.includes(HOST_FEATURE_WEB_PREVIEW)).toBe(version === "candidate");
         expect(features.includes(HOST_FEATURE_NATIVE_FILE_PREVIEW)).toBe(version === "candidate");
 
         const request = { protocolVersion: 19, type: "runtime.command", runtimeId: hostId, commandId: id,

@@ -434,9 +434,9 @@ private struct MessageContentView: View {
                                        identifier: String, allowsPreview: Bool = true, action: @escaping () -> Void) -> some View {
         if !streaming, allowsPreview, let actions = readContext, let openFilePreview, ChatFilePreview.Format(fileName: name) != nil {
             let key = ChatFilePreview.Key(session: actions.target.identity, block: block, source: source, name: name)
-            ChatFilePreviewCard(preview: actions.connection.transfers.browserPreview, key: key, canOpen: { actions.isCurrent }) {
-                fileDownloadButton(label, identifier: identifier, action: action)
-            }.environment(\.openChatFilePreview, openFilePreview).id(key)
+            ChatFilePreviewCard(preview: actions.connection.transfers.browserPreview, key: key, label: label, downloadIdentifier: identifier,
+                                canOpen: { actions.isCurrent }, download: action)
+                .environment(\.openChatFilePreview, openFilePreview).id(key)
         } else { fileDownloadButton(label, identifier: identifier, action: action) }
     }
 

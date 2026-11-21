@@ -1177,7 +1177,14 @@ class RelayClient internal constructor(
         if (activePath == "lan" && direct?.isReady == true) return direct.sendFilePreview(payload)
         val state = e2e ?: return false
         val native = nativeFilePreviewCommand(payload)
-        if (!synchronized(state.lock) { state.bootstrapReady && (state.allowsNativeFilePreview || !native && state.allowsFilePreview) }) return false
+        val web = webFilePreviewCommand(payload)
+        if (!synchronized(state.lock) {
+                state.bootstrapReady && when {
+                    native -> state.allowsNativeFilePreview
+                    web -> state.allowsFilePreview
+                    else -> state.allowsFilePreview || state.allowsNativeFilePreview
+                }
+            }) return false
         sealAndSend(state, payload)
     }
 
