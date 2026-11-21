@@ -48,24 +48,24 @@ ApplicationWindow {
         function agent(kind) { return host.agents.find(function(a) { return a.kind === kind }) || ({}) }
         var pi = agent("pi"), codex = agent("codex"), dsh = agent("dsh"), hermes = host.hermesCli
         return [
-            {kind: "pi", name: "Pi", mark: "pi", installed: pi.installed === true, broken: pi.installedButBroken === true, cliIssue: pi.cliIssue, data: pi},
-            {kind: "codex", name: "Codex", mark: "codex", installed: codex.installed === true, broken: codex.installedButBroken === true, cliIssue: codex.cliIssue, data: codex},
-            {kind: "codexDesktop", name: "Codex 桌面版", mark: "codex", installed: codex.desktopInstalled === true, broken: false},
+            {kind: "pi", name: "Pi", installed: pi.installed === true, broken: pi.installedButBroken === true, cliIssue: pi.cliIssue, data: pi},
+            {kind: "codex", name: "Codex", installed: codex.installed === true, broken: codex.installedButBroken === true, cliIssue: codex.cliIssue, data: codex},
+            {kind: "codexDesktop", name: "Codex 桌面版", installed: codex.desktopInstalled === true, broken: false},
             // A version still being read is not a verdict: only a finished probe can mark Claude broken.
-            {kind: "claude", name: "Claude Code", mark: "claude", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible && !host.claudeDetecting, cliIssue: host.claudeCliIssue},
-            {kind: "dsh", name: "DeepSeek Harness", mark: "dsh", installed: dsh.installed === true, broken: dsh.installedButBroken === true, cliIssue: dsh.cliIssue, data: dsh},
+            {kind: "claude", name: "Claude Code", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible && !host.claudeDetecting, cliIssue: host.claudeCliIssue},
+            {kind: "dsh", name: "DeepSeek Harness", installed: dsh.installed === true, broken: dsh.installedButBroken === true, cliIssue: dsh.cliIssue, data: dsh},
             // DSH-DESKTOP-09: only a Desktop Orbis opened can be attached, so its single action is always opening it from here.
-            {kind: "dshDesktop", name: "DeepSeek 桌面版", mark: "dsh", installed: dsh.desktopInstalled === true,
+            {kind: "dshDesktop", name: "DeepSeek 桌面版", installed: dsh.desktopInstalled === true,
              broken: window.dshDesktopBlocked(), opensToFix: true}
-        ].concat(window.agentEnabled("openclaw") ? [{kind: "openclaw", name: "OpenClaw", mark: "openclaw", installed: true, broken: false}] : [])
+        ].concat(window.agentEnabled("openclaw") ? [{kind: "openclaw", name: "OpenClaw", installed: true, broken: false}] : [])
          .concat(window.agentEnabled("hermes")
-            ? [{kind: "hermes", name: "Hermes Agent", symbol: "chat_bubble", installed: hermes.installed === true || window.backendFor("hermes")?.ready === true,
+            ? [{kind: "hermes", name: "Hermes Agent", installed: hermes.installed === true || window.backendFor("hermes")?.ready === true,
                 broken: hermes.cliIssue === "unrunnable", cliIssue: hermes.cliIssue, passive: true}]
             : [])
          .concat((host.agentEnablement.agents || []).filter(function(agent) {
             return agent.enabled && ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "openclaw", "hermes"].indexOf(agent.kind) < 0
          }).map(function(agent) {
-            return {kind: agent.kind, name: agent.label, symbol: "chat_bubble", installed: window.backendFor(agent.kind)?.ready === true, broken: false, passive: true}
+            return {kind: agent.kind, name: agent.label, installed: window.backendFor(agent.kind)?.ready === true, broken: false, passive: true}
          })).filter(function(row) { return window.agentEnabled(row.kind) })
     }
     function agentEnabled(kind) {
@@ -582,6 +582,7 @@ ApplicationWindow {
     component SoftSwitch: Switch {
         id: softSwitch
         property bool marksProviderDirty: true
+        property string agentKind: ""
         readonly property string stateLabel: checked ? "开" : "关"
         Accessible.name: (text || "开关") + "，当前状态：" + stateLabel
         onToggled: if (marksProviderDirty && providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
@@ -600,7 +601,20 @@ ApplicationWindow {
                 SymbolIcon { anchors.centerIn: parent; width: 16; height: 16; name: softSwitch.checked ? "check" : "close"; color: softSwitch.enabled ? (softSwitch.checked ? Theme.accent : Theme.inkMuted) : Theme.inkFaint }
             }
         }
-        contentItem: Label { text: softSwitch.text; leftPadding: softSwitch.indicator.width + softSwitch.spacing; verticalAlignment: Text.AlignVCenter; color: softSwitch.enabled ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; wrapMode: Text.WordWrap }
+        contentItem: Label {
+            text: softSwitch.text
+            leftPadding: agentMark.x + (agentMark.hasMark ? agentMark.width + 8 : 0)
+            verticalAlignment: Text.AlignVCenter
+            color: softSwitch.enabled ? Theme.ink : Theme.inkFaint
+            font.pixelSize: Theme.body
+            wrapMode: Text.WordWrap
+            AgentMark {
+                id: agentMark
+                anchors.verticalCenter: parent.verticalCenter
+                x: softSwitch.indicator.width + softSwitch.spacing
+                kind: softSwitch.agentKind; visible: hasMark
+            }
+        }
     }
     component SoftComboBox: ComboBox {
         id: softCombo
@@ -960,8 +974,12 @@ ApplicationWindow {
                                         Item {
                                             Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd
                                             opacity: agentRow.modelData.installed ? 1 : 0.4
-                                            AgentMark { objectName: "overviewAgentMark-" + agentRow.modelData.kind; anchors.fill: parent; visible: !!agentRow.modelData.mark; kind: agentRow.modelData.mark || "" }
-                                            SymbolIcon { anchors.fill: parent; visible: !agentRow.modelData.mark; name: agentRow.modelData.symbol || ""; color: agentRow.modelData.tint || Theme.agentCodex }
+                                            AgentMark {
+                                                id: overviewMark
+                                                objectName: "overviewAgentMark-" + agentRow.modelData.kind
+                                                anchors.fill: parent; kind: agentRow.modelData.kind; visible: hasMark
+                                            }
+                                            SymbolIcon { anchors.fill: parent; visible: !overviewMark.hasMark; name: "chat_bubble"; color: Theme.inkMuted }
                                         }
                                         Label { text: agentRow.modelData.name; color: agentRow.modelData.installed ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
                                         Item {
@@ -1096,6 +1114,7 @@ ApplicationWindow {
                                     anchors.fill: parent; spacing: 15
                                     RowLayout {
                                         Layout.fillWidth: true
+                                        AgentMark { kind: modelData.kind; visible: hasMark }
                                         Heading { text: window.agentName(modelData.kind); color: Theme.agent(modelData.kind) }
                                         Item { Layout.fillWidth: true }
                                         Hint { text: modelData.installed ? "可用" : modelData.installedButBroken ? "已安装（需要修复）" : "尚未安装"; color: modelData.installed ? Theme.success : Theme.inkMuted }
@@ -1116,6 +1135,7 @@ ApplicationWindow {
                             visible: window.agentEnabled("claude"); Layout.fillWidth: true
                             ColumnLayout { anchors.fill: parent; spacing: 12
                                 RowLayout { Layout.fillWidth: true
+                                    AgentMark { kind: "claude" }
                                     Heading { text: "Claude Code"; color: Theme.agentClaude }
                                     Item { Layout.fillWidth: true }
                                     Hint { text: window.claudeStateText(); color: host.claudeInstalled && !host.claudeCompatible ? Theme.warning : Theme.inkMuted }
@@ -1146,6 +1166,7 @@ ApplicationWindow {
                                         objectName: "enableAgent-" + modelData.kind
                                         Layout.fillWidth: true
                                         text: modelData.label
+                                        agentKind: modelData.kind
                                         marksProviderDirty: false
                                         enabled: host.bridgeReady && !host.busy
                                         checked: modelData.enabled === true
@@ -1229,6 +1250,7 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true
                             ActionButton { text: "‹ Agent"; onClicked: window.providersOpen = false }
+                            AgentMark { kind: host.providerKind; visible: hasMark }
                             Heading { text: ({pi: "Pi", codex: "Codex", claude: "Claude Code", dsh: "DeepSeek Harness"})[host.providerKind] + " 供应商" }
                             Item { Layout.fillWidth: true }
                         }
@@ -1374,6 +1396,7 @@ ApplicationWindow {
                             RowLayout {
                                 visible: host.kimiCodeAvailable && window.agentEnabled("kimiCode"); Layout.fillWidth: true; spacing: 12
                                 onVisibleChanged: if (visible) kimiSource.currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0
+                                AgentMark { kind: "kimiCode" }
                                 Label { text: "Kimi Code"; Layout.fillWidth: true }
                                 SoftComboBox {
                                     id: kimiSource; objectName: "kimiCodeSource"

@@ -76,7 +76,9 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
             }
             if (state.agentEnablementAvailable) SettingsGroup("Agent", tag = "settings-agent-enablement") {
                 state.agentEnablementRows.forEach { agent ->
-                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        knownAgentBrand(agent.kind)?.let { AgentIcon(it, Modifier.size(18.dp)) }
                         Text(agent.label, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
                         Switch(checked = agent.enabled, onCheckedChange = { enabled ->
                             if (enabled) state.agentEnablementRevision?.let { onAgentEnabled(agent.kind, true, it, false) }

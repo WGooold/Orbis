@@ -1,14 +1,18 @@
-Agent identity marks (Pi, Codex, Claude, OpenClaw)
+Agent identity marks (Pi, Codex, Claude Code, OpenClaw, Hermes Agent, Kimi Code)
 
 Pi mark
 Source: https://pi.dev/logo-auto.svg
 Copyright (c) 2025 Mario Zechner
 
-Codex, Claude and OpenClaw marks (Lobe Icons)
+Codex, Claude Code, OpenClaw and Hermes Agent marks (Lobe Icons)
 Source: https://github.com/lobehub/lobe-icons
 Copyright (c) 2023 LobeHub
 
-The Pi, Codex, Claude and OpenClaw marks are distributed under the following MIT License. Their
+Kimi Code mark
+Source: https://github.com/MoonshotAI/kimi-code/blob/83e4dde93453dd22e89da03d2c96d84999e7d0c2/KIMI%20CODE%20LOGO/Original%20Logo.svg
+Copyright (c) 2026 Moonshot AI
+
+The marks above are distributed under the following MIT License. Their
 product names and marks identify the corresponding third-party agents.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

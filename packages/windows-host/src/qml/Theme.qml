@@ -39,7 +39,15 @@ QtObject {
     readonly property color agentCodex: dark ? "#77d6c7" : "#00655d"
     readonly property color agentDeepseek: dark ? "#a9bbff" : "#3550cf"
     readonly property color agentClaude: dark ? "#f0b48c" : "#9a4521"
-    function agent(kind) { return ({pi:agentPi,codex:agentCodex,dsh:agentDeepseek,claude:agentClaude})[kind] || ink }
+    function agent(kind) {
+        switch (kind) {
+        case "pi": return agentPi
+        case "codex": case "codexDesktop": return agentCodex
+        case "dsh": case "dshDesktop": return agentDeepseek
+        case "claude": return agentClaude
+        default: return ink
+        }
+    }
     readonly property real highlightOpacity: dark ? (sage ? 0.7 : 0.8) : (sage ? 0.8 : 0.9)
     readonly property real shadeOpacity: dark ? 0.7 : (sage ? 0.65 : 0.55)
     readonly property int display: 28

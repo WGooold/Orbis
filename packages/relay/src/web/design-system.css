@@ -25,6 +25,10 @@
 .cinema-site .icon-button { display: inline-grid; place-items: center; border-radius: var(--radius-full); }
 .cinema-site .agent-pick { border-radius: var(--radius-md); }
 .cinema-site .agent-pick[aria-pressed=true] { color: var(--accent); background: var(--surface-base); box-shadow: var(--inset-sm); }
+.agent-pick .agent-mark-on-dark, :root[data-ob$="dark"] .agent-pick .agent-mark-on-light { display: none; }
+:root[data-ob$="dark"] .agent-pick .agent-mark-on-dark { display: block; }
+:root[data-ob$="dark"] .agent-pick img[src$="/lobe-hermesagent.svg"] { filter: invert(1); }
+.agent-pick img[src$="/omp-icon.svg"] { background: #16171b; padding: 3px; border-radius: 22%; }
 .cinema-site :is(.eyebrow,.card-heading small,.card-prompt,.card-tool,.card-composer,.preview-label,.agent-availability,.orbit-navigation p,.playback.subtle,.scroll-cue,.demo-disclaimer,.download-kind,.platform-select,.version-tag,.checksum-link,.download-card>small,.registration-status,.site-footer>p,.site-footer>div) { font-size: 12px; line-height: 18px; font-weight: 400; }
 .cinema-site :is(.card-heading h2,.agent-face>h2,.download-heading h3) { font: 600 15px/24px var(--font-sans); }
 .cinema-site :is(.brand,.agent-current,.agent-face.is-preview h2,.outro-tagline) { font: 600 20px/28px var(--font-sans); }

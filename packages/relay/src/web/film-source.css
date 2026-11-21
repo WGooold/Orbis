@@ -139,15 +139,14 @@
   flex: none;
   background: center / contain no-repeat;
 }
-.film-source .a-claude { background-image: url(promo/agents/claude.svg); }
+.film-source :is(.a-claude, .a-claudecode) { background-image: url(promo/agents/lobe-claudecode-color.svg); }
 .film-source .a-codex { background-image: url(promo/agents/codex.svg); }
 .film-source .a-dsh { background-image: url(promo/agents/deepseek.svg); }
 .film-source .a-pi { background-image: url(promo/agents/pi.svg); }
-.film-source .a-claudecode { background-image: url(promo/agents/lobe-claudecode-color.svg); }
 .film-source .a-codexc { background-image: url(promo/agents/lobe-codex-color.svg); }
-.film-source .a-kimi { background-image: url(promo/agents/lobe-kimi-color.svg); }
-.film-source .a-zai { background-image: url(promo/agents/lobe-zai.svg); }
-.film-source .a-opencode { background-image: url(promo/agents/lobe-opencode.svg); }
+.film-source .a-kimi { background-image: url(promo/agents/kimi-code.svg); }
+.film-source .a-zcode { background-image: url(promo/agents/zcode.png); }
+.film-source .a-opencode { background-image: url(promo/agents/opencode-light.svg); }
 .film-source .a-hermes { background-image: url(promo/agents/lobe-hermesagent.svg); }
 .film-source .a-openclaw { background-image: url(promo/agents/lobe-openclaw-color.svg); }
 .film-source .a-omp { background-color: #16171b; background-image: url(promo/agents/omp-icon.svg); background-size: 72%; border-radius: 22%; }

@@ -73,16 +73,15 @@ struct OrbisLiveActivityPresentation {
         state.runningCount > 1 || state.pendingCount > 1 || (state.runningCount == 1 && state.pendingCount == 1)
     }
 
+    private var showsAgentMark: Bool { !isAggregate && !isStale && !isEnded }
+
     var assetName: String {
-        guard !isAggregate, !isStale, !isEnded else { return "OrbisMark" }
-        switch state.agentKind {
-        case "codex", "codexDesktop": return "AgentCodex"
-        case "claude": return "AgentClaude"
-        case "dsh", "dshDesktop": return "AgentDeepSeek"
-        case "pi": return "AgentPi"
-        default: return "OrbisMark"
-        }
+        guard showsAgentMark else { return "OrbisMark" }
+        return AgentIdentity(kind: state.agentKind)?.assetName(dark: true) ?? "OrbisMark"
     }
+
+    /// The widget's dark background already matches OpenCode's light-ink artwork.
+    var markUsesOriginalColors: Bool { showsAgentMark && state.agentKind == "opencode" }
 
     var agentName: String {
         switch state.agentKind {

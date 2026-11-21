@@ -56,7 +56,12 @@ struct ConnectionStatusView: View {
                         StatusSection(title: "Agent") {
                             ForEach(store.activeConnection.agentEnablementRows) { row in
                                 Toggle(isOn: Binding(get: { row.enabled }, set: { changeAgent(row, enabled: $0) })) {
-                                    Text(row.label).font(.orbisBody(.semibold))
+                                    HStack(spacing: 10) {
+                                        if AgentIdentity(kind: row.id) != nil {
+                                            AgentEmblem(kind: row.id, size: 20, recessed: false).accessibilityHidden(true)
+                                        }
+                                        Text(row.label).font(.orbisBody(.semibold))
+                                    }
                                 }.toggleStyle(NeuToggleStyle())
                                     .disabled(store.activeConnection.agentEnablementPending != nil)
                                     .accessibilityIdentifier("agent-enablement-" + row.id)

@@ -24,7 +24,7 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
     { id: "pi", name: "Pi", icon: "pi.svg" },
     { id: "codex", name: "Codex", icon: "codex.svg" },
     { id: "deepseek", name: "DeepSeek", icon: "deepseek.svg" },
-    { id: "claude", name: "Claude Code", icon: "claude.svg" },
+    { id: "claude", name: "Claude Code", icon: "lobe-claudecode-color.svg" },
   ];
   const agentOrder=[1,3,2,0];
   const profiles = ["本机配置", "relay-b", "openrouter", "azure"];

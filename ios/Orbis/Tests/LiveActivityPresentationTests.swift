@@ -43,6 +43,19 @@ final class LiveActivityPresentationTests: XCTestCase {
         XCTAssertEqual(multiple.otherRunningText, "另有 2 个会话运行中")
     }
 
+    // AGENT-MARK-01: use the OpenCode mark only for a non-stale single session;
+    // ActivityKit's aggregate and fallback states still use the Orbis mark.
+    func testOpenCodeUsesItsMarkOnDarkActivitySurface() {
+        var activity = state()
+        activity.agentKind = "opencode"
+        XCTAssertEqual(presentation(activity).assetName, "AgentOpenCodeDark")
+        XCTAssertTrue(presentation(activity).markUsesOriginalColors)
+        XCTAssertEqual(presentation(activity, stale: true).assetName, "OrbisMark")
+        activity.runningCount = 2
+        XCTAssertEqual(presentation(activity).assetName, "OrbisMark")
+        XCTAssertFalse(presentation(activity).markUsesOriginalColors)
+    }
+
     // LA-03: waiting for a person takes visual priority; running sessions remain
     // visible only in the expanded secondary summary.
     func testAttentionWinsCompactCountAndKeepsOtherRunningSessions() {

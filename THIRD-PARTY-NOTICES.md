@@ -4,10 +4,10 @@ Orbis original source code is available under the MIT license in [LICENSE](LICEN
 Dependencies, toolchains and third-party artwork keep their own licenses.
 
 - Windows distribution: [Qt, MinGW, Node.js and native dependency notices](packages/windows-host/THIRD-PARTY-NOTICES.md). Bundles include upstream licenses and an exact dependency inventory.
-- Android agent icons: [source attribution](android/docs/agent-icons.md) and [bundled notices](android/app/src/main/assets/agent-icon-notices.txt).
+- Agent icons: [Android source attribution](android/docs/agent-icons.md), with bundled notices for [Android](android/app/src/main/assets/agent-icon-notices.txt), [iOS](ios/Orbis/AGENT-ICON-NOTICES.txt), [Host](packages/windows-host/THIRD-PARTY-NOTICES.md) and the [website](packages/relay/src/web/promo/agents/NOTICES.txt).
 - Android dependencies are declared in `android/app/build.gradle.kts`; the Gradle wrapper is provided by Gradle under Apache-2.0.
 - JavaScript versions and sources are locked in `package-lock.json`; each package retains its upstream license. Packaging does not relicense those dependencies.
 - The native Host QUIC helper uses Go and quic-go. Host runtime bundles include its exact module inventory and upstream licenses under `packages/host/native/`; versions are locked in `native/relayquic/go.mod` and `go.sum`.
-- Pi, Codex, DeepSeek and Claude names and marks identify supported integrations. This project is independently maintained and claims no endorsement, partnership or authorization from their owners.
+- Third-party agent names and marks identify the corresponding products. This project is independently maintained and claims no endorsement, partnership or authorization from their owners.
 
 Redistributions must preserve this file, the Orbis MIT license and the applicable dependency notices. Qt shared libraries remain replaceable; see the Windows build instructions for rebuilding and relinking the application.

@@ -23,6 +23,40 @@ private slots:
         qmlRegisterType<NeuSurface>("Orbis.Host", 1, 0, "NeuSurface");
         qmlRegisterSingletonType(QUrl("qrc:/qt/qml/Orbis/Host/Theme.qml"), "Orbis.Host", 1, 0, "Theme");
     }
+    void agentMarksLoadWithBothAppearances() {
+        // AGENT-MARK-01: test the bundled images through the shared QML mark,
+        // including the two desktop aliases and live light/dark asset changes.
+        QTemporaryDir settings; QVERIFY(settings.isValid());
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(settings.filePath("appearance.ini")));
+        auto *theme = engine.singletonInstance<QObject *>("Orbis.Host", "Theme"); QVERIFY(theme);
+        auto *preferences = theme->property("preferences").value<QObject *>(); QVERIFY(preferences);
+        QQmlComponent component(&engine, QUrl("qrc:/qt/qml/Orbis/Host/AgentMark.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> mark(component.create()); QVERIFY2(mark, qPrintable(component.errorString()));
+        auto *image = mark->findChild<QObject *>("agentMarkImage"); QVERIFY(image);
+        for (const auto &mode : {QString("light"), QString("dark")}) {
+            QVERIFY(preferences->setProperty("mode", mode));
+            QMap<QString, QUrl> sources;
+            for (const QString kind : {"pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", "hermes", "kimiCode", "opencode"}) {
+                QVERIFY(mark->setProperty("kind", kind));
+                QVERIFY2(mark->property("hasMark").toBool(), qPrintable(kind));
+                QTRY_COMPARE(image->property("status").toInt(), 1);  // Image.Ready
+                if (kind == "kimiCode" || kind == "opencode") {
+                    const double ratio = kind == "kimiCode" ? 86.0 / 76 : 240.0 / 300;
+                    QVERIFY(qAbs(image->property("paintedWidth").toDouble() / image->property("paintedHeight").toDouble() - ratio) < 0.07);
+                }
+                sources.insert(kind, image->property("source").toUrl());
+            }
+            QCOMPARE(sources["codexDesktop"], sources["codex"]);
+            QCOMPARE(sources["dshDesktop"], sources["dsh"]);
+            QCOMPARE(sources["kimiCode"], QUrl("qrc:/agent-marks/kimi-code.svg"));
+            QCOMPARE(sources["opencode"], QUrl("qrc:/agent-marks/opencode-" + mode + ".svg"));
+            QCOMPARE(sources["hermes"], QUrl("qrc:/agent-marks/hermes-" + mode + ".svg"));
+        }
+        QVERIFY(mark->setProperty("kind", "future-agent"));
+        QVERIFY(!mark->property("hasMark").toBool());
+    }
     void loadingRemainsLegible_data() {
         QTest::addColumn<QString>("material");
         QTest::addColumn<QString>("mode");

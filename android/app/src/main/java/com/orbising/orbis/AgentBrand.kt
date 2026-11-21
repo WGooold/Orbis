@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /** Agent identity is independent of the selected model/provider. */
-internal enum class AgentBrand(val title: String, val icon: Int) {
+internal enum class AgentBrand(val title: String, val icon: Int, val darkIcon: Int = icon) {
     Pi("Pi", R.drawable.ic_agent_pi),
     Codex("Codex", R.drawable.ic_agent_codex),
     DeepSeek("DeepSeek", R.drawable.ic_agent_dsh),
@@ -33,11 +33,13 @@ internal enum class AgentBrand(val title: String, val icon: Int) {
     Kimi("Kimi Code", R.drawable.ic_agent_kimi),
     OpenClaw("OpenClaw", R.drawable.ic_agent_openclaw),
     Hermes("Hermes Agent", R.drawable.ic_agent_hermes),
-    OpenCode("OpenCode", R.drawable.ic_agent_opencode),
+    OpenCode("OpenCode", R.drawable.ic_agent_opencode, R.drawable.ic_agent_opencode_dark),
 }
 
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
-internal fun agentBrand(kind: String?) = when (kind) {
+internal fun agentBrand(kind: String?) = knownAgentBrand(kind) ?: AgentBrand.Pi
+internal fun knownAgentBrand(kind: String?): AgentBrand? = when (kind) {
+    "pi" -> AgentBrand.Pi
     "codex", "codexDesktop" -> AgentBrand.Codex
     "dsh", "dshDesktop" -> AgentBrand.DeepSeek
     "claude" -> AgentBrand.Claude
@@ -45,7 +47,7 @@ internal fun agentBrand(kind: String?) = when (kind) {
     "openclaw" -> AgentBrand.OpenClaw
     "hermes" -> AgentBrand.Hermes
     "opencode" -> AgentBrand.OpenCode
-    else -> AgentBrand.Pi
+    else -> null
 }
 /** Desktop entries are the app window on the computer; "headless" describes only terminal Agents (ADR-0022, ADR-0076). */
 internal fun ownsComputerWindow(kind: String?) = kind == "codexDesktop" || kind == "dshDesktop"
@@ -85,12 +87,14 @@ internal fun AgentTheme(brand: AgentBrand, content: @Composable () -> Unit) {
 @Composable
 internal fun AgentIcon(brand: AgentBrand, modifier: Modifier = Modifier, description: String? = null, tintOverride: Color? = null) {
     Icon(
-        painter = painterResource(brand.icon),
+        painter = painterResource(if (LocalOrbisDarkTheme.current) brand.darkIcon else brand.icon),
         contentDescription = description,
         modifier = modifier.size(22.dp),
-        tint = tintOverride ?: when (brand) {
-            AgentBrand.Pi, AgentBrand.Claude, AgentBrand.OpenClaw -> Color.Unspecified
-            else -> brand.accent()
+        tint = when (brand) {
+            // These marks depend on their internal colors to stay recognizable.
+            AgentBrand.Kimi, AgentBrand.OpenCode -> Color.Unspecified
+            AgentBrand.Pi, AgentBrand.Claude, AgentBrand.OpenClaw -> tintOverride ?: Color.Unspecified
+            else -> tintOverride ?: brand.accent()
         },
     )
 }

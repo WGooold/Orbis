@@ -675,7 +675,7 @@ window.addFilmShake = (timeline, at = 0) => timeline.to("#s4-shake", {
         { kind: "pi", title: "梳理项目中的页面结构", user: "梳理项目中的页面结构", tool: ["Bash", "ls src/pages"], reply: "website 一共 6 个页面：首页、下载、文档、更新日志、隐私和关于。", path: "/Projects/website" },
         { kind: "codex", title: "整理下载页布局", user: "下载页按修改时间排序", tool: ["Edit", "DownloadView.swift"], reply: "已改为按修改时间倒序，最新的文件排在最前。", path: "/Projects/orbis", desk: true },
         { kind: "dsh", title: "检查服务端连接状态", user: "检查服务端连接状态", tool: ["Bash", "curl /health"], reply: "Relay 与局域网链路都正常，端到端加密已启用。", path: "/Projects/orbis" },
-        { name: "ZCode", icon: "a-zai" },
+        { name: "ZCode", icon: "a-zcode" },
         { name: "OpenCode", icon: "a-opencode" },
         { name: "Kimi Code", icon: "a-kimi" },
         { name: "Oh My Pi", icon: "a-omp" },

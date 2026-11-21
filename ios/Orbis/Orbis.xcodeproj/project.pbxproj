@@ -34,6 +34,8 @@
         A08700010000000000000004 /* LiveActivityProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000004; };
         A08700010000000000000005 /* OrbisLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000005; };
         A08700010000000000000006 /* LiveActivityAttributes.swift in Widget Sources */ = {isa = PBXBuildFile; fileRef = A08710010000000000000001; };
+        A0870001000000000000000A /* AgentIdentity.swift in App Sources */ = {isa = PBXBuildFile; fileRef = A0871001000000000000000A; };
+        A0870001000000000000000B /* AgentIdentity.swift in Widget Sources */ = {isa = PBXBuildFile; fileRef = A0871001000000000000000A; };
         A08700010000000000000007 /* Assets.xcassets in Widget Resources */ = {isa = PBXBuildFile; fileRef = A0011001000000000000000C; };
         A08700010000000000000008 /* OrbisLiveActivity.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A08710010000000000000007; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy); }; };
         C01400010000000000000001 /* ChatNativeSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01410010000000000000001; };
@@ -140,6 +142,7 @@
         A11110010000000000000005 /* OrbisNotifications.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OrbisNotifications.appex; sourceTree = BUILT_PRODUCTS_DIR; };
         A08710010000000000000008 /* LiveActivityLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityLifecycle.swift; sourceTree = "<group>"; };
         A08710010000000000000001 /* LiveActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityAttributes.swift; sourceTree = "<group>"; };
+        A0871001000000000000000A /* AgentIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentIdentity.swift; sourceTree = "<group>"; };
         A08710010000000000000002 /* LiveActivityCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityCoordinator.swift; sourceTree = "<group>"; };
         A08710010000000000000003 /* LiveActivityRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityRegistration.swift; sourceTree = "<group>"; };
         A08710010000000000000004 /* LiveActivityProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityProjection.swift; sourceTree = "<group>"; };
@@ -304,6 +307,7 @@
 				A00110010000000000000032 /* OrbisHub.swift */,
 				A00110010000000000000031 /* Notifications.swift */,
 				A08710010000000000000001 /* LiveActivityAttributes.swift */,
+				A0871001000000000000000A /* AgentIdentity.swift */,
                 A11110010000000000000001 /* NotificationSource.swift */,
 				A08710010000000000000008 /* LiveActivityLifecycle.swift */,
 				A08710010000000000000002 /* LiveActivityCoordinator.swift */,
@@ -517,7 +521,7 @@
 /* Begin PBXSourcesBuildPhase section */
         F08640010000000000000001 /* Share Extension Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (F08600010000000000000001 /* ShareViewController.swift in Sources */, F08600010000000000000002 /* ExternalImportStore.swift in Share Extension Sources */, F08600010000000000000003 /* ExternalImportLabels.swift in Share Extension Sources */, F08600010000000000000004 /* ExternalShareReader.swift in Sources */, F08600010000000000000005 /* ExternalShareSelection.swift in Sources */, F08600010000000000000006 /* Localization.swift in Share Extension Sources */, F08600010000000000000007 /* LocalizationCatalog.swift in Share Extension Sources */); runOnlyForDeploymentPostprocessing = 0; };
         A11140010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A11100010000000000000003, A11100010000000000000004); runOnlyForDeploymentPostprocessing = 0; };
-        A08740010000000000000001 /* Widget Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A08700010000000000000005 /* OrbisLiveActivityWidget.swift in Sources */, A08700010000000000000006 /* LiveActivityAttributes.swift in Widget Sources */, A11100010000000000000002 /* NotificationSource in Widget */); runOnlyForDeploymentPostprocessing = 0; };
+        A08740010000000000000001 /* Widget Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A08700010000000000000005 /* OrbisLiveActivityWidget.swift in Sources */, A08700010000000000000006 /* LiveActivityAttributes.swift in Widget Sources */, A0870001000000000000000B /* AgentIdentity.swift in Widget Sources */, A11100010000000000000002 /* NotificationSource in Widget */); runOnlyForDeploymentPostprocessing = 0; };
 		A00140010000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -554,6 +558,7 @@
 				A00100010000000000000032 /* OrbisHub.swift in Sources */,
 				A00100010000000000000031 /* Notifications.swift in Sources */,
 				A08700010000000000000001 /* LiveActivityAttributes.swift in Sources */,
+				A0870001000000000000000A /* AgentIdentity.swift in App Sources */,
                 A11100010000000000000001 /* NotificationSource in App */,
 				A08700010000000000000009 /* LiveActivityLifecycle.swift in Sources */,
 				A08700010000000000000002 /* LiveActivityCoordinator.swift in Sources */,

@@ -7,8 +7,8 @@ Codex mark (Lobe Icons)
 Source: https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/codex.svg
 Copyright (c) 2023 LobeHub
 
-Claude mark (Lobe Icons)
-Source: https://github.com/lobehub/lobe-icons/blob/f25f22c0e7295a76077fe417d23deeb56eefdf3e/packages/static-svg/icons/claude-color.svg
+Claude Code mark (Lobe Icons)
+Source: @lobehub/icons-static-svg 1.102.0, claudecode-color.svg, https://github.com/lobehub/lobe-icons
 Copyright (c) 2023 LobeHub
 
 OpenClaw mark (Lobe Icons)
@@ -19,8 +19,13 @@ Hermes Agent mark (Lobe Icons @lobehub/icons-static-svg 1.102.0)
 Source: https://github.com/lobehub/lobe-icons
 Copyright (c) 2023 LobeHub
 
-The Pi, Codex, Claude, OpenClaw and Hermes Agent marks are distributed under the following MIT License. Their
-product names and marks identify the corresponding third-party agents.
+Kimi Code mark
+Source: https://github.com/MoonshotAI/kimi-code/blob/83e4dde93453dd22e89da03d2c96d84999e7d0c2/KIMI%20CODE%20LOGO/Original%20Logo.svg
+Copyright (c) 2026 Moonshot AI
+
+The Pi, Codex, Claude Code, OpenClaw, Hermes Agent and Kimi Code marks are
+distributed under the following MIT License. Their product names and marks
+identify the corresponding third-party agents.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -49,3 +54,8 @@ DeepSeek. The mark is bundled only to identify the DeepSeek Harness agent that
 this app connects to, and is not covered by the MIT License above. Orbis is
 independently maintained and claims no endorsement, partnership or
 authorization from DeepSeek.
+
+OpenCode mark
+Source: https://opencode.ai/brand (transparent light/dark logo files)
+OpenCode and its mark are trademarks of Anomaly. They identify the OpenCode integration only,
+are not covered by the MIT license above, and do not imply endorsement.

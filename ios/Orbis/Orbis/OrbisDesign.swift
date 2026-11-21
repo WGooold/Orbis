@@ -2226,7 +2226,6 @@ struct AgentIconRecess: View {
 
 struct AgentEmblem: View {
     @Environment(\.colorScheme) private var scheme
-    @Environment(\.orbisAppearance) private var visualStyle
     let kind: String?
     var size: CGFloat = 44
     var recessed = true
@@ -2238,43 +2237,18 @@ struct AgentEmblem: View {
         }.accessibilityLabel(agentTitle(kind))
     }
     private var mark: some View {
-        Group {
-            if kind == "opencode" {
-                Image(systemName: "terminal.fill")
-                    .font(.system(size: size * (recessed ? 0.42 : 0.7), weight: .medium))
-                    .foregroundStyle(OrbisPalette(scheme).agent(kind))
-            } else {
-                Image(agentAsset(kind)).renderingMode(kind == "pi" || kind == "claude" || kind == "openclaw" || kind == nil ? .original : .template)
-                    .resizable().scaledToFit().foregroundStyle(OrbisPalette(scheme).agent(kind))
-                    .frame(width: size * (recessed ? 0.56 : 0.9), height: size * (recessed ? 0.56 : 0.9))
-            }
-        }.frame(width: size, height: size).modifier(OrbisActionPulse())
+        let identity = AgentIdentity(kind: kind) ?? .pi
+        let glyphSize = size * (recessed ? 0.56 : 0.9)
+        return Image(identity.assetName(dark: scheme == .dark))
+            .renderingMode(identity.original ? .original : .template)
+            .resizable().scaledToFit().foregroundStyle(OrbisPalette(scheme).agent(kind))
+            .frame(width: glyphSize, height: glyphSize)
+            .frame(width: size, height: size).modifier(OrbisActionPulse())
     }
 }
 
 func agentTitle(_ kind: String?) -> String {
-    switch kind {
-    case "codex", "codexDesktop": return "Codex"
-    case "dsh", "dshDesktop": return "DeepSeek"
-    case "hermes": return "Hermes Agent"
-    case "claude": return "Claude Code"
-    case kimiCodeKind: return "Kimi Code"
-    case "openclaw": return "OpenClaw"
-    case "opencode": return "OpenCode"
-    default: return "Pi"
-    }
-}
-
-private func agentAsset(_ kind: String?) -> String {
-    switch kind {
-    case "codex", "codexDesktop": return "AgentCodex"
-    case "dsh", "dshDesktop": return "AgentDeepSeek"
-    case "hermes": return "AgentHermes"
-    case "claude": return "AgentClaude"
-    case kimiCodeKind: return "AgentKimi"
-    case "openclaw": return "AgentOpenClaw"
-    default: return "AgentPi"
-    }
+    (AgentIdentity(kind: kind) ?? .pi).title
 }
 
 struct RuntimeStatusLabel: View {

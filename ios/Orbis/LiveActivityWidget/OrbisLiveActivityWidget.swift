@@ -110,7 +110,7 @@ private struct OrbisActivityMark: View {
     let size: CGFloat
     var body: some View {
         Image(presentation.assetName)
-            .renderingMode(.template)
+            .renderingMode(presentation.markUsesOriginalColors ? .original : .template)
             .resizable()
             .scaledToFit()
             .frame(width: size, height: size)

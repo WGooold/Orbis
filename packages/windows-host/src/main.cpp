@@ -396,12 +396,25 @@ int main(int argc, char *argv[]) {
             // HOST-AGENT-MARK-02: desktop variants retain the vendor identity.
             // Verify the rendered image as well as the model so a missing SVG cannot pass.
             for (const auto &kind : {QString("codex"), QString("dsh")}) {
-                auto *mark = findVisualItem(window->contentItem(), "overviewAgentMark-" + kind + "Desktop");
-                if (!mark || !mark->isVisible() || mark->property("kind").toString() != kind) { app.exit(84); return; }
-                bool loaded = false;
-                for (auto *child : mark->childItems()) if (child->property("source").toUrl().toString().startsWith("data:image/svg+xml,"))
-                    loaded = child->property("status").toInt() == 1;
-                if (!loaded) { app.exit(85); return; }
+                const auto desktopKind = kind + "Desktop";
+                auto *desktop = findVisualItem(window->contentItem(), "overviewAgentMark-" + desktopKind);
+                auto *terminal = findVisualItem(window->contentItem(), "overviewAgentMark-" + kind);
+                if (!desktop || !terminal || !desktop->isVisible() || desktop->property("kind").toString() != desktopKind) { app.exit(84); return; }
+                auto *desktopImage = findVisualItem(desktop, "agentMarkImage");
+                auto *terminalImage = findVisualItem(terminal, "agentMarkImage");
+                if (!desktopImage || !terminalImage || desktopImage->property("status").toInt() != 1
+                    || desktopImage->property("source").toUrl() != terminalImage->property("source").toUrl()) { app.exit(85); return; }
+            }
+            // AGENT-MARK-01: when the bridge advertises these agents, the overview
+            // must actually load their marks rather than going through the fallback.
+            for (const auto &item : controller.agentEnablement().value("agents").toList()) {
+                const auto row = item.toMap();
+                const auto kind = row.value("kind").toString();
+                if (!row.value("enabled").toBool() || (kind != "kimiCode" && kind != "hermes" && kind != "opencode")) continue;
+                auto *mark = findVisualItem(window->contentItem(), "overviewAgentMark-" + kind);
+                auto *image = mark ? findVisualItem(mark, "agentMarkImage") : nullptr;
+                if (!mark || !mark->isVisible() || !image || image->property("status").toInt() != 1 ||
+                    !image->property("source").toUrl().toString().startsWith("qrc:/agent-marks/")) { app.exit(85); return; }
             }
             if (auto *plain = findVisualItem(window->contentItem(), "overviewActivate"); !plain || !contentIsCentered(plain)) { app.exit(57); return; }
 #endif

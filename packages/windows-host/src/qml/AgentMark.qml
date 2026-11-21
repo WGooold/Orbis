@@ -7,16 +7,20 @@ Item {
     id: mark
     property string kind: ""
     property color tint: Theme.agent(kind)
+    readonly property string imageSource: AgentMarks.source(kind, tint, Theme.dark)
+    readonly property bool hasMark: imageSource.length > 0
     implicitWidth: Theme.iconMd
     implicitHeight: Theme.iconMd
+    Accessible.ignored: true
     Image {
+        objectName: "agentMarkImage"
         anchors.centerIn: parent
         width: Math.min(mark.width, mark.height) * 0.9
         height: width
         sourceSize.width: width * Screen.devicePixelRatio
-        sourceSize.height: width * Screen.devicePixelRatio
+        fillMode: Image.PreserveAspectFit
         smooth: true
-        source: AgentMarks.source(mark.kind, mark.tint)
+        source: mark.imageSource
         Accessible.ignored: true
     }
 }

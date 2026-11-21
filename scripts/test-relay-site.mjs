@@ -26,7 +26,7 @@ async function requiredImages(page, name) {
   const loaded = () => {
     const logo = globalThis.document.querySelector(".site-header .brand img");
     const picks = [...globalThis.document.querySelectorAll(".agent-pick")];
-    const icons = picks.map(pick => pick.querySelector("img"));
+    const icons = picks.map(pick => [...pick.querySelectorAll("img")].find(image => image.getClientRects().length > 0));
     const prefix = new URL("assets/", globalThis.location.href).pathname;
     return logo !== null && picks.length > 0 && icons.every(Boolean)
       && [logo, ...icons].every(image => image.complete && image.naturalWidth > 0
@@ -34,6 +34,18 @@ async function requiredImages(page, name) {
   };
   await page.waitForFunction(loaded);
   check(name, await page.evaluate(loaded));
+}
+
+// AGENT-MARK-01: cover the visible picker and its separately rendered film art.
+async function agentArtwork(page, dark) {
+  const assets = [["Kimi Code", ".a-kimi", "kimi-code.svg"], ["OpenCode", ".a-opencode", dark ? "opencode-dark.svg" : "opencode-light.svg"], ["ZCode", ".a-zcode", "zcode.png"]];
+  for (const [name, selector, file] of assets) {
+    const picker = page.locator(`.agent-pick[title="${name}"] img:visible`);
+    check(`${name} picker uses ${file}`, await picker.count() === 1 && await picker.evaluate((image, expected) => image.complete && image.naturalWidth > 0 && image.currentSrc.endsWith(`/promo/agents/${expected}`), file));
+    // The orbit cards intentionally use a fixed light palette.
+    const filmFile = name === "OpenCode" ? "opencode-light.svg" : file;
+    check(`${name} orbit uses ${filmFile}`, await page.locator(`#orbit-canvas ${selector}`).first().evaluate((mark, expected) => globalThis.getComputedStyle(mark).backgroundImage.includes(`/promo/agents/${expected}`), filmFile));
+  }
 }
 
 async function navigationIdentity(page) {
@@ -107,9 +119,18 @@ async function foreground(page, name, underneath) {
 }
 
 try {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, colorScheme: "light", deviceScaleFactor: 1 });
   const page = await prepare(context);
   await requiredImages(page, "required brand and Agent images load through the Relay prefix");
+  await agentArtwork(page, false);
+  await screenshot(page, "agent-marks-light", "#agent-picks");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForSelector('html[data-ob="dark"]', { state: "attached" });
+  await requiredImages(page, "theme-specific Agent images load in dark mode");
+  await agentArtwork(page, true);
+  await screenshot(page, "agent-marks-dark", "#agent-picks");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForSelector('html[data-ob="light"]', { state: "attached" });
   check("required Agent and chapter identities are unique and correctly linked", await navigationIdentity(page));
   await screenshot(page,"desktop-hero");
   await page.locator(".agent-pick").nth(1).click();

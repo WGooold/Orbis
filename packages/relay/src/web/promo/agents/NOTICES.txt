@@ -7,11 +7,15 @@ Codex mark (Lobe Icons)
 Source: https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/codex.svg
 Copyright (c) 2023 LobeHub
 
-Claude mark (Lobe Icons)
-Source: https://github.com/lobehub/lobe-icons/blob/f25f22c0e7295a76077fe417d23deeb56eefdf3e/packages/static-svg/icons/claude-color.svg
+Claude Code mark (Lobe Icons)
+Source: @lobehub/icons-static-svg 1.102.0, claudecode-color.svg, https://github.com/lobehub/lobe-icons
 Copyright (c) 2023 LobeHub
 
-The Pi, Codex and Claude marks are distributed under the following MIT License. Their
+Kimi Code mark
+Source: https://github.com/MoonshotAI/kimi-code/blob/83e4dde93453dd22e89da03d2c96d84999e7d0c2/KIMI%20CODE%20LOGO/Original%20Logo.svg
+Copyright (c) 2026 Moonshot AI
+
+The Pi, Codex, Claude Code and Kimi Code marks are distributed under the following MIT License. Their
 product names and marks identify the corresponding third-party agents.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -42,11 +46,20 @@ this app connects to, and is not covered by the MIT License above. Orbis is
 independently maintained and claims no endorsement, partnership or
 authorization from DeepSeek.
 
+OpenCode mark
+Source: https://opencode.ai/brand (transparent light/dark logo files)
+OpenCode and its mark are trademarks of Anomaly. They identify the OpenCode integration only,
+are not covered by the MIT license above, and do not imply endorsement.
+
+ZCode mark
+Source: https://zcode.z.ai/favicon-192x192.png?v=20260707-transparent
+The ZCode product mark identifies the site preview only. It is not covered by
+the MIT license above, and its use does not imply endorsement.
+
 ----
 Added for the promo film (2026-11-02):
 - lobe-*.svg: Lobe Icons static SVGs (@lobehub/icons-static-svg 1.102.0, MIT, Copyright (c) 2023 LobeHub),
-  https://github.com/lobehub/lobe-icons — claudecode-color, codex-color, kimi-color, zai (ZCode / Z.ai),
-  opencode, hermesagent (Hermes Agent), openclaw-color, deepseek-color.
+  https://github.com/lobehub/lobe-icons — claudecode-color, codex-color, hermesagent (Hermes Agent), and openclaw-color.
 - omp-icon.svg: Oh My Pi icon, https://github.com/can1357/oh-my-pi/blob/main/assets/icon.svg (repository license applies).
 Product names and marks identify the corresponding third-party agents.
 

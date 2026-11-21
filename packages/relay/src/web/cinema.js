@@ -4,7 +4,7 @@
 const motionPreference = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)");
 const reducedMotion = () => motionPreference?.matches ?? false;
 const byId = id => document.getElementById(id);
-const agentImage = (file, className = "") => `<img class="${className}" src="assets/promo/agents/${file}.svg" alt="" draggable="false">`;
+const agentImage = (file, className = "") => `<img class="${className}" src="assets/promo/agents/${file}" alt="" draggable="false">`;
 
 function revealHeadline() {
   const title = byId("hero-title");
@@ -28,17 +28,17 @@ function revealHeadline() {
 }
 
 const agents = [
-  { name: "Claude Code", image: "lobe-claudecode-color" },
-  { name: "Codex", image: "lobe-codex-color" },
-  { name: "Pi", image: "pi" },
-  { name: "Codex Desktop", image: "lobe-codex-color" },
-  { name: "DeepSeek", image: "deepseek" },
-  { name: "ZCode", image: "lobe-zai", preview: true },
-  { name: "OpenCode", image: "lobe-opencode", preview: true },
-  { name: "Kimi Code", image: "lobe-kimi-color", preview: true },
-  { name: "Oh My Pi", image: "omp-icon", preview: true },
-  { name: "Hermes", image: "lobe-hermesagent", preview: true },
-  { name: "OpenClaw", image: "lobe-openclaw-color", preview: true },
+  { name: "Claude Code", image: "lobe-claudecode-color.svg" },
+  { name: "Codex", image: "lobe-codex-color.svg" },
+  { name: "Pi", image: "pi.svg" },
+  { name: "Codex Desktop", image: "lobe-codex-color.svg" },
+  { name: "DeepSeek", image: "deepseek.svg" },
+  { name: "ZCode", image: "zcode.png", preview: true },
+  { name: "OpenCode", image: "opencode-light.svg", darkImage: "opencode-dark.svg", preview: true },
+  { name: "Kimi Code", image: "kimi-code.svg", preview: true },
+  { name: "Oh My Pi", image: "omp-icon.svg", preview: true },
+  { name: "Hermes", image: "lobe-hermesagent.svg", preview: true },
+  { name: "OpenClaw", image: "lobe-openclaw-color.svg", preview: true },
 ];
 
 function setupOrbit() {
@@ -54,7 +54,10 @@ function setupOrbit() {
     const pick=document.createElement("button");pick.type="button";pick.className="agent-pick";
     pick.dataset.preview=String(Boolean(agent.preview));pick.title=agent.name;
     pick.setAttribute("aria-label",`${agent.name}，${agent.preview?"即将接入":"已接入"}`);
-    pick.innerHTML=agentImage(agent.image);pick.addEventListener("click",()=>selectNearest(index));picks.append(pick);
+    pick.innerHTML=agent.darkImage
+      ? agentImage(agent.image, "agent-mark-on-light")+agentImage(agent.darkImage, "agent-mark-on-dark")
+      : agentImage(agent.image);
+    pick.addEventListener("click",()=>selectNearest(index));picks.append(pick);
   }
   const buttons=[...picks.children];
   function decorateCards() {
