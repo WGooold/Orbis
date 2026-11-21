@@ -1392,7 +1392,7 @@ const HOSTS = [
   { name: 'MacBook Pro', os: 'macOS', link: 'lan', ms: 8, online: true, pos: [0, 0, 0], yaw: 0.05,
     star: { a: '#fff4e2', b: '#ff9a40', glow: '#ffd7a2', r: 4.4 },
     planets: [
-      { agent: 'claude', r: 3.6, orbit: 12.5, period: 190, phase: 0.08, tilt: [0.62, 0.14], spin: 0.05, sessions: [
+      { agent: 'claude', r: 3.6, orbit: 12.5, period: 190, phase: 0.08, tilt: [0.1, 0.03], spin: 0.05, sessions: [
         S('修复登录后的跳转循环', '~/orbis/android', 'running', [mu('登录成功后又跳回配对页，查一下原因'), mt('读取 HostConnection.kt'), mt('读取 RemoteViewModel.kt'), ma('重连时先收到了断开回调，ViewModel 据此清空配对状态，于是退回配对页。我改成只有明确取消配对才清空，正在补一条回归测试。')]),
         S('历史分页预取', '~/orbis/ios', 'approval', [mu('往上翻历史时会顿一下，做个预取'), mt('修改 ChatNativeTranscriptView.swift'), ma('预取改为提前两屏触发，解码移到后台队列。需要跑一遍分页测试确认。')], 'swift test --filter ChatPaging', '分页测试 18 项全部通过，翻页时不再卡顿。'),
         S('星轨导航概念稿', '~/orbis/docs/design', 'running', [mu('把星系导航做成能点的 HTML'), ma('层级之间按对数距离推进，同层切换沿轨道拉远再推近。正在调转场的时间曲线。')]),
@@ -1436,7 +1436,7 @@ const HOSTS = [
         S('安装包签名', '~/orbis/host/windows', 'approval', [mu('给新安装包签名'), ma('安装包已生成，签名需要你确认。')], 'signtool sign /fd sha256 OrbisHost.exe', '签名完成，安装包放在 dist 目录。'),
         S('QML 布局', '~/orbis/host/qml', 'idle'),
       ] },
-      { agent: 'claude', r: 3.6, orbit: 21, period: 300, phase: 0.62, tilt: [0.55, -0.1], spin: 0.05, sessions: [
+      { agent: 'claude', r: 3.6, orbit: 21, period: 300, phase: 0.62, tilt: [0.1, 0.03], spin: 0.05, sessions: [
         S('托盘菜单', '~/orbis/host', 'idle'),
         S('日志轮转', '~/orbis/host', 'idle'),
       ] },
@@ -1830,27 +1830,28 @@ function codexBandTex() {
   const t = new THREE.CanvasTexture(c); t.wrapS = THREE.RepeatWrapping; t.anisotropy = 4;
   return (codexBandTex.T = t);
 }
-function whaleTex() {
-  if (whaleTex.T) return whaleTex.T;
+function whaleTex(vb) {
+  // vb: where the belly (the inside of the curl) falls on the wrap
+  const key = 'T' + vb.toFixed(2); if (whaleTex[key]) return whaleTex[key];
   const W = 1024, H = 512, c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
-  g.fillStyle = '#f3f2ec'; g.fillRect(0, 0, W, H);
-  // back: brand-blue glaze across the middle of the wrap, soft at its edges like a dipped glaze
-  const grd = g.createLinearGradient(0, 0, 0, H);
-  grd.addColorStop(0, 'rgba(63,95,232,0)'); grd.addColorStop(0.24, 'rgba(63,95,232,0)'); grd.addColorStop(0.32, 'rgba(56,86,224,1)');
-  grd.addColorStop(0.5, 'rgba(40,64,196,1)'); grd.addColorStop(0.68, 'rgba(56,86,224,1)'); grd.addColorStop(0.76, 'rgba(63,95,232,0)'); grd.addColorStop(1, 'rgba(63,95,232,0)');
-  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+  const row = (v) => (1 - (((v % 1) + 1) % 1)) * H;
+  // brand-blue glaze everywhere, deepest along the back
+  for (let y = 0; y < H; y++) {
+    const v = 1 - y / H; let d = Math.abs(v - vb); d = Math.min(d, 1 - d); // 0 at belly, 0.5 at back
+    const k = sstep(0.1, 0.5, d), r = lerp(78, 34, k), gg = lerp(112, 56, k), b = lerp(240, 190, k);
+    g.fillStyle = 'rgb(' + (r | 0) + ',' + (gg | 0) + ',' + (b | 0) + ')'; g.fillRect(0, y, W, 1);
+  }
+  // white porcelain belly with cobalt sea-wave scallops
+  const y0 = row(vb + 0.13), y1 = row(vb - 0.13), ya = Math.min(y0, y1), yb = Math.max(y0, y1);
+  const belly = (a, b) => { g.fillStyle = '#f3f2ec'; g.fillRect(0, a, W, b - a);
+    g.strokeStyle = 'rgba(30,56,170,0.85)'; g.lineWidth = 2.2;
+    for (let y = a + 10; y < b - 4; y += 14) for (let x = -20 + (((y / 14) | 0) % 2) * 13; x < W + 20; x += 26) { g.beginPath(); g.arc(x, y, 12, Math.PI, TAU); g.stroke(); }
+    g.strokeStyle = 'rgba(24,44,150,0.95)'; g.lineWidth = 4; [a, b].forEach((yy) => { g.beginPath(); g.moveTo(0, yy); g.lineTo(W, yy); g.stroke(); }); };
+  if (yb - ya < H * 0.5) belly(ya, yb); else { belly(0, ya); belly(yb, H); }
   // cloud scrolls painted over the back
-  g.strokeStyle = 'rgba(170,190,255,0.55)'; g.lineWidth = 3;
-  for (let i = 0; i < 26; i++) { const x = rng() * W, y = H * (0.36 + rng() * 0.28), r = 10 + rng() * 16; g.beginPath(); for (let a = 0; a < TAU * 1.6; a += 0.2) { const rr = r * (1 - a / (TAU * 2)); g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr * 0.6); } g.stroke(); }
-  // belly: cobalt sea-wave scallops (blue-and-white porcelain)
-  g.strokeStyle = 'rgba(30,56,170,0.85)'; g.lineWidth = 2.2;
-  const band = (y0, y1) => { for (let y = y0; y < y1; y += 15) for (let x = -20 + ((y / 15) % 2) * 14; x < W + 20; x += 28) { g.beginPath(); g.arc(x, y, 13, Math.PI, TAU); g.stroke(); } };
-  band(6, H * 0.22); band(H * 0.8, H - 4);
-  g.strokeStyle = 'rgba(24,44,150,0.9)'; g.lineWidth = 4; [H * 0.27, H * 0.73].forEach((y) => { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); });
-  // mouth line near the head
-  g.strokeStyle = 'rgba(20,34,110,0.95)'; g.lineWidth = 5; g.beginPath(); g.moveTo(10, H * 0.27); g.quadraticCurveTo(110, H * 0.3, 190, H * 0.25); g.stroke();
-  g.beginPath(); g.moveTo(10, H * 0.73); g.quadraticCurveTo(110, H * 0.7, 190, H * 0.75); g.stroke();
-  const t = new THREE.CanvasTexture(c); t.anisotropy = 4; return (whaleTex.T = t);
+  g.strokeStyle = 'rgba(175,195,255,0.6)'; g.lineWidth = 3;
+  for (let i = 0; i < 30; i++) { const x = rng() * W, y = row(vb + 0.5 + (rng() - 0.5) * 0.4), r = 9 + rng() * 15; g.beginPath(); for (let a = 0; a < TAU * 1.6; a += 0.2) { const rr = r * (1 - a / (TAU * 2)); g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr * 0.6); } g.stroke(); }
+  const t = new THREE.CanvasTexture(c); t.anisotropy = 4; return (whaleTex[key] = t);
 }
 const KIMI_K = 'M11.065 11.199l7.257-7.2c.137-.136.06-.41-.116-.41H14.3a.164.164 0 00-.117.051l-7.82 7.756c-.122.12-.302.013-.302-.179V3.82c0-.127-.083-.23-.185-.23H3.186c-.103 0-.186.103-.186.23V19.77c0 .128.083.23.186.23h2.69c.103 0 .186-.102.186-.23v-3.25c0-.069.025-.135.069-.178l2.424-2.406a.158.158 0 01.205-.023l6.484 4.772a7.677 7.677 0 003.453 1.283c.108.012.2-.095.2-.23v-3.06c0-.117-.07-.212-.164-.227a5.028 5.028 0 01-2.027-.807l-5.613-4.064c-.117-.078-.132-.279-.028-.381z';
 function kimiTextures() {
@@ -1861,9 +1862,9 @@ function kimiTextures() {
   // maria: broad dark seas
   for (let i = 0; i < 14; i++) { const x = rng() * W, y = H * (0.2 + rng() * 0.6), r = 40 + rng() * 90; const gr = gC.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, 'rgba(70,74,86,0.55)'); gr.addColorStop(1, 'rgba(70,74,86,0)'); gC.fillStyle = gr; gC.fillRect(x - r, y - r, 2 * r, 2 * r); }
   // craters: a dished floor and a bright rim, in the height map and faintly in colour
-  for (let i = 0; i < 260; i++) {
-    const x = rng() * W, y = rng() * H, r = 2 + Math.pow(rng(), 3) * 34;
-    const gr = gB.createRadialGradient(x, y, 0, x, y, r * 1.25); gr.addColorStop(0, 'rgba(40,40,40,0.9)'); gr.addColorStop(0.72, 'rgba(90,90,90,0.4)'); gr.addColorStop(0.86, 'rgba(210,210,210,0.75)'); gr.addColorStop(1, 'rgba(128,128,128,0)');
+  for (let i = 0; i < 170; i++) {
+    const x = rng() * W, y = rng() * H, r = 2 + Math.pow(rng(), 3) * 30;
+    const gr = gB.createRadialGradient(x, y, 0, x, y, r * 1.25); gr.addColorStop(0, 'rgba(96,96,96,0.55)'); gr.addColorStop(0.75, 'rgba(118,118,118,0.3)'); gr.addColorStop(0.9, 'rgba(150,150,150,0.3)'); gr.addColorStop(1, 'rgba(128,128,128,0)');
     gB.fillStyle = gr; gB.fillRect(x - r * 1.3, y - r * 1.3, r * 2.6, r * 2.6);
     const gc = gC.createRadialGradient(x, y, 0, x, y, r * 1.2); gc.addColorStop(0, 'rgba(60,62,70,0.25)'); gc.addColorStop(0.85, 'rgba(200,204,214,0.18)'); gc.addColorStop(1, 'rgba(0,0,0,0)');
     gC.fillStyle = gc; gC.fillRect(x - r * 1.3, y - r * 1.3, r * 2.6, r * 2.6);
@@ -1931,7 +1932,7 @@ const WORLD = {
       eyeP.forEach((e, i) => { p.copy(e); p.y += bob; m4.compose(p, q0, sq); eyes.setMatrixAt(i, m4); });
       eyes.instanceMatrix.needsUpdate = true;
       eyeMat.color.setRGB(2, 1.05, 0.55).multiplyScalar(h.online ? 0.75 + 0.8 * act + 0.12 * Math.sin(clock * 17) : 0.12);
-      faceCamera(pl, dt, 0.4);
+      faceCamera(pl, dt, 0.22);
     };
   },
   codex(pl, h) {
@@ -2061,8 +2062,12 @@ const WORLD = {
       for (let j = 0; j <= RAD; j++) { const th = (j / RAD) * TAU; dv.copy(N).multiplyScalar(Math.cos(th)).addScaledVector(B, Math.sin(th) * 0.84); pos.push(P0.x + dv.x * rr, P0.y + dv.y * rr, P0.z + dv.z * rr); uv.push(t, j / RAD); }
     }
     for (let i = 0; i < SEG; i++) for (let j = 0; j < RAD; j++) { const a = i * (RAD + 1) + j, b = a + RAD + 1; idx.push(a, b, a + 1, b, b + 1, a + 1); }
+    // which side of the wrap faces the centre of the curl: that is the belly
+    const mid = (SEG / 2) | 0, cen = new V3(); spine.getPoints(40).forEach((q) => cen.add(q)); cen.multiplyScalar(1 / 41);
+    const Pm = spine.getPointAt(0.5), toC = cen.clone().sub(Pm);
+    const bSign = fr.binormals[mid].dot(toC) > 0 ? 1 : -1, vBelly = bSign > 0 ? 0.25 : 0.75;
     const body = new THREE.BufferGeometry(); body.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); body.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); body.setIndex(idx); body.computeVertexNormals();
-    const mat = physical({ map: whaleTex(), roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.35 });
+    const mat = physical({ map: whaleTex(vBelly), roughness: 0.2, clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.35 });
     if (!h.online) mat.color.setScalar(0.55);
     const g = new THREE.Group(); g.add(new THREE.Mesh(body, mat));
     // fluke at the tail tip
@@ -2077,8 +2082,9 @@ const WORLD = {
     pivot.position.copy(end); pivot.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(Bn, T1, Nn)); pivot.add(fluke); g.add(pivot);
     // eyes on both flanks
     const eyeMat = physical({ color: '#05070c', roughness: 0.08, clearcoat: 1, envMapIntensity: 1.8 });
-    [-1, 1].forEach((sx) => { const t = 0.15, k = Math.round(t * SEG); spine.getPointAt(t, P0); const rr = prof(t) * r; dv.copy(fr.normals[k]).multiplyScalar(Math.cos(1.25)).addScaledVector(fr.binormals[k], sx * Math.sin(1.25) * 0.84);
-      const e = new THREE.Mesh(SPHERE_MID, eyeMat); e.scale.setScalar(r * 0.075); e.position.copy(P0).addScaledVector(dv, rr * 0.97); g.add(e);
+    [-1, 1].forEach((sx) => { const t = 0.15, k = Math.round(t * SEG); spine.getPointAt(t, P0); const rr = prof(t) * r;
+      dv.copy(fr.normals[k]).multiplyScalar(sx * 0.93 * rr).addScaledVector(fr.binormals[k], -bSign * 0.3 * 0.84 * rr);
+      const e = new THREE.Mesh(SPHERE_MID, eyeMat); e.scale.setScalar(r * 0.075); e.position.copy(P0).add(dv); dv.normalize(); g.add(e);
       const hl = new THREE.Mesh(SPHERE_MID, new THREE.MeshBasicMaterial({ color: 0xffffff })); hl.scale.setScalar(r * 0.025); hl.position.copy(e.position).addScaledVector(dv, r * 0.06).add(new V3(0.02 * r, 0.03 * r, 0)); g.add(hl); });
     pl.spinG.add(g);
     pl.anim = (dt, act) => {
@@ -2090,7 +2096,7 @@ const WORLD = {
   kimi(pl, h) {
     // Moonshot AI's Kimi: the dark side of the moon, the K carved into it and lit from inside, the blue dot as its companion
     const T = kimiTextures();
-    const mat = physical({ map: T.color, bumpMap: T.bump, bumpScale: 1.1, roughnessMap: T.rough, roughness: 1, emissiveMap: T.emis, emissive: new THREE.Color('#6fa8ff'), emissiveIntensity: 0.8, envMapIntensity: 0.55, clearcoat: 0.3, clearcoatRoughness: 0.4 });
+    const mat = physical({ map: T.color, bumpMap: T.bump, bumpScale: 0.45, roughnessMap: T.rough, roughness: 1, emissiveMap: T.emis, emissive: new THREE.Color('#6fa8ff'), emissiveIntensity: 0.8, envMapIntensity: 0.35 });
     if (!h.online) mat.color.setScalar(0.6);
     const moon = new THREE.Mesh(SPHERE_HI, mat); moon.scale.setScalar(pl.r); pl.spinG.add(moon);
     const dot = new THREE.Mesh(SPHERE_MID, new THREE.MeshBasicMaterial({ color: new THREE.Color('#1783FF').multiplyScalar(h.online ? 1.7 : 0.4) })); dot.scale.setScalar(pl.r * 0.17);
@@ -2135,7 +2141,7 @@ function buildMoon(h, pl, s, i, born) {
   s.birth = born ? 0 : 1; s.flash = 0; s.wpos = new V3(); s.local = new V3(); s.phi = 0;
   s.glowC = new THREE.Color(ag.glow);
   s.core = new THREE.MeshBasicMaterial({ color: s.glowC.clone() });
-  s.shell = physical({ color: '#e6edff', roughness: 0.05, transparent: true, opacity: 0.3, clearcoat: 1, clearcoatRoughness: 0.03, envMapIntensity: 2.8, flatShading: true, depthWrite: false });
+  s.shell = physical({ color: new THREE.Color('#eef3ff').lerp(new THREE.Color(ag.glow), 0.15), roughness: 0.04, transparent: true, opacity: 0.17, clearcoat: 1, clearcoatRoughness: 0.02, envMapIntensity: 3.4, flatShading: true, depthWrite: false });
   s.mesh = new THREE.Group();
   const shell = new THREE.Mesh(CRYSTAL_GEO, s.shell); shell.scale.set(1, 1.5, 1); shell.rotation.set(rng() * 0.6, rng() * TAU, rng() * 0.6);
   const core = new THREE.Mesh(SPHERE_MID, s.core); core.scale.setScalar(0.36);
@@ -2635,7 +2641,8 @@ function updateBodies(dt) {
   HOSTS.forEach((h, hi) => {
     const focusHost = nav.h === hi;
     h.vis = lerp(h.vis, nav.level === 0 || focusHost ? 1 : 0, 1 - Math.exp(-dt * 2.6));
-    const sv = 0.3 + 0.7 * h.vis, ig = Math.min(1, h.ignite);
+    h.lv3 = lerp(h.lv3 == null ? 1 : h.lv3, nav.level === 3 ? 0.45 : 1, 1 - Math.exp(-dt * 2.5));
+    const sv = (0.3 + 0.7 * h.vis) * h.lv3, ig = Math.min(1, h.ignite);
     h.starU.uTime.value = clock; h.coronaU.uTime.value = clock;
     const baseI = h.online ? 1 : 0.32;
     h.starU.uI.value = baseI * (0.15 + 0.85 * ig) * sv;
@@ -2684,7 +2691,7 @@ function updateMoon(h, pl, s, dt) {
   s.mesh.rotation.y += dt * 0.4;
   s.mesh.scale.setScalar(s.mr * (0.3 + 0.7 * b));
   s.flash = Math.max(0, s.flash - dt * 1.4);
-  let k = 0.2, cc = s.glowC;
+  let k = 0.38, cc = s.glowC;
   if (s.state === 'running') k = 1.15 + 0.45 * Math.sin(clock * 3 + s.phase * 7);
   else if (s.state === 'approval') { k = 1.05; cc = C_AMBER; }
   else if (s.state === 'queued') { k = 0.32; cc = C_QUEUE; }
