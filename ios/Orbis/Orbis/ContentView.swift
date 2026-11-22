@@ -2,7 +2,7 @@ import SwiftUI
 
 private enum RootTab: String, CaseIterable {
     case chat, providers, settings
-    var title: String { switch self { case .chat: L10n.tr("聊天"); case .providers: L10n.tr("供应商"); case .settings: L10n.tr("设置") } }
+    var title: String { switch self { case .chat: L10n.tr("聊天"); case .providers: "Agent"; case .settings: L10n.tr("设置") } }
     var symbol: String { switch self { case .chat: "bubble.left"; case .providers: "slider.horizontal.3"; case .settings: "gearshape" } }
 }
 
@@ -378,7 +378,7 @@ private struct NavigationRoot: View, Equatable {
             })) {
                 rootContent(.chat) { home }
                 rootContent(.providers) { AgentProvidersView(root: true, onBack: { selectRoot(.chat) }) }
-                rootContent(.settings) { ConnectionStatusView(root: true, onBack: { selectRoot(.chat) }) }
+                rootContent(.settings) { ConnectionStatusView(root: true, onBack: { selectRoot(.chat) }, onOpenAgent: { selectRoot(.providers) }) }
             }
             .orbisConfigureVerticalTabBar()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -418,7 +418,7 @@ private struct NavigationRoot: View, Equatable {
                     .id(facts.target.pageIdentity)
             } else { OrbisEmptyState(symbol: "desktopcomputer", title: L10n.tr("会话已离线")) }
         case .pairing: PairingEntryView(onCancel: back, onCode: store.pair)
-        case .status: ConnectionStatusView(onBack: back)
+        case .status: ConnectionStatusView(onBack: back, onOpenAgent: { push(.providers) })
         case .providers: AgentProvidersView(onBack: back)
         case .history: HistoryBranchView(onBack: back)
         case .downloads: DownloadsView(onBack: back, onOpen: { push(.downloadedFile($0)) })

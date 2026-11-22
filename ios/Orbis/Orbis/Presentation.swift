@@ -216,6 +216,12 @@ func readyAdmitsAgentEnablement(_ ready: [String: Any]) -> Bool {
         (ready["deviceFeatures"] as? [String] ?? []).contains(feature)
 }
 
+let agentDialReviewFeature = "agent.enablement.review.v1"
+func readyAdmitsAgentDialReview(_ ready: [String: Any]) -> Bool {
+    readyAdmitsAgentEnablement(ready) && (ready["hostFeatures"] as? [String] ?? []).contains(agentDialReviewFeature) &&
+        (ready["deviceFeatures"] as? [String] ?? []).contains(agentDialReviewFeature)
+}
+
 func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
     let advertised = ready["hostFeatures"] as? [String] ?? []
     guard advertised.contains("device.features") else { return [] }
@@ -226,6 +232,7 @@ func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
         "agent.hermes",
         "agent.opencode",
         "agent.enablement.v1",
+        agentDialReviewFeature,
         "state.compact-bootstrap.v1",
         "claude.send-now.v1",
         runtimeCloseFeature,

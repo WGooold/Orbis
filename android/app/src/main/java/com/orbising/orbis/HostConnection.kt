@@ -354,54 +354,85 @@ internal class HostConnection(
     private fun savedRelayMode(): RelayTransportMode = runCatching {
         RelayTransportMode.valueOf(relayPreferences.getString(hostId, RelayTransportMode.AUTO.name)!!)
     }.getOrDefault(RelayTransportMode.AUTO)
-    fun setAgentEnabled(kind: String, enabled: Boolean, expectedRevision: Long, confirmDisable: Boolean) {
-        val state = mutableState.value
-        val revision = state.agentEnablementRevision?.takeIf { it == expectedRevision } ?: return
-        if (state.agentEnablementRows.none { it.kind == kind && it.enabled != enabled }) return
-        requestAgentEnablement(revision) {
-            put("type", "agent.enablement.write"); put("kind", kind); put("enabled", enabled); put("expectedRevision", revision)
-            if (confirmDisable) put("confirmDisable", true)
+    fun setAgentEnabled(kind: String, enabled: Boolean, confirmation: AgentDialReview? = null, expectedRevision: Long? = null) {
+        updateState { state ->
+            val revision = state.agentEnablementRevision
+            if (revision == null || !state.agentDialCanEdit()) state else state.copy(agentDial =
+                state.agentDial.enqueue(kind, enabled, state.agentEnablementRows, revision, confirmation, expectedRevision))
         }
+        pumpAgentDial()
     }
 
-    fun refreshAgentEnablement() = requestAgentEnablement(null) { put("type", "agent.enablement.read") }
+    fun dismissAgentDialReview(review: AgentDialReview) {
+        updateState { state -> if (state.agentDial.review == review) state.copy(agentDial = state.agentDial.copy(review = null)) else state }
+        pumpAgentDial()
+    }
 
-    private fun requestAgentEnablement(revision: Long?, body: JsonObjectBuilder.() -> Unit) {
+    fun cancelQueuedAgentDial() = updateState { state ->
+        if (state.agentDial.queue.isEmpty() && state.agentDial.review == null) state
+        else state.copy(agentDial = state.agentDial.copy(queue = emptyList(), review = null))
+    }
+
+    fun refreshAgentEnablement() {
         val id = "agent-enablement:${UUID.randomUUID()}"
+        val owner = generation
         updateState { state ->
-            if (!state.agentEnablementAvailable || state.agentEnablementPending != null ||
-                revision != null && revision != state.agentEnablementRevision) state
-            else state.copy(agentEnablementPending = id, agentEnablementFailed = false)
+            if (!state.e2eReady || !state.agentEnablementAvailable || state.agentDial.inFlight != null || state.agentDial.queue.isNotEmpty()) state
+            else state.copy(agentDial = state.agentDial.copy(synchronized = false, inFlight = AgentDialRequest(id, null, null)))
         }
-        if (mutableState.value.agentEnablementPending != id) return
-        val sent = relay.sendDeviceMessage(buildJsonObject { body(); put("requestId", id); put("protocolVersion", PROTOCOL_VERSION) })
-        fun fail() = updateState { state ->
-            if (state.agentEnablementPending != id) state else state.copy(agentEnablementPending = null, agentEnablementFailed = true)
+        if (mutableState.value.agentDial.inFlight?.id == id) sendAgentDial(id, owner, recoverOnFailure = false)
+    }
+
+    private fun pumpAgentDial() {
+        val id = "agent-enablement:${UUID.randomUUID()}"
+        val owner = generation
+        updateState { state ->
+            val revision = state.agentEnablementRevision
+            if (revision == null || !state.agentDialCanEdit() || state.agentDial.queue.isEmpty()) state
+            else state.copy(agentDial = state.agentDial.beginWrite(id, state.agentEnablementRows, revision))
         }
-        if (!sent) fail() else scope.launch { delay(10_000); fail() }
+        if (mutableState.value.agentDial.inFlight?.id == id) sendAgentDial(id, owner, recoverOnFailure = true)
+    }
+
+    private fun sendAgentDial(id: String, owner: Int, recoverOnFailure: Boolean) {
+        val request = mutableState.value.agentDial.inFlight?.takeIf { it.id == id } ?: return
+        val choice = request.choice
+        val payload = buildJsonObject {
+            put("type", if (choice == null) "agent.enablement.read" else "agent.enablement.write")
+            put("requestId", id); put("protocolVersion", PROTOCOL_VERSION)
+            if (choice != null) {
+                put("kind", choice.kind); put("enabled", choice.target); put("expectedRevision", request.revision!!)
+                choice.review?.let { if (it.token == null) put("confirmDisable", true) else put("review", it.token) }
+            }
+        }
+        fun fail() {
+            if (owner != generation || mutableState.value.agentDial.inFlight?.id != id) return
+            updateState { state -> if (state.agentDial.inFlight?.id != id) state else state.copy(agentDial = state.agentDial.copy(
+                synchronized = false, queue = emptyList(), inFlight = null, review = null,
+                notice = AgentDialNotice(choice?.kind, if (choice != null) "interrupted" else "readFailed", id))) }
+            if (recoverOnFailure) refreshAgentEnablement()
+        }
+        if (!relay.sendReadyDeviceMessage(payload) { owner == generation && mutableState.value.agentDial.inFlight?.id == id }) fail()
+        else scope.launch { delay(10_000); fail() }
     }
 
     private fun receiveAgentEnablement(message: JsonObject) {
-        val snapshot = message["snapshot"] as? JsonObject ?: return
-        val revision = (snapshot["revision"] as? JsonPrimitive)?.longOrNull?.takeIf { it in 0..9_007_199_254_740_991L } ?: return
-        val raw = (snapshot["agents"] as? JsonArray)?.takeIf { it.size <= 128 } ?: return
-        val rows = raw.map { value ->
-            val row = value as? JsonObject ?: return
-            val kind = (row["kind"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: return
-            val label = (row["label"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: return
-            val enabled = (row["enabled"] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull ?: return
-            AgentEnablementRow(kind, label, enabled)
-        }
-        if (rows.map { it.kind }.toSet().size != rows.size) return
-        updateState { state ->
-            if (!state.agentEnablementAvailable) return@updateState state
-            val owned = state.agentEnablementPending != null && state.agentEnablementPending == (message["requestId"] as? JsonPrimitive)?.contentOrNull
-            val current = revision >= (state.agentEnablementRevision ?: -1L)
-            state.copy(agentEnablementRows = if (current) rows else state.agentEnablementRows,
-                agentEnablementRevision = if (current) revision else state.agentEnablementRevision,
-                agentEnablementPending = if (owned) null else state.agentEnablementPending,
-                agentEnablementFailed = if (owned) (message["status"] as? JsonPrimitive)?.contentOrNull == "conflict" else state.agentEnablementFailed)
-        }
+        val type = (message["type"] as? JsonPrimitive)?.contentOrNull
+        val id = (message["requestId"] as? JsonPrimitive)?.contentOrNull
+        val result = (message["status"] as? JsonPrimitive)?.contentOrNull
+        val incoming = parseAgentDialSnapshot(message["snapshot"] as? JsonObject)
+        if (incoming == null || (type == "agent.enablement.result" && result !in setOf("applied", "conflict", "unchanged"))) return
+        val timestamp = System.currentTimeMillis()
+        updateState { it.withAgentDialSnapshot(incoming, id, result, timestamp) }
+        pumpAgentDial()
+    }
+
+    private fun receiveAgentDialRejection(message: JsonObject) {
+        val id = (message["requestId"] as? JsonPrimitive)?.contentOrNull ?: return
+        val structured = if (message["type"]?.jsonPrimitive?.contentOrNull == "agent.enablement.review") parseAgentDialReview(message["review"] as? JsonObject) else null
+        val code = (message["code"] as? JsonPrimitive)?.contentOrNull
+        updateState { it.withAgentDialRejection(id, structured, code) }
+        pumpAgentDial()
     }
 
     fun setRelayTransportMode(mode: RelayTransportMode) {
@@ -3245,11 +3276,12 @@ internal class HostConnection(
                     }
                     filteredReady.set(null)
                     val management = readyAdmitsAgentEnablement(incomingMessage)
-                    if (management && !mutableState.value.agentEnablementAvailable) {
-                        updateState { it.copy(agentEnablementAvailable = true) }
-                        refreshAgentEnablement()
-                    } else if (!management) updateState { it.copy(agentEnablementAvailable = false, agentEnablementRevision = null,
-                        agentEnablementRows = emptyList(), agentEnablementPending = null, agentEnablementFailed = false) }
+                    if (management) {
+                        val scoped = readyAdmitsAgentDialReview(incomingMessage)
+                        updateState { it.copy(agentEnablementAvailable = true, agentDial = it.agentDial.copy(scoped = scoped)) }
+                        if (!mutableState.value.agentDial.synchronized && mutableState.value.agentDial.notice?.status != "readFailed") refreshAgentEnablement()
+                    } else updateState { it.copy(agentEnablementAvailable = false, agentEnablementRevision = null,
+                        agentEnablementRows = emptyList(), agentDial = AgentDialSync()) }
                     expectedMessageDisplayVersion = when {
                         MESSAGE_RENDER_FEATURE !in deviceAgentFeatures(incomingMessage) -> LEGACY_DISPLAY_PROJECTION_VERSION
                         incomingMessage.containsKey("dshDesktop") -> DISPLAY_PROJECTION_VERSION
@@ -3262,9 +3294,8 @@ internal class HostConnection(
                     if (settingsType == "agent.enablement.snapshot" || settingsType == "agent.enablement.result") {
                         receiveAgentEnablement(incomingMessage); continue
                     }
-                    if (settingsType == "protocol.error" && id?.startsWith("agent-enablement:") == true) {
-                        updateState { if (it.agentEnablementPending == id) it.copy(agentEnablementPending = null, agentEnablementFailed = true) else it }
-                        continue
+                    if (settingsType == "agent.enablement.review" || settingsType == "protocol.error" && id?.startsWith("agent-enablement:") == true) {
+                        receiveAgentDialRejection(incomingMessage); continue
                     }
                 }
                 if (interactiveChannel != null && incomingMessage != null && incomingMessage.get("type")?.jsonPrimitive?.contentOrNull in setOf("agent.menu.options.page", "protocol.error") && menuOptions.owns(incomingMessage)) {
@@ -3638,6 +3669,7 @@ internal class HostConnection(
                     }
                 }
                 if (ready) {
+                    if (!mutableState.value.agentDial.synchronized) refreshAgentEnablement()
                     flushReadySends()
                     autoResumeDownloads()
                     // device.ready can be reduced before the handshake flips e2eReady (device order:

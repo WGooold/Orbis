@@ -1,4 +1,6 @@
 #include "HostController.h"
+#include <algorithm>
+#include <utility>
 #include "CredentialStore.h"
 #include "QaActivation.h"
 #include "StartupSettings.h"
@@ -164,7 +166,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         if (error == QProcess::FailedToStart) { m_state = "error"; setMessage("无法启动内置 Host：" + m_bridge.errorString()); }
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
-        m_agentEnablement.clear(); emit agentEnablementChanged();
+        m_agentEnablement.clear(); m_agentChoices.clear(); m_agentReview.reset(); m_agentInFlight.reset(); m_agentWriteId = -1; m_agentChoiceRecheck = false; m_agentReadPending = false;
+        emit agentEnablementChanged();
         m_kimiCodeSupported = false;
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
         // 在途命令随内核一起没了：进度说明也必须跟着消失，否则会永久停在“正在做什么”。
@@ -232,7 +235,7 @@ static bool isProviderBackgroundRequest(const QString &method) {
  * not grey out unrelated controls; their own controls read activityKinds instead.
  */
 static bool isBackgroundRequest(const QString &method) {
-    return isProviderBackgroundRequest(method) || method == "detect";
+    return isProviderBackgroundRequest(method) || method == "detect" || method.startsWith("agent.enablement.");
 }
 /**
  * 每个桥命令在界面上叫什么。返回空 = 不值得单独提示（Agent 安装/更新有自己一套进度 UI）。
@@ -252,7 +255,7 @@ static QPair<QString, QString> activityFor(const QString &method, const QJsonObj
     if (method == "activateInstallation") return { "agentVersion", "正在切换 Agent 版本" };
     if (method == "claudeIntegration") return { "claude", "正在更新 Claude Code 插件" };
     if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
-    if (method == "agent.enablement.write") return { "agentEnablement", "正在保存 Agent 设置" };
+    if (method.startsWith("agent.enablement.write")) return { "agentEnablement", "正在保存 Agent 设置" };
     if (method == "openclaw.save") return { "openClaw", "正在保存 OpenClaw 配置" };
     if (method == "rename") return { "host", "正在保存电脑名称" };
     if (method.startsWith("provider.")) {
@@ -362,7 +365,7 @@ void HostController::resumeAfterChange() {
 }
 void HostController::clearRunningFacts() {
     // Desktop connections belong to this Host run; their lifecycles report again on the next start.
-    m_backends.clear(); m_runtimeCount = 0; m_codexDesktop.clear(); m_dshDesktop.clear(); m_kimiCodeState.clear();
+    m_backends.clear(); m_activeAgentSessions.clear(); m_runtimeCount = 0; m_codexDesktop.clear(); m_dshDesktop.clear(); m_kimiCodeState.clear();
     // 终端 Codex 与 DeepSeek 后端的准备属于这一次运行：停了就不再有“正在准备”。
     // Claude 插件登记属于 Host 核心本身，暂停连接不影响它。
     m_preparations.remove("codex"); m_preparations.remove("dsh");
@@ -378,6 +381,8 @@ void HostController::receiveLine(const QJsonObject &line) {
         if (!isBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
         if (m_activity.remove(id)) m_activityOrder.removeAll(id);
         if (line.contains("error")) {
+            if (method.startsWith("agent.enablement.write")) failAgentChoice();
+            else if (method == "agent.enablement.read") m_agentReadPending = false;
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
             if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
             if (method == "selectAgentEntry") emit agentEntryFinished(params.value("kind").toString(), line.value("error").toString());
@@ -386,6 +391,7 @@ void HostController::receiveLine(const QJsonObject &line) {
         }
         else if (callback) callback(line.value("result"));
         runSettled();
+        if (!m_agentChoices.isEmpty() && !m_agentInFlight && !m_agentReview && agentChoicesAvailable()) pumpAgentChoices();
     } else {
         const auto event = line.value("event").toString();
         if (event == "state") {
@@ -420,7 +426,7 @@ void HostController::receiveLine(const QJsonObject &line) {
                 m_settings.remove(kind + "ManualEntry"); m_settings.sync();
             }
         }
-        else if (event == "agentEnablement") { applyAgentEnablement(line.value("snapshot").toObject()); }
+        else if (event == "agentEnablement") { applyAgentEnablement(line.value("snapshot").toObject(), true); }
         else if (event == "status") {
             m_devices = line.value("devices").toArray().toVariantList(); refreshDeviceUpdateIndicators(); m_runtimeCount = line.value("runtimeCount").toInt();
             // The running service's own model; offline status events (rename/revoke while paused) carry none.
@@ -430,6 +436,7 @@ void HostController::receiveLine(const QJsonObject &line) {
                     backends = domain.toObject().value("value").toObject().value("backends").toArray().toVariantList();
             }
             m_backends = backends;
+            m_activeAgentSessions = m_state == "connected" ? line.value("activeAgentSessions").toObject().toVariantMap() : QVariantMap{};
             m_kimiCodeState = m_desiredRunning && kimiCodeEnabled() ? line.value("kimiCodeState").toString() : QString();
         }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
@@ -829,26 +836,170 @@ bool HostController::kimiCodeEnabled() const {
     }
     return false;
 }
-void HostController::applyAgentEnablement(const QJsonObject &snapshot) {
-    if (!snapshot.value("revision").isDouble() || !snapshot.value("agents").isArray()) return;
-    if (!m_agentEnablement.isEmpty() && snapshot.value("revision").toDouble() <= m_agentEnablement.value("revision").toDouble()) return;
+static QVariantMap agentChoicesIn(const QVariantMap &snapshot) {
+    QVariantMap choices;
+    for (const auto &entry : snapshot.value("agents").toList()) {
+        const auto row = entry.toMap(); choices.insert(row.value("kind").toString(), row.value("enabled"));
+    }
+    return choices;
+}
+static bool hasAgentSnapshot(const QJsonObject &snapshot) {
+    return snapshot.value("revision").isDouble() && snapshot.value("agents").isArray();
+}
+void HostController::applyAgentEnablement(const QJsonObject &snapshot, bool announce) {
+    if (!hasAgentSnapshot(snapshot)) return;
+    const auto revision = snapshot.value("revision").toDouble();
+    if (!m_agentEnablement.isEmpty() && revision <= m_agentEnablement.value("revision").toDouble()) return;
+    const auto previous = announce ? agentChoicesIn(m_agentEnablement) : QVariantMap{};
     m_agentEnablement = snapshot.toVariantMap();
     if (!kimiCodeEnabled()) m_kimiCodeState.clear();
     emit agentEnablementChanged();
     emit changed();
+    const auto values = previous.isEmpty() ? QVariantMap{} : agentChoicesIn(m_agentEnablement);
+    for (auto it = previous.cbegin(); it != previous.cend(); ++it) {
+        if (values.contains(it.key()) && values.value(it.key()) != it.value()
+            && (!m_agentInFlight || !m_agentInFlight->kinds.contains(it.key())))
+            emit agentWriteFeedback({it.key()}, values.value(it.key()).toBool() ? "externalOn" : "externalOff", revision);
+    }
     if (m_bridgeReady && !m_exiting) detectAgents();
 }
-void HostController::setAgentEnabled(const QString &kind, bool enabled, double expectedRevision, bool confirmDisable) {
-    if (!m_bridgeReady || busy() || m_agentEnablement.isEmpty()) return;
+QVariantMap HostController::agentChanges() const {
+    QVariantMap items;
+    const auto insert = [&](const AgentChoice &job, bool queued) {
+        for (const auto &kind : job.kinds)
+            items.insert(kind, QVariantMap{{"target", job.target}, {"previous", job.previous.value(kind)}, {"queued", queued}, {"withdrawable", queued && !job.batch}});
+    };
+    for (const auto &job : m_agentChoices) insert(job, true);
+    if (m_agentInFlight) insert(*m_agentInFlight, false);
+    return items;
+}
+void HostController::setAgentEnabled(const QString &kind, bool enabled, double expectedRevision) {
+    enqueueAgentChoices({kind}, enabled, expectedRevision, false);
+}
+void HostController::setAgentsEnabled(const QStringList &kinds, bool enabled, double expectedRevision) {
+    enqueueAgentChoices(kinds, enabled, expectedRevision, kinds.size() > 1);
+}
+void HostController::confirmAgentReviews() {
+    if (!m_agentReview || !agentChoicesAvailable()) return;
+    auto job = *std::exchange(m_agentReview, std::nullopt);
+    m_agentChoices.prepend(job);
+    pumpAgentChoices();
+}
+void HostController::dismissAgentReviews() {
+    m_agentReview.reset();
+    pumpAgentChoices();
+}
+void HostController::refreshAgentChoices() {
+    if (!m_bridgeReady || m_agentReadPending || m_agentInFlight || m_agentReview) return;
+    m_agentReadPending = true;
+    m_agentChoiceRecheck = true;
+    if (command("agent.enablement.read", {}, [this](const QJsonValue &value) {
+        m_agentReadPending = false;
+        const auto snapshot = value.toObject();
+        if (!hasAgentSnapshot(snapshot)) { emit changed(); return; }
+        applyAgentEnablement(snapshot, true);
+        m_agentChoiceRecheck = false;
+        pumpAgentChoices();
+    }) < 0) m_agentReadPending = false;
+    emit changed();
+}
+void HostController::failAgentChoice() {
+    if (!m_agentInFlight) return;
+    const auto kinds = m_agentInFlight->kinds;
+    m_agentInFlight.reset(); m_agentWriteId = -1; m_agentChoices.clear();
+    m_agentChoiceRecheck = true;
+    emit agentWriteFeedback(kinds, "failed", m_agentEnablement.value("revision").toDouble());
+    // The bridge's read is ordered after the write. Never replay an uncertain write.
+    refreshAgentChoices();
+}
+void HostController::enqueueAgentChoices(const QStringList &kinds, bool enabled, double expectedRevision, bool batch) {
+    if (!agentChoicesAvailable() || m_agentReview || kinds.isEmpty()) return;
     const auto revision = m_agentEnablement.value("revision").toDouble();
-    if (expectedRevision >= 0 && expectedRevision != revision) { setMessage("Agent 设置已在其他设备更新，请确认后重试"); return; }
-    QJsonObject params{{"kind", kind}, {"enabled", enabled}, {"expectedRevision", revision}};
-    if (confirmDisable) params.insert("confirmDisable", true);
-    command("agent.enablement.write", params, [this](const QJsonValue &value) {
-        const auto result = value.toObject();
-        applyAgentEnablement(result.value("snapshot").toObject());
-        if (result.value("status").toString() == "conflict") setMessage("Agent 设置已在其他设备更新，请确认后重试");
-    });
+    if (expectedRevision >= 0 && expectedRevision != revision) { emit agentWriteFeedback(kinds, "conflict", revision); return; }
+    const auto values = agentChoicesIn(m_agentEnablement);
+    AgentChoice job{{}, enabled, batch, expectedRevision, {}, {}};
+    for (const auto &kind : kinds) {
+        if (job.kinds.contains(kind)) continue;
+        if (!values.contains(kind) || (m_agentInFlight && m_agentInFlight->kinds.contains(kind))) return;
+        auto existing = std::find_if(m_agentChoices.begin(), m_agentChoices.end(), [&](const auto &choice) { return choice.kinds.contains(kind); });
+        if (existing != m_agentChoices.end()) {
+            if (!batch && !existing->batch && existing->target != enabled) { m_agentChoices.erase(existing); emit changed(); }
+            return;
+        }
+        if (values.value(kind).toBool() != enabled) { job.kinds.append(kind); job.previous.insert(kind, values.value(kind)); }
+    }
+    if (!job.kinds.isEmpty()) m_agentChoices.append(job);
+    pumpAgentChoices();
+}
+void HostController::pumpAgentChoices() {
+    if (!agentChoicesAvailable() || m_agentInFlight || m_agentReview) { emit changed(); return; }
+    while (!m_agentChoices.isEmpty()) {
+        auto job = m_agentChoices.takeFirst();
+        const auto revision = m_agentEnablement.value("revision").toDouble();
+        const auto values = agentChoicesIn(m_agentEnablement);
+        const auto current = [&](const QString &kind) { return values.contains(kind) && values.value(kind) == job.previous.value(kind); };
+        if ((job.expectedRevision >= 0 && job.expectedRevision != revision) || !std::all_of(job.kinds.cbegin(), job.kinds.cend(), current)) {
+            emit agentWriteFeedback(job.kinds, "conflict", revision);
+            continue;
+        }
+        m_agentInFlight = job;
+        QJsonObject params{{"enabled", job.target}, {"expectedRevision", revision}};
+        if (job.batch) {
+            params.insert("kinds", QJsonArray::fromStringList(job.kinds));
+            if (!job.reviews.isEmpty()) params.insert("reviews", QJsonObject::fromVariantMap(job.reviews));
+        } else {
+            const auto kind = job.kinds.first();
+            params.insert("kind", kind);
+            params.insert("scoped", true);
+            if (job.reviews.contains(kind)) params.insert("review", job.reviews.value(kind).toString());
+        }
+        const int id = command(job.batch ? "agent.enablement.writeBatch" : "agent.enablement.write", params, [this, job, revision](const QJsonValue &value) {
+            const auto result = value.toObject();
+            const auto status = result.value("status").toString();
+            const auto snapshot = result.value("snapshot").toObject();
+            if (status != "review" && (!hasAgentSnapshot(snapshot) || (status != "conflict" && status != "applied" && status != "unchanged"))) { failAgentChoice(); return; }
+            m_agentInFlight.reset(); m_agentWriteId = -1;
+            const auto priorRevision = m_agentEnablement.value("revision").toDouble();
+            const auto currentlyAt = priorRevision;
+            if (status == "review") {
+                const auto reviews = job.batch ? result.value("reviews").toArray() : QJsonArray{result.value("review")};
+                auto reviewed = job;
+                reviewed.expectedRevision = revision;
+                reviewed.reviews.clear();
+                QVariantList details;
+                for (const auto &entry : reviews) {
+                    const auto row = entry.toObject();
+                    const auto kind = row.value("kind").toString();
+                    const auto token = row.value("token").toString();
+                    if (job.kinds.contains(kind) && !reviewed.reviews.contains(kind) && row.value("revision").toDouble(-1) == revision && token.size() == 64) {
+                        reviewed.reviews.insert(kind, token);
+                        details.append(row.toVariantMap());
+                    }
+                }
+                if (!job.target && currentlyAt == revision && !reviews.isEmpty() && details.size() == reviews.size()) {
+                    m_agentReview = reviewed;
+                    emit agentReviewsRequested(job.kinds, details, revision);
+                } else emit agentWriteFeedback(job.kinds, "conflict", currentlyAt);
+            } else {
+                applyAgentEnablement(snapshot);
+                const auto received = snapshot.value("revision").toDouble();
+                const bool stale = received < priorRevision || status == "applied" && received != revision + 1;
+                if (status == "conflict" || stale)
+                    emit agentWriteFeedback(job.kinds, "conflict", m_agentEnablement.value("revision").toDouble());
+                else if (status == "applied") emit agentWriteFeedback(job.kinds, job.target ? "enabled" : "disabled", received);
+            }
+            pumpAgentChoices();
+        });
+        if (id < 0) { failAgentChoice(); return; }
+        m_agentWriteId = id;
+        QTimer::singleShot(60'000, this, [this, id] {
+            if (m_agentWriteId != id) return;
+            m_pending.remove(id); m_methods.remove(id); m_requestParams.remove(id); m_activity.remove(id); m_activityOrder.removeAll(id);
+            failAgentChoice(); runSettled();
+        });
+        return;
+    }
+    emit changed();
 }
 void HostController::saveOpenClaw(const QString &url, const QString &token) {
     if (!m_bridgeReady || busy() || m_openClaw.value("source").toString() != "file") return;
@@ -955,6 +1106,16 @@ void HostController::setProviders(const QVariantList &providers) {
 void HostController::setProviderPresets(const QVariantList &presets) {
     if (m_providerPresets == presets) return;
     m_providerPresets = presets; emit providerPresetsChanged();
+}
+void HostController::refreshAgentProviders(const QString &kind) {
+    if (!m_bridgeReady || !QStringList{"codex", "dsh", "claude", "pi"}.contains(kind)) return;
+    if (m_providerKind != kind) {
+        m_providerKind = kind; setProviders({}); setProviderPresets({}); ++m_draftGeneration; emit changed();
+    }
+    const auto generation = m_draftGeneration;
+    command("provider.list", {{"kind", kind}}, [this, kind, generation](const QJsonValue &value) {
+        if (m_providerKind == kind && generation == m_draftGeneration) setProviders(value.toArray().toVariantList());
+    });
 }
 void HostController::loadProviders(const QString &kind) {
     if (m_providerKind != kind) { setProviders({}); setProviderPresets({}); ++m_draftGeneration; }

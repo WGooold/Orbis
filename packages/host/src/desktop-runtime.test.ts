@@ -41,6 +41,7 @@ describe("desktop Host lifecycle", () => {
       expect(initial.revision).toBe(0);
       const changed = await runtime.setAgentEnablement({ kind: "openclaw", enabled: !existing.enabled, expectedRevision: 0 });
       expect(changed).toMatchObject({ status: "applied", snapshot: { revision: 1, agents: expect.arrayContaining([expect.objectContaining({ kind: "openclaw", enabled: !existing.enabled })]) } });
+      if (changed.status === "review") throw new Error("A paused Host has no running work to review");
       expect(published.filter(event => event.event === "agentEnablement").map(event => event.snapshot)).toEqual([initial, changed.snapshot]);
       expect(await runtime.setAgentEnablement({ kind: "openclaw", enabled: existing.enabled, expectedRevision: 0 }))
         .toEqual({ status: "conflict", snapshot: changed.snapshot });

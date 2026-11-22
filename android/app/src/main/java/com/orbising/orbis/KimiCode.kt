@@ -18,6 +18,7 @@ internal fun deviceAgentFeatures(ready: JsonObject): List<String> {
         "agent.hermes",
         "agent.opencode",
         AGENT_ENABLEMENT_FEATURE,
+        AGENT_DIAL_REVIEW_FEATURE,
         "state.compact-bootstrap.v1",
         "claude.send-now.v1",
         RUNTIME_CLOSE_FEATURE,

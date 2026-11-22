@@ -116,6 +116,103 @@ struct StoreTests {
         #expect(owner.enabledAgentKinds == nil)
     }
 
+    // AGENT-DIAL-01: correlated receipts settle presentation; a broadcast is immediately authoritative for policy.
+    @Test func agentDialHoldsItsOwnPinAndDoesNotReplayAfterReconnect() async throws {
+        let (store, transport) = setup()
+        let owner = store.activeConnection
+        let features = ["agent.enablement.v1", "agent.enablement.review.v1"]
+        func ready() async {
+            await transport.emit(["type": "device.ready", "runtimes": [], "dshDesktop": NSNull(),
+                                  "hostFeatures": ["device.features"] + features, "deviceFeatures": features])
+        }
+        func snapshot(_ revision: Int, pi: Bool, codex: Bool) -> [String: Any] {
+            ["revision": revision, "agents": [["kind": "pi", "label": "Pi", "enabled": pi], ["kind": "codex", "label": "Codex CLI", "enabled": codex]]]
+        }
+        await ready()
+        let initialRead = try #require(owner.agentEnablementPending)
+        await transport.emit(["type": "agent.enablement.snapshot", "requestId": initialRead, "snapshot": snapshot(1, pi: true, codex: false)])
+        owner.setAgentEnabled("pi", enabled: false)
+        let off = try #require(owner.agentEnablementPending)
+        owner.setAgentEnabled("codex", enabled: true)
+        #expect(owner.agentDialQueued("codex"))
+        let applied = snapshot(2, pi: false, codex: false)
+        await transport.emit(["type": "agent.enablement.snapshot", "snapshot": applied])
+        #expect(owner.enabledAgentKinds == [])
+        #expect(owner.agentDialVisualEnabled("pi", committed: false))
+        #expect(owner.agentEnablementPending == off)
+        await transport.emit(["type": "agent.enablement.result", "requestId": off, "status": "applied", "snapshot": applied])
+        #expect(!owner.agentDialVisualEnabled("pi", committed: false))
+        #expect(owner.agentDialNotice?.revision == 2)
+        let enable = try #require(transport.sent.last { $0["type"] as? String == "agent.enablement.write" })
+        #expect(enable["kind"] as? String == "codex")
+        #expect(enable["expectedRevision"] as? Int == 2)
+        owner.setAgentEnabled("pi", enabled: true, expectedRevision: 2)
+        #expect(owner.agentDialQueued("pi"))
+        transport.state?(.offline, nil)
+        #expect(!owner.agentDialCanEdit && owner.agentDialQueue.isEmpty && owner.enabledAgentKinds == nil)
+        #expect(owner.agentDialCached?.count == 2)
+        await ready()
+        let reread = try #require(owner.agentEnablementPending)
+        let recovered = snapshot(3, pi: false, codex: true)
+        await transport.emit(["type": "agent.enablement.result", "requestId": enable["requestId"]!, "status": "applied", "snapshot": recovered])
+        #expect(owner.agentEnablementRevision == nil)
+        #expect(!owner.agentDialCanEdit)
+        await transport.emit(["type": "agent.enablement.snapshot", "requestId": reread, "snapshot": recovered])
+        #expect(owner.agentDialCanEdit && owner.enabledAgentKinds == ["codex"])
+        #expect(transport.sent.filter { $0["type"] as? String == "agent.enablement.write" }.count == 2)
+    }
+
+    @Test func lateAppliedReceiptCannotMoveThePolicyBehindANewerBroadcast() async throws {
+        let (store, transport) = setup()
+        let owner = store.activeConnection
+        let features = ["agent.enablement.v1", "agent.enablement.review.v1"]
+        await transport.emit(["type": "device.ready", "runtimes": [], "dshDesktop": NSNull(),
+                              "hostFeatures": ["device.features"] + features, "deviceFeatures": features])
+        let read = try #require(owner.agentEnablementPending)
+        func snapshot(_ revision: Int, _ pi: Bool) -> [String: Any] {
+            ["revision": revision, "agents": [["kind": "pi", "label": "Pi", "enabled": pi]]]
+        }
+        await transport.emit(["type": "agent.enablement.snapshot", "requestId": read, "snapshot": snapshot(1, true)])
+        owner.setAgentEnabled("pi", enabled: false)
+        let write = try #require(owner.agentEnablementPending)
+        await transport.emit(["type": "agent.enablement.snapshot", "snapshot": snapshot(3, true)])
+        #expect(owner.agentDialVisualEnabled("pi", committed: true))
+        await transport.emit(["type": "agent.enablement.result", "requestId": write, "status": "applied", "snapshot": snapshot(2, false)])
+        #expect(owner.enabledAgentKinds == ["pi"])
+        #expect(owner.agentDialVisualEnabled("pi", committed: true))
+        #expect(owner.agentDialNotice?.status == "conflict")
+    }
+
+    // AGENT-DIAL-01: a review holds the queue, and its approved write goes first at the reviewed revision.
+    @Test func agentDialReviewIsScopedAndQueuedFirst() async throws {
+        let (store, transport) = setup()
+        let owner = store.activeConnection
+        let features = ["agent.enablement.v1", "agent.enablement.review.v1"]
+        await transport.emit(["type": "device.ready", "runtimes": [], "dshDesktop": NSNull(),
+                              "hostFeatures": ["device.features"] + features, "deviceFeatures": features])
+        let read = try #require(owner.agentEnablementPending)
+        func snapshot(_ revision: Int) -> [String: Any] {
+            ["revision": revision, "agents": [["kind": "pi", "label": "Pi", "enabled": true], ["kind": "codex", "label": "Codex CLI", "enabled": false]]]
+        }
+        await transport.emit(["type": "agent.enablement.snapshot", "requestId": read, "snapshot": snapshot(1)])
+        owner.setAgentEnabled("pi", enabled: false)
+        let write = try #require(owner.agentEnablementPending)
+        owner.setAgentEnabled("codex", enabled: true)
+        let token = String(repeating: "a", count: 64)
+        await transport.emit(["type": "agent.enablement.review", "requestId": write,
+                              "review": ["kind": "pi", "revision": 1, "token": token, "total": 1, "sessions": ["Working"]]])
+        let review = try #require(owner.agentDialReview)
+        #expect(review.sessions == ["Working"])
+        #expect(owner.agentEnablementPending == nil && owner.agentDialQueued("codex"))
+        owner.setAgentEnabled("pi", enabled: false, review: review)
+        let confirmed = try #require(transport.sent.last { $0["type"] as? String == "agent.enablement.write" })
+        #expect(confirmed["kind"] as? String == "pi" && confirmed["review"] as? String == token)
+        #expect(confirmed["confirmDisable"] == nil)
+        await transport.emit(["type": "agent.enablement.result", "requestId": confirmed["requestId"]!, "status": "conflict", "snapshot": snapshot(2)])
+        #expect(owner.agentDialReview == nil && owner.enabledAgentKinds == ["pi"])
+        #expect(transport.sent.last { $0["type"] as? String == "agent.enablement.write" }?["kind"] as? String == "codex")
+    }
+
     @Test func pathAnnouncementsUpdateLatencyAndDisconnectClearsTheSample() async {
         let (store, transport) = setup()
         transport.state?(.secured, nil)

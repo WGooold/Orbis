@@ -2,8 +2,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { AgentKindSchema } from "@orbis/protocol";
-import { AgentEnablementController, AgentEnablementStore, AgentLifecycleRegistry, type AgentLifecycleLease } from "./agent-enablement.js";
+import { AgentKindSchema, type AgentKind } from "@orbis/protocol";
+import { AgentBatchConfirmationRequired, AgentEnablementController, AgentEnablementStore, AgentLifecycleRegistry, type AgentLifecycleLease } from "./agent-enablement.js";
 
 const directories: string[] = [];
 async function directory(): Promise<string> {
@@ -17,7 +17,8 @@ afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(p
 it("persists an all-off baseline for every known source", async () => {
   const path = await directory();
   const snapshot = await new AgentEnablementStore(path).read();
-  expect(snapshot.agents.map(row => row.kind)).toEqual(AgentKindSchema.options);
+  expect(snapshot.agents.map(row => row.kind).sort()).toEqual([...AgentKindSchema.options].sort());
+  expect(snapshot.agents.map(row => row.kind).slice(0, 5)).toEqual(["codex", "codexDesktop", "claude", "dsh", "dshDesktop"]);
   expect(snapshot.agents.every(row => !row.enabled)).toBe(true);
   const reconsider = vi.fn(async () => ({ openclaw: true }));
   expect(await new AgentEnablementStore(path, reconsider).read()).toEqual(snapshot);
@@ -36,7 +37,39 @@ it("serializes competing changes and returns committed state on conflict and rep
   expect(stale).toEqual({ status: "conflict", snapshot: accepted.snapshot });
   expect(await store.set({ kind: "pi", enabled: true, expectedRevision: 0 })).toEqual({ status: "unchanged", snapshot: accepted.snapshot });
   expect(await new AgentEnablementStore(path).read()).toEqual(accepted.snapshot);
-  expect(accepted.snapshot.agents.filter(row => row.enabled).map(row => row.kind)).toEqual(["pi", "claude"]);
+  expect(accepted.snapshot.agents.filter(row => row.enabled).map(row => row.kind).sort()).toEqual(["claude", "pi"]);
+});
+
+// AGENT-DIAL-01: no reviewed or idle source moves before a single atomic batch commit.
+it("reviews the whole desktop selection again if the affected work changes", async () => {
+  const path = await directory();
+  const publish = vi.fn();
+  const controller = new AgentEnablementController(new AgentEnablementStore(path, async () => ({ pi: true, claude: true, codex: true })), publish);
+  const initial = await controller.read();
+  const work = new Map<AgentKind, { token: string; sessions: string[] }>([
+    ["pi", { token: "a".repeat(64), sessions: ["Pi task"] }], ["claude", { token: "b".repeat(64), sessions: ["Claude task"] }],
+  ]);
+  const inspect = (kind: AgentKind, revision: number, scope: string) => {
+    expect(scope).toBe('desktop:batch:["claude","codex","pi"]');
+    const item = work.get(kind);
+    return item && { ...item, kind, revision, total: item.sessions.length };
+  };
+  const batch = { kinds: ["pi", "claude", "codex"], enabled: false, expectedRevision: 0 };
+  await expect(controller.setBatch(batch, inspect)).rejects.toBeInstanceOf(AgentBatchConfirmationRequired);
+  const tokens = { pi: "a".repeat(64), claude: "b".repeat(64) };
+  work.set("claude", { token: "c".repeat(64), sessions: ["Replacement task"] });
+  await expect(controller.setBatch({ ...batch, reviews: tokens }, inspect)).rejects.toMatchObject({ reviews: [
+    { kind: "pi", sessions: ["Pi task"] }, { kind: "claude", sessions: ["Replacement task"] },
+  ] });
+  expect(await controller.read()).toEqual(initial);
+  expect(publish).toHaveBeenCalledTimes(1);
+  await expect(controller.setBatch({ ...batch, confirmDisable: true }, inspect)).rejects.toThrow();
+  const accepted = await controller.setBatch({ ...batch, reviews: { ...tokens, claude: "c".repeat(64) } }, inspect);
+  expect(accepted).toMatchObject({ status: "applied", snapshot: { revision: 1 } });
+  expect(accepted.snapshot.agents.every(row => !row.enabled)).toBe(true);
+  expect(await new AgentEnablementStore(path).read()).toEqual(accepted.snapshot);
+  expect(publish).toHaveBeenCalledTimes(2);
+  expect(await controller.setBatch({ ...batch, enabled: true }, inspect)).toEqual({ status: "conflict", snapshot: accepted.snapshot });
 });
 
 // An older Host must not erase a newer source's stored preference on a downgrade.

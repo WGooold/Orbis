@@ -10,12 +10,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { DeviceHandshake, E2eChannel, buildHandshakeEnvelope, loadOrCreateHostIdentity, saveDeviceStore, readHandshakeEnvelope } from "@orbis/e2e";
-import { AgentKindSchema, EnvelopeReassembler, fragmentEnvelope, HOST_FEATURE_WEB_PREVIEW, HOST_FEATURE_NATIVE_FILE_PREVIEW, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type EnvelopeV2 } from "@orbis/protocol";
+import { EnvelopeReassembler, fragmentEnvelope, HOST_FEATURE_WEB_PREVIEW, HOST_FEATURE_NATIVE_FILE_PREVIEW, PROTOCOL_VERSION, LOOPBACK_PATH, RelayToDeviceMessageSchema, encodeArtifactChunkFrame, decodeArtifactChunkFrame, type AgentDisableReview, type EnvelopeV2 } from "@orbis/protocol";
 import { createRelayServer as createLocalRelay, type RelayServer } from "@orbis/relay";
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 import { createBusinessRelayServer as createRelayServer, relayBusinessDeviceURL, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 import { HostService as SourceHostService } from "./host-service.js";
-import { agentEnablementCatalog, AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
+import { agentEnablementCatalog, agentEnablementOrder, AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
 import { CLAUDE_BRIDGE_CAPABILITIES, CLAUDE_BRIDGE_VERSION } from "./claude-mods-bridge.js";
 import type { OpenClawConfig } from "./openclaw-gateway.js";
 
@@ -183,7 +183,7 @@ describe("Host Agent settings through the desktop JSON bridge", () => {
         return phone;
       };
       try {
-        const allOff = { revision: 0, agents: AgentKindSchema.options.map(kind => ({ kind, label: agentEnablementCatalog[kind].label, enabled: false })) };
+        const allOff = { revision: 0, agents: agentEnablementOrder.map(kind => ({ kind, label: agentEnablementCatalog[kind].label, enabled: false })) };
         expect(await command("initialize")).toMatchObject({ agentEnablement: allOff });
         await command("start");
         const [first, second] = await Promise.all([connect(firstDevice), connect(secondDevice)]);
@@ -464,6 +464,49 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
       for (const socket of gateway.clients) socket.terminate();
       await new Promise<void>(resolve => gateway.close(() => resolve()));
     }
+  });
+
+  // AGENT-DIAL-01: the scoped receipt belongs to one paired client and one set of active work.
+  it.skipIf(!!compatibleRoot)("negotiates disable review and refuses approvals for replaced work", async () => {
+    await setup(false, true);
+    await management!.set({ kind: "pi", enabled: true, expectedRevision: 0 });
+    const app = await connect(19, "lan");
+    const other = await connect(19, "lan", 19, true, "other19");
+    const features = ["agent.enablement.v1", "agent.enablement.review.v1"];
+    for (const phone of [app, other]) {
+      phone.request({ type: "device.features", features });
+      expect(await phone.take("device.ready")).toMatchObject({ deviceFeatures: features });
+    }
+    const descriptor = host.loopback!.descriptor!;
+    const runPi = async (name: string, runtimeId: string) => {
+      const socket = new WebSocket(descriptor.url + LOOPBACK_PATH);
+      runtimes.push(socket); await once(socket, "open");
+      socket.send(JSON.stringify({ type: "runtime.authenticate", protocolVersion: PROTOCOL_VERSION, role: "host", credential: descriptor.token,
+        runtime: { runtimeId, name, cwd: directory, status: "running", sessionId: runtimeId } }));
+      await vi.waitFor(() => expect(host.localRuntimes).toContainEqual(expect.objectContaining({ runtimeId })));
+      return socket;
+    };
+    const first = await runPi("First task", "review-1");
+    const request = async (phone: OldPhone, requestId: string, type: string, extra: object = {}) => {
+      phone.request({ type: "agent.enablement.write", requestId, kind: "pi", enabled: false, expectedRevision: 1, ...extra });
+      return phone.take(type, requestId);
+    };
+    const reviewMessage = await request(app, "review", "agent.enablement.review", { confirmDisable: true });
+    expect(reviewMessage).toMatchObject({ review: { kind: "pi", revision: 1, sessions: ["First task"], total: 1 } });
+    const original = (reviewMessage.review as AgentDisableReview).token;
+    const copied = await request(other, "copied", "agent.enablement.review", { review: original });
+    expect((copied.review as AgentDisableReview).token).not.toBe(original);
+    first.close(); await once(first, "close");
+    const replacement = await runPi("Replacement task", "review-2");
+    await vi.waitFor(() => expect(host.localRuntimes).toHaveLength(1));
+    const stale = await request(app, "stale", "agent.enablement.review", { review: original });
+    expect(stale.review).toMatchObject({ sessions: ["Replacement task"], total: 1 });
+    expect(management!.allows("pi")).toBe(true);
+    const detached = once(replacement, "close");
+    expect(await request(app, "confirmed-review", "agent.enablement.result", { review: (stale.review as AgentDisableReview).token }))
+      .toMatchObject({ status: "applied", snapshot: { revision: 2 } });
+    await detached;
+    expect(management!.allows("pi")).toBe(false);
   });
 
   // Use authenticated native bridge requests, not just the ready projection, to prove

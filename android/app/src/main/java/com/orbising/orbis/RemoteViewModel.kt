@@ -169,17 +169,20 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         setActiveHost(hostId)
     }
 
-    /** Saves phone-to-Relay selection for the active Host. */
-    fun setAgentEnabled(kind: String, enabled: Boolean, revision: Long, confirmDisable: Boolean) {
-        active()?.setAgentEnabled(kind, enabled, revision, confirmDisable)
+    fun setAgentEnabled(hostId: String?, kind: String, enabled: Boolean, review: AgentDialReview? = null, expectedRevision: Long? = null) {
+        active()?.takeIf { it.hostId == hostId }?.setAgentEnabled(kind, enabled, review, expectedRevision)
     }
-    fun refreshAgentEnablement() { active()?.refreshAgentEnablement() }
+    fun dismissAgentDialReview(hostId: String?, review: AgentDialReview) {
+        active()?.takeIf { it.hostId == hostId }?.dismissAgentDialReview(review)
+    }
+    fun refreshAgentEnablement(hostId: String?) { active()?.takeIf { it.hostId == hostId }?.refreshAgentEnablement() }
 
     fun setRelayTransportMode(mode: RelayTransportMode) {
         active()?.setRelayTransportMode(mode)
     }
 
     private fun setActiveHost(hostId: String?) {
+        if (active()?.hostId != hostId) active()?.cancelQueuedAgentDial()
         active()?.closeToolDetail()
         active()?.closeChangeViewer()
         val resolved = synchronized(lock) { hostId?.takeIf { connections.containsKey(it) } }

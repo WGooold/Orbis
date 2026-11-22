@@ -201,6 +201,7 @@ final class OrbisStore: ObservableObject {
         guard connections[hostId] != nil else { return }
         if selectedHostId != hostId { activeConnection.setHistoryWindowVisible(false); activeConnection.hostState.setCatalogVisible(false) }
         if selectedHostId != hostId {
+            activeConnection.cancelQueuedAgentDial()
             activeConnection.transfers.browserPreview.close()
             activeConnection.toolContent.close(); activeConnection.turnFileChanges.closeViewer()
             activeConnection.clearFeedbackScope(preservingConnectionConditions: true); activeConnection.setFeedbackForeground(false)

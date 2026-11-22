@@ -64,6 +64,8 @@ internal object InteractionMotion {
     const val GlyphPressedScale = 0.94f
     const val GlyphPressedOpacity = 0.82f
     val GlyphEase = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+    // AGENT-DIAL-01: the ring sweep shares the established interaction curve.
+    val Easing get() = GlyphEase
     const val EdgeShrink = 0.08f
     fun edgeShift(width: Float, progress: Float, direction: Float, gap: Float): Float {
         val p = progress.coerceIn(0f, 1f)

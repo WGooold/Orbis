@@ -33,8 +33,15 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (method === "start") fs.writeFileSync(path.join(__dirname, "start.json"), JSON.stringify(params));
   if (method === "start") { out({ event: "state", state: "connecting" }); out({ event: "state", state: "connected" }); }
   if (method === "stop") out({ event: "state", state: "stopped" });
-  if (method === "agent.enablement.write") {
-    const snapshot = { revision: params.expectedRevision + 1, agents: [{ kind: params.kind, label: params.kind, enabled: params.enabled }] };
+  if (method.startsWith("agent.enablement.write")) {
+    fs.writeFileSync(path.join(__dirname, method + ".json"), JSON.stringify(params));
+    if (fs.existsSync(path.join(__dirname, "hold-agent-write"))) return;
+    const kinds = params.kinds ?? [params.kind];
+    const snapshot = { revision: params.expectedRevision + 1, agents: kinds.map(kind => ({ kind, label: kind, enabled: params.enabled })) };
+    if (method === "agent.enablement.writeBatch" && !params.enabled && !params.reviews) {
+      const reviews = kinds.slice(0, 2).map((kind, index) => ({ kind, revision: params.expectedRevision, token: String(index).repeat(64), sessions: [kind + " work"], total: 1 }));
+      return out({ id, result: { status: "review", reviews } });
+    }
     return out({ id, result: { status: "applied", snapshot } });
   }
   if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
@@ -125,8 +132,8 @@ private slots:
         settle(host);
         host.setAgentEnabled("openclaw", true);
         QVERIFY(!enabled());
-        settle(host);
-        QVERIFY(enabled());
+        QTRY_VERIFY(enabled());
+        QTRY_VERIFY(!host.activityKinds().contains("agents"));
         QCOMPARE(methods(root()), QStringList({"agent.enablement.write"}));
         QCOMPARE(methods(root(), true), QStringList({"detect", "agent.enablement.write", "detect"}));
         QCOMPARE(host.state(), QString("connected"));
@@ -135,6 +142,68 @@ private slots:
         settle(host);
         QVERIFY(!enabled());
         QCOMPARE(host.agentEnablement().value("revision").toInt(), 2);
+    }
+
+    // AGENT-DIAL-01: one review can cover active and idle rows; confirm resends exactly the reviewed batch.
+    void batchAgentReviewKeepsOneSelectionAndRevision() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        const QStringList kinds{"pi", "codex", "claude"};
+        QJsonArray rows;
+        for (const auto &kind : kinds) rows.append(QJsonObject{{"kind", kind}, {"label", kind}, {"enabled", true}});
+        host.applyAgentEnablement({{"revision", 1}, {"agents", rows}});
+        QSignalSpy review(&host, &HostController::agentReviewsRequested);
+        host.setAgentsEnabled(kinds, false);
+        QTRY_COMPARE(review.size(), 1);
+        QCOMPARE(review.first().at(0).toStringList(), kinds);
+        QCOMPARE(review.first().at(1).toList().size(), 2);
+        QCOMPARE(host.agentEnablement().value("revision").toInt(), 1);
+        QVERIFY(host.agentChanges().isEmpty());
+        host.confirmAgentReviews();
+        QTRY_COMPARE(host.agentEnablement().value("revision").toInt(), 2);
+        for (const auto &row : host.agentEnablement().value("agents").toList()) QVERIFY(!row.toMap().value("enabled").toBool());
+        QCOMPARE(methods(root()), QStringList({"agent.enablement.writeBatch", "agent.enablement.writeBatch"}));
+        QFile last(root() + "/packages/host/dist/agent.enablement.writeBatch.json");
+        QVERIFY(last.open(QIODevice::ReadOnly));
+        const auto request = QJsonDocument::fromJson(last.readAll()).object();
+        QCOMPARE(request.value("expectedRevision").toInt(), 1);
+        QCOMPARE(request.value("kinds").toArray(), QJsonArray::fromStringList(kinds));
+        QCOMPARE(request.value("reviews").toObject().size(), 2);
+        QVERIFY(!request.contains("confirmDisable"));
+    }
+
+    // AGENT-DIAL-01: the local receipt, not the broadcast, moves our latch; intervening edits void stale approval.
+    void agentBroadcastAndStaleReviewDoNotReplay() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        const auto snapshot = [](int revision, bool pi, bool codex) {
+            return QJsonObject{{"revision", revision}, {"agents", QJsonArray{QJsonObject{{"kind", "pi"}, {"enabled", pi}}, QJsonObject{{"kind", "codex"}, {"enabled", codex}}}}};
+        };
+        host.applyAgentEnablement(snapshot(1, true, true));
+        QFile held(root() + "/packages/host/dist/hold-agent-write");
+        QVERIFY(held.open(QIODevice::WriteOnly)); held.close();
+        host.setAgentEnabled("pi", false);
+        QTRY_VERIFY(methods(root()).contains("agent.enablement.write"));
+        const auto id = host.m_agentWriteId;
+        host.receiveLine({{"event", "agentEnablement"}, {"snapshot", snapshot(2, false, true)}});
+        QCOMPARE(host.agentEnablement().value("revision").toInt(), 2);
+        QCOMPARE(host.agentChanges().value("pi").toMap().value("previous").toBool(), true);
+        host.receiveLine({{"id", id}, {"result", QJsonObject{{"status", "applied"}, {"snapshot", snapshot(2, false, true)}}}});
+        QVERIFY(host.agentChanges().isEmpty());
+        QSignalSpy review(&host, &HostController::agentReviewsRequested);
+        host.setAgentEnabled("codex", false);
+        QTRY_VERIFY(methods(root()).count("agent.enablement.write") == 2);
+        host.receiveLine({{"id", host.m_agentWriteId}, {"result", QJsonObject{{"status", "review"}, {"review", QJsonObject{
+            {"kind", "codex"}, {"revision", 2}, {"token", QString(64, 'a')}, {"sessions", QJsonArray{"Task"}}, {"total", 1}}}}}});
+        QCOMPARE(review.size(), 1);
+        QSignalSpy feedback(&host, &HostController::agentWriteFeedback);
+        host.applyAgentEnablement(snapshot(3, true, true), true);
+        feedback.clear();
+        host.confirmAgentReviews();
+        QCOMPARE(feedback.size(), 1);
+        QCOMPARE(feedback.first().at(1).toString(), QString("conflict"));
+        QCOMPARE(host.m_agentWriteId, -1);
+        QCOMPARE(methods(root()).count("agent.enablement.write"), 2);
     }
 
     // OPENCLAW-04: only a successful save reconnects a running Host; a paused Host stays paused.
@@ -254,8 +323,8 @@ private slots:
         QVERIFY(host.kimiCodeAvailable()); QVERIFY(host.kimiCodeEnabled());
         host.receiveLine({{"event", "status"}, {"kimiCodeState", "connected"}});
         QCOMPARE(host.kimiCodeState(), QString("connected"));
-        host.setAgentEnabled("kimiCode", false, 1, true);
-        settle(host);
+        host.setAgentEnabled("kimiCode", false, 1);
+        QTRY_VERIFY(!host.kimiCodeEnabled());
         QCOMPARE(methods(root()), QStringList({"agent.enablement.write"}));
         QVERIFY(!host.kimiCodeEnabled()); QVERIFY(host.kimiCodeState().isEmpty());
         QCOMPARE(host.state(), QString("connected"));

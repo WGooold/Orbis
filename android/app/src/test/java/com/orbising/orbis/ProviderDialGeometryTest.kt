@@ -1,6 +1,6 @@
 package com.orbising.orbis
 
-import org.junit.Assert.assertEquals
+import org.junit.Assert.*
 import org.junit.Test
 import kotlin.math.PI
 
@@ -29,4 +29,19 @@ class ProviderDialGeometryTest {
         assertEquals(1f, ProviderDialGeometry.radialX(0f, 1f, 0f), 0.0001f)
         assertEquals(1f, ProviderDialGeometry.radialY(0f, 1f, 90f), 0.0001f)
     }
+
+    // AGENT-DIAL-01: motion starts in one zone; only an armed horizontal pin reaches a write.
+    @Test fun pinChannelAndReelHaveIndependentGestureZones() {
+        val layout = DualDialGeometry.measure(390f, 440f)
+        val x = layout.pinStart + layout.pinTravel * 0.5f
+        val y = layout.cy
+        assertTrue(layout.inPinChannel(x, y))
+        assertFalse(layout.inPinChannel(x, y + 28f))
+        assertFalse(AgentDialPin.horizontal(12f, -70f))
+        assertTrue(AgentDialPin.horizontal(30f, 8f))
+        assertFalse(AgentDialPin.armed(false, AgentDialPin.drag(false, layout.pinTravel * 0.4f, layout.pinTravel)))
+        assertEquals(AgentDialPin.HOLD, AgentDialPin.drag(false, layout.pinTravel * 1.5f, layout.pinTravel), 0.00001f)
+        assertTrue(AgentDialPin.armed(true, AgentDialPin.drag(true, -layout.pinTravel, layout.pinTravel)))
+    }
+
 }

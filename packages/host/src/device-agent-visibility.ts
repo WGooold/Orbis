@@ -93,7 +93,8 @@ export function projectBackendDomain(view: AgentView, domain: string, value: unk
     if (!allowsAgent(view, DSH_DESKTOP_KIND)) delete next.dshDesktop;
     return next;
   }
-  if (domain === "providers") return { ...row, providers: filter(view, row.providers) };
+  if (domain === "providers" && Array.isArray(row.providers)) return { ...row, providers: row.providers.filter(value =>
+    safeIdentity(view, value) || (object(value)?.agentKind === "codex" && allowsAgent(view, "codexDesktop"))) };
   if (domain === "operations") return { ...row, items: filter(view, row.items) };
   return value;
 }

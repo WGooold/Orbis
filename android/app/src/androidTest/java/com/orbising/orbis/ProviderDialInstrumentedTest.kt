@@ -19,6 +19,7 @@ class ProviderDialInstrumentedTest {
     @get:Rule val compose = createComposeRule()
     private val changes = mutableListOf<Pair<AgentProvider,String?>>()
     private val queries = mutableListOf<AgentProvider>()
+    private val enablementChanges = mutableListOf<Triple<String, Boolean, AgentDialReview?>>()
     private var keyboard: androidx.compose.ui.input.InputModeManager? = null
     private fun profiles(kind: String) = listOf(
         AgentProvider("$kind-local",kind,"本机配置",true,kind=="pi",official=true,subscriptionSupported=kind=="codex"),
@@ -140,6 +141,48 @@ class ProviderDialInstrumentedTest {
             .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "DeepSeek"))
         dragOuterRingToSecondProfile()
         compose.runOnIdle { assertTrue(changes.isEmpty()) }
+    }
+
+    /** AGENT-DIAL-01: wheel navigation cannot commit; only an armed, horizontal pin release sends a choice. */
+    @Test fun pinRequiresPastMidpointHorizontalReleaseAndKeepsItsChannelSeparate() {
+        val revision = 7L
+        val rows = listOf(AgentEnablementRow("pi", "Pi", true), AgentEnablementRow("codex", "Codex CLI", false))
+        val state = ready().copy(agentEnablementAvailable = true, agentEnablementRevision = revision, agentEnablementRows = rows,
+            agentDial = AgentDialSync(cached = AgentDialSnapshot(revision, rows), synchronized = true))
+        compose.setContent { OrbisTheme {
+            ProviderDialScreen(state, emptyList(), {}, {}, { provider, host -> changes += provider to host }, { _, _ -> },
+                showBack = false, onAgentEnabled = { _, kind, target, review, _ -> enablementChanges += Triple(kind, target, review) })
+        } }
+        compose.onNodeWithTag("provider-summary").assertExists()
+        val dial = compose.onNodeWithTag("provider-dual-dial")
+        val bounds = dial.fetchSemanticsNode().boundsInRoot
+        val geometry = with(compose.density) { DualDialGeometry.measure(bounds.width.toDp().value, bounds.height.toDp().value) }
+        val x = with(compose.density) { (geometry.pinStart + geometry.pinTravel / 2).dp.toPx() }
+        val y = with(compose.density) { geometry.cy.dp.toPx() }
+        val travel = with(compose.density) { geometry.pinTravel.dp.toPx() }
+        dial.performTouchInput {
+            down(androidx.compose.ui.geometry.Offset(x, y))
+            moveTo(androidx.compose.ui.geometry.Offset(x + travel * 0.4f, y), 250)
+            up()
+        }
+        compose.runOnIdle { assertTrue(enablementChanges.isEmpty()) }
+        dial.performTouchInput {
+            down(androidx.compose.ui.geometry.Offset(x, y))
+            moveTo(androidx.compose.ui.geometry.Offset(x + travel * 0.8f, y), 250)
+            up()
+        }
+        compose.runOnIdle {
+            assertEquals(listOf(Triple("pi", false, null)), enablementChanges)
+            assertTrue(changes.isEmpty())
+        }
+        val selection = compose.onNodeWithTag("provider-agent-reel")
+        selection.performSemanticsAction(SemanticsActions.SetProgress) { assertTrue(it(1f)) }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(1, enablementChanges.size)
+            assertEquals("codex", enablementChanges.single().first)
+            assertTrue(changes.isEmpty())
+        }
     }
 
     /** SC63: every Agent's ring follows the finger before release, then supports a reverse drag. */

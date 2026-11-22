@@ -29,6 +29,13 @@ enum HomePresentation: Equatable {
     case ready([HomeRuntimeCard])
 }
 
+/// Legacy Hosts have no enablement directory; only filter the dial when their backend roster is known.
+func legacyAgentDialKinds(supported: [String]?, launchable: [String]?) -> [String]? {
+    guard supported != nil || launchable != nil else { return nil }
+    let announced = Set((supported ?? []) + (launchable ?? []))
+    return ["codex", "claude", "dsh", "pi"].filter(announced.contains)
+}
+
 /// 首页同步进度。首版快照发布前由列表区域显示，发布后由连接胶囊显示，不再占用单独一行。
 enum HomeSyncStatus: Equatable {
     case idle
@@ -60,64 +67,189 @@ final class HostConnection: ObservableObject {
     var enabledAgentKinds: Set<String>? {
         agentEnablementRevision.map { _ in Set(agentEnablementRows.filter(\.enabled).map(\.id)) }
     }
-    @Published private(set) var agentEnablementPending: String?
+    struct AgentDialReview: Decodable, Equatable, Hashable {
+        let kind: String
+        let revision: Int
+        let sessions: [String]
+        let total: Int?
+        let token: String?
+    }
+    struct AgentDialChoice: Equatable {
+        let kind: String
+        let target: Bool
+        let previous: Bool
+        let review: AgentDialReview?
+        let expectedRevision: Int?
+    }
+    struct AgentDialNotice: Equatable {
+        let kind: String?
+        let status: String
+        let id: String
+        var revision: Int? = nil
+    }
+    private struct AgentDialRequest {
+        let id: String
+        let choice: AgentDialChoice?
+        let revision: Int?
+    }
     @Published private(set) var agentEnablementAvailable = false
-    @Published private(set) var agentEnablementFailed = false
     private(set) var agentEnablementRevision: Int?
+    @Published private(set) var agentDialCached: [AgentEnablementRow]?
+    @Published private(set) var agentDialSynchronized = false
+    @Published private(set) var agentDialReview: AgentDialReview?
+    @Published private(set) var agentDialNotice: AgentDialNotice?
+    @Published private(set) var agentDialLastSync: Date?
+    @Published private(set) var agentDialQueue: [AgentDialChoice] = []
+    @Published private var agentDialRequest: AgentDialRequest?
+    var agentEnablementPending: String? { agentDialRequest?.id }
+    private var agentDialScoped = false
+    var agentDialCanEdit: Bool { agentEnablementAvailable && agentDialSynchronized && connection == .secured }
+    func agentDialChoice(_ kind: String) -> AgentDialChoice? {
+        if let current = agentDialRequest?.choice, current.kind == kind { return current }
+        return agentDialQueue.first { $0.kind == kind }
+    }
+    func agentDialVisualEnabled(_ kind: String, committed: Bool) -> Bool { agentDialChoice(kind)?.previous ?? committed }
+    func agentDialQueued(_ kind: String) -> Bool { agentDialQueue.contains { $0.kind == kind } }
 
-    private func resetAgentEnablement() {
-        agentEnablementAvailable = false
-        agentEnablementPending = nil
-        agentEnablementRevision = nil
-        agentEnablementRows = []
-        agentEnablementFailed = false
+    private func resetAgentEnablement(keepDialCache: Bool = true) {
+        if let request = agentDialRequest, let change = request.choice {
+            agentDialNotice = AgentDialNotice(kind: change.kind, status: "interrupted", id: request.id)
+        } else if agentDialNotice?.status != "interrupted" { agentDialNotice = nil }
+        agentEnablementAvailable = false; agentDialSynchronized = false; agentDialScoped = false
+        agentDialRequest = nil; agentDialReview = nil; agentDialQueue = []
+        agentEnablementRevision = nil; agentEnablementRows = []
+        if !keepDialCache { agentDialCached = nil; agentDialLastSync = nil; agentDialNotice = nil }
     }
 
-    func setAgentEnabled(_ kind: String, enabled: Bool, expectedRevision: Int? = nil, confirmDisable: Bool = false) {
-        guard agentEnablementAvailable, agentEnablementPending == nil, let revision = agentEnablementRevision,
-              expectedRevision == nil || expectedRevision == revision,
-              agentEnablementRows.contains(where: { $0.id == kind && $0.enabled != enabled }) else { return }
-        var request: [String: Any] = ["type": "agent.enablement.write", "kind": kind, "enabled": enabled, "expectedRevision": revision]
-        if confirmDisable { request["confirmDisable"] = true }
-        requestAgentEnablement(request)
+    func dismissAgentDialReview(_ review: AgentDialReview) {
+        if agentDialReview == review { agentDialReview = nil; pumpAgentDial() }
+    }
+    func cancelQueuedAgentDial() {
+        if !agentDialQueue.isEmpty { agentDialQueue = [] }
+        if agentDialReview != nil { agentDialReview = nil }
+    }
+
+    func setAgentEnabled(_ kind: String, enabled: Bool, expectedRevision: Int? = nil, review: AgentDialReview? = nil) {
+        guard agentDialCanEdit, let revision = agentEnablementRevision, expectedRevision == nil || expectedRevision == revision,
+              agentDialRequest?.choice?.kind != kind, agentDialReview == nil || agentDialReview == review else { return }
+        if let index = agentDialQueue.firstIndex(where: { $0.kind == kind }) {
+            if agentDialQueue[index].previous == enabled { agentDialQueue.remove(at: index) }
+            return
+        }
+        guard let row = agentEnablementRows.first(where: { $0.id == kind && $0.enabled != enabled }),
+              review == nil || (!enabled && review == agentDialReview && review?.revision == revision && review?.kind == kind) else { return }
+        let choice = AgentDialChoice(kind: kind, target: enabled, previous: row.enabled, review: review, expectedRevision: expectedRevision ?? review?.revision)
+        if review != nil { agentDialQueue.insert(choice, at: 0) } else { agentDialQueue.append(choice) }
+        if agentDialReview?.kind == kind { agentDialReview = nil }
+        agentDialNotice = nil
+        pumpAgentDial()
     }
 
     func refreshAgentEnablement() {
-        guard agentEnablementAvailable, agentEnablementPending == nil else { return }
-        requestAgentEnablement(["type": "agent.enablement.read"])
+        // Authenticated device.ready may precede the transport's .secured callback.
+        guard agentEnablementAvailable, agentDialRequest == nil, agentDialQueue.isEmpty else { return }
+        agentDialSynchronized = false
+        requestAgentDial(nil, revision: nil)
     }
 
-    private func requestAgentEnablement(_ body: [String: Any]) {
+    private func pumpAgentDial() {
+        guard agentDialCanEdit, agentDialRequest == nil, agentDialReview == nil, let revision = agentEnablementRevision else { return }
+        while !agentDialQueue.isEmpty {
+            let next = agentDialQueue.removeFirst()
+            guard agentEnablementRows.contains(where: { $0.id == next.kind && $0.enabled == next.previous }),
+                  next.expectedRevision == nil || next.expectedRevision == revision else {
+                agentDialNotice = .init(kind: next.kind, status: "conflict", id: UUID().uuidString)
+                continue
+            }
+            requestAgentDial(next, revision: revision); return
+        }
+    }
+
+    private func requestAgentDial(_ choice: AgentDialChoice?, revision: Int?) {
         let id = "agent-enablement:" + UUID().uuidString
-        agentEnablementFailed = false
-        agentEnablementPending = id
-        var request = body; request["requestId"] = id; request["protocolVersion"] = orbisProtocolVersion
-        if !transport.send(request) { agentEnablementPending = nil; agentEnablementFailed = true; return }
+        agentDialRequest = AgentDialRequest(id: id, choice: choice, revision: revision)
+        var request: [String: Any] = ["type": choice == nil ? "agent.enablement.read" : "agent.enablement.write", "requestId": id, "protocolVersion": orbisProtocolVersion]
+        if let choice, let revision {
+            request["kind"] = choice.kind; request["enabled"] = choice.target; request["expectedRevision"] = revision
+            if let review = choice.review {
+                if let token = review.token { request["review"] = token } else { request["confirmDisable"] = true }
+            }
+        }
+        guard transport.send(request) else { failAgentDial(id); return }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(10))
-            guard let self, self.agentEnablementPending == id else { return }
-            self.agentEnablementPending = nil
-            self.agentEnablementFailed = true
+            self?.failAgentDial(id)
         }
+    }
+
+    private func failAgentDial(_ id: String) {
+        guard let request = agentDialRequest, request.id == id else { return }
+        agentDialRequest = nil; agentDialSynchronized = false; agentDialQueue = []; agentDialReview = nil
+        agentDialNotice = .init(kind: request.choice?.kind, status: request.choice == nil ? "readFailed" : "interrupted", id: id)
+        if request.choice != nil { refreshAgentEnablement() }
     }
 
     private func receiveAgentEnablement(_ message: [String: Any]) {
         guard agentEnablementAvailable, let snapshot = message["snapshot"] as? [String: Any],
-              let revision = snapshot["revision"] as? Int, revision >= 0,
+              let revision = snapshot["revision"] as? Int, (0...9_007_199_254_740_991).contains(revision),
               let raw = snapshot["agents"] as? [[String: Any]], raw.count <= 128 else { return }
         let rows = raw.compactMap { row -> AgentEnablementRow? in
-            guard let id = row["kind"] as? String, let label = row["label"] as? String, let enabled = row["enabled"] as? Bool else { return nil }
+            guard let id = row["kind"] as? String, (1...64).contains(id.count),
+                  let label = row["label"] as? String, (1...128).contains(label.count), let enabled = row["enabled"] as? Bool else { return nil }
             return AgentEnablementRow(id: id, label: label, enabled: enabled)
         }
         guard rows.count == raw.count, Set(rows.map(\.id)).count == rows.count else { return }
-        if revision >= (agentEnablementRevision ?? -1) {
+        let isResult = message["type"] as? String == "agent.enablement.result"
+        let status = message["status"] as? String
+        guard !isResult || ["applied", "conflict", "unchanged"].contains(status ?? "") else { return }
+        let owned = agentDialRequest.flatMap { $0.id == message["requestId"] as? String && ($0.choice != nil) == isResult ? $0 : nil }
+        guard (message["requestId"] == nil || owned != nil), (!isResult || owned?.choice != nil) else { return }
+        let expectedResultRevision = owned?.revision.map { $0 + 1 }
+        let staleResult = owned?.choice != nil && (revision < (agentEnablementRevision ?? -1) ||
+            status == "applied" && expectedResultRevision != revision)
+        var other: AgentEnablementRow?
+        if revision > (agentEnablementRevision ?? -1) {
+            other = rows.first { row in agentDialChoice(row.id) == nil && (agentDialCached ?? []).contains { $0.id == row.id && $0.enabled != row.enabled } }
             agentEnablementRevision = revision
-            agentEnablementRows = rows
+            if rows != agentEnablementRows { agentEnablementRows = rows }
+            if rows != agentDialCached { agentDialCached = rows }
+            agentDialLastSync = Date()
+            if agentDialReview?.revision != revision { agentDialReview = nil }
         }
-        if let pending = agentEnablementPending, message["requestId"] as? String == pending {
-            agentEnablementPending = nil
-            agentEnablementFailed = message["status"] as? String == "conflict"
+        if let owned {
+            agentDialRequest = nil
+            if let change = owned.choice {
+                if status == "conflict" || staleResult { agentDialNotice = .init(kind: change.kind, status: "conflict", id: owned.id) }
+                else if !change.target, status == "applied", agentEnablementRows.contains(where: { $0.id == change.kind && !$0.enabled }) {
+                    agentDialNotice = .init(kind: change.kind, status: "disabled", id: owned.id, revision: agentEnablementRevision)
+                } else if status == "applied" { agentDialNotice = nil }
+            } else {
+                if agentDialNotice?.status == "readFailed" { agentDialNotice = nil }
+                agentDialSynchronized = true
+            }
         }
+        if owned?.choice == nil, let other { agentDialNotice = .init(kind: other.id, status: other.enabled ? "externalOn" : "externalOff", id: "snapshot:\(revision)") }
+        pumpAgentDial()
+    }
+
+    private func rejectAgentDial(_ message: [String: Any]) {
+        guard let request = agentDialRequest, request.id == message["requestId"] as? String else { return }
+        agentDialRequest = nil
+        if let change = request.choice, !change.target, let revision = agentEnablementRevision, revision == request.revision {
+            if agentDialScoped, let raw = message["review"] as? [String: Any], let review: AgentDialReview = jsonDecode(raw), review.kind == change.kind,
+               review.revision == revision, let total = review.total, total >= max(1, review.sessions.count), review.sessions.count <= 24,
+               review.sessions.allSatisfy({ (1...256).contains($0.count) }),
+               let token = review.token, token.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil {
+                agentDialReview = review; pumpAgentDial(); return
+            }
+            if !agentDialScoped, message["code"] as? String == "agent_disable_confirmation_required" {
+                agentDialReview = .init(kind: change.kind, revision: revision, sessions: [], total: nil, token: nil)
+                pumpAgentDial(); return
+            }
+        }
+        let status = request.choice == nil ? "readFailed" : agentEnablementRevision == request.revision ? "failed" : "conflict"
+        agentDialNotice = .init(kind: request.choice?.kind, status: status, id: request.id)
+        pumpAgentDial()
     }
 
     @Published private(set) var selectedHostId: String?
@@ -1529,6 +1661,7 @@ final class HostConnection: ObservableObject {
             }
             else { self.ledgerOpenConnection() }
             self.connection = state
+            if state == .secured, self.agentEnablementAvailable, !self.agentDialSynchronized { self.refreshAgentEnablement() }
             if state != .secured, self.browse?.forDownload == true, self.browse?.loading == true { self.dismissDownloadBrowser() }
             if state != .secured { self.pathRTT = nil }
             if state != .secured { self.homeDirectoryReceived = false; self.defaultSessionSpawnMode = "tui"; self.filteredReady = nil; self.resetAgentEnablement(); self.importReady = false; self.finishExternalImport(.unconfirmed); self.finishExternalLaunch(.unconfirmed) }
@@ -3767,6 +3900,8 @@ final class HostConnection: ObservableObject {
             if let selectedRuntime { syncSession(selectedRuntime, force: true) }
         case "agent.enablement.snapshot", "agent.enablement.result":
             if channel != nil { receiveAgentEnablement(message) }
+        case "agent.enablement.review":
+            if channel != nil { rejectAgentDial(message) }
         case "device.ready":
             guard channel != nil, let values = message["runtimes"] as? [[String: Any]] else { return }
             // OpenClaw's echo is independent of Gateway readiness. The old Host
@@ -3782,6 +3917,7 @@ final class HostConnection: ObservableObject {
             let admittedClose = readyAdmitsRuntimeClose(message)
             let filtered = features.contains("device.features") && (message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw ||
                features.contains(Self.agentEnablementFeature) && !readyAdmitsAgentEnablement(message) ||
+               features.contains(agentDialReviewFeature) && !readyAdmitsAgentDialReview(message) ||
                features.contains(codexUnifiedHistoryFeature) && !admittedCodex || features.contains(runtimeCloseFeature) && !admittedClose)
             if filtered, message["_orbisFilteredFallback"] == nil {
                 if filteredReady != nil { return }
@@ -3800,8 +3936,11 @@ final class HostConnection: ObservableObject {
             }
             filteredReady = nil
             let management = readyAdmitsAgentEnablement(message)
-            if management && !agentEnablementAvailable { agentEnablementAvailable = true; refreshAgentEnablement() }
-            else if !management && agentEnablementAvailable { resetAgentEnablement() }
+            if management {
+                if !agentEnablementAvailable { agentEnablementAvailable = true }
+                agentDialScoped = readyAdmitsAgentDialReview(message)
+                if !agentDialSynchronized && agentDialNotice?.status != "readFailed" { refreshAgentEnablement() }
+            } else if agentEnablementAvailable || agentDialCached != nil { resetAgentEnablement(keepDialCache: false) }
             let previousDisplayVersion = expectedMessageDisplayVersion
             // The Host advertises the rich projection on its ready message; older Hosts keep the
             // released display version, and the filtered (non-`dshDesktop`) view never carries it.
@@ -4056,7 +4195,7 @@ final class HostConnection: ObservableObject {
             refreshSessions()
         case "protocol.error":
             if let id = message["requestId"] as? String, id.hasPrefix("agent-enablement:") {
-                if agentEnablementPending == id { agentEnablementPending = nil; agentEnablementFailed = true }
+                if channel != nil { rejectAgentDial(message) }
                 return
             }
             if let result = menuOptions.consume(message) {

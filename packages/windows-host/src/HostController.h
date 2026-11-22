@@ -1,5 +1,6 @@
 #pragma once
 #include <QObject>
+#include <optional>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QProcess>
@@ -90,6 +91,10 @@ class HostController : public QObject {
     /** HOST-GUIDE-01: per-Agent backend facts of the running Host ({kind, ready, launchable, runtimeCount}); empty while paused. */
     Q_PROPERTY(QVariantList backends READ backends NOTIFY changed)
     Q_PROPERTY(QVariantMap agentEnablement READ agentEnablement NOTIFY agentEnablementChanged)
+    Q_PROPERTY(QVariantMap agentChanges READ agentChanges NOTIFY changed)
+    Q_PROPERTY(bool agentChoicesAvailable READ agentChoicesAvailable NOTIFY changed)
+    Q_PROPERTY(bool agentChoicesNeedRetry READ agentChoicesNeedRetry NOTIFY changed)
+    Q_PROPERTY(QVariantMap activeAgentSessions READ activeAgentSessions NOTIFY changed)
     Q_PROPERTY(QVariantMap openClaw READ openClaw NOTIFY openClawChanged)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
@@ -178,6 +183,10 @@ public:
     int runtimeCount() const { return m_runtimeCount; }
     QVariantList backends() const { return m_backends; }
     QVariantMap agentEnablement() const { return m_agentEnablement; }
+    bool agentChoicesNeedRetry() const { return m_bridgeReady && m_agentChoiceRecheck && !m_agentReadPending; }
+    bool agentChoicesAvailable() const { return m_bridgeReady && !busy() && !m_agentEnablement.isEmpty() && !m_agentChoiceRecheck; }
+    QVariantMap agentChanges() const;
+    QVariantMap activeAgentSessions() const { return m_activeAgentSessions; }
     QVariantMap openClaw() const { return m_openClaw; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
@@ -202,7 +211,12 @@ public:
     Q_INVOKABLE void replaceIdentity();
     Q_INVOKABLE void refreshRegistrationPolicy();
     Q_INVOKABLE void startHost();
-    Q_INVOKABLE void setAgentEnabled(const QString &kind, bool enabled, double expectedRevision = -1, bool confirmDisable = false);
+    Q_INVOKABLE void setAgentEnabled(const QString &kind, bool enabled, double expectedRevision = -1);
+    Q_INVOKABLE void setAgentsEnabled(const QStringList &kinds, bool enabled, double expectedRevision = -1);
+    Q_INVOKABLE void confirmAgentReviews();
+    Q_INVOKABLE void dismissAgentReviews();
+    Q_INVOKABLE void refreshAgentChoices();
+    Q_INVOKABLE void refreshAgentProviders(const QString &kind);
     Q_INVOKABLE void saveOpenClaw(const QString &url, const QString &token);
     Q_INVOKABLE void reconnectOpenClaw();
     Q_INVOKABLE void stopHost();
@@ -268,6 +282,8 @@ signals:
     void agentEntryFinished(const QString &kind, const QString &error);
     void changed();
     void agentEnablementChanged();
+    void agentReviewsRequested(const QStringList &kinds, const QVariantList &reviews, double revision);
+    void agentWriteFeedback(const QStringList &kinds, const QString &status, double revision);
     void openClawChanged();
     void providersChanged();
     void providerPresetsChanged();
@@ -316,7 +332,10 @@ private:
     void resumeAfterChange();
     /** Paused Hosts have no reachable phones or sessions; drop the running service's facts with it. */
     void clearRunningFacts();
-    void applyAgentEnablement(const QJsonObject &snapshot);
+    void applyAgentEnablement(const QJsonObject &snapshot, bool announce = false);
+    void enqueueAgentChoices(const QStringList &kinds, bool enabled, double expectedRevision, bool batch);
+    void pumpAgentChoices();
+    void failAgentChoice();
     void receiveLine(const QJsonObject &line);
     /** `failed`, when given, replaces the user-facing error handling for a refused or unreachable request. */
     void api(const QString &endpoint, const QJsonObject &body, Callback done, std::function<void()> failed = {});
@@ -383,7 +402,19 @@ private:
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_iosAppDownloadQr, m_challenge, m_challengeEmail;
     DiagnosticLogModel m_logs;
     QVariantList m_devices, m_agents, m_backends;
-    QVariantMap m_agentEnablement;
+    QVariantMap m_agentEnablement, m_activeAgentSessions;
+    struct AgentChoice {
+        QStringList kinds;
+        bool target;
+        bool batch;
+        double expectedRevision;
+        QVariantMap previous;
+        QVariantMap reviews;
+    };
+    QList<AgentChoice> m_agentChoices;
+    std::optional<AgentChoice> m_agentInFlight, m_agentReview;
+    int m_agentWriteId = -1;
+    bool m_agentChoiceRecheck = false, m_agentReadPending = false;
     QVariantMap m_openClaw;
     QVariantMap m_codexDesktop, m_dshDesktop;
     QString m_kimiCodeState, m_kimiCodeDefaultSource = "web";

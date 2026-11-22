@@ -18,6 +18,7 @@ struct ConnectionStatusView: View {
     @State private var proposedProtocol: RelayTransportMode = .auto
     var root = false
     let onBack: () -> Void
+    var onOpenAgent: () -> Void = {}
     var body: some View {
         let palette = OrbisPalette(scheme, appearance: OrbisAppearance(rawValue: appearance) ?? .mist)
         let useSystemBar = root && systemVerticalBar
@@ -52,25 +53,14 @@ struct ConnectionStatusView: View {
                             }.frame(minHeight: 56).contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityIdentifier("settings-protocol")
                     }
-                    if store.activeConnection.agentEnablementAvailable {
-                        StatusSection(title: "Agent") {
-                            ForEach(store.activeConnection.agentEnablementRows) { row in
-                                Toggle(isOn: Binding(get: { row.enabled }, set: { changeAgent(row, enabled: $0) })) {
-                                    HStack(spacing: 10) {
-                                        if AgentIdentity(kind: row.id) != nil {
-                                            AgentEmblem(kind: row.id, size: 20, recessed: false).accessibilityHidden(true)
-                                        }
-                                        Text(row.label).font(.orbisBody(.semibold))
-                                    }
-                                }.toggleStyle(NeuToggleStyle())
-                                    .disabled(store.activeConnection.agentEnablementPending != nil)
-                                    .accessibilityIdentifier("agent-enablement-" + row.id)
-                            }
-                            if store.activeConnection.agentEnablementPending != nil { ProgressView().controlSize(.small) }
-                            if store.activeConnection.agentEnablementFailed {
-                                OrbisActionButton(title: L10n.tr("刷新"), symbol: "arrow.clockwise", action: store.activeConnection.refreshAgentEnablement)
-                            }
-                        }
+                    StatusSection(title: "Agent") {
+                        Button(action: onOpenAgent) {
+                            HStack {
+                                Label("Agent", systemImage: "slider.horizontal.3").font(.orbisBody(.semibold))
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.orbisLabel()).foregroundStyle(palette.secondary)
+                            }.frame(minHeight: 56).contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityIdentifier("settings-open-agent")
                     }
                     StatusSection(title: L10n.tr("语音")) {
                         OrbisMotionButton { voiceCleanupOpen = true } label: {
@@ -115,18 +105,6 @@ struct ConnectionStatusView: View {
                 }).orbisSheet([.large])
             }
             .orbisBottomSheet(isPresented: $protocolOpen) { protocolSheet.orbisSheet([.medium, .large]) }
-    }
-    private func changeAgent(_ row: HostConnection.AgentEnablementRow, enabled: Bool) {
-        let owner = store.activeConnection
-        guard let revision = owner.agentEnablementRevision else { return }
-        if enabled { owner.setAgentEnabled(row.id, enabled: true, expectedRevision: revision); return }
-        overlay.showDialog(L10n.tr("停用 {0}？", row.label), message: L10n.tr("Orbis 将断开此 Agent 的接入，不会退出原生应用。"), actions: [
-            OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
-            OrbisDialogAction(title: L10n.tr("停用"), role: .destructive) {
-                guard store.activeConnection === owner else { return }
-                owner.setAgentEnabled(row.id, enabled: false, expectedRevision: revision, confirmDisable: true)
-            },
-        ])
     }
     private var connectionSheet: some View {
         VStack(spacing: 16) {
@@ -317,104 +295,223 @@ struct AgentProvidersView: View {
     @Environment(\.orbisAppearance) private var appearance
     @Environment(\.orbisSystemVerticalBar) private var systemVerticalBar
     @Environment(\.orbisSystemRootActions) private var systemRootActions
+    @Environment(\.orbisVisible) private var visible
     @State private var selectedId: String?
+    @State private var chosenKind = "codex"
     @State private var moving = false
+    @State private var displayedNotice: HostConnection.AgentDialNotice?
+    @State private var previousProfiles: [AgentProvider] = []
+    @State private var reviewDialogID: UUID?
     var root = false
     let onBack: () -> Void
-    private let kinds = ["codex", "claude", "dsh", "pi"]
-    private var selectedIndex: Int { host.providers.firstIndex { $0.id == selectedId } ?? host.providers.firstIndex(where: \.enabled) ?? 0 }
-    private var provider: AgentProvider? { host.providers.indices.contains(selectedIndex) ? host.providers[selectedIndex] : nil }
+    private var owner: HostConnection { store.activeConnection }
+    private var online: Bool { owner.connection == .secured }
+    private let groups = ["codex", "claude", "dsh", "pi"]
+    private var rows: [HostConnection.AgentEnablementRow] { owner.agentDialCached ?? owner.agentEnablementRows }
+    private var managed: Bool { owner.agentEnablementAvailable || owner.agentDialCached != nil }
+    private var legacyKinds: [String]? { legacyAgentDialKinds(supported: owner.supportedAgents, launchable: owner.launchableAgents) }
+    private var kinds: [String] {
+        managed ? rows.map(\.id) : legacyKinds ?? groups
+    }
+    private var kind: String { kinds.contains(chosenKind) ? chosenKind : (kinds.first ?? "") }
+    // DeepSeek Desktop has a separate, read-only native catalog (ADR-0076).
+    private var group: String? { kind == "codexDesktop" ? "codex" : groups.contains(kind) ? kind : nil }
+    private var row: HostConnection.AgentEnablementRow? { rows.first { $0.id == kind } }
+    private var label: String { row?.label ?? (kind.isEmpty ? "" : agentTitle(kind)) }
+    private var powered: Bool { !managed || row?.enabled == true }
+    private var visualOn: Bool { owner.agentDialVisualEnabled(kind, committed: powered) }
+    private var write: HostConnection.AgentDialChoice? { owner.agentDialChoice(kind) }
+    private var queued: Bool { owner.agentDialQueued(kind) }
+    private var editable: Bool { visible && owner.agentDialCanEdit && row != nil && owner.agentDialReview == nil && (write == nil || queued) }
+    private var profiles: [AgentProvider] { powered ? group.map { host.providers(for: $0) } ?? [] : [] }
+    private var selectedIndex: Int { profiles.firstIndex { $0.id == selectedId } ?? profiles.firstIndex(where: \.enabled) ?? 0 }
+    private var provider: AgentProvider? { profiles.indices.contains(selectedIndex) ? profiles[selectedIndex] : nil }
     private var palette: OrbisPalette { OrbisPalette(scheme, appearance: OrbisAppearance(rawValue: appearance) ?? .mist) }
+    private var sourceStatus: (String, Color) {
+        if write != nil { return (queued ? "已排队" : "待确认", palette.accent) }
+        if row?.enabled == false { return ("未启用", palette.faint) }
+        if !online { return ("已断开", palette.faint) }
+        if row == nil { return ("正在读取 Agent", palette.secondary) }
+        if kind == "codexDesktop", let facts = owner.codexDesktop {
+            if facts.state == "attached" { return ("已连接", palette.success) }
+            if ["notInstalled", "not_installed"].contains(facts.state) { return ("未安装", palette.warning) }
+            if ["failed", "error", "incompatible"].contains(facts.state) { return ("接入失败", palette.error) }
+        }
+        if (owner.supportedAgents ?? []).contains(kind) { return ("已连接", palette.success) }
+        if (owner.launchableAgents ?? []).contains(kind) { return ("可启动", palette.secondary) }
+        return ("等待接入", palette.secondary)
+    }
+    private func refresh() {
+        if managed && !owner.agentDialSynchronized { owner.refreshAgentEnablement() }
+        else if powered, let group, online { host.loadProviders(group) }
+    }
+    private func toggle(_ target: Bool) { if editable { owner.setAgentEnabled(kind, enabled: target) } }
+    private func choose(_ kind: String) { if kind != self.kind { selectedId = nil; chosenKind = kind } }
     var body: some View {
         let useSystemBar = root && systemVerticalBar
-        let refreshDisabled = host.providersLoading || host.changingProvider || !host.connected
+        let refreshDisabled = !online || host.changingProvider || host.providersLoading || managed && !powered && owner.agentDialSynchronized
         VStack(spacing: 0) {
             if !useSystemBar {
                 OrbisHeader {
                     if !root { OrbisIconButton(symbol: "arrow.left", label: L10n.tr("返回"), action: onBack) }
-                } title: { Text(L10n.tr("供应商")).font(.orbisTitle()) } trailing: {
-                    OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新供应商")) { host.loadProviders(host.providerKind) }
-                        .disabled(refreshDisabled)
+                } title: { Text("Agent").font(.orbisTitle()) } trailing: {
+                    OrbisIconButton(symbol: "arrow.clockwise", label: L10n.tr("刷新"), action: refresh).disabled(refreshDisabled)
                 }
             }
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "laptopcomputer").font(.orbisBody(.semibold))
+            HStack(spacing: 12) {
+                if store.pairings.count > 1 {
+                    Menu {
+                        ForEach(store.pairings, id: \.hostId) { pairing in
+                            Button(pairing.hostName) { store.connect(hostId: pairing.hostId) }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "laptopcomputer")
+                            Image(systemName: "chevron.down").font(.orbisCaption())
+                        }.lineLimit(1)
+                    }.font(.orbisBody(.semibold)).tint(palette.text)
+                } else { Label(store.selectedHost?.hostName ?? L10n.tr("电脑"), systemImage: "laptopcomputer").font(.orbisBody(.semibold)) }
                 Spacer(minLength: 8)
-                Text(L10n.tr("{0} 个配置", host.providers.count))
+                Text(managed ? (rows.isEmpty ? L10n.tr("正在读取 Agent") : L10n.tr("{0} / {1} 已启用", rows.filter(\.enabled).count, rows.count)) : L10n.tr("{0} 个配置", profiles.count))
                     .font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.8)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12)
             GeometryReader { geometry in
-                // FOLD-03: a closed phone in landscape has room beside the dial, but not below it.
                 if geometry.size.width >= 560 && geometry.size.height < 500 {
                     HStack(spacing: 0) {
                         providerDial.frame(maxWidth: .infinity, maxHeight: .infinity)
-                        ScrollView {
-                            providerControls
-                        }
-                        .frame(width: min(340, geometry.size.width * 0.44))
-                        .accessibilityIdentifier("provider-controls-scroll")
+                        ScrollView { providerControls }.frame(width: min(340, geometry.size.width * 0.44))
+                            .accessibilityIdentifier("provider-controls-scroll")
                     }
                 } else {
                     VStack(spacing: 0) {
-                        providerDial.frame(minHeight: 220, maxHeight: .infinity)
-                        providerControls
+                        providerDial.frame(minHeight: min(200, geometry.size.height * 0.54), maxHeight: .infinity)
+                        ViewThatFits(in: .vertical) {
+                            providerControls
+                            ScrollView { providerControls }.frame(maxHeight: max(88, geometry.size.height * 0.42))
+                        }
                     }
                 }
             }
         }.background(palette.base.ignoresSafeArea())
-            .orbisRootSystemToolbar(
-                enabled: useSystemBar,
-                showActions: systemRootActions,
-                title: L10n.tr("供应商"),
-                titleColor: palette.text,
-                trailingLabel: L10n.tr("刷新供应商"),
-                trailingSymbol: "arrow.clockwise",
-                trailingDisabled: refreshDisabled,
-                trailingAction: { host.loadProviders(host.providerKind) }
-            )
-            .onAppear { host.loadProviders(host.providerKind) }
-            .onChange(of: host.providerKind) { _, _ in selectedId = nil }
-            .onChange(of: host.hostKey) { _, _ in selectedId = nil; moving = false; overlay.dismissDialog() }
-            .onChange(of: host.connected) { _, connected in if !connected { moving = false; overlay.dismissDialog() } }
+            .orbisRootSystemToolbar(enabled: useSystemBar, showActions: systemRootActions, title: "Agent", titleColor: palette.text,
+                trailingLabel: L10n.tr("刷新"), trailingSymbol: "arrow.clockwise", trailingDisabled: refreshDisabled, trailingAction: refresh)
+            .task(id: DialLoadKey(host: store.selectedHostId, group: group, powered: powered, online: online, visible: visible)) {
+                if visible, online, powered, let group { host.loadProviders(group) }
+            }
+            .onChange(of: profiles, initial: true) { _, current in if powered { previousProfiles = current } }
+            .task(id: DialNoticeKey(host: store.selectedHostId, id: owner.agentDialNotice?.id)) {
+                displayedNotice = owner.agentDialNotice
+                guard displayedNotice?.status != "readFailed" else { return }
+                try? await Task.sleep(for: .seconds(4))
+                if !Task.isCancelled { displayedNotice = nil }
+            }
+            .onChange(of: host.hostKey) { _, _ in previousProfiles = []; chosenKind = "codex"; selectedId = nil; moving = false; displayedNotice = nil; dismissReviewDialog() }
+            .onChange(of: online) { _, value in if !value { moving = false; dismissReviewDialog() } }
+            .onChange(of: owner.agentDialReview) { _, review in showReview(review) }
+            .onChange(of: visible) { _, value in if value { showReview(owner.agentDialReview) } else { dismissReviewDialog(); moving = false } }
+            .onAppear { showReview(owner.agentDialReview) }
+            .onDisappear { dismissReviewDialog() }
+    }
+    private struct DialNoticeKey: Hashable { let host: String?; let id: String? }
+    private struct DialLoadKey: Hashable { let host: String?; let group: String?; let powered: Bool; let online: Bool; let visible: Bool }
+    private func dismissReviewDialog() {
+        if let id = reviewDialogID, overlay.dialog?.id == id { overlay.dismissDialog() }
+        reviewDialogID = nil
+    }
+    private func showReview(_ review: HostConnection.AgentDialReview?) {
+        dismissReviewDialog()
+        guard visible, online, let review else { return }
+        let expected = owner
+        let name = rows.first { $0.id == review.kind }?.label ?? review.kind
+        var text = L10n.tr("Orbis 将断开此 Agent 的接入，不会退出原生应用。")
+        if !review.sessions.isEmpty { text += "\n\n" + review.sessions.map { "• " + $0 }.joined(separator: "\n") }
+        let extra = (review.total ?? 0) - review.sessions.count
+        if extra > 0 { text += "\n" + L10n.tr("另外 {0} 个", extra) }
+        overlay.showDialog(L10n.tr("停用 {0}？", name), message: text, actions: [
+            OrbisDialogAction(title: L10n.tr("取消"), role: .cancel) { expected.dismissAgentDialReview(review) },
+            OrbisDialogAction(title: L10n.tr("停用"), role: .destructive) {
+                guard store.activeConnection === expected else { return }
+                expected.setAgentEnabled(review.kind, enabled: false, review: review)
+            },
+        ])
+        reviewDialogID = overlay.dialog?.id
     }
     private var providerDial: some View {
-        ProviderDialView(kinds: kinds, kind: host.providerKind, providers: host.providers, selected: selectedIndex,
-            onKind: { kind in selectedId = nil; overlay.dismissDialog(); host.loadProviders(kind) },
-            onSelect: { index in if host.providers.indices.contains(index) { selectedId = host.providers[index].id } }, onMoving: { moving = $0 })
+        ProviderDialView(kinds: kinds, kind: kind, providers: visualOn && !powered ? previousProfiles : profiles, selected: selectedIndex,
+            onKind: choose, onSelect: { if profiles.indices.contains($0) { selectedId = profiles[$0].id } }, onMoving: { moving = $0 },
+            rows: rows, label: label, status: sourceStatus.0, statusColor: sourceStatus.1, managed: managed, powered: visualOn,
+            offline: !online, editable: editable, pending: write, queued: queued,
+            autoNudge: editable && !rows.isEmpty && rows.allSatisfy { !$0.enabled },
+            conflictID: displayedNotice?.kind == kind && displayedNotice?.status == "conflict" ? displayedNotice?.id : nil,
+            onToggle: toggle)
+            .id(store.selectedHostId)
             .overlay(alignment: .trailing) {
-                if host.providersLoading {
-                    ProgressView().accessibilityLabel(L10n.tr("正在读取供应商")).padding(.trailing, 24).allowsHitTesting(false)
-                } else if host.providers.isEmpty && host.providerCatalogProblem == nil {
-                    Text(L10n.tr("还没有供应商")).font(.orbisBody()).foregroundStyle(palette.secondary).padding(.trailing, 24).allowsHitTesting(false)
+                if !managed && profiles.isEmpty && group != nil {
+                    if host.providersLoading { ProgressView().accessibilityLabel(L10n.tr("正在读取供应商")).padding(.trailing, 24) }
+                    else if host.providerCatalogProblem == nil { Text(L10n.tr("还没有供应商")).font(.orbisBody()).foregroundStyle(palette.secondary).padding(.trailing, 24) }
                 }
-            }
-            .accessibilityIdentifier("provider-dial-area")
+            }.accessibilityIdentifier("provider-dial-area")
     }
     private var providerControls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            quotaPanel
-            if let problem = host.providerCatalogProblem {
-                Label(problem, systemImage: "exclamationmark.circle")
-                    .font(.orbisCaption())
-                    .foregroundStyle(host.connected ? palette.error : palette.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("provider-catalog-problem")
+        VStack(alignment: .leading, spacing: 10) {
+            let sessions = online && powered ? owner.runtimes.filter { $0.agentKind == kind }.count : 0
+            if sessions > 0 && !(provider?.subscriptionSupported == true && provider?.enabled == true) {
+                Text(L10n.tr("{0} 个会话", sessions)).font(.orbisCaption()).foregroundStyle(palette.success)
             }
-            if let provider {
+            if powered && group != nil && (provider != nil || !managed) { quotaPanel }
+            if powered, let group, let problem = host.providerCatalogProblem(for: group) {
+                Label(problem, systemImage: "exclamationmark.circle").font(.orbisCaption())
+                    .foregroundStyle(online ? palette.error : palette.secondary).accessibilityIdentifier("provider-catalog-problem")
+            }
+            if kind == "codexDesktop", powered, online, let reason = owner.codexDesktop?.reason, sourceStatus.1 == palette.error {
+                Text(reason).font(.orbisCaption()).foregroundStyle(palette.error)
+            }
+            if let write {
+                OrbisActionButton(title: L10n.tr(write.target ? "正在启用" : "正在停用"), symbol: "clock") {}.disabled(true)
+            } else if managed && row == nil {
+                OrbisActionButton(title: L10n.tr("正在读取 Agent")) {}.disabled(true)
+            } else if managed && !powered {
+                OrbisActionButton(title: L10n.tr("启用 {0}", label), symbol: "power", tint: palette.agent(kind)) { toggle(true) }
+                    .disabled(!editable || moving).accessibilityIdentifier("agent-enable-action")
+            } else if let provider {
                 let active = provider.enabled && !provider.additive
-                OrbisActionButton(title: actionTitle(provider), symbol: active ? "checkmark" : provider.additive ? (provider.enabled ? "xmark" : "plus") : "arrow.left.arrow.right", tint: palette.agent(provider.kind)) {
-                    apply(provider)
-                }.disabled(active || moving || host.providersLoading || !host.canChangeProvider)
+                OrbisActionButton(title: actionTitle(provider), symbol: active ? "checkmark" : provider.additive ? (provider.enabled ? "xmark" : "plus") : "arrow.left.arrow.right", tint: palette.agent(provider.kind)) { apply(provider) }
+                    .disabled(active || moving || !online || !host.canChangeProvider(for: provider.kind))
                     .accessibilityIdentifier("provider-action-" + provider.id)
-            } else { OrbisActionButton(title: L10n.tr("正在使用")) {}.disabled(true) }
-            HStack {
-                Spacer()
-                Text("\(host.providers.isEmpty ? 0 : selectedIndex + 1) / \(host.providers.count)")
-                    .accessibilityLabel(L10n.tr("配置 {0} / {1}", host.providers.isEmpty ? 0 : selectedIndex + 1, host.providers.count))
+            } else {
+                OrbisActionButton(title: L10n.tr(managed && group == nil ? "已启用" : host.providersLoading ? "正在读取供应商" : "当前没有可用供应商"), symbol: managed && group == nil ? "checkmark" : nil) {}.disabled(true)
+            }
+            if !profiles.isEmpty || !managed {
+                Text("\(profiles.isEmpty ? 0 : selectedIndex + 1) / \(profiles.count)")
+                    .accessibilityLabel(L10n.tr("配置 {0} / {1}", profiles.isEmpty ? 0 : selectedIndex + 1, profiles.count))
                     .accessibilityIdentifier("provider-position")
-            }.font(.orbisCaption()).foregroundStyle(palette.secondary)
-            if let notice = host.providerNotice { OrbisNotice(text: notice).accessibilityIdentifier("provider-notice") }
+                    .frame(maxWidth: .infinity, alignment: .trailing).font(.orbisCaption()).foregroundStyle(palette.secondary)
+            }
+            if !online {
+                Text(owner.agentDialLastSync.map { L10n.tr("等待电脑连接 · 上次同步 {0}", $0.formatted(date: .omitted, time: .shortened)) } ?? L10n.tr("等待电脑连接"))
+                    .font(.orbisCaption()).foregroundStyle(palette.warning)
+            }
+            if powered, group == host.providerKind, let notice = host.providerNotice { OrbisNotice(text: notice).accessibilityIdentifier("provider-notice") }
+            if let feedback = displayedNotice { feedbackRow(feedback) }
         }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 16)
+    }
+    private func feedbackRow(_ feedback: HostConnection.AgentDialNotice) -> some View {
+        let name = rows.first { $0.id == feedback.kind }?.label ?? label
+        let text: String = switch feedback.status {
+        case "disabled": L10n.tr("已停用 {0}", name)
+        case "externalOn": L10n.tr("{0} 已在其他设备启用", name)
+        case "externalOff": L10n.tr("{0} 已在其他设备停用", name)
+        case "conflict": L10n.tr("Agent 设置已在其他设备更新，请确认后重试")
+        case "interrupted": L10n.tr(owner.agentDialSynchronized ? "已按电脑同步" : "未确认，等待电脑同步")
+        default: L10n.tr("无法读取或保存 Agent 设置")
+        }
+        return HStack {
+            Text(text).font(.orbisCaption()).foregroundStyle(palette.secondary)
+            Spacer(minLength: 0)
+            if feedback.status == "disabled", let kind = feedback.kind, owner.agentDialCanEdit, feedback.revision == owner.agentEnablementRevision {
+                Button(L10n.tr("撤销")) { owner.setAgentEnabled(kind, enabled: true, expectedRevision: feedback.revision); displayedNotice = nil }
+            } else if feedback.status == "readFailed", online { Button(L10n.tr("刷新"), action: owner.refreshAgentEnablement) }
+        }
     }
     private var quotaPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -447,7 +544,7 @@ struct AgentProvidersView: View {
         return provider.enabled ? L10n.tr("正在使用 {0}", provider.name) : L10n.tr("切换到 {0}", provider.name)
     }
     private func apply(_ provider: AgentProvider) {
-        guard !moving, let key = host.hostKey, host.canChangeProvider else { return }
+        guard !moving, powered, online, let key = host.hostKey, host.canChangeProvider(for: provider.kind) else { return }
         let removing = provider.additive && provider.enabled
         overlay.showDialog(removing ? L10n.tr("移出 {0}？", provider.name) : L10n.tr("切换 {0} 到 {1}？", agentTitle(provider.kind), provider.name), message: provider.confirmation, actions: [
             OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
@@ -511,6 +608,33 @@ private struct ProviderDialView: View {
     let onKind: (String) -> Void
     let onSelect: (Int) -> Void
     let onMoving: (Bool) -> Void
+    let rows: [HostConnection.AgentEnablementRow]
+    let label: String
+    let status: String
+    let statusColor: Color
+    let managed: Bool
+    let powered: Bool
+    let offline: Bool
+    let editable: Bool
+    let pending: HostConnection.AgentDialChoice?
+    let queued: Bool
+    let autoNudge: Bool
+    let conflictID: String?
+    let onToggle: (Bool) -> Void
+    @State private var nudged = false
+    @State private var recoil = 0.0
+    @State private var sweep = 1.0
+    @State private var pinDrag: Double?
+    @State private var pinOwner: String?
+    @State private var pinStartEnabled = false
+    @State private var pinStartChoice: HostConnection.AgentDialChoice?
+    @State private var pinArmed = false
+    @State private var pinTouched = false
+    @State private var axisLocked = false
+    @State private var hint: String?
+    @State private var nudge = 0.0
+    @State private var hintTask: Task<Void, Never>?
+    @State private var ringLit = false
     @State private var groupPosition = 0.0
     @State private var profilePosition = 0.0
     @State private var handle: ProviderDialGeometry.Handle?
@@ -519,13 +643,16 @@ private struct ProviderDialView: View {
     @State private var moved = false
     @State private var agentPulse = 0
     @State private var profilePulse = 0
-    private var groupIndex: Int { kinds.firstIndex(of: kind) ?? 1 }
+    private var groupIndex: Int { kinds.firstIndex(of: kind) ?? 0 }
+    private var actualPower: Bool { !managed || ringLit }
+    private var pinFraction: Double { pinDrag ?? ((pending.map { $0.target ? ProviderDialGeometry.pinHold : 1 - ProviderDialGeometry.pinHold } ?? (powered ? 1 : 0)) + nudge) }
+    private var pinColor: Color { conflictID != nil ? palette.error : offline || !powered && pending == nil ? palette.faint : palette.agent(kind) }
     private var palette: OrbisPalette { OrbisPalette(scheme) }
     var body: some View {
         GeometryReader { proxy in
             let g = ProviderDialGeometry.Layout(width: proxy.size.width, height: proxy.size.height)
             ZStack(alignment: .topLeading) {
-                disc(radius: g.radius, intensity: 1)
+                disc(radius: g.radius, inset: managed && !actualPower, intensity: actualPower ? 1 : 0.45)
                     .overlay { if keyboardHandle == .profile { Circle().stroke(palette.agent(kind), lineWidth: 2).padding(4) } }
                     .focusEffectDisabled()
                     .onKeyPress(keys: [.upArrow, .downArrow, .home, .end]) { key in keyboardBrowse(.profile, key: key.key) }
@@ -543,7 +670,7 @@ private struct ProviderDialView: View {
                 disc(radius: g.hubRadius, intensity: hubIntensity)
                     .overlay { if keyboardHandle == .agent { Circle().stroke(palette.agent(kind), lineWidth: 2).padding(4) } }
                     .focusEffectDisabled()
-                    .onKeyPress(keys: [.upArrow, .downArrow, .home, .end]) { key in keyboardBrowse(.agent, key: key.key) }
+                    .onKeyPress(keys: [.upArrow, .downArrow, .home, .end, .leftArrow, .rightArrow, .space]) { key in keyboardBrowse(.agent, key: key.key) }
                     .onKeyPress(.tab, phases: .down) { key in
                         if key.modifiers.contains(.shift) { keyboardHandle = .profile; return .handled }
                         return .ignored
@@ -558,13 +685,18 @@ private struct ProviderDialView: View {
                 }
                 agentScale(g).opacity(handle == .profile ? 0.4 : 1)
                 disc(radius: g.holeRadius, inset: true, intensity: 0.65).position(x: g.centerX, y: g.centerY)
-                Circle().fill(palette.agent(kind)).frame(width: 8, height: 8)
-                    .modifier(OrbisDialPulse(trigger: profilePulse, peak: 1.5))
-                    .position(x: g.centerX + g.radius + 12, y: g.centerY)
+                Circle().fill(!managed ? palette.agent(kind) : actualPower && !offline && status == "已连接" ? statusColor : .clear)
+                    .overlay { if managed && (!actualPower || offline || status != "已连接") { Circle().strokeBorder(actualPower && !offline ? statusColor : palette.faint, lineWidth: 1.1) } }
+                    .frame(width: 7, height: 7).modifier(OrbisDialPulse(trigger: profilePulse, peak: 1.5))
+                    .position(x: g.centerX + g.radius + 8, y: g.centerY)
+                OrbisDialSweep(progress: sweep, tint: palette.agent(kind), geometry: g)
+                    .opacity(managed && !offline && !reduced ? 1 : 0).allowsHitTesting(false)
+                if managed && handle != .agent && !kind.isEmpty { pinView(g) }
+                if managed && profilesHidden && !kind.isEmpty { nameplate(g) }
             }.frame(width: proxy.size.width, height: proxy.size.height).clipped()
                 .contentShape(Rectangle()).gesture(gesture(g))
                 .background {
-                    OrbisDialKeyboardBridge(active: visible && scenePhase == .active,
+                    OrbisDialKeyboardBridge(active: visible && scenePhase == .active, pinEditable: managed && editable,
                         focus: Binding(get: { keyboardHandle }, set: { keyboardHandle = $0 }),
                         browse: { owner, key in _ = keyboardBrowse(owner, key: key) })
                 }
@@ -574,14 +706,14 @@ private struct ProviderDialView: View {
                         .accessibilityElement().accessibilityLabel("Agent").accessibilityValue(agentTitle(kind))
                         .accessibilityAdjustableAction { direction in adjustAgent(direction) }
                 }
-                .accessibilityLabel(L10n.tr("供应商圆盘"))
-                .accessibilityValue(providers.indices.contains(selected) ? providers[selected].name : L10n.tr("还没有供应商"))
+                .accessibilityLabel(L10n.tr(managed ? "Agent 转盘" : "供应商圆盘"))
+                .accessibilityValue(providers.indices.contains(selected) ? providers[selected].name : L10n.tr(status))
                 .accessibilityAdjustableAction { direction in
                     let next = max(0, min(providers.count - 1, selected + (direction == .increment ? 1 : -1)))
                     settleProfile(next)
                 }
         }.onAppear {
-            groupPosition = Double(groupIndex); profilePosition = Double(selected)
+            groupPosition = Double(groupIndex); profilePosition = Double(selected); ringLit = powered
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--preview-provider-keyboard") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { keyboardHandle = .profile }
@@ -591,7 +723,36 @@ private struct ProviderDialView: View {
             .onChange(of: dragging) { old, active in if old && !active { resetGesture() } }
             .onChange(of: visible) { _, active in if !active { keyboardHandle = nil; resetGesture() } }
             .onChange(of: scenePhase) { _, phase in if phase != .active { keyboardHandle = nil; resetGesture() } }
-            .onDisappear { keyboardHandle = nil; resetGesture() }
+            .onDisappear { keyboardHandle = nil; resetGesture(); hintTask?.cancel() }
+            .onChange(of: kinds) { _, _ in resetGesture(); groupPosition = Double(groupIndex) }
+            .task(id: autoNudge && visible) {
+                guard visible, autoNudge, !nudged else { return }
+                try? await Task.sleep(for: .milliseconds(900))
+                guard !Task.isCancelled else { return }
+                nudged = true; nudgePin()
+                try? await Task.sleep(for: .milliseconds(540))
+                if !Task.isCancelled { nudgePin() }
+            }
+            .task(id: conflictID) {
+                recoil = 0
+                guard conflictID != nil, !reduced else { return }
+                for offset in [-4.0, 3.0, 0.0] {
+                    withAnimation(.easeOut(duration: 0.055)) { recoil = offset }
+                    try? await Task.sleep(for: .milliseconds(55)); if Task.isCancelled { return }
+                }
+            }
+            .task(id: powered) {
+                if managed && powered && !ringLit && !offline {
+                    if !reduced { try? await Task.sleep(for: .milliseconds(170)) }
+                    guard !Task.isCancelled else { return }
+                    withAnimation(reduced ? nil : InteractionMotion.state) { ringLit = true }
+                    if !reduced {
+                        sweep = 0
+                        withAnimation(.easeOut(duration: 0.58)) { sweep = 1 }
+                    }
+                    OrbisHaptics.commit()
+                } else { ringLit = powered }
+            }
             .onChange(of: kind) { _, _ in
                 agentPulse += 1
                 if handle == nil { groupPosition = Double(groupIndex) }
@@ -606,15 +767,21 @@ private struct ProviderDialView: View {
     }
     private func agentScale(_ g: ProviderDialGeometry.Layout) -> some View {
         ZStack {
-            Color.clear.frame(width: 36, height: 36).neuSurface(inset: true, radius: 18, intensity: 0.4, concentric: false)
-                .modifier(OrbisDialPulse(trigger: agentPulse, peak: 1.08))
-                .position(x: g.centerX + g.agentRadius, y: g.centerY)
+            if !managed {
+                Color.clear.frame(width: 36, height: 36).neuSurface(inset: true, radius: 18, intensity: 0.4, concentric: false)
+                    .modifier(OrbisDialPulse(trigger: agentPulse, peak: 1.08))
+                    .position(x: g.centerX + g.agentRadius, y: g.centerY)
+            }
             ForEach(Array(kinds.enumerated()), id: \.offset) { index, agent in
                 let angle = (Double(index) - groupPosition) * g.agentStep * .pi / 180
                 let x = g.centerX + g.agentRadius * cos(angle)
-                if x >= 30 {
-                    AgentEmblem(kind: agent, size: 20, recessed: false)
-                        .saturation(index == groupIndex ? 1 : 0).opacity(index == groupIndex ? 1 : 0.4)
+                if abs(Double(index) - groupPosition) < 3.1 && x >= 20 && (!managed || index != groupIndex || handle == .agent) {
+                    dialMark(agent, muted: offline || rows.first { $0.id == agent }?.enabled == false || index != groupIndex)
+                        .frame(width: 44, height: 44).overlay(alignment: .bottomTrailing) {
+                            if managed && ["codexDesktop", "dshDesktop"].contains(agent) {
+                                Image(systemName: "macwindow").font(.system(size: 9, weight: .semibold)).foregroundStyle(palette.faint).padding(4)
+                            }
+                        }.contentShape(Rectangle()).opacity(index == groupIndex ? 1 : 0.66)
                         .position(x: x, y: g.centerY + g.agentRadius * sin(angle))
                         .onTapGesture { settleAgent(index) }
                 }
@@ -631,20 +798,21 @@ private struct ProviderDialView: View {
                     let outer = g.radius - 10, inner = outer - (major ? 14 : index % 2 == 0 ? 9 : 5)
                     path.move(to: CGPoint(x: g.centerX + inner * cos(angle), y: g.centerY + inner * sin(angle)))
                     path.addLine(to: CGPoint(x: g.centerX + outer * cos(angle), y: g.centerY + outer * sin(angle)))
-                    context.stroke(path, with: .color(palette.faint), lineWidth: 1)
+                    context.stroke(path, with: .color(palette.faint.opacity(offline ? 0.32 : actualPower ? 1 : 0.28)), lineWidth: 1)
                 }
             }
-            ForEach(Array(providers.enumerated()), id: \.element.id) { index, provider in
+            ForEach(Array((actualPower ? providers : []).enumerated()), id: \.element.id) { index, provider in
                 let delta = Double(index) - profilePosition
                 let angle = delta * g.profileStep * .pi / 180
                 let x = g.centerX + (g.radius + 28) * cos(angle), y = g.centerY + (g.radius + 28) * sin(angle)
                 if abs(delta) <= 3.5 && x >= 20 {
                     VStack(alignment: .leading, spacing: 4) {
-                        if abs(delta) < 0.5 { Text(agentTitle(kind)).font(.orbisCaption()).foregroundStyle(palette.agent(kind)) }
+                        if abs(delta) < 0.5 { Text(label).font(.orbisCaption()).foregroundStyle(palette.agent(kind)) }
                         Text(provider.name).font(abs(delta) < 0.5 ? .orbisTitle() : .orbisBody()).lineLimit(1)
                             .foregroundStyle(abs(delta) < 0.5 ? palette.text : palette.secondary)
                         if abs(delta) < 0.5 {
                             Text(provider.official ? L10n.tr("官方") : L10n.tr("自定义配置")).font(.orbisCaption()).foregroundStyle(palette.secondary)
+                            if managed && (hint != nil || status != "已连接") { Text(L10n.tr(hint ?? status)).font(.orbisCaption()).foregroundStyle(statusColor) }
                             if provider.enabled { Text(provider.additive ? L10n.tr("已启用") : L10n.tr("使用中")).font(.orbisCaption()).foregroundStyle(palette.success) }
                         }
                     }.frame(width: max(136, g.width - x - 8), alignment: .leading)
@@ -657,52 +825,125 @@ private struct ProviderDialView: View {
             }
         }.opacity(handle == .agent ? 0.4 : 1)
     }
+    private var profilesHidden: Bool { !actualPower || providers.isEmpty }
+    @ViewBuilder private func dialMark(_ id: String, muted: Bool) -> some View {
+        if AgentIdentity(kind: id) != nil { AgentEmblem(kind: id, size: 20, recessed: false).saturation(muted ? 0 : 1).opacity(muted ? 0.66 : 1) }
+        else { Image(systemName: "terminal").font(.system(size: 18, weight: .semibold)).foregroundStyle(palette.faint) }
+    }
+    private func nameplate(_ g: ProviderDialGeometry.Layout) -> some View {
+        let x = g.centerX + g.radius + 28
+        let width = max(64, min(150, g.width - x - 12))
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(.orbisCaption()).foregroundStyle(powered && !offline ? palette.agent(kind) : palette.faint)
+            Text(L10n.tr(hint ?? status)).font(.orbisTitle()).foregroundStyle(statusColor).lineLimit(2)
+        }.frame(width: width, alignment: .leading).position(x: x + width / 2, y: g.centerY - 4)
+    }
+    private func pinView(_ g: ProviderDialGeometry.Layout) -> some View {
+        ZStack {
+            Capsule().fill(.clear).frame(width: g.pinTravel + 44, height: 44)
+                .neuSurface(inset: true, radius: 22, intensity: 0.55, concentric: false).environment(\.orbisSurface, nil)
+                .position(x: g.pinStart + g.pinTravel / 2, y: g.centerY)
+            Circle().strokeBorder(palette.faint.opacity(0.50), lineWidth: 1).frame(width: 36, height: 36)
+                .position(x: g.pinStart + g.pinTravel, y: g.centerY)
+            ZStack {
+                Circle().fill(.clear).neuSurface(radius: 20, intensity: powered ? 0.6 : 0.28, concentric: false).environment(\.orbisSurface, nil)
+                if pending == nil { dialMark(kind, muted: !powered || offline) }
+                else if queued { Circle().strokeBorder(pinColor, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])).padding(5) }
+                else if reduced { Circle().trim(from: 0, to: 0.72).stroke(pinColor, style: StrokeStyle(lineWidth: 1.5, lineCap: .round)).padding(5) }
+                else { ProgressView().tint(pinColor) }
+            }.frame(width: 40, height: 40)
+                .position(x: g.pinStart + g.pinTravel * ProviderDialGeometry.clamp(pinFraction, 0, 1) + recoil, y: g.centerY)
+                .animation(reduced || pinDrag != nil ? nil : .easeOut(duration: 0.17), value: pinFraction)
+            Color.clear.frame(width: g.pinTravel + 48, height: 48)
+                .position(x: g.pinStart + g.pinTravel / 2, y: g.centerY)
+                .accessibilityElement().accessibilityLabel(label).accessibilityValue(L10n.tr(hint ?? status))
+                .accessibilityAddTraits(.isToggle).accessibilityIdentifier("agent-enablement-" + kind)
+                .accessibilityAction { if editable { onToggle(!(pending?.target ?? powered)) } }
+                .accessibilityAction(named: Text(L10n.tr((pending?.target ?? powered) ? "停用" : "启用"))) {
+                    if editable { onToggle(!(pending?.target ?? powered)) }
+                }.disabled(!editable)
+        }.frame(width: g.width, height: g.height).allowsHitTesting(false)
+    }
+    private func nudgePin() {
+        guard editable, pending == nil else { return }
+        hintTask?.cancel()
+        hint = powered ? "向内拉停用" : "向外推启用"
+        if !reduced { nudge = powered ? -0.16 : 0.16 }
+        hintTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300)); guard !Task.isCancelled else { return }
+            nudge = 0
+            try? await Task.sleep(for: .milliseconds(1050)); if !Task.isCancelled { hint = nil }
+        }
+    }
     private func gesture(_ g: ProviderDialGeometry.Layout) -> some Gesture {
         DragGesture(minimumDistance: 0).updating($dragging) { _, active, _ in active = true }.onChanged { value in
+            let dx = value.translation.width, dy = value.translation.height
             if !gestureStarted {
-                gestureStarted = true; handle = g.handle(x: value.startLocation.x, y: value.startLocation.y)
+                gestureStarted = true; pinTouched = managed && g.pinContains(x: value.startLocation.x, y: value.startLocation.y)
+                handle = g.handle(x: value.startLocation.x, y: value.startLocation.y) ?? (pinTouched ? .agent : nil)
                 initialPosition = handle == .agent ? Double(groupIndex) : profilePosition
-                moved = false
+                moved = false; axisLocked = false; pinArmed = false
+                pinStartEnabled = pending?.target ?? powered; pinStartChoice = pending
+            }
+            if !axisLocked {
+                guard managed ? hypot(dx, dy) >= 8 : abs(dy) >= (handle == .agent ? 10 : 4) else { return }
+                axisLocked = true; moved = true
+                if managed && ProviderDialGeometry.horizontal(dx, dy) {
+                    handle = nil
+                    if pinTouched && editable { pinOwner = kind; hintTask?.cancel() }
+                } else if handle == .agent && kinds.isEmpty || handle == .profile && providers.isEmpty { handle = nil }
                 if handle != nil { onMoving(true) }
             }
-            guard let handle else { return }
-            let dy = value.translation.height
-            guard moved || abs(dy) >= (handle == .agent ? 10 : 4) else { return }
-            moved = true
-            if handle == .agent {
+            if let pinOwner {
+                guard editable, pinOwner == kind, pinStartChoice == pending, pinStartEnabled == (pending?.target ?? powered) else {
+                    self.pinOwner = nil; pinDrag = nil; pinArmed = false; hint = nil; return
+                }
+                let position = ProviderDialGeometry.pinPosition(enabled: pinStartEnabled, dx: dx, travel: g.pinTravel)
+                pinDrag = position
+                let next = ProviderDialGeometry.pinArmed(enabled: pinStartEnabled, position: position)
+                if next && !pinArmed { OrbisHaptics.selectionChanged() }
+                pinArmed = next; hint = next ? (pinStartEnabled ? "松手停用" : "松手启用") : nil
+            } else if handle == .agent, !kinds.isEmpty {
                 let next = ProviderDialGeometry.softened(initialPosition - dy / 84, count: kinds.count)
                 let index = Int(ProviderDialGeometry.clamp(next.rounded(), 0, Double(kinds.count - 1)))
-                if index != groupIndex { OrbisHaptics.commit(); onKind(kinds[index]) }
+                if index != groupIndex { OrbisHaptics.selectionChanged(); onKind(kinds[index]) }
                 groupPosition = ProviderDialGeometry.sticky(next)
-            } else {
+            } else if handle == .profile, !providers.isEmpty {
                 let next = ProviderDialGeometry.softened(initialPosition - dy / ((g.radius + 28) * g.profileStep * .pi / 180), count: providers.count)
-                let index = Int(ProviderDialGeometry.clamp(next.rounded(), 0, Double(max(0, providers.count - 1))))
+                let index = Int(ProviderDialGeometry.clamp(next.rounded(), 0, Double(providers.count - 1)))
                 if index != Int(profilePosition.rounded()) { OrbisHaptics.selectionChanged(); profilePulse += 1 }
-                profilePosition = next
+                profilePosition = next; onSelect(index)
             }
         }.onEnded { value in
             let captured = handle; handle = nil; gestureStarted = false
+            if pinOwner != nil {
+                let apply = editable && pinArmed && pinOwner == kind && pinStartChoice == pending && pinStartEnabled == (pending?.target ?? powered)
+                pinOwner = nil; pinDrag = nil; pinArmed = false; hint = nil
+                if apply { onToggle(!pinStartEnabled) }; return
+            }
+            if !moved && pinTouched { nudgePin(); return }
             guard let captured else { onMoving(false); return }
             if !moved {
                 let angle = atan2(value.startLocation.y - g.centerY, value.startLocation.x - g.centerX) * 180 / .pi
-                if captured == .agent { settleAgent(Int(ProviderDialGeometry.clamp((groupPosition + angle / g.agentStep).rounded(), 0, Double(kinds.count - 1)))) }
+                if captured == .agent { settleAgent(Int(ProviderDialGeometry.clamp((groupPosition + angle / g.agentStep).rounded(), 0, Double(max(0, kinds.count - 1))))) }
                 else { settleProfile(Int(ProviderDialGeometry.clamp((profilePosition + angle / g.profileStep).rounded(), 0, Double(max(0, providers.count - 1))))) }
                 return
             }
-            if captured == .agent { settleAgent(Int(ProviderDialGeometry.clamp(groupPosition.rounded(), 0, Double(kinds.count - 1)))) }
-            else {
-                let target = ProviderDialGeometry.settled(initialPosition, translation: value.translation.height,
-                    predictedTranslation: value.predictedEndTranslation.height, handle: .profile, count: providers.count, pointsPerStep: (g.radius + 28) * g.profileStep * .pi / 180)
-                settleProfile(target)
-            }
+            if captured == .agent { settleAgent(Int(ProviderDialGeometry.clamp(groupPosition.rounded(), 0, Double(max(0, kinds.count - 1))))) }
+            else { settleProfile(ProviderDialGeometry.settled(initialPosition, translation: value.translation.height,
+                predictedTranslation: value.predictedEndTranslation.height, handle: .profile, count: providers.count, pointsPerStep: (g.radius + 28) * g.profileStep * .pi / 180)) }
         }
     }
     private func resetGesture() {
         guard handle != nil || gestureStarted else { return }
-        handle = nil; gestureStarted = false; moved = false
+        handle = nil; gestureStarted = false; moved = false; pinOwner = nil; pinDrag = nil; pinArmed = false
         groupPosition = Double(groupIndex); profilePosition = Double(selected); onMoving(false)
     }
     private func keyboardBrowse(_ owner: ProviderDialGeometry.Handle, key: KeyEquivalent) -> KeyPress.Result {
+        if key == .leftArrow || key == .rightArrow || key == .space {
+            guard owner == .agent, managed, editable else { return .ignored }
+            onToggle(key == .rightArrow || (key == .space && !(pending?.target ?? powered))); return .handled
+        }
         let count = owner == .agent ? kinds.count : providers.count
         guard count > 0 else { return .handled }
         let current = owner == .agent ? groupIndex : selected
@@ -805,15 +1046,32 @@ func pathTitle(_ path: String?) -> String {
 }
 
 
+private struct OrbisDialSweep: View, Animatable {
+    var progress: Double
+    let tint: Color
+    let geometry: ProviderDialGeometry.Layout
+    var animatableData: Double { get { progress } set { progress = newValue } }
+    var body: some View {
+        Path { path in
+            for direction in [-1.0, 1.0] {
+                path.move(to: CGPoint(x: geometry.centerX + geometry.radius - 12, y: geometry.centerY))
+                path.addArc(center: CGPoint(x: geometry.centerX, y: geometry.centerY), radius: geometry.radius - 12,
+                            startAngle: .degrees(0), endAngle: .degrees(direction * 110 * progress), clockwise: direction < 0)
+            }
+        }.stroke(tint.opacity(max(0, sin(progress * .pi)) * 0.7), lineWidth: 2)
+    }
+}
+
 /// UIKeyCommand reaches physical keyboards consistently on iOS 17+ even when
 /// SwiftUI's decorative dial circles do not become native first responders.
 private struct OrbisDialKeyboardBridge: UIViewRepresentable {
     let active: Bool
+    let pinEditable: Bool
     @Binding var focus: ProviderDialGeometry.Handle?
     let browse: (ProviderDialGeometry.Handle, KeyEquivalent) -> Void
     func makeUIView(context: Context) -> Receiver { Receiver() }
     func updateUIView(_ view: Receiver, context: Context) {
-        view.active = active; view.owner = focus; view.browse = browse
+        view.active = active; view.owner = focus; view.browse = browse; view.pinEditable = pinEditable
         view.changeFocus = { focus = $0 }
         if active && focus != nil { if !view.isFirstResponder { view.becomeFirstResponder() } }
         else if view.isFirstResponder { view.resignFirstResponder() }
@@ -821,6 +1079,8 @@ private struct OrbisDialKeyboardBridge: UIViewRepresentable {
     final class Receiver: UIView {
         var owner: ProviderDialGeometry.Handle?
         var active = false
+        var pinEditable = false
+        var acceptsPinKeys: Bool { owner == .agent && pinEditable }
         override func didMoveToWindow() { super.didMoveToWindow(); if window != nil && active && owner != nil { becomeFirstResponder() } }
         var browse: (ProviderDialGeometry.Handle, KeyEquivalent) -> Void = { _, _ in }
         var changeFocus: (ProviderDialGeometry.Handle?) -> Void = { _ in }
@@ -837,6 +1097,9 @@ private struct OrbisDialKeyboardBridge: UIViewRepresentable {
             case .keyboardDownArrow: down()
             case .keyboardHome: home()
             case .keyboardEnd: end()
+            case .keyboardLeftArrow where acceptsPinKeys: left()
+            case .keyboardRightArrow where acceptsPinKeys: right()
+            case .keyboardSpacebar where acceptsPinKeys: space()
             case .keyboardTab:
                 let shift = key.modifierFlags.contains(.shift) || presses.compactMap(\.key).contains { [.keyboardLeftShift, .keyboardRightShift].contains($0.keyCode) }
                 if shift, owner == .agent { previous() }
@@ -850,6 +1113,11 @@ private struct OrbisDialKeyboardBridge: UIViewRepresentable {
              UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(down)),
              UIKeyCommand(input: UIKeyCommand.inputHome, modifierFlags: [], action: #selector(home)),
              UIKeyCommand(input: UIKeyCommand.inputEnd, modifierFlags: [], action: #selector(end))]
+            if acceptsPinKeys {
+                commands += [UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(left)),
+                             UIKeyCommand(input: UIKeyCommand.inputRightArrow, modifierFlags: [], action: #selector(right)),
+                             UIKeyCommand(input: " ", modifierFlags: [], action: #selector(space))]
+            }
             if owner == .profile { commands.append(UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(nextHandle))) }
             if owner == .agent { commands.append(UIKeyCommand(input: "\t", modifierFlags: .shift, action: #selector(previous))) }
             return commands.map { command in
@@ -859,6 +1127,9 @@ private struct OrbisDialKeyboardBridge: UIViewRepresentable {
         @objc private func up() { if let owner { browse(owner, .upArrow) } }
         @objc private func down() { if let owner { browse(owner, .downArrow) } }
         @objc private func home() { if let owner { browse(owner, .home) } }
+        @objc private func left() { if let owner { browse(owner, .leftArrow) } }
+        @objc private func right() { if let owner { browse(owner, .rightArrow) } }
+        @objc private func space() { if let owner { browse(owner, .space) } }
         @objc private func end() {
             if let owner { browse(owner, .end) }
         }

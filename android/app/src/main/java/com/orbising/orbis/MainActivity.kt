@@ -480,9 +480,12 @@ internal fun RemoteApp(
                             onEnable = model::switchAgentProvider,
                             onQuerySubscription = model::querySubscription,
                             showBack = false,
+                            onAgentEnabled = model::setAgentEnabled,
+                            onAgentRefresh = model::refreshAgentEnablement,
+                            onDismissAgentReview = model::dismissAgentDialReview,
                         )
                         HomeTab.Settings -> StatusScreen(state, model, model.pairingStatus(),
-                            onBack = { homeTab = HomeTab.Chat }, root = true)
+                            onBack = { homeTab = HomeTab.Chat }, root = true, onOpenAgent = { homeTab = HomeTab.Providers })
                     }
                 }
                 }
@@ -3775,8 +3778,9 @@ internal fun StatusScreen(
     pairing: PairingStatus,
     onBack: () -> Unit,
     root: Boolean = false,
+    onOpenAgent: () -> Unit = {},
 ) {
-    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode, model, model::setAgentEnabled, model::refreshAgentEnablement)
+    DesignSettingsScreen(state, onBack, root, model::setRelayTransportMode, model, onOpenAgent)
 }
 
 

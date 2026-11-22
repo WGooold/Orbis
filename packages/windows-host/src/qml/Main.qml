@@ -45,19 +45,19 @@ ApplicationWindow {
     readonly property bool hostLinking: host.resumePending || host.state === "connecting" || host.state === "reconnecting"
     readonly property int onlineDevices: host.devices.filter(function(device) { return device.path === "lan" || device.path === "relay" }).length
     readonly property var overviewAgents: {
-        function agent(kind) { return host.agents.find(function(a) { return a.kind === kind }) || ({}) }
-        var pi = agent("pi"), codex = agent("codex"), dsh = agent("dsh"), hermes = host.hermesCli
+        function agent(kind) { return host.agents.find(a => a.kind === kind) }
+        const pi = agent("pi"), codex = agent("codex"), dsh = agent("dsh"), hermes = host.hermesCli
         return [
-            {kind: "pi", name: "Pi", installed: pi.installed === true, broken: pi.installedButBroken === true, cliIssue: pi.cliIssue, data: pi},
-            {kind: "codex", name: "Codex", installed: codex.installed === true, broken: codex.installedButBroken === true, cliIssue: codex.cliIssue, data: codex},
-            {kind: "codexDesktop", name: "Codex 桌面版", installed: codex.desktopInstalled === true, broken: false},
+            {kind: "pi", name: "Pi", installed: pi?.installed, broken: pi?.installedButBroken === true, cliIssue: pi?.cliIssue, data: pi},
+            {kind: "codex", name: "Codex", installed: codex?.installed, broken: codex?.installedButBroken === true, cliIssue: codex?.cliIssue, data: codex},
+            {kind: "codexDesktop", name: "Codex 桌面版", installed: codex?.desktopInstalled, broken: false},
             // A version still being read is not a verdict: only a finished probe can mark Claude broken.
-            {kind: "claude", name: "Claude Code", installed: host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible && !host.claudeDetecting, cliIssue: host.claudeCliIssue},
-            {kind: "dsh", name: "DeepSeek Harness", installed: dsh.installed === true, broken: dsh.installedButBroken === true, cliIssue: dsh.cliIssue, data: dsh},
+            {kind: "claude", name: "Claude Code", installed: host.claudeDetecting ? undefined : host.claudeInstalled, broken: host.claudeInstalled && !host.claudeCompatible && !host.claudeDetecting, cliIssue: host.claudeCliIssue},
+            {kind: "dsh", name: "DeepSeek Harness", installed: dsh?.installed, broken: dsh?.installedButBroken === true, cliIssue: dsh?.cliIssue, data: dsh},
             // DSH-DESKTOP-09: only a Desktop Orbis opened can be attached, so its single action is always opening it from here.
-            {kind: "dshDesktop", name: "DeepSeek 桌面版", installed: dsh.desktopInstalled === true,
+            {kind: "dshDesktop", name: "DeepSeek 桌面版", installed: dsh?.desktopInstalled,
              broken: window.dshDesktopBlocked(), opensToFix: true}
-        ].concat(window.agentEnabled("openclaw") ? [{kind: "openclaw", name: "OpenClaw", installed: true, broken: false}] : [])
+        ].concat(window.agentEnabled("openclaw") ? [{kind: "openclaw", name: "OpenClaw", installed: window.openClawReady, broken: false}] : [])
          .concat(window.agentEnabled("hermes")
             ? [{kind: "hermes", name: "Hermes Agent", installed: hermes.installed === true || window.backendFor("hermes")?.ready === true,
                 broken: hermes.cliIssue === "unrunnable", cliIssue: hermes.cliIssue, passive: true}]
@@ -66,7 +66,7 @@ ApplicationWindow {
             return agent.enabled && ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "openclaw", "hermes"].indexOf(agent.kind) < 0
          }).map(function(agent) {
             return {kind: agent.kind, name: agent.label, installed: window.backendFor(agent.kind)?.ready === true, broken: false, passive: true}
-         })).filter(function(row) { return window.agentEnabled(row.kind) })
+         })).filter(row => window.agentEnabled(row.kind)).sort((a, b) => window.agentRows.findIndex(row => row.kind === a.kind) - window.agentRows.findIndex(row => row.kind === b.kind))
     }
     function agentEnabled(kind) {
         const row = (host.agentEnablement.agents || []).find(function(agent) { return agent.kind === kind })
@@ -76,12 +76,16 @@ ApplicationWindow {
     readonly property string openClawStateText: host.openClaw.invalid ? "配置无效"
         : !host.openClaw.url ? "待配置" : host.resumePending ? "正在重新连接"
         : window.openClawReady ? "已连接" : host.desiredRunning ? "Gateway 未就绪" : "Host 未连接"
+    readonly property int setupStep: ["activate", "connect", "pair", "enable", "install"].indexOf(nextStep)
+    readonly property bool setupComplete: host.activated && host.devices.length > 0 && overviewAgents.some(agent => agent.installed && !agent.broken)
+    readonly property bool connectionError: host.state === "error" && !host.resumePending
+    readonly property string publicPath: !hostOnline ? "" : host.devices.some(device => device.path === "lan") ? "局域网" : onlineDevices > 0 ? "中继" : ""
     // HOST-ACTIVITY-05: while the saved activation is still being read, "not activated" is not known yet.
     readonly property string nextStep: !host.activated ? (host.credentialsLoading ? "" : "activate")
-        : !host.desiredRunning && !host.resumePending ? "connect"
+        : !hostOnline ? "connect"
         : host.devices.length === 0 ? "pair"
-        : overviewAgents.length === 0 ? "enable"
-        : !overviewAgents.some(function(agent) { return agent.installed }) ? "install" : "open"
+        : agentRows.length && enabledAgentCount === 0 ? "enable"
+        : overviewAgents.some(agent => agent.data && (agent.installed === false || agent.broken)) && !overviewAgents.some(agent => agent.installed && !agent.broken) ? "install" : "open"
     function backendFor(kind) { return host.backends.find(function(backend) { return backend.kind === kind }) }
     /** Whether a phone can use this Agent through the running Host right now. */
     function agentReachable(agent) {
@@ -117,7 +121,8 @@ ApplicationWindow {
         // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。Claude 有自己的检测。
         if (!host.bridgeReady || window.agentCliDetecting(agent.kind)) return "检测中"
         if (agent.cliIssue === "unrunnable") return "入口不可用"
-        if (!agent.installed) return "未安装"
+        if (agent.installed === false) return "未安装"
+        if (agent.installed !== true) return "等待检测"
         if (agent.kind === "dshDesktop" && host.dshDesktopOpen === "waiting") return "等待退出"
         if (agent.broken) return agent.kind === "claude" ? "需升级" : agent.kind === "dshDesktop" ? window.dshDesktopShortState() : "需要修复"
         if (window.hostLinking) return "正在连接"
@@ -127,6 +132,24 @@ ApplicationWindow {
         if (window.preparing(agent.kind)) return "正在准备"
         if (!window.agentReachable(agent)) return "手机暂不可用"
         return sessions > 0 ? "手机上 " + sessions + " 个会话" : "手机可用"
+    }
+    // Unknown installation is not an install verdict: keep the action descriptive but disabled until detection settles.
+    function overviewAgentActionText(agent, installable) {
+        if (agent.kind === "openclaw") return "配置"
+        if (agent.installed === false) return installable ? (agent.broken ? "修复" : "安装") : "打开"
+        if (agent.installed === true && agent.broken && installable && agent.opensToFix !== true) return "修复"
+        if (agent.installed === true) return "打开"
+        return window.agentPhoneState(agent, 0)
+    }
+    function overviewAgentActionEnabled(agent, installable) {
+        return host.bridgeReady && !host.busy && (agent.installed === true || (agent.installed === false && installable))
+    }
+    function overviewAgentActionPrimary(agent, installable) {
+        if (window.connectionError) return false
+        if (agent.installed === true && (!agent.broken || agent.opensToFix === true) && window.nextStep === "open") return true
+        const needsInstallOrRepair = agent.installed === false ||
+            agent.installed === true && agent.broken && agent.opensToFix !== true
+        return needsInstallOrRepair && installable && window.nextStep === "install"
     }
     readonly property var codexTerminalState: host.codexTerminal || ({})
     // 进行中的操作来自 host.activity（桥命令逐个登记），是所有按钮变灰的统一原因。
@@ -151,15 +174,8 @@ ApplicationWindow {
         return host.claudeVersion ? "需升级" : "版本未确认"
     }
     function openOverviewAgent(kind) {
-        if (kind === "openclaw") {
-            window.selectPage(2)
-            Qt.callLater(function() {
-                if (window.page !== 2) return
-                var flick = scroll.contentItem
-                var y = openClawCard.mapToItem(flick.contentItem, 0, 0).y
-                flick.contentY = Math.max(0, Math.min(y - 16, flick.contentHeight - flick.height))
-            })
-        } else if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
+        if (kind === "openclaw") window.goAgent(kind)
+        else if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
         else host.openAgent(kind)
     }
     function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek", hermes:"Hermes Agent"})[kind] || kind }
@@ -191,6 +207,96 @@ ApplicationWindow {
     function showAgentBatch() { batchInstallDialog.open() }
     function closeAgentDialogs() { installDialog.close(); batchInstallDialog.close() }
     property bool providersOpen: false
+    property string selectedAgent: "codex"
+    property var selectedAgents: []
+    property string agentSelectionAnchor: ""
+    property string previewProviderId: ""
+    property var agentFeedback: ({})
+    readonly property var agentRows: host.agentEnablement.agents || []
+    readonly property int enabledAgentCount: agentRows.filter(row => row.enabled).length
+    readonly property var selectedAgentRow: agentRows.find(row => row.kind === selectedAgent) || agentRows[0] || null
+    readonly property string detailKind: selectedAgentRow ? selectedAgentRow.kind : ""
+    readonly property string detailProviderGroup: providerGroup(detailKind)
+    readonly property bool detailPowered: selectedAgentRow !== null && selectedAgentRow.enabled === true
+    readonly property var detailChange: host.agentChanges[detailKind] || null
+    readonly property var detailSessions: host.activeAgentSessions[detailKind] || ({})
+    readonly property var detailFacts: window.overviewAgents.find(row => row.kind === detailKind) || null
+    readonly property bool canEditAgent: host.agentChoicesAvailable
+    readonly property string inlineListOwner: page === 2 && detailPowered && !providersOpen ? detailProviderGroup : ""
+    onInlineListOwnerChanged: if (inlineListOwner) host.refreshAgentProviders(inlineListOwner)
+    function providerGroup(kind) {
+        // Codex is shared. DeepSeek Desktop exposes a separate native, read-only catalog (ADR-0076).
+        return kind === "codexDesktop" ? "codex" : ["codex", "claude", "pi", "dsh"].includes(kind) ? kind : ""
+    }
+    function choiceFor(kind) { return host.agentChanges[kind] || null }
+    function agentVisualOn(row) {
+        if (!row) return false
+        const change = choiceFor(row.kind)
+        return change ? change.previous : row.enabled === true
+    }
+    function agentFeedbackText() {
+        const kinds = agentFeedback.kinds || []
+        const label = kinds.length > 1 ? kinds.length + " 个 Agent" : agentRows.find(row => row.kind === kinds[0])?.label || "Agent"
+        switch (agentFeedback.status) {
+        case "disabled": return "已停用 " + label
+        case "externalOn": return label + " 已在其他设备启用"
+        case "externalOff": return label + " 已在其他设备停用"
+        case "conflict": return "其他设备已更改，未应用"
+        case "failed": return "未确认，等待电脑同步"
+        default: return ""
+        }
+    }
+    function flipAgent(kind) {
+        const row = agentRows.find(item => item.kind === kind), change = choiceFor(kind)
+        if (canEditAgent && row && (!change || change.withdrawable)) host.setAgentEnabled(kind, !(change ? change.target : row.enabled))
+    }
+    function chooseAgent(kind, modifiers) {
+        const ids = agentRows.map(row => row.kind)
+        if (!ids.includes(kind)) return
+        if (modifiers & Qt.ShiftModifier) {
+            const a = Math.max(0, ids.indexOf(agentSelectionAnchor || detailKind)), b = ids.indexOf(kind)
+            selectedAgents = ids.slice(Math.min(a, b), Math.max(a, b) + 1)
+        } else if (modifiers & (Qt.ControlModifier | Qt.MetaModifier)) {
+            const values = selectedAgents.length ? selectedAgents : [detailKind]
+            selectedAgents = kind === detailKind && !selectedAgents.length ? [kind] : values.includes(kind) ? values.filter(id => id !== kind) : values.concat(kind)
+            agentSelectionAnchor = kind
+        } else { selectedAgents = []; agentSelectionAnchor = kind }
+        selectedAgent = kind; providersOpen = false; previewProviderId = ""
+    }
+    function goAgent(kind) {
+        selectPage(2)
+        if (kind) chooseAgent(kind, 0)
+        else { providersOpen = false; selectedAgents = [] }
+        if (scroll.contentItem) scroll.contentItem.contentY = 0
+    }
+    function agentStatus(row) {
+        const change = choiceFor(row.kind)
+        if (change) return {text: change.queued ? "已排队" : "待确认", color: Theme.accent, sync: !change.queued}
+        if (!row.enabled) return {text: "未启用", color: Theme.inkFaint, idle: true}
+        const agent = window.overviewAgents.find(candidate => candidate.kind === row.kind)
+        const backend = window.backendFor(row.kind)
+        const prep = window.preparationOf(row.kind)
+        if (host.agentInstalling && host.agentInstallKind === row.kind) return {text: window.installationStage(), color: Theme.warning, sync: true}
+        if (prep.state === "error") return {text: "接入失败", color: Theme.danger, detail: prep.message || ""}
+        if (row.kind === "openclaw" && (host.openClaw.invalid || !host.openClaw.url)) return {text: "待配置", color: Theme.warning}
+        if (!host.desiredRunning && !host.resumePending && host.state === "stopped") return {text: "恢复后生效", color: Theme.inkFaint, idle: true}
+        if (window.connectionError) return {text: "等待 Host 连接", color: Theme.warning, idle: true}
+        if (prep.state === "preparing" || window.hostLinking) return {text: "准备中", color: Theme.warning, sync: true}
+        if (row.kind === "codexDesktop" && window.codexDesktopState() === "error") return {text: "接入失败", color: Theme.danger, detail: window.codexDesktopReason()}
+        if (row.kind === "dshDesktop" && window.dshDesktopBlocked()) return {text: window.dshDesktopShortState(), color: Theme.warning}
+        if (agent && !agent.passive && agent.installed === false && !window.agentCliDetecting(row.kind)) return {text: "未安装", color: Theme.warning, idle: true}
+        if (agent && agent.broken) return {text: "需要修复", color: Theme.warning, detail: window.agentCliHint(agent)}
+        if (backend && backend.ready && window.hostOnline) return {text: host.activeAgentSessions[row.kind]?.total > 0 ? "运行中" : "可用", color: Theme.success, idle: !(host.activeAgentSessions[row.kind]?.total > 0)}
+        if (backend && backend.launchable) return {text: "可启动", color: Theme.inkMuted, idle: true}
+        return {text: "等待接入", color: Theme.inkMuted, idle: true}
+    }
+    function askProvider(row) {
+        if (!detailPowered || !detailProviderGroup || host.providerKind !== detailProviderGroup || host.busy || detailChange || !row) return
+        if (row.enabled) {
+            if (row.mode === "additive") { window.removeProviderId = row.id; removeProviderDialog.open() }
+        } else if (row.mode === "additive") host.switchProvider(row.id, true)
+        else { agentProviderConfirm.profile = row; agentProviderConfirm.group = detailProviderGroup; agentProviderConfirm.open() }
+    }
     property bool providerFormDirty: false
     property bool loadingProviderDraft: false
     property string pendingPresetId: ""
@@ -365,7 +471,11 @@ ApplicationWindow {
     }
     onVisibleChanged: if (visible) host.refreshRegistrationPolicy()
     function selectPage(index) { if (page !== index) { page = index; if (window.motionEnabled) { pageContent.entryProgress = 0; pageArrival.restart() } } if (index === 3) settingsPane.load() }
-    function openProviders(kind) { page = 2; providersOpen = true; providerSearch.text = ""; host.loadProviders(kind) }
+    function openProviders(kind) {
+        if (detailProviderGroup !== kind || !detailPowered) { selectPage(2); chooseAgent(window.agentEnabled(kind) ? kind : kind === "codex" ? "codexDesktop" : kind, 0) }
+        if (!detailPowered || detailProviderGroup !== kind) return
+        selectPage(2); providersOpen = true; providerSearch.text = ""; host.loadProviders(kind)
+    }
     function closeProviderEditor() { providerDialog.close() }
     function requestCloseProviderEditor() { if (providerFormDirty) discardProviderDialog.open(); else closeProviderEditor() }
     function setProviderEditorMode(nativeMode) {
@@ -819,7 +929,7 @@ ApplicationWindow {
                 }
             }
             Rectangle {
-                visible: host.message.length > 0
+                visible: host.message.length > 0 && !(window.page === 0 && window.connectionError && host.activated)
                 Layout.fillWidth: true; Layout.leftMargin: 40; Layout.rightMargin: 40; Layout.bottomMargin: 16
                 implicitHeight: messageLabel.implicitHeight + 24; radius: Theme.radiusMd; color: Theme.surfaceBase
                 RowLayout {
@@ -837,7 +947,7 @@ ApplicationWindow {
                     anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 10; anchors.topMargin: 8; anchors.bottomMargin: 8; spacing: 12
                     Label { text: "发现可用更新：" + window.availableUpdatesText(); Layout.fillWidth: true; wrapMode: Text.WordWrap; color: Theme.warning; font.pixelSize: Theme.label }
                     ActionButton { text: "更新 Host"; visible: host.hostUpdateAvailable; enabled: !host.busy; onClicked: host.updateHost() }
-                    ActionButton { text: "查看 Agent"; visible: window.agentUpdatesAvailable(); onClicked: window.selectPage(2) }
+                    ActionButton { text: "查看 Agent"; visible: window.agentUpdatesAvailable(); onClicked: window.goAgent(host.claudeUpdateAvailable && window.agentEnabled("claude") ? "claude" : host.agents.find(agent => agent.updateAvailable && window.agentEnabled(agent.kind))?.kind || "") }
                     ActionButton { text: "查看设备"; visible: window.androidUpdatesAvailable(); onClicked: window.selectPage(1) }
                     SoftToolButton { symbol: "close"; onClicked: window.updateNoticeDismissed = true; implicitWidth: Theme.touchTarget; implicitHeight: Theme.touchTarget; Accessible.name: "关闭更新提示" }
                 }
@@ -861,7 +971,27 @@ ApplicationWindow {
                     ColumnLayout {
                         visible: window.page === 0
                         Layout.fillWidth: true; spacing: 20
-                        // HOST-GUIDE-01: activation is the first step, so it leads until it is done.
+                        // HOST-GUIDE-01: once set up, a temporary disconnect does not reopen the guide.
+                        RowLayout {
+                            objectName: "overviewGuide"
+                            visible: !window.setupComplete && window.setupStep >= 0
+                            Layout.fillWidth: true; spacing: 0
+                            Repeater {
+                                model: ["激活", "连接", "添加手机", "启用 Agent", "安装 Agent"]
+                                delegate: RowLayout {
+                                    required property int index
+                                    required property string modelData
+                                    Layout.fillWidth: true; spacing: 6
+                                    Rectangle {
+                                        Layout.preferredWidth: 22; Layout.preferredHeight: 22; radius: 11
+                                        color: index === window.setupStep ? Theme.accentSoft : Theme.surfaceLift
+                                        Label { anchors.centerIn: parent; text: index < window.setupStep ? "✓" : String(index + 1); color: index === window.setupStep ? Theme.accent : index < window.setupStep ? Theme.success : Theme.inkMuted; font.pixelSize: Theme.caption }
+                                    }
+                                    Label { text: modelData; color: index === window.setupStep ? Theme.ink : Theme.inkMuted; font.pixelSize: Theme.caption; elide: Text.ElideRight; Layout.fillWidth: true }
+                                }
+                            }
+                        }
+                        // Activation leads until it is done.
                         RowLayout {
                             visible: !host.activated && !host.credentialsLoading
                             Layout.fillWidth: true; spacing: 20
@@ -914,7 +1044,11 @@ ApplicationWindow {
                                             Label { text: window.activityText; color: Theme.inkMuted; font.pixelSize: Theme.caption; elide: Text.ElideRight; Layout.fillWidth: true }
                                         }
                                     }
-                                    ConnectionLine { Layout.fillWidth: true; Layout.minimumWidth: 60 }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; Layout.minimumWidth: 60; spacing: 2
+                                        ConnectionLine { Layout.fillWidth: true }
+                                        Hint { visible: window.publicPath.length > 0; text: window.publicPath; Layout.alignment: Qt.AlignHCenter }
+                                    }
                                     ColumnLayout {
                                         spacing: 4; Layout.preferredWidth: 110
                                         RowLayout {
@@ -927,14 +1061,33 @@ ApplicationWindow {
                                     NodeDisc { symbol: "smartphone"; lit: window.hostOnline && window.onlineDevices > 0 }
                                 }
                                 RowLayout {
+                                    visible: window.connectionError && host.activated; Layout.fillWidth: true
+                                    Hint { text: host.message || "无法连接 Host"; color: Theme.danger; Layout.fillWidth: true }
+                                    ActionButton { text: "诊断"; onClicked: window.selectPage(4) }
+                                    ActionButton { objectName: "overviewRetry"; text: "重试"; primary: true; enabled: host.connectionBlockReason.length === 0; onClicked: host.startHost() }
+                                }
+                                Flow {
+                                    objectName: "overviewDevices"
+                                    visible: host.devices.length > 0; Layout.fillWidth: true; spacing: 8
+                                    Repeater {
+                                        model: host.devices
+                                        delegate: ActionButton {
+                                            required property var modelData
+                                            readonly property string path: window.hostOnline ? (modelData.path || "offline") : "offline"
+                                            text: (modelData.label || "手机") + " · " + (path === "lan" ? "局域网" : path === "relay" ? "中继" : "离线")
+                                            onClicked: window.selectPage(1)
+                                        }
+                                    }
+                                }
+                                RowLayout {
                                     // While the saved activation is still being read, keep Connect visible and say why it waits.
-                                    visible: host.activated || host.credentialsLoading
+                                    visible: (host.activated || host.credentialsLoading) && !window.connectionError
                                     Layout.fillWidth: true; spacing: 12
                                     Item { Layout.fillWidth: true }
                                     ActionButton {
                                         objectName: "overviewConnection"
                                         text: host.desiredRunning || host.resumePending ? "暂停连接" : "开始连接"
-                                        primary: window.nextStep === "connect"
+                                        primary: window.nextStep === "connect" && !window.hostLinking
                                         enabled: !host.resumePending && (host.desiredRunning || host.connectionBlockReason.length === 0)
                                         loading: window.activityKinds.indexOf("connect") >= 0
                                         onClicked: { if (host.desiredRunning) host.stopHost(); else host.startHost() }
@@ -953,12 +1106,16 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 6
-                                Heading { text: "Agent"; Layout.bottomMargin: 6 }
-                                ActionButton {
-                                    objectName: "overviewEnableAgents"; text: "启用 Agent"
-                                    visible: window.overviewAgents.length === 0
-                                    primary: window.nextStep === "enable"
-                                    onClicked: window.selectPage(2)
+                                RowLayout {
+                                    Layout.fillWidth: true; Layout.bottomMargin: 6
+                                    Heading { text: "Agent" }
+                                    Hint { text: window.enabledAgentCount + " / " + window.agentRows.length + " 已启用"; Layout.fillWidth: true }
+                                    ActionButton { text: "管理"; onClicked: window.goAgent("") }
+                                }
+                                RowLayout {
+                                    visible: window.overviewAgents.length === 0; Layout.fillWidth: true
+                                    Hint { text: window.agentRows.length ? "还没有启用的 Agent" : "正在读取 Agent"; Layout.fillWidth: true }
+                                    ActionButton { objectName: "overviewEnableAgents"; text: "启用 Agent"; visible: window.agentRows.length > 0; primary: window.nextStep === "enable"; onClicked: window.goAgent("") }
                                 }
                                 Repeater {
                                     model: window.overviewAgents
@@ -976,9 +1133,21 @@ ApplicationWindow {
                                         Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight + 8; spacing: 14
                                         Accessible.role: Accessible.ListItem
                                         Accessible.name: modelData.name + "，" + window.agentPhoneState(modelData, sessions)
+                                        Accessible.onPressAction: window.goAgent(agentRow.modelData.kind)
+                                        activeFocusOnTab: true
+                                        HoverHandler { id: overviewRowHover }
+                                        TapHandler {
+                                            onTapped: point => {
+                                                const x = point.position.x
+                                                if (x < overviewAgentStatus.x || (x > overviewAgentStatus.x + overviewAgentStatus.width && (!overviewAgentAction.visible || x < overviewAgentAction.x))) window.goAgent(agentRow.modelData.kind)
+                                            }
+                                        }
+                                        Keys.onReturnPressed: window.goAgent(agentRow.modelData.kind)
+                                        Keys.onSpacePressed: window.goAgent(agentRow.modelData.kind)
+                                        Rectangle { anchors.fill: parent; z: -1; radius: Theme.radiusSm; color: Theme.surfaceLift; visible: overviewRowHover.hovered || agentRow.activeFocus }
                                         Item {
                                             Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd
-                                            opacity: agentRow.modelData.installed ? 1 : 0.4
+                                            opacity: agentRow.modelData.installed === false ? 0.4 : 1
                                             AgentMark {
                                                 id: overviewMark
                                                 objectName: "overviewAgentMark-" + agentRow.modelData.kind
@@ -986,10 +1155,10 @@ ApplicationWindow {
                                             }
                                             SymbolIcon { anchors.fill: parent; visible: !overviewMark.hasMark; name: "chat_bubble"; color: Theme.inkMuted }
                                         }
-                                        Label { text: agentRow.modelData.name; color: agentRow.modelData.installed ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Label { text: agentRow.modelData.name; color: agentRow.modelData.installed === false ? Theme.inkFaint : Theme.ink; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
                                         Item {
+                                            id: overviewAgentStatus
                                             Layout.preferredWidth: Math.max(72, agentStatusRow.implicitWidth); Layout.preferredHeight: Theme.touchTarget
-                                            visible: agentRow.modelData.installed || !!agentRow.cliHint || agentRow.desktopNotice
                                             RowLayout {
                                                 id: agentStatusRow
                                                 anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 4
@@ -999,6 +1168,7 @@ ApplicationWindow {
                                                     text: visible ? window.codexDesktopLabel() : ""
                                                     color: window.codexDesktopColor(); font.pixelSize: Theme.label
                                                 }
+                                                Label { visible: !agentRow.desktopNotice; text: window.agentPhoneState(agentRow.modelData, 0); color: agentRow.reachable ? Theme.success : Theme.inkMuted; font.pixelSize: Theme.label }
                                                 SymbolIcon { visible: agentRow.sessions > 0; name: "chat_bubble"; color: Theme.success; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs }
                                                 MotionText { objectName: "overviewAgentSessions-" + agentRow.modelData.kind; visible: agentRow.sessions > 0; roll: true; text: String(agentRow.sessions); color: Theme.success; font.pixelSize: Theme.label; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
                                                 Item {
@@ -1035,24 +1205,26 @@ ApplicationWindow {
                                                     StatusDot {
                                                         anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                                                         color: agentRow.desktopNotice ? window.codexDesktopColor() : agentRow.cliHint || agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking || agentState.preparing ? Theme.warning : Theme.inkFaint
-                                                        idle: !agentRow.desktopNotice && !agentRow.modelData.broken && !agentRow.reachable && (!agentRow.modelData.installed || !window.hostLinking && !agentState.preparing)
-                                                        syncing: !agentRow.desktopNotice && !agentRow.cliHint && !agentRow.modelData.broken && (window.hostLinking || agentState.preparing)
+                                                        idle: !agentRow.desktopNotice && !agentRow.modelData.broken && !agentRow.reachable && (agentRow.modelData.installed === false || agentRow.modelData.installed === true && !window.hostLinking && !agentState.preparing)
+                                                        syncing: !agentRow.desktopNotice && !agentRow.cliHint && !agentRow.modelData.broken && (window.hostLinking || agentState.preparing || window.agentCliDetecting(agentRow.modelData.kind))
                                                     }
                                                 }
                                             }
                                         }
+                                        Item { visible: agentRow.modelData.passive === true; Layout.preferredWidth: 112 }
                                         ActionButton {
+                                            id: overviewAgentAction
                                             objectName: "overviewAgent-" + agentRow.modelData.kind
                                             visible: agentRow.modelData.passive !== true
                                             Layout.preferredWidth: 112
-                                            text: agentRow.modelData.kind === "openclaw" ? "配置" : agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken) ? (agentRow.modelData.broken ? "修复" : "安装") : "打开"
-                                            primary: agentRow.modelData.installed && (!agentRow.modelData.broken || agentRow.modelData.opensToFix === true) ? window.nextStep === "open" : agentRow.installable && window.nextStep === "install"
-                                            enabled: host.bridgeReady && !host.busy && (agentRow.modelData.installed || agentRow.installable)
+                                            text: window.overviewAgentActionText(agentRow.modelData, agentRow.installable)
+                                            primary: window.overviewAgentActionPrimary(agentRow.modelData, agentRow.installable)
+                                            enabled: window.overviewAgentActionEnabled(agentRow.modelData, agentRow.installable)
                                             loading: host.agentInstalling && host.agentInstallKind === agentRow.modelData.kind
                                                 || agentRow.modelData.kind === "dshDesktop" && host.dshDesktopOpen !== "idle"
                                             Accessible.name: text + " " + agentRow.modelData.name
                                             onClicked: {
-                                                if (agentRow.installable && (!agentRow.modelData.installed || agentRow.modelData.broken)) window.showAgentInstaller(agentRow.modelData.data)
+                                                if (agentRow.installable && (agentRow.modelData.installed === false || agentRow.modelData.broken)) window.showAgentInstaller(agentRow.modelData.data)
                                                 else window.openOverviewAgent(agentRow.modelData.kind)
                                             }
                                         }
@@ -1111,230 +1283,336 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
-                        visible: window.page === 2 && !window.providersOpen; Layout.fillWidth: true; spacing: 16
-                        RowLayout { Layout.fillWidth: true; Heading { text: "你的 Agent" } Item { Layout.fillWidth: true } ActionButton { text: "检查更新"; enabled: host.bridgeReady && !host.busy && window.activityKinds.indexOf("agents") < 0; loading: window.activityKinds.indexOf("agents") >= 0; onClicked: host.detectAgents(true) } }
-                        RowLayout { Layout.fillWidth: true
-                            ActionButton { text: "全部更新到最新（" + window.batchAgentTargets().length + "）"; enabled: host.bridgeReady && !host.busy && window.batchAgentTargets().length > 0; onClicked: window.showAgentBatch() }
-                            Item { Layout.fillWidth: true }
-                        }
-                        RowLayout { visible: host.agentInstalling; Layout.fillWidth: true
-                            BusyIndicator { running: visible; Layout.preferredWidth: 30; Layout.preferredHeight: 30 }
-                            Hint { text: window.agentName(host.agentInstallKind) + "，" + window.installationStage() + (host.agentInstallVersion ? "，" + host.agentInstallVersion : ""); Layout.fillWidth: true }
-                            ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
-                        }
-                        DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
-                        Repeater {
-                            model: host.agents.filter(agent => window.agentEnabled(agent.kind))
-                            delegate: Card {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                ColumnLayout {
-                                    anchors.fill: parent; spacing: 15
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        AgentMark { kind: modelData.kind; visible: hasMark }
-                                        Heading { text: window.agentName(modelData.kind); color: Theme.agent(modelData.kind) }
-                                        Item { Layout.fillWidth: true }
-                                        Hint { text: modelData.installed ? "可用" : modelData.installedButBroken ? "已安装（需要修复）" : "尚未安装"; color: modelData.installed ? Theme.success : Theme.inkMuted }
-                                    }
-                                    Hint { text: "当前 " + (modelData.version || "—") + "，最新 " + (modelData.latestVersion || "未知") + (modelData.updateAvailable ? "，有可用更新" : ""); Layout.fillWidth: true; color: modelData.updateAvailable ? Theme.warning : Theme.inkMuted }
-                                    Hint { visible: !!modelData.error || !!modelData.latestError; text: modelData.error || modelData.latestError || ""; Layout.fillWidth: true; color: Theme.warning }
-                                    Hint { visible: !!modelData.compatibilityNote; text: modelData.compatibilityNote || ""; Layout.fillWidth: true }
-                                    RowLayout {
-                                        spacing: 10
-                                        ActionButton { text: modelData.installedButBroken ? "修复到最新版本" : !modelData.installed ? "安装最新版本" : !modelData.latestVersion || modelData.updateAvailable ? "更新到最新版本" : "已是最新版本"; enabled: host.bridgeReady && !host.busy && (!modelData.installed || !modelData.latestVersion || modelData.updateAvailable || modelData.installedButBroken); onClicked: window.showAgentInstaller(modelData) }
-                                        ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders(modelData.kind) }
-                                        ActionButton { objectName: "restartDshServer"; text: "重启 DSH Server"; visible: modelData.kind === "dsh"; enabled: host.bridgeReady && !host.busy && !host.agentInstalling && modelData.installed; loading: window.activityKinds.indexOf("dsh") >= 0; onClicked: restartDshDialog.open() }
-                                    }
-                                }
-                            }
-                        }
-                        Card {
-                            visible: window.agentEnabled("claude"); Layout.fillWidth: true
-                            ColumnLayout { anchors.fill: parent; spacing: 12
-                                RowLayout { Layout.fillWidth: true
-                                    AgentMark { kind: "claude" }
-                                    Heading { text: "Claude Code"; color: Theme.agentClaude }
-                                    Item { Layout.fillWidth: true }
-                                    Hint { text: window.claudeStateText(); color: host.claudeInstalled && !host.claudeCompatible ? Theme.warning : Theme.inkMuted }
-                                }
-                                Hint { objectName: "claudeVersions"; text: "当前 " + (host.claudeVersion || "—") + "，最新 " + (host.claudeLatestChecking ? "查询中" : host.claudeLatestVersion || "未知") + (host.claudeUpdateAvailable ? "，有可用更新" : ""); Layout.fillWidth: true; color: host.claudeUpdateAvailable ? Theme.warning : Theme.inkMuted }
-                                Hint { visible: !!host.claudeVersionError; text: host.claudeVersionError; Layout.fillWidth: true; color: Theme.warning }
-                                Hint { visible: !!host.claudeLatestError; text: host.claudeLatestError; Layout.fillWidth: true; color: Theme.warning }
-                                Hint { text: "供应商切换后，请重新打开 Claude Code 会话。"; Layout.fillWidth: true }
-                                RowLayout {
-                                    // HOST-CLAUDE-UPDATE-02: show the official latest and verify the selected launcher after updating.
-                                    ActionButton { objectName: "updateClaude"; text: host.claudeLatestVersion && !host.claudeUpdateAvailable && !!host.claudeVersion ? "已是最新版本" : "更新到最新版本"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled && !host.claudeDetecting && !host.claudeLatestChecking && (!host.claudeLatestVersion || host.claudeUpdateAvailable || !host.claudeVersion); loading: host.agentInstalling && host.agentInstallKind === "claude"; onClicked: window.showAgentInstaller({kind: "claude", installed: true, version: host.claudeVersion, latestVersion: host.claudeLatestVersion}) }
-                                    ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders("claude") }
-                                    ActionButton { text: "打开 Claude Code"; enabled: host.bridgeReady && !host.busy && host.claudeInstalled; onClicked: host.openAgentTui("claude") }
-                                }
-                            }
-                        }
-                        Card {
-                            Layout.fillWidth: true
-                            visible: host.bridgeReady
-                            ColumnLayout {
-                                anchors.fill: parent; spacing: 8
-                                Heading { text: "启用 Agent" }
-                                Hint { visible: !(host.agentEnablement.agents || []).length; text: "无法读取 Agent 设置，请检查 Host 状态目录后重启 Host。"; width: parent.width }
-                                Repeater {
-                                    model: host.agentEnablement.agents || []
-                                    delegate: SoftSwitch {
-                                        required property var modelData
-                                        objectName: "enableAgent-" + modelData.kind
-                                        Layout.fillWidth: true
-                                        text: modelData.label
-                                        agentKind: modelData.kind
-                                        marksProviderDirty: false
-                                        enabled: host.bridgeReady && !host.busy
-                                        checked: modelData.enabled === true
-                                        onClicked: {
-                                            // Restore the binding before the next rendered frame; Host owns the value.
-                                            checked = Qt.binding(function() { return modelData.enabled === true })
-                                            if (!modelData.enabled) host.setAgentEnabled(modelData.kind, true, host.agentEnablement.revision, false)
-                                            else {
-                                                disableAgentDialog.sourceKind = modelData.kind
-                                                disableAgentDialog.sourceLabel = modelData.label
-                                                disableAgentDialog.revision = host.agentEnablement.revision
-                                                disableAgentDialog.open()
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // OPENCLAW-04: configure the local Gateway without managing its process.
-                        Card {
-                            id: openClawCard
-                            objectName: "openClawCard"
-                            Layout.fillWidth: true
-                            visible: host.bridgeReady && !!host.openClaw.source && window.agentEnabled("openclaw")
-                            readonly property bool editable: host.openClaw.source === "file"
-                            readonly property bool dirty: clawUrl.text.trim() !== (host.openClaw.url || "") || clawToken.text.length > 0
-                            function reset() { clawUrl.text = host.openClaw.url || ""; clawToken.clear() }
-                            onVisibleChanged: reset()
-                            Component.onCompleted: reset()
-                            Connections { target: host; function onOpenClawChanged() { openClawCard.reset() } }
-                            ColumnLayout {
-                                anchors.fill: parent; spacing: 12
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    AgentMark { kind: "openclaw" }
-                                    Heading { text: "OpenClaw"; Layout.fillWidth: true }
-                                    StatusDot { idle: !window.openClawReady; color: window.openClawReady ? Theme.success : host.openClaw.invalid ? Theme.warning : Theme.inkFaint }
-                                    Hint { objectName: "openClawState"; text: window.openClawStateText }
-                                }
-                                Field { id: clawUrl; objectName: "openClawUrl"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "ws://127.0.0.1:18789"; Accessible.name: "OpenClaw Gateway 地址" }
-                                Field {
-                                    id: clawToken; objectName: "openClawToken"
-                                    visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
-                                    marksProviderDirty: false; maximumLength: 4096; echoMode: TextInput.Password
-                                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                                    placeholderText: host.openClaw.hasToken && clawUrl.text.trim() === host.openClaw.url ? "已保存令牌" : "Gateway 令牌（可选）"
-                                    Accessible.name: "OpenClaw Gateway 令牌"
-                                }
-                                Hint { visible: !openClawCard.editable; text: "由环境变量配置" }
-                                RowLayout {
-                                    ActionButton {
-                                        objectName: "applyOpenClaw"
-                                        visible: openClawCard.editable
-                                        text: host.desiredRunning ? "应用并重新连接" : "保存配置"
-                                        enabled: !host.busy && openClawCard.dirty && clawUrl.text.trim().length > 0
-                                        loading: window.activityKinds.indexOf("openClaw") >= 0
-                                        onClicked: { host.saveOpenClaw(clawUrl.text, clawToken.text); clawToken.clear() }
-                                    }
-                                    ActionButton {
-                                        objectName: "reconnectOpenClaw"; text: "重新连接 Host"
-                                        visible: !!host.openClaw.url && !host.openClaw.invalid && host.desiredRunning
-                                        enabled: !host.busy && !openClawCard.dirty
-                                        onClicked: host.reconnectOpenClaw()
-                                    }
-                                    ActionButton {
-                                        objectName: "disableOpenClaw"; text: "移除连接配置"
-                                        visible: openClawCard.editable && (!!host.openClaw.url || host.openClaw.invalid)
-                                        enabled: !host.busy
-                                        onClicked: { clawToken.clear(); host.saveOpenClaw("", "") }
-                                    }
-                                }
-                            }
-                        }
-                        // 以前这里写死“正在检测 Agent…”，但 busy 也包含激活、切中继、保存供应商；
-                        // 统一读活动文案，并只在 Agent 页保留（其余页由概览、对话框自己负责）。
-                        Hint { visible: window.activityText.length > 0 && !host.agentInstalling; text: window.activityText; Layout.fillWidth: true }
-                    }
-
-                    ColumnLayout {
-                        visible: window.page === 2 && window.providersOpen; Layout.fillWidth: true; spacing: 16
+                        visible: window.page === 2; Layout.fillWidth: true; spacing: 16
                         RowLayout {
-                            Layout.fillWidth: true
-                            ActionButton { text: "‹ Agent"; onClicked: window.providersOpen = false }
-                            AgentMark { kind: host.providerKind; visible: hasMark }
-                            Heading { text: ({pi: "Pi", codex: "Codex", claude: "Claude Code", dsh: "DeepSeek Harness"})[host.providerKind] + " 供应商" }
+                            Layout.fillWidth: true; spacing: 12
+                            Heading { text: "Agent"; font.pixelSize: Theme.display }
+                            Hint { text: window.enabledAgentCount + " / " + window.agentRows.length + " 已启用"; visible: window.agentRows.length > 0 }
                             Item { Layout.fillWidth: true }
+                            ActionButton { text: "检查更新"; enabled: host.bridgeReady && !host.busy && window.activityKinds.indexOf("agents") < 0; loading: window.activityKinds.indexOf("agents") >= 0; onClicked: host.detectAgents(true) }
                         }
-                        Flow {
-                            Layout.fillWidth: true; spacing: 14
-                            ActionButton { text: "刷新"; enabled: !host.busy; onClicked: host.loadProviders(host.providerKind) }
-                            ActionButton { text: "通用配置"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: host.loadCodexPreferences() }
-                            ActionButton { text: "账号管理"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: { host.clearMessage(); host.oauthAccount("list"); oauthDialog.open() } }
-                            ActionButton { text: "添加供应商"; symbol: "add"; primary: true; enabled: !host.busy; onClicked: host.editProvider("") }
-                        }
-                        RowLayout { Layout.fillWidth: true
-                            Field { id: providerSearch; objectName: "providerSearch"; Layout.fillWidth: true; placeholderText: "搜索名称、标识、备注或网站"; Accessible.name: "搜索供应商" }
-                            Hint { text: String(window.visibleProviders.length) + " / " + host.providers.length }
-                        }
-                        Card {
-                            visible: host.providers.length === 0; Layout.fillWidth: true
-                            ColumnLayout { anchors.fill: parent; spacing: 12
-                                Heading { text: "添加第一个供应商" }
-                            }
-                        }
-                        Hint { visible: host.providers.length > 0 && window.visibleProviders.length === 0; text: "没有匹配的供应商"; Layout.fillWidth: true }
-                        Repeater {
-                            model: window.visibleProviders
-                            delegate: Card {
-                                id: providerCard
-                                required property var modelData
-                                required property int index
-                                Layout.fillWidth: true
-                                contentHeight: providerCardContent.implicitHeight
-                                Rectangle { anchors.fill: parent; color: "transparent"; border.color: Theme.accent; border.width: 2; radius: Theme.radiusLg; visible: providerDrop.containsDrag }
-                                DropArea { id: providerDrop; anchors.fill: parent; keys: ["provider-card"]; enabled: !host.busy && providerSearch.text.trim().length === 0
-                                    onDropped: function(drop) { window.moveProvider(window.draggedProviderId, providerCard.modelData.id); drop.acceptProposedAction() }
-                                }
-                                ColumnLayout { id: providerCardContent; anchors.fill: parent; spacing: 12
-                                  RowLayout { Layout.fillWidth: true; spacing: 12
-                                    Item { Layout.preferredWidth: 30; Layout.preferredHeight: 40
-                                        SymbolIcon { id: providerDrag; objectName: "providerDragHandle-" + modelData.id; anchors.centerIn: parent; name: "more_horiz"; width: Theme.iconMd; height: Theme.iconMd; rotation: 90; color: dragMouse.enabled ? Theme.inkMuted : Theme.inkFaint
-                                            Drag.active: dragMouse.drag.active; Drag.source: providerCard; Drag.keys: ["provider-card"]; Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
-                                            MouseArea { id: dragMouse; anchors.fill: parent; enabled: !host.busy && providerSearch.text.trim().length === 0; cursorShape: Qt.OpenHandCursor; drag.target: providerDrag
-                                                onPressed: { window.draggedProviderId = modelData.id; providerDrag.anchors.centerIn = undefined }
-                                                onReleased: { providerDrag.Drag.drop(); providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
-                                                onCanceled: { providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                        Hint { visible: host.bridgeReady && !window.agentRows.length; text: "无法读取 Agent 设置，请检查 Host 状态目录后重启 Host。"; Layout.fillWidth: true }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 20
+                            ColumnLayout {
+                                Layout.preferredWidth: 312; Layout.minimumWidth: 255; Layout.alignment: Qt.AlignTop; spacing: 10
+                                Card {
+                                    id: agentRail
+                                    objectName: "agentRail"
+                                    padding: 8; Layout.fillWidth: true; activeFocusOnTab: true
+                                    Accessible.role: Accessible.List
+                                    Accessible.name: "Agent"
+                                    Keys.onPressed: event => {
+                                        const ids = window.agentRows.map(row => row.kind)
+                                        if (!ids.length) return
+                                        if (event.key === Qt.Key_Up || event.key === Qt.Key_Down || event.key === Qt.Key_Home || event.key === Qt.Key_End) {
+                                            const i = Math.max(0, ids.indexOf(window.detailKind))
+                                            window.chooseAgent(ids[event.key === Qt.Key_Home ? 0 : event.key === Qt.Key_End ? ids.length - 1 : Math.max(0, Math.min(ids.length - 1, i + (event.key === Qt.Key_Down ? 1 : -1)))], event.modifiers)
+                                        } else if (event.key === Qt.Key_Space) window.flipAgent(window.detailKind)
+                                        else if (event.key === Qt.Key_Escape) window.selectedAgents = []
+                                        else return
+                                        event.accepted = true
+                                    }
+                                    ColumnLayout {
+                                        anchors.fill: parent; spacing: 2
+                                        Repeater {
+                                            model: window.agentRows
+                                            delegate: Item {
+                                                id: railRow
+                                                required property var modelData
+                                                readonly property string kind: modelData.kind
+                                                readonly property bool chosen: window.detailKind === kind
+                                                readonly property bool multi: window.selectedAgents.includes(kind)
+                                                readonly property var change: window.choiceFor(kind)
+                                                readonly property var state: window.agentStatus(modelData)
+                                                objectName: "agent-rail-" + kind
+                                                Layout.fillWidth: true; Layout.preferredHeight: 52
+                                                Accessible.role: Accessible.ListItem
+                                                Accessible.name: modelData.label + "，" + state.text
+                                                Accessible.onPressAction: window.chooseAgent(kind, 0)
+                                                Rectangle {
+                                                    anchors.fill: parent; radius: Theme.radiusMd
+                                                    color: railRow.chosen || rowHover.hovered ? Theme.surfaceLift : "transparent"
+                                                    border.color: Theme.accent; border.width: railRow.multi || railRow.chosen && agentRail.activeFocus ? 1.5 : 0
+                                                }
+                                                Rectangle {
+                                                    x: 2; y: railRow.kind === "codex" || railRow.kind === "dsh" ? parent.height / 2 : 0
+                                                    radius: 1; width: 2; height: parent.height / 2 + 1; color: Theme.hairline
+                                                    visible: ["codex", "codexDesktop", "dsh", "dshDesktop"].includes(railRow.kind)
+                                                }
+                                                HoverHandler { id: rowHover }
+                                                TapHandler { acceptedButtons: Qt.RightButton; onTapped: { window.chooseAgent(railRow.kind, 0); agentMenu.popup() } }
+                                                Menu {
+                                                    id: agentMenu
+                                                    MenuItem { text: railRow.change && railRow.change.withdrawable ? "撤回排队" : railRow.modelData.enabled ? "停用" : "启用"; enabled: window.canEditAgent && (!railRow.change || railRow.change.withdrawable); onTriggered: window.flipAgent(railRow.kind) }
+                                                    MenuItem { text: "供应商配置"; visible: !!window.providerGroup(railRow.kind); enabled: railRow.modelData.enabled && !host.busy; onTriggered: window.openProviders(window.providerGroup(railRow.kind)) }
+                                                    MenuItem { text: "复制诊断信息"; onTriggered: host.copyDiagnostics() }
+                                                }
+                                                RowLayout {
+                                                    anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 8; spacing: 9
+                                                    id: railControls
+                                                    Label { text: "▸"; color: Theme.accent; opacity: railRow.chosen ? 1 : 0; Accessible.ignored: true }
+                                                    AgentMark { kind: railRow.kind; visible: hasMark; opacity: window.agentVisualOn(railRow.modelData) ? 1 : 0.45 }
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true; spacing: 1
+                                                        Label { text: railRow.modelData.label; font.pixelSize: Theme.body; color: Theme.ink; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                        Label { text: railRow.state.text; font.pixelSize: Theme.caption; color: railRow.state.color; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                    }
+                                                    StatusDot { color: railRow.state.color; idle: railRow.state.idle === true; syncing: railRow.state.sync === true }
+                                                    AgentLatch {
+                                                        id: railLatch
+                                                        objectName: "enableAgent-" + railRow.kind
+                                                        Accessible.name: railRow.modelData.label
+                                                        powered: window.agentVisualOn(railRow.modelData); change: railRow.change; tint: Theme.agent(railRow.kind)
+                                                        failed: window.agentFeedback.status === "conflict" && (window.agentFeedback.kinds || []).includes(railRow.kind)
+                                                        enabled: window.canEditAgent && (!change || change.withdrawable)
+                                                        onClicked: window.flipAgent(railRow.kind)
+                                                    }
+                                                }
+                                                // The latch and the row own disjoint hit regions, including when the latch is waiting.
+                                                Item {
+                                                    anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
+                                                    width: railControls.x + railLatch.x
+                                                    TapHandler { onTapped: point => { window.chooseAgent(railRow.kind, point.modifiers); agentRail.forceActiveFocus() } }
+                                                }
                                             }
                                         }
                                     }
-                                    ColumnLayout { Layout.fillWidth: true
-                                        Heading { text: modelData.name; font.pixelSize: Theme.body; color: Theme.agent(modelData.kind || host.providerKind); Layout.fillWidth: true; elide: Text.ElideRight }
-                                        Hint { text: (modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用") + (modelData.globalDefault ? "（Pi 全局默认）" : ""); color: modelData.enabled ? Theme.success : Theme.inkMuted }
-                                        Hint { text: modelData.notes || ""; visible: text.length > 0; Layout.fillWidth: true }
+                                }
+                                Card {
+                                    visible: window.selectedAgents.length > 0; Layout.fillWidth: true; padding: 10
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        Hint { text: "已选 " + window.selectedAgents.length; Layout.fillWidth: true }
+                                        ActionButton { text: "启用"; enabled: window.canEditAgent && window.selectedAgents.some(kind => !window.agentEnabled(kind)) && !window.selectedAgents.some(kind => window.choiceFor(kind)); onClicked: host.setAgentsEnabled(window.selectedAgents, true) }
+                                        ActionButton { text: "停用"; enabled: window.canEditAgent && window.selectedAgents.some(kind => window.agentEnabled(kind)) && !window.selectedAgents.some(kind => window.choiceFor(kind)); onClicked: host.setAgentsEnabled(window.selectedAgents, false) }
+                                        ActionButton { text: "取消"; onClicked: window.selectedAgents = [] }
                                     }
-                                    ActionButton { text: modelData.enabled ? (modelData.mode === "additive" ? "移除" : "已在用") : "启用"; primary: !modelData.enabled; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: { if (modelData.enabled) { window.removeProviderId = modelData.id; removeProviderDialog.open() } else host.switchProvider(modelData.id, true) } }
-                                    ActionButton { text: "编辑"; enabled: !host.busy; onClicked: host.editProvider(modelData.id) }
-                                    ActionButton { text: "复制"; enabled: !host.busy; onClicked: host.copyProvider(modelData.id) }
-                                    ActionButton { text: "删除"; danger: true; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: { window.deleteProviderId = modelData.id; deleteProviderDialog.open() } }
-                                  }
-                                  RowLayout { Layout.fillWidth: true; spacing: 10
-                                    Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
-                                    ActionButton { text: "检测连通"; loading: host.checkingProviderIds.indexOf(modelData.id) >= 0; visible: modelData.category !== "official"; enabled: !host.busy && host.checkingProviderIds.indexOf(modelData.id) < 0; onClicked: host.checkProvider(modelData.id) }
-                                    ActionButton { text: "查询订阅配额"; visible: modelData.enabled && modelData.subscriptionSupported === true; enabled: !host.busy; onClicked: host.querySubscription(modelData.id) }
-                                    SoftToolButton { symbol: "arrow_upward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index > 0; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index - 1].id); ToolTip.visible: hovered; ToolTip.text: "上移" }
-                                    SoftToolButton { symbol: "arrow_downward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index + 1 < window.visibleProviders.length; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index + 1].id); ToolTip.visible: hovered; ToolTip.text: "下移" }
-                                  }
+                                }
+                            }
+                            Card {
+                                id: agentDetail
+                                objectName: "agentDetail"
+                                visible: window.selectedAgentRow !== null; Layout.fillWidth: true; Layout.minimumWidth: 390; Layout.alignment: Qt.AlignTop
+                                padding: 20
+                                contentHeight: Math.max(520, detailColumn.implicitHeight)
+                                ColumnLayout {
+                                    id: detailColumn
+                                    width: parent.width; spacing: 16
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        AgentMark { kind: window.detailKind; visible: hasMark; opacity: window.agentVisualOn(window.selectedAgentRow) ? 1 : 0.45 }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true; spacing: 3
+                                            Heading { text: window.selectedAgentRow ? window.selectedAgentRow.label : ""; Layout.fillWidth: true; elide: Text.ElideRight }
+                                            Hint { text: window.selectedAgentRow ? window.agentStatus(window.selectedAgentRow).text : ""; color: window.selectedAgentRow ? window.agentStatus(window.selectedAgentRow).color : Theme.inkMuted }
+                                        }
+                                        AgentLatch { powered: window.agentVisualOn(window.selectedAgentRow); change: window.detailChange; tint: Theme.agent(window.detailKind); enabled: window.canEditAgent && (!change || change.withdrawable); Accessible.name: window.selectedAgentRow ? window.selectedAgentRow.label : "Agent"; onClicked: window.flipAgent(window.detailKind) }
+                                    }
+                                    RowLayout {
+                                        visible: window.agentFeedbackText().length > 0 || host.agentChoicesNeedRetry
+                                        Layout.fillWidth: true
+                                        Hint { text: window.agentFeedbackText() || "无法读取 Agent 设置"; Layout.fillWidth: true }
+                                        ActionButton { text: "重新读取"; visible: host.agentChoicesNeedRetry; onClicked: host.refreshAgentChoices() }
+                                        ActionButton {
+                                            text: "撤销"; visible: window.agentFeedback.status === "disabled" && window.agentFeedback.revision === host.agentEnablement.revision
+                                            enabled: window.canEditAgent; onClicked: { const receipt = window.agentFeedback; window.agentFeedback = ({}); host.setAgentsEnabled(receipt.kinds, true, receipt.revision) }
+                                        }
+                                    }
+                                    ActionButton { objectName: "agentDetailEnable"; visible: !window.detailPowered && !window.detailChange; text: "启用 " + (window.selectedAgentRow ? window.selectedAgentRow.label : "Agent"); primary: true; enabled: window.canEditAgent; onClicked: window.flipAgent(window.detailKind) }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 16
+                                        visible: window.detailPowered
+                                        Hint { text: window.selectedAgentRow && window.agentStatus(window.selectedAgentRow).detail || ""; visible: text.length > 0; color: Theme.warning; Layout.fillWidth: true }
+                                        Flow {
+                                            Layout.fillWidth: true; spacing: 8
+                                            ActionButton { id: dialInstall; objectName: "agentDetailInstall"; visible: !!window.detailFacts && (window.detailFacts.data !== undefined); text: window.detailFacts && window.detailFacts.broken ? "修复或更新" : window.detailFacts && window.detailFacts.installed ? "更新到最新版本" : "安装最新版本"; enabled: window.canEditAgent && !host.agentInstalling && (window.detailKind !== "claude" || (!host.claudeDetecting && !host.claudeLatestChecking && (!host.claudeLatestVersion || host.claudeUpdateAvailable || !host.claudeVersion))); onClicked: window.showAgentInstaller(window.detailKind === "claude" ? {kind:"claude", installed:true, version:host.claudeVersion, latestVersion:host.claudeLatestVersion} : window.detailFacts.data) }
+                                            ActionButton { objectName: "updateClaude"; visible: window.detailKind === "claude" && window.detailPowered; text: host.claudeLatestVersion && !host.claudeUpdateAvailable && !!host.claudeVersion ? "已是最新版本" : "更新到最新版本"; enabled: host.claudeInstalled && dialInstall.enabled; onClicked: window.showAgentInstaller({kind:"claude", installed:true, version:host.claudeVersion, latestVersion:host.claudeLatestVersion}) }
+                                            ActionButton { text: "打开"; visible: !!window.detailFacts && !window.detailFacts.passive && window.detailKind !== "openclaw"; enabled: window.canEditAgent && !!window.detailFacts && window.detailFacts.installed; onClicked: window.openOverviewAgent(window.detailKind) }
+                                            ActionButton { objectName: "restartDshServer"; text: "重启 DSH Server"; visible: window.detailKind === "dsh"; enabled: window.canEditAgent && !host.agentInstalling && !!window.detailFacts && window.detailFacts.installed; onClicked: restartDshDialog.open() }
+                                            ActionButton { text: "入口设置"; visible: !!window.detailFacts && (!!window.agentCliHint(window.detailFacts) || !!host.agentEntryOverrides[window.detailKind]); enabled: window.canEditAgent; onClicked: window.showAgentEntry(window.detailFacts) }
+                                            ActionButton { text: "接入设置"; visible: ["codex", "dsh", "claude", "pi", "kimiCode"].includes(window.detailKind); onClicked: window.selectPage(3) }
+                                            ActionButton { text: "全部更新到最新（" + window.batchAgentTargets().length + "）"; visible: window.batchAgentTargets().length > 0; enabled: window.canEditAgent; onClicked: window.showAgentBatch() }
+                                        }
+                                        Hint { objectName: "claudeVersions"; visible: window.detailKind === "claude"; text: "当前 " + (host.claudeVersion || "—") + "，最新 " + (host.claudeLatestChecking ? "查询中" : host.claudeLatestVersion || "未知") + (host.claudeUpdateAvailable ? "，有可用更新" : ""); Layout.fillWidth: true }
+                                        Hint { visible: window.detailKind === "claude" && text.length > 0; text: host.claudeVersionError || host.claudeLatestError; Layout.fillWidth: true; color: Theme.warning }
+                                        Hint { visible: !!window.detailFacts?.data && window.detailKind !== "claude" && text.length > 0; text: window.detailFacts?.data?.error || window.detailFacts?.data?.latestError || window.detailFacts?.data?.compatibilityNote || ""; Layout.fillWidth: true; color: Theme.warning }
+                                        RowLayout { visible: host.agentInstalling && host.agentInstallKind === window.detailKind; Layout.fillWidth: true
+                                            Hint { text: window.installationStage(); Layout.fillWidth: true }
+                                            ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
+                                        }
+                                        DownloadBar { visible: host.downloadReceived >= 0 && host.agentInstallKind === window.detailKind; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
+                                        ColumnLayout {
+                                            visible: !!window.detailProviderGroup; Layout.fillWidth: true; spacing: 8
+                                            RowLayout {
+                                                visible: !window.providersOpen; Layout.fillWidth: true
+                                                Heading { text: "供应商"; Layout.fillWidth: true }
+                                                ActionButton { text: "供应商配置"; enabled: window.canEditAgent && !window.detailChange; onClicked: window.openProviders(window.detailProviderGroup) }
+                                            }
+                                            Hint { visible: !window.providersOpen && host.providerKind === window.detailProviderGroup && host.providers.length === 0; text: window.activityKinds.indexOf("providerList") >= 0 ? "正在读取供应商" : "没有可用供应商" }
+                                            Repeater {
+                                                model: !window.providersOpen && host.providerKind === window.detailProviderGroup ? host.providers : []
+                                                delegate: Item {
+                                                    id: providerRow
+                                                    required property var modelData
+                                                    Layout.fillWidth: true; Layout.preferredHeight: 48
+                                                    activeFocusOnTab: true
+                                                    Accessible.role: Accessible.ListItem; Accessible.name: modelData.name + (modelData.enabled ? "，已启用" : "")
+                                                    Accessible.onPressAction: window.previewProviderId = modelData.id
+                                                    Keys.onReturnPressed: window.askProvider(modelData)
+                                                    Rectangle { anchors.fill: parent; radius: Theme.radiusSm; color: providerHover.hovered || window.previewProviderId === providerRow.modelData.id ? Theme.surfaceLift : "transparent"; border.width: providerRow.activeFocus ? 1 : 0; border.color: Theme.accent }
+                                                    HoverHandler { id: providerHover }
+                                                    TapHandler { onTapped: window.previewProviderId = providerRow.modelData.id; onDoubleTapped: window.askProvider(providerRow.modelData) }
+                                                    RowLayout {
+                                                        anchors.fill: parent; anchors.margins: 6; spacing: 8
+                                                        Label { text: "▸"; color: Theme.agent(window.detailKind); opacity: providerRow.modelData.enabled ? 1 : 0; Accessible.ignored: true }
+                                                        Label { text: providerRow.modelData.name; color: Theme.ink; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                        ActionButton { text: "配额"; visible: providerRow.modelData.enabled && providerRow.modelData.subscriptionSupported === true; enabled: !host.busy && !window.detailChange; onClicked: host.querySubscription(providerRow.modelData.id) }
+                                                        ActionButton { text: providerRow.modelData.enabled ? "移出" : "切换"; visible: (!providerRow.modelData.enabled || providerRow.modelData.mode === "additive") && (providerHover.hovered || providerRow.activeFocus || window.previewProviderId === providerRow.modelData.id); enabled: !host.busy && !window.detailChange; onClicked: window.askProvider(providerRow.modelData) }
+                                                    }
+                                                }
+                                            }
+                                        ColumnLayout {
+                                            visible: window.providersOpen; Layout.fillWidth: true; spacing: 12
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                ActionButton { text: "‹ 供应商"; onClicked: window.providersOpen = false }
+                                                Item { Layout.fillWidth: true }
+                                            }
+                                            Flow {
+                                                Layout.fillWidth: true; spacing: 14
+                                                ActionButton { text: "刷新"; enabled: !host.busy; onClicked: host.loadProviders(host.providerKind) }
+                                                ActionButton { text: "通用配置"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: host.loadCodexPreferences() }
+                                                ActionButton { text: "账号管理"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: { host.clearMessage(); host.oauthAccount("list"); oauthDialog.open() } }
+                                                ActionButton { text: "添加供应商"; symbol: "add"; primary: true; enabled: !host.busy; onClicked: host.editProvider("") }
+                                            }
+                                            RowLayout { Layout.fillWidth: true
+                                                Field { id: providerSearch; objectName: "providerSearch"; Layout.fillWidth: true; placeholderText: "搜索名称、标识、备注或网站"; Accessible.name: "搜索供应商" }
+                                                Hint { text: String(window.visibleProviders.length) + " / " + host.providers.length }
+                                            }
+                                            Card {
+                                                visible: host.providers.length === 0; Layout.fillWidth: true
+                                                ColumnLayout { anchors.fill: parent; spacing: 12
+                                                    Heading { text: "添加第一个供应商" }
+                                                }
+                                            }
+                                            Hint { visible: host.providers.length > 0 && window.visibleProviders.length === 0; text: "没有匹配的供应商"; Layout.fillWidth: true }
+                                            Repeater {
+                                                model: window.visibleProviders
+                                                delegate: Card {
+                                                    id: providerCard
+                                                    required property var modelData
+                                                    required property int index
+                                                    Layout.fillWidth: true
+                                                    contentHeight: providerCardContent.implicitHeight
+                                                    Rectangle { anchors.fill: parent; color: "transparent"; border.color: Theme.accent; border.width: 2; radius: Theme.radiusLg; visible: providerDrop.containsDrag }
+                                                    DropArea { id: providerDrop; anchors.fill: parent; keys: ["provider-card"]; enabled: !host.busy && providerSearch.text.trim().length === 0
+                                                        onDropped: function(drop) { window.moveProvider(window.draggedProviderId, providerCard.modelData.id); drop.acceptProposedAction() }
+                                                    }
+                                                    ColumnLayout { id: providerCardContent; anchors.fill: parent; spacing: 12
+                                                      RowLayout { Layout.fillWidth: true; spacing: 12
+                                                        Item { Layout.preferredWidth: 30; Layout.preferredHeight: 40
+                                                            SymbolIcon { id: providerDrag; objectName: "providerDragHandle-" + modelData.id; anchors.centerIn: parent; name: "more_horiz"; width: Theme.iconMd; height: Theme.iconMd; rotation: 90; color: dragMouse.enabled ? Theme.inkMuted : Theme.inkFaint
+                                                                Drag.active: dragMouse.drag.active; Drag.source: providerCard; Drag.keys: ["provider-card"]; Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
+                                                                MouseArea { id: dragMouse; anchors.fill: parent; enabled: !host.busy && providerSearch.text.trim().length === 0; cursorShape: Qt.OpenHandCursor; drag.target: providerDrag
+                                                                    onPressed: { window.draggedProviderId = modelData.id; providerDrag.anchors.centerIn = undefined }
+                                                                    onReleased: { providerDrag.Drag.drop(); providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                                                                    onCanceled: { providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                                                                }
+                                                            }
+                                                        }
+                                                        ColumnLayout { Layout.fillWidth: true
+                                                            Heading { text: modelData.name; font.pixelSize: Theme.body; color: Theme.agent(modelData.kind || host.providerKind); Layout.fillWidth: true; elide: Text.ElideRight }
+                                                            Hint { text: (modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用") + (modelData.globalDefault ? "（Pi 全局默认）" : ""); color: modelData.enabled ? Theme.success : Theme.inkMuted }
+                                                            Hint { text: modelData.notes || ""; visible: text.length > 0; Layout.fillWidth: true }
+                                                        }
+                                                      }
+                                                      Flow { Layout.fillWidth: true; spacing: 6
+                                                        ActionButton { text: modelData.enabled ? (modelData.mode === "additive" ? "移除" : "已在用") : "启用"; primary: !modelData.enabled; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: window.askProvider(modelData) }
+                                                        ActionButton { text: "编辑"; enabled: !host.busy; onClicked: host.editProvider(modelData.id) }
+                                                        ActionButton { text: "复制"; enabled: !host.busy; onClicked: host.copyProvider(modelData.id) }
+                                                        ActionButton { text: "删除"; danger: true; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: { window.deleteProviderId = modelData.id; deleteProviderDialog.open() } }
+                                                      }
+                                                      Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
+                                                      Flow { Layout.fillWidth: true; spacing: 6
+                                                        ActionButton { text: "检测连通"; loading: host.checkingProviderIds.indexOf(modelData.id) >= 0; visible: modelData.category !== "official"; enabled: !host.busy && host.checkingProviderIds.indexOf(modelData.id) < 0; onClicked: host.checkProvider(modelData.id) }
+                                                        ActionButton { text: "查询订阅配额"; visible: modelData.enabled && modelData.subscriptionSupported === true; enabled: !host.busy; onClicked: host.querySubscription(modelData.id) }
+                                                        SoftToolButton { symbol: "arrow_upward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index > 0; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index - 1].id); ToolTip.visible: hovered; ToolTip.text: "上移" }
+                                                        SoftToolButton { symbol: "arrow_downward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index + 1 < window.visibleProviders.length; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index + 1].id); ToolTip.visible: hovered; ToolTip.text: "下移" }
+                                                      }
+                                                    }
+                                                }
+                                            }
+                                            Hint { visible: host.busy; text: "正在处理供应商配置…"; Layout.fillWidth: true }
+                                        }
+
+                                        }
+                                        ColumnLayout {
+                                            visible: (window.detailSessions.total || 0) > 0; Layout.fillWidth: true; spacing: 6
+                                            Heading { text: "运行中会话 · " + (window.detailSessions.total || 0) }
+                                            Repeater { model: window.detailSessions.sessions || []; delegate: Hint { required property string modelData; text: modelData; Layout.fillWidth: true } }
+                                            Hint { visible: window.detailSessions.total > (window.detailSessions.sessions || []).length; text: "另外 " + (window.detailSessions.total - (window.detailSessions.sessions || []).length) + " 个" }
+                                        }
+                                        // OPENCLAW-04: configure the local Gateway without managing its process.
+                                        Card {
+                                            id: openClawCard
+                                            objectName: "openClawCard"
+                                            Layout.fillWidth: true
+                                            visible: host.bridgeReady && !!host.openClaw.source && window.detailKind === "openclaw" && window.detailPowered
+                                            readonly property bool editable: host.openClaw.source === "file"
+                                            readonly property bool dirty: clawUrl.text.trim() !== (host.openClaw.url || "") || clawToken.text.length > 0
+                                            function reset() { clawUrl.text = host.openClaw.url || ""; clawToken.clear() }
+                                            onVisibleChanged: reset()
+                                            Component.onCompleted: reset()
+                                            Connections { target: host; function onOpenClawChanged() { openClawCard.reset() } }
+                                            ColumnLayout {
+                                                anchors.fill: parent; spacing: 12
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    AgentMark { kind: "openclaw" }
+                                                    Heading { text: "OpenClaw"; Layout.fillWidth: true }
+                                                    StatusDot { idle: !window.openClawReady; color: window.openClawReady ? Theme.success : host.openClaw.invalid ? Theme.warning : Theme.inkFaint }
+                                                    Hint { objectName: "openClawState"; text: window.openClawStateText }
+                                                }
+                                                Field { id: clawUrl; objectName: "openClawUrl"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "ws://127.0.0.1:18789"; Accessible.name: "OpenClaw Gateway 地址" }
+                                                Field {
+                                                    id: clawToken; objectName: "openClawToken"
+                                                    visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
+                                                    marksProviderDirty: false; maximumLength: 4096; echoMode: TextInput.Password
+                                                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                                                    placeholderText: host.openClaw.hasToken && clawUrl.text.trim() === host.openClaw.url ? "已保存令牌" : "Gateway 令牌（可选）"
+                                                    Accessible.name: "OpenClaw Gateway 令牌"
+                                                }
+                                                Hint { visible: !openClawCard.editable; text: "由环境变量配置" }
+                                                Flow {
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    ActionButton {
+                                                        objectName: "applyOpenClaw"
+                                                        visible: openClawCard.editable
+                                                        text: host.desiredRunning ? "应用并重新连接" : "保存配置"
+                                                        enabled: !host.busy && openClawCard.dirty && clawUrl.text.trim().length > 0
+                                                        loading: window.activityKinds.indexOf("openClaw") >= 0
+                                                        onClicked: { host.saveOpenClaw(clawUrl.text, clawToken.text); clawToken.clear() }
+                                                    }
+                                                    ActionButton {
+                                                        objectName: "reconnectOpenClaw"; text: "重新连接 Host"
+                                                        visible: !!host.openClaw.url && !host.openClaw.invalid && host.desiredRunning
+                                                        enabled: !host.busy && !openClawCard.dirty
+                                                        onClicked: host.reconnectOpenClaw()
+                                                    }
+                                                    ActionButton {
+                                                        objectName: "disableOpenClaw"; text: "移除连接配置"
+                                                        visible: openClawCard.editable && (!!host.openClaw.url || host.openClaw.invalid)
+                                                        enabled: !host.busy
+                                                        onClicked: { clawToken.clear(); host.saveOpenClaw("", "") }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
-                        Hint { visible: host.busy; text: "正在处理供应商配置…"; Layout.fillWidth: true }
                     }
 
                     Card {
@@ -1632,19 +1910,71 @@ ApplicationWindow {
         Label { width: parent.width; text: "连接会立即失效。"; wrapMode: Text.WordWrap }
         onAccepted: host.revoke(window.revokeId)
     }
+    Timer { id: agentFeedbackExpiry; interval: 4000; onTriggered: window.agentFeedback = ({}) }
+    Connections {
+        target: host
+        function onAgentWriteFeedback(kinds, status, revision) {
+            if (status === "enabled") return
+            window.agentFeedback = {kinds: kinds, status: status, revision: revision}
+            agentFeedbackExpiry.restart()
+        }
+        function onAgentReviewsRequested(kinds, reviews, revision) {
+            disableAgentDialog.kinds = kinds
+            disableAgentDialog.reviews = reviews
+            disableAgentDialog.revision = revision
+            disableAgentDialog.open()
+        }
+        function onPaired() { if (pairDialog.opened) pairDialog.accept() }
+    }
     SoftDialog {
-        id: disableAgentDialog; objectName: "disableAgentDialog"; anchors.centerIn: parent; modal: true; width: 410
-        property string sourceKind: ""
-        property string sourceLabel: ""
+        id: disableAgentDialog; objectName: "disableAgentDialog"; anchors.centerIn: parent; modal: true; width: 430
+        property var kinds: []
+        property var reviews: []
         property double revision: -1
-        title: "停用 " + sourceLabel + "？"
-        contentItem: Hint { text: "Orbis 将断开此 Agent 的接入，不会退出原生应用。"; width: parent.width }
+        title: kinds.length > 1 ? "停用 " + kinds.length + " 个 Agent？" : "停用 " + (window.agentRows.find(row => row.kind === kinds[0])?.label || "Agent") + "？"
+        contentItem: ScrollView {
+            implicitHeight: Math.min(360, reviewDetails.implicitHeight + 6)
+            contentWidth: availableWidth
+            ColumnLayout {
+                id: reviewDetails
+                width: parent.width; spacing: 10
+                Hint { text: "这些会话将不再同步到 Orbis，电脑上照常运行。"; Layout.fillWidth: true }
+                Hint { visible: disableAgentDialog.kinds.length > 1; text: disableAgentDialog.kinds.map(kind => window.agentRows.find(row => row.kind === kind)?.label || kind).join("、"); Layout.fillWidth: true }
+                Repeater {
+                    model: disableAgentDialog.reviews
+                    delegate: ColumnLayout {
+                        id: reviewGroup
+                        required property var modelData
+                        Layout.fillWidth: true; spacing: 4
+                        Hint { text: window.agentRows.find(row => row.kind === reviewGroup.modelData.kind)?.label || reviewGroup.modelData.kind; visible: disableAgentDialog.reviews.length > 1; Layout.fillWidth: true }
+                        Repeater { model: reviewGroup.modelData.sessions || []; delegate: Label { required property string modelData; text: "• " + modelData; textFormat: Text.PlainText; color: Theme.ink; wrapMode: Text.Wrap; Layout.fillWidth: true } }
+                        Hint { visible: reviewGroup.modelData.total > reviewGroup.modelData.sessions.length; text: "另外 " + (reviewGroup.modelData.total - reviewGroup.modelData.sessions.length) + " 个" }
+                    }
+                }
+                Hint { visible: host.agentEnablement.revision !== disableAgentDialog.revision; text: "设置已变化，请重新发起停用。"; color: Theme.warning }
+            }
+        }
         footer: SoftDialogButtons {
             ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
-            ActionButton { text: "停用"; danger: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            ActionButton { text: "停用"; danger: true; enabled: window.canEditAgent && disableAgentDialog.reviews.length > 0 && host.agentEnablement.revision === disableAgentDialog.revision; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
             onAccepted: disableAgentDialog.accept(); onRejected: disableAgentDialog.reject()
         }
-        onAccepted: host.setAgentEnabled(sourceKind, false, revision, true)
+        onAccepted: host.confirmAgentReviews()
+        onRejected: host.dismissAgentReviews()
+    }
+    SoftDialog {
+        id: agentProviderConfirm; anchors.centerIn: parent; modal: true; width: 430
+        property var profile: null
+        property string group: ""
+        readonly property bool fresh: !!profile && window.detailProviderGroup === group && window.detailPowered && !window.detailChange && host.providerKind === group && host.providers.some(row => row.id === profile.id && row.name === profile.name && !row.enabled)
+        title: "切换到 " + (profile ? profile.name : "") + "？"
+        contentItem: Hint { text: "已有会话可能需要重新打开。"; width: parent.width }
+        footer: SoftDialogButtons {
+            ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            ActionButton { text: "切换"; primary: true; enabled: agentProviderConfirm.fresh && !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            onAccepted: agentProviderConfirm.accept(); onRejected: agentProviderConfirm.reject()
+        }
+        onAccepted: if (fresh && !host.busy) host.switchProvider(profile.id, true)
     }
     SoftDialog {
         id: restartDshDialog; title: "重启 DSH Server？"; anchors.centerIn: parent; modal: true; width: 480

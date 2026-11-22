@@ -6,6 +6,11 @@ import Testing
 
 @Suite("Provider dial handle ownership and detents")
 struct ProviderDialGeometryTests {
+    @Test func legacyRosterFiltersOnlyWhenTheHostAdvertisesCapabilities() {
+        #expect(legacyAgentDialKinds(supported: ["pi", "codexDesktop"], launchable: ["codex", "hermes"]) == ["codex", "pi"])
+        #expect(legacyAgentDialKinds(supported: [], launchable: []) == [])
+        #expect(legacyAgentDialKinds(supported: nil, launchable: nil) == nil)
+    }
     @Test func touchStartsInExactlyOneHandle() {
         let g = ProviderDialGeometry.Layout(width: 390, height: 400)
         #expect(g.centerX < 0)
@@ -35,6 +40,19 @@ struct ProviderDialGeometryTests {
         #expect(ProviderDialGeometry.settleDuration(distance: 2) > 0.22)
         #expect(ProviderDialGeometry.settleDuration(distance: -2) == ProviderDialGeometry.settleDuration(distance: 2))
         #expect(ProviderDialGeometry.settleDuration(distance: 100) == 0.46)
+    }
+
+    // AGENT-DIAL-01: an outward drag stops before the socket; a vertical drag is never a latch edit.
+    @Test func pinArmsOnlyPastMidpointInItsCaptureChannel() {
+        let g = ProviderDialGeometry.Layout(width: 390, height: 440)
+        let x = g.pinStart + g.pinTravel / 2
+        #expect(g.pinContains(x: x, y: g.centerY))
+        #expect(!g.pinContains(x: x, y: g.centerY + 28))
+        #expect(!ProviderDialGeometry.horizontal(12, -70))
+        #expect(ProviderDialGeometry.horizontal(30, 8))
+        #expect(!ProviderDialGeometry.pinArmed(enabled: false, position: ProviderDialGeometry.pinPosition(enabled: false, dx: g.pinTravel * 0.4, travel: g.pinTravel)))
+        #expect(ProviderDialGeometry.pinPosition(enabled: false, dx: g.pinTravel * 1.5, travel: g.pinTravel) == ProviderDialGeometry.pinHold)
+        #expect(ProviderDialGeometry.pinArmed(enabled: true, position: ProviderDialGeometry.pinPosition(enabled: true, dx: -g.pinTravel, travel: g.pinTravel)))
     }
 
 }

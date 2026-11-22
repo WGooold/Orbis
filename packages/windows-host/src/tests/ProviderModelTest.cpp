@@ -8,6 +8,73 @@
 class ProviderModelTest : public QObject {
     Q_OBJECT
 private slots:
+    void overviewAgentActionsPreserveUnknownInstallationState() {
+        QFile file(QStringLiteral(ORBIS_MAIN_QML));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QString source = QString::fromUtf8(file.readAll());
+        auto function = [&](const QString &name) {
+            const int start = source.indexOf("    function " + name + "(");
+            if (start < 0) return QString();
+            const int open = source.indexOf('{', start);
+            if (open < 0) return QString();
+            int depth = 0;
+            for (int index = open; index < source.size(); ++index) {
+                if (source.at(index) == '{') ++depth;
+                else if (source.at(index) == '}' && --depth == 0) return source.mid(start, index - start + 1);
+            }
+            return QString();
+        };
+        const QString actionText = function("overviewAgentActionText");
+        const QString actionEnabled = function("overviewAgentActionEnabled");
+        const QString actionPrimary = function("overviewAgentActionPrimary");
+        QVERIFY(!actionText.isEmpty()); QVERIFY(!actionEnabled.isEmpty()); QVERIFY(!actionPrimary.isEmpty());
+        QQmlEngine engine;
+        QQmlComponent component(&engine);
+        const QString qml = QStringLiteral(R"(
+import QtQuick
+Item {
+    id: window
+    property var host: ({bridgeReady: true, busy: false})
+    property bool connectionError: false
+    property string nextStep: "install"
+    function agentPhoneState(agent, sessions) { return agent.installed === undefined ? "等待检测" : "未安装" }
+    %1
+    %2
+    %3
+    function report() {
+        var unknown = {kind: "codex", installable: true}
+        var missing = {kind: "codex", installed: false}
+        var installed = {kind: "codex", installed: true, broken: false}
+        var openclaw = {kind: "openclaw", installed: true}
+        return JSON.stringify({
+            unknown: {text: overviewAgentActionText(unknown, true), enabled: overviewAgentActionEnabled(unknown, true), primary: overviewAgentActionPrimary(unknown, true)},
+            missing: {text: overviewAgentActionText(missing, true), enabled: overviewAgentActionEnabled(missing, true), primary: overviewAgentActionPrimary(missing, true)},
+            installed: {text: overviewAgentActionText(installed, true), enabled: overviewAgentActionEnabled(installed, true), primary: overviewAgentActionPrimary(installed, true)},
+            openclaw: {text: overviewAgentActionText(openclaw, false), enabled: overviewAgentActionEnabled(openclaw, false)}
+        })
+    }
+}
+)").arg(actionText, actionEnabled, actionPrimary);
+        component.setData(qml.toUtf8(), QUrl());
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> view(component.create());
+        QVERIFY2(view != nullptr, qPrintable(component.errorString()));
+        QVariant result;
+        QVERIFY(QMetaObject::invokeMethod(view.get(), "report", Q_RETURN_ARG(QVariant, result)));
+        const auto report = QJsonDocument::fromJson(result.toString().toUtf8()).object();
+        QCOMPARE(report.value("unknown").toObject().value("text").toString(), QString("等待检测"));
+        QCOMPARE(report.value("unknown").toObject().value("enabled").toBool(), false);
+        QCOMPARE(report.value("unknown").toObject().value("primary").toBool(), false);
+        QCOMPARE(report.value("missing").toObject().value("text").toString(), QString("安装"));
+        QCOMPARE(report.value("missing").toObject().value("enabled").toBool(), true);
+        QCOMPARE(report.value("missing").toObject().value("primary").toBool(), true);
+        QCOMPARE(report.value("installed").toObject().value("text").toString(), QString("打开"));
+        QCOMPARE(report.value("installed").toObject().value("enabled").toBool(), true);
+        QCOMPARE(report.value("installed").toObject().value("primary").toBool(), false);
+        QCOMPARE(report.value("openclaw").toObject().value("text").toString(), QString("配置"));
+        QCOMPARE(report.value("openclaw").toObject().value("enabled").toBool(), true);
+    }
+
     void existingModelEditsSurviveSerialization() {
         QFile file(QStringLiteral(ORBIS_MAIN_QML));
         QVERIFY(file.open(QIODevice::ReadOnly));

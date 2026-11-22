@@ -104,3 +104,13 @@ OpenCode 只在当前启用租约内创建连接监视器和会话适配器。�
 扩展回归：旧安装、更新与终端用例在隔离状态中显式启用被测来源，原业务断言不变；另验证新装状态不会发现或安装停用来源。本机 Codex 环境变量不再进入合成 launcher。保留[首次扩大回归](../../.artifacts/agent-enablement-all/candidate-98a7c544-regression.log)及[本地主线对照](../../.artifacts/agent-enablement-all/expanded-main-sync-baseline.log)，同步远端主线已有的会话基线、溢出用例和 lint 修复后，[Lint、类型检查、构建与 2543 项回归通过](../../.artifacts/agent-enablement-all/expanded-core-clean.log)。22 项由现有平台条件跳过。此轮未改移动端源码，安装与交互仍由 QA 验收。
 
 [桌面桥端到端回归](../../.artifacts/agent-enablement-all/desktop-bridge-wire-candidate.log)运行 Qt 使用的实际 Node JSON 桥与隔离 Relay：两个合成配对客户端验证电脑启用后广播到两端、手机停用后回推电脑与另一端、旧修订不能覆盖，以及电脑暂停时保存、恢复后手机读回。此证据覆盖协议和实际进程接线，不代替平台 UI 安装验收。
+
+## AGENT-DIAL-01｜跨端 Agent 拨盘与停用复核
+
+将移动端设置入口收敛为按 Host 选择的 Agent 拨盘。管理能力已协商时，转盘目录、启用数与写入均来自该 Host 的版本化快照；旧 Host 则按其 `agents`／`launchableAgents` 公告筛选，二者都未知时保留旧目录回退，不将“未知”误作“没有”。转动浏览不写远端；插销写入先显示原有事实，只有对应 Host 回执确认后才改变状态，离线缓存只供浏览，不重放操作。停用前由 Host 对运行会话复核；批量停用作为同一修订的一次原子写入提交，过期复核与迟到回执不能覆盖较新的快照。
+
+`agent.enablement.review.v1` 是显式协商的协议扩展，用于安全复核令牌与范围绑定；不是“完全不新增协议帧”。旧端不协商此能力时继续使用既有兼容路径。界面行为服从实际策略与 Host 回执；原型中的动画或乐观状态不得替代复核。
+
+桌面概览安装动作区分已安装、明确未安装与未知：未知显示检测状态且不触发安装。移动端旧端目录筛选与原型的固定列表不同，是为遵循 Host 能力公告。
+
+本机自动验证（2026-11-23）：[Node 类型检查与 65 项定向回归](../../.artifacts/agent-dial-20261123/node-dial.log)、[Android 9 项状态／几何回归](../../.artifacts/agent-dial-20261123/android-final/run.log)、[Android 插桩源码编译](../../.artifacts/agent-dial-20261123/android-instrumented-compile/run.log)、[Swift 9 项旧端目录、回执与几何回归](../../.artifacts/agent-dial-20261123/ios-state/run.log)、Qt [`provider-model`](../../.artifacts/agent-dial-20261123/qt-provider-model.log) 与 [`host-live-change`](../../.artifacts/agent-dial-20261123/qt-host-live-change.log) 定向测试。尚未做原型与原生界面的同尺寸截图对比，未部署、未安装，待用户安装及视觉交互验收。

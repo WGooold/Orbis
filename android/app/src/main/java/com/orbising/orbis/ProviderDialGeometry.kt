@@ -52,6 +52,9 @@ internal enum class ProviderDialRing { Agent, Profile }
 /** Physical layout in dp, shared by drawing, hit testing and gesture regression tests. */
 internal data class DualDialGeometry(val cx: Float, val cy: Float, val radius: Float, val holeRadius: Float,
     val hubRadius: Float, val seamRadius: Float, val agentRadius: Float, val profileStep: Float, val agentStep: Float) {
+    val pinTravel get() = seamRadius - agentRadius
+    val pinStart get() = cx + agentRadius
+    fun inPinChannel(x: Float, y: Float) = x in (pinStart - 22)..(pinStart + pinTravel + 22) && kotlin.math.abs(y - cy) <= 26
     val profilePitch get() = (radius + 28) * Math.toRadians(profileStep.toDouble()).toFloat()
     fun ringAt(x: Float, y: Float): ProviderDialRing? {
         if (x < 20) return null
@@ -81,4 +84,14 @@ internal data class DualDialGeometry(val cx: Float, val cy: Float, val radius: F
             return i + kotlin.math.sign(d)*0.5f*kotlin.math.abs(d*2).toDouble().pow(2.4).toFloat()
         }
     }
+}
+
+
+/** AGENT-DIAL-01: the horizontal lane owns the initial contact; the real socket is reserved for Host acknowledgement. */
+internal object AgentDialPin {
+    const val HOLD = 0.72f
+    const val LOCK = 8f
+    fun horizontal(dx: Float, dy: Float) = kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.1f
+    fun drag(enabled: Boolean, dx: Float, travel: Float): Float = if (enabled) (1 + dx / travel).coerceIn(1-HOLD, 1f) else (dx / travel).coerceIn(0f, HOLD)
+    fun armed(enabled: Boolean, position: Float): Boolean = if (enabled) position < 0.5f else position > 0.5f
 }

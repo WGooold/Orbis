@@ -63,7 +63,7 @@ internal fun HomeTabBar(
             HomeTab.entries.forEach { tab ->
                 val label = when (tab) {
                     HomeTab.Chat -> L10n.tr("聊天")
-                    HomeTab.Providers -> L10n.tr("供应商")
+                    HomeTab.Providers -> "Agent"
                     HomeTab.Settings -> L10n.tr("设置")
                 }
                 val active = selected == tab

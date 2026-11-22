@@ -27,6 +27,9 @@ enum ProviderDialGeometry {
             profileStep = clamp(96 / (radius + 28) * 180 / .pi, 16, 24).rounded()
             agentStep = clamp(56 / agentRadius * 180 / .pi, 24, 40).rounded()
         }
+        var pinStart: Double { centerX + agentRadius }
+        var pinTravel: Double { hubRadius + 24 - agentRadius }
+        func pinContains(x: Double, y: Double) -> Bool { (pinStart - 22...pinStart + pinTravel + 22).contains(x) && abs(y - centerY) <= 26 }
         func handle(x: Double, y: Double) -> Handle? {
             guard x >= 20 else { return nil }
             let distance = hypot(x - centerX, y - centerY)
@@ -36,6 +39,12 @@ enum ProviderDialGeometry {
             return .profile
         }
     }
+    static let pinHold = 0.72
+    static func horizontal(_ dx: Double, _ dy: Double) -> Bool { abs(dx) > abs(dy) * 1.1 }
+    static func pinPosition(enabled: Bool, dx: Double, travel: Double) -> Double {
+        enabled ? clamp(1 + dx / travel, 1 - pinHold, 1) : clamp(dx / travel, 0, pinHold)
+    }
+    static func pinArmed(enabled: Bool, position: Double) -> Bool { enabled ? position < 0.5 : position > 0.5 }
     static func settleDuration(distance: Double) -> Double { min(0.46, 0.22 + abs(distance) * 0.06) }
     static func clamp(_ value: Double, _ lower: Double, _ upper: Double) -> Double { min(max(value, lower), upper) }
     static func softened(_ value: Double, count: Int) -> Double {

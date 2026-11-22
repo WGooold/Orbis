@@ -1,4 +1,4 @@
-import { AgentEnablementChoiceSchema, AgentEnablementRevisionSchema, AgentKindSchema, type AgentKind } from "@orbis/protocol";
+import { AgentEnablementChoiceSchema, AgentEnablementRevisionSchema, AgentKindSchema, type AgentKind, type AgentDisableReview } from "@orbis/protocol";
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,16 +6,16 @@ import { z } from "zod";
 
 /** The exhaustive Host-side catalog. Clients render rows, not per-Agent settings implementations. */
 export const agentEnablementCatalog = {
-  pi: { label: "Pi" },
   codex: { label: "Codex CLI" },
   codexDesktop: { label: "Codex Desktop" },
-  dsh: { label: "DeepSeek CLI" },
   claude: { label: "Claude Code" },
+  dsh: { label: "DeepSeek CLI" },
   dshDesktop: { label: "DeepSeek Desktop" },
-  hermes: { label: "Hermes Agent" },
+  pi: { label: "Pi" },
   kimiCode: { label: "Kimi Code" },
-  openclaw: { label: "OpenClaw" },
   opencode: { label: "OpenCode" },
+  hermes: { label: "Hermes Agent" },
+  openclaw: { label: "OpenClaw" },
 } as const satisfies Record<AgentKind, { label: string }>;
 
 const fileName = "agent-enablement.json";
@@ -27,9 +27,27 @@ const fileSchema = z.strictObject({
 });
 type File = z.infer<typeof fileSchema>;
 
-export class AgentDisableConfirmationRequired extends Error {}
+export class AgentDisableConfirmationRequired extends Error {
+  constructor(readonly review: AgentDisableReview) { super("请确认停用正在工作的 Agent"); }
+}
+
+// Keep sibling sources adjacent without changing the shared AgentKind wire enum.
+export const agentEnablementOrder = Object.keys(agentEnablementCatalog) as AgentKind[];
 
 const changeSchema = AgentEnablementChoiceSchema.extend({ kind: AgentKindSchema });
+// Desktop bridge only. The paired protocol keeps its negotiated single-source write.
+const batchSchema = z.strictObject({
+  kinds: z.array(AgentKindSchema).min(1).max(agentEnablementOrder.length).refine(kinds => new Set(kinds).size === kinds.length),
+  enabled: z.boolean(),
+  expectedRevision: AgentEnablementRevisionSchema,
+  reviews: z.partialRecord(AgentKindSchema, AgentEnablementChoiceSchema.shape.review.unwrap()).optional(),
+}).refine(({ kinds, enabled, reviews }) => !reviews || (!enabled && Object.keys(reviews).every(kind => kinds.includes(kind as AgentKind))));
+type DisableVerifier = (kind: AgentKind, revision: number, review?: string) => void;
+const allowed = (): boolean => true;
+const noReview: DisableVerifier = () => {};
+export class AgentBatchConfirmationRequired extends Error {
+  constructor(readonly reviews: AgentDisableReview[]) { super("请确认停用正在工作的 Agent"); }
+}
 export type AgentEnablementSnapshot = {
   readonly revision: number;
   readonly agents: readonly { readonly kind: AgentKind; readonly label: string; readonly enabled: boolean }[];
@@ -58,20 +76,40 @@ export class AgentEnablementStore {
     return this.#serial(async () => this.#snapshot(await this.#load()));
   }
 
-  set(input: unknown, stillAuthorized: () => boolean = () => true, verifyDisable: (kind: AgentKind) => void = () => {}): Promise<AgentEnablementResult> {
+  async set(input: unknown, stillAuthorized = allowed, verifyDisable = noReview, scoped = false): Promise<AgentEnablementResult> {
+    const { kind, enabled, expectedRevision, confirmDisable, review } = changeSchema.parse(input);
+    return this.#setChoices([kind], enabled, expectedRevision, stillAuthorized, (kinds, revision) => {
+      if (kinds.length && (scoped || !confirmDisable)) verifyDisable(kind, revision, scoped ? review : undefined);
+    });
+  }
+
+  async setBatch(input: unknown, inspectDisable: (kind: AgentKind, revision: number, scope: string) => AgentDisableReview | undefined): Promise<AgentEnablementResult> {
+    const { kinds, enabled, expectedRevision, reviews } = batchSchema.parse(input);
+    // Approval covers this exact selection, not a larger batch or a single write.
+    const scope = `desktop:batch:${JSON.stringify([...kinds].sort())}`;
+    return this.#setChoices(kinds, enabled, expectedRevision, allowed, (disabling, revision) => {
+      const affected = disabling.flatMap(kind => inspectDisable(kind, revision, scope) ?? []);
+      if (affected.some(review => reviews?.[review.kind as AgentKind] !== review.token)) throw new AgentBatchConfirmationRequired(affected);
+    });
+  }
+
+  #setChoices(kinds: readonly AgentKind[], enabled: boolean, expectedRevision: number, stillAuthorized: () => boolean,
+    verify: (disabling: readonly AgentKind[], revision: number) => void): Promise<AgentEnablementResult> {
     return this.#serial(async () => {
-      const { kind, enabled, expectedRevision, confirmDisable } = changeSchema.parse(input);
       const data = await this.#load();
       if (!stillAuthorized()) throw new Error("Agent settings request is no longer authorized");
-      const current = Object.hasOwn(data.choices, kind) && data.choices[kind] === true;
+      const changed = kinds.filter(kind => !Object.hasOwn(data.choices, kind) || data.choices[kind] !== enabled);
       // Duplicate delivery after a successful commit is already satisfied. A stale
       // write with a different target must never undo a newer edit.
-      if (current === enabled && Object.hasOwn(data.choices, kind)) return { status: "unchanged", snapshot: this.#snapshot(data) };
+      if (!changed.length) return { status: "unchanged", snapshot: this.#snapshot(data) };
       if (expectedRevision !== data.revision) return { status: "conflict", snapshot: this.#snapshot(data) };
-      const next = fileSchema.parse({ ...data, revision: data.revision + 1, choices: { ...data.choices, [kind]: enabled } });
+      const choices = { ...data.choices };
+      for (const kind of changed) choices[kind] = enabled;
+      const next = fileSchema.parse({ ...data, revision: data.revision + 1, choices });
+      // Review all of the affected sources at the same revision before replacing anything.
       await this.#commit(next, () => {
         if (!stillAuthorized()) throw new Error("Agent settings request is no longer authorized");
-        if (current && !enabled && !confirmDisable) verifyDisable(kind);
+        if (!enabled) verify(changed.filter(kind => data.choices[kind] === true), data.revision);
       });
       return { status: "applied", snapshot: this.#snapshot(next) };
     });
@@ -80,7 +118,7 @@ export class AgentEnablementStore {
   #snapshot(data: File): AgentEnablementSnapshot {
     return {
       revision: data.revision,
-      agents: AgentKindSchema.options.map(kind => ({ kind, ...agentEnablementCatalog[kind], enabled: Object.hasOwn(data.choices, kind) && data.choices[kind] === true })),
+      agents: agentEnablementOrder.map(kind => ({ kind, ...agentEnablementCatalog[kind], enabled: Object.hasOwn(data.choices, kind) && data.choices[kind] === true })),
     };
   }
 
@@ -181,8 +219,15 @@ export class AgentEnablementController {
     return snapshot;
   }
 
-  async set(input: unknown, stillAuthorized: () => boolean = () => true, verifyDisable: (kind: AgentKind) => void = () => {}): Promise<AgentEnablementResult> {
-    const result = await this.#store.set(input, stillAuthorized, verifyDisable);
+  async set(input: unknown, stillAuthorized: () => boolean = () => true,
+    verifyDisable: (kind: AgentKind, revision: number, review?: string) => void = () => {}, scoped = false): Promise<AgentEnablementResult> {
+    const result = await this.#store.set(input, stillAuthorized, verifyDisable, scoped);
+    this.#apply(result.snapshot);
+    return result;
+  }
+
+  async setBatch(input: unknown, inspectDisable: Parameters<AgentEnablementStore["setBatch"]>[1]): Promise<AgentEnablementResult> {
+    const result = await this.#store.setBatch(input, inspectDisable);
     this.#apply(result.snapshot);
     return result;
   }

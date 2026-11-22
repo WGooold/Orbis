@@ -64,9 +64,10 @@ set_source_files_properties(src/qml/StatusDot.qml PROPERTIES QT_RESOURCE_ALIAS S
 set_source_files_properties(src/qml/ThemePreview.qml PROPERTIES QT_RESOURCE_ALIAS ThemePreview.qml)
 set_source_files_properties(src/qml/SymbolIcon.qml PROPERTIES QT_RESOURCE_ALIAS SymbolIcon.qml)
 set_source_files_properties(src/qml/Symbols.js PROPERTIES QT_RESOURCE_ALIAS Symbols.js QT_QML_SKIP_QMLDIR_ENTRY TRUE)
+set_source_files_properties(src/qml/AgentLatch.qml PROPERTIES QT_RESOURCE_ALIAS AgentLatch.qml)
 set_source_files_properties(src/qml/AgentMark.qml PROPERTIES QT_RESOURCE_ALIAS AgentMark.qml)
 set_source_files_properties(src/qml/AgentMarks.js PROPERTIES QT_RESOURCE_ALIAS AgentMarks.js QT_QML_SKIP_QMLDIR_ENTRY TRUE)
-qt_add_qml_module(OrbisHost URI Orbis.Host VERSION 1.0 QML_FILES src/qml/StatusDot.qml src/qml/ThemePreview.qml src/qml/Theme.qml src/qml/Surface.qml src/qml/SymbolIcon.qml src/qml/Symbols.js src/qml/AgentMark.qml src/qml/AgentMarks.js src/qml/MotionText.qml src/qml/Motion.js src/qml/Main.qml src/qml/Card.qml src/qml/ActionButton.qml src/qml/DiagnosticLogView.qml src/qml/ProviderFlow.js SOURCES src/NeuSurface.cpp src/NeuSurface.h)
+qt_add_qml_module(OrbisHost URI Orbis.Host VERSION 1.0 QML_FILES src/qml/StatusDot.qml src/qml/ThemePreview.qml src/qml/Theme.qml src/qml/Surface.qml src/qml/SymbolIcon.qml src/qml/Symbols.js src/qml/AgentMark.qml src/qml/AgentLatch.qml src/qml/AgentMarks.js src/qml/MotionText.qml src/qml/Motion.js src/qml/Main.qml src/qml/Card.qml src/qml/ActionButton.qml src/qml/DiagnosticLogView.qml src/qml/ProviderFlow.js SOURCES src/NeuSurface.cpp src/NeuSurface.h)
 qt_add_resources(OrbisHost branding PREFIX "/" FILES src/assets/orbis.png)
 set(agent_mark_dir src/assets/agents)
 set(agent_mark_files ${agent_mark_dir}/kimi-code.svg ${agent_mark_dir}/opencode-light.svg

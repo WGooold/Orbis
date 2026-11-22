@@ -7,8 +7,8 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { DEVICE_STORE_FILE, HOST_IDENTITY_FILE, X25519_KEY_BYTES, deriveSharedSecret, fromBase64UrlFixed, loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, privateKeyFromRaw, resolveStateDir, revokeDeviceRecord, saveDeviceStore, toBase64Url } from "@orbis/e2e";
 import QRCode from "qrcode";
-import { AgentEnablementChoiceSchema, AgentKindSchema, hostRecoveryProof, type AgentKind, type AgentStateRangeRequest } from "@orbis/protocol";
-import { AgentDisableConfirmationRequired, AgentEnablementController, AgentEnablementStore, type AgentEnablementResult, type AgentEnablementSnapshot } from "./agent-enablement.js";
+import { AgentEnablementChoiceSchema, AgentKindSchema, hostRecoveryProof, type AgentDisableReview, type AgentKind, type AgentStateRangeRequest } from "@orbis/protocol";
+import { AgentBatchConfirmationRequired, AgentDisableConfirmationRequired, AgentEnablementController, AgentEnablementStore, type AgentEnablementResult, type AgentEnablementSnapshot } from "./agent-enablement.js";
 import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { RelayAuthenticationError } from "./relay-client.js";
@@ -285,13 +285,26 @@ export class DesktopRuntime {
     return await this.#agentEnablement.read();
   }
 
-  async setAgentEnablement(input: unknown): Promise<AgentEnablementResult> {
+  async setAgentEnablement(input: unknown, scoped = false): Promise<AgentEnablementResult | { status: "review"; review: AgentDisableReview }> {
     const choice = AgentEnablementChoiceSchema.extend({ kind: AgentKindSchema }).safeParse(input);
     if (!choice.success) throw new Error("此 Agent 暂不支持启用设置");
     try {
-      return await this.#agentEnablement.set(choice.data, undefined, kind => this.#service?.verifyAgentDisable(kind));
+      if (choice.data.review !== undefined && !scoped) throw new Error("Unnegotiated Agent review");
+      return await this.#agentEnablement.set(choice.data, undefined, (kind, revision, review) => this.#service?.verifyAgentDisable(kind, revision, review), scoped);
     } catch (error) {
-      if (error instanceof AgentDisableConfirmationRequired) throw error;
+      if (error instanceof AgentDisableConfirmationRequired) {
+        if (scoped) return { status: "review", review: error.review };
+        throw error;
+      }
+      throw new Error("无法保存 Agent 设置，请检查 Host 状态目录权限");
+    }
+  }
+
+  async setAgentEnablementBatch(input: unknown): Promise<AgentEnablementResult | { status: "review"; reviews: AgentDisableReview[] }> {
+    try {
+      return await this.#agentEnablement.setBatch(input, (kind, revision, scope) => this.#service?.reviewAgentDisable(kind, revision, scope));
+    } catch (error) {
+      if (error instanceof AgentBatchConfirmationRequired) return { status: "review", reviews: error.reviews };
       throw new Error("无法保存 Agent 设置，请检查 Host 状态目录权限");
     }
   }
@@ -1121,7 +1134,7 @@ export class DesktopRuntime {
     const model = service.readHostState(["backends", "connections", "management", "operations"]);
     const backends = model.domains.find(domain => domain.domain === "backends")?.value as { backends?: { runtimeCount: number }[] } | undefined;
     const status = { event: "status", devices, runtimeCount: backends?.backends?.reduce((sum, backend) => sum + backend.runtimeCount, 0) ?? 0,
-      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, model };
+      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, activeAgentSessions: service.runningAgentSessions(), model };
     const text = JSON.stringify({ ...status, model: { ...model, domains: model.domains.map(domain => ({ ...domain, checkedAt: 0 })) } });
     if (text !== this.#lastStatus) { this.#lastStatus = text; this.#emit(status); }
   }

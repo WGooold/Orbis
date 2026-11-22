@@ -64,7 +64,11 @@ input.on("line", line => {
           result = await runtime.readRange(range); break;
         }
         case "agent.enablement.read": result = await runtime.readAgentEnablement(); break;
-        case "agent.enablement.write": result = await runtime.setAgentEnablement(p); break;
+        case "agent.enablement.write": {
+          const { scoped, ...choice } = p;
+          result = await runtime.setAgentEnablement(choice, scoped === true); break;
+        }
+        case "agent.enablement.writeBatch": result = await runtime.setAgentEnablementBatch(p); break;
         case "openclaw.save": result = await runtime.saveOpenClaw(p.url, p.token); break;
         case "start": await runtime.start(p as DesktopSettings); break;
         case "stop": await runtime.stop(); break;

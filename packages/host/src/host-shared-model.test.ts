@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { HostOperationsState } from "@orbis/protocol";
 import { HostService } from "./host-service.js";
+import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
+import { deviceAgentView, projectBackendDomain } from "./device-agent-visibility.js";
 import { ProviderManager } from "./provider-manager.js";
+import { createBusinessRelayServer, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 
 describe("Host shared model integration", () => {
   it("drains in-flight provider reads on close and rejects all late publication or diagnostics", async () => {
@@ -30,6 +33,39 @@ describe("Host shared model integration", () => {
       expect(host.readHostState()).toEqual(before);
       expect(host.readHostDiagnostics()?.records).toBe(0);
     } finally { release(); await closing; await rm(stateDir, { recursive: true, force: true }); }
+  });
+
+  // AGENT-DIAL-01: Desktop-only can read the shared Codex profile, but does not advertise CLI access.
+  it("keeps Codex providers available for Desktop without exposing CLI backends", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "orbis-desktop-provider-only-"));
+    const manager = new ProviderManager(stateDir, { codex: join(stateDir, "codex"), pi: join(stateDir, "pi"), dsh: join(stateDir, "dsh"), claude: join(stateDir, "claude") });
+    const relay = await createBusinessRelayServer({ port: 0, runtimeCredentials: ["fixture"] });
+    const policy = new AgentEnablementController(new AgentEnablementStore(stateDir, async () => ({ codexDesktop: true })), () => {});
+    const desktopRuntime = {
+      kind: "codexDesktop", runtimeId: "codex-desktop-fixture", isReady: () => true, currentProvider: vi.fn(async () => "desktop-profile"),
+      ownsRuntime: () => false, seedDesktopThreads: vi.fn(), setEventSink: vi.fn(), directoryEntries: () => [],
+      markStarted: vi.fn(), nativeHistoryId: (id: string) => id, runtimeIdFor: (id: string) => "codex-desktop:" + id,
+    } as never;
+    let host: HostService | undefined;
+    try {
+      host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "fixture", stateDir,
+        providers: manager, agentEnablement: policy, codexDesktopRuntime: desktopRuntime, lan: false, loopback: false, reconnect: false });
+      await host.start();
+      await host.refreshProviderFacts();
+      const desktopOnly = deviceAgentView(undefined, new Set(["codex", "pi", "claude", "dsh"]));
+      expect(policy.allows("codex")).toBe(false);
+      expect(host.readHostState(["backends"]).domains[0]?.value).toMatchObject({ backends: expect.not.arrayContaining([expect.objectContaining({ kind: "codex" })]) });
+      const providers = host.readHostProviders();
+      expect(providers?.providers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agentKind: "codex", profiles: expect.any(Array), modelProvider: null }),
+        expect.objectContaining({ agentKind: "codexDesktop", modelProvider: "desktop-profile" }),
+      ]));
+      const visibleProviders = projectBackendDomain(desktopOnly, "providers", providers) as { providers: { agentKind: string }[] };
+      expect(visibleProviders.providers.some(row => row.agentKind === "codex")).toBe(true);
+      expect(visibleProviders.providers.some(row => row.agentKind === "codexDesktop")).toBe(true);
+      const neither = deviceAgentView(undefined, new Set(["codex", "codexDesktop"]));
+      expect(projectBackendDomain(neither, "providers", providers)).toMatchObject({ providers: [] });
+    } finally { await host?.stop(); await stopRelayBusinessTransports(); await relay.close(); await rm(stateDir, { recursive: true, force: true }); }
   });
 
   it("retains bounded shared operation identities and terminal states without device-private receipts", async () => {

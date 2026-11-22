@@ -12,7 +12,7 @@
 import { homedir, hostname } from "node:os";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join, normalize } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { createProcessToolContentStore, type ToolContentStore } from "@orbis/runtime-bridge";
 import { TurnFileChangeService } from "./turn-file-change-service.js";
@@ -66,7 +66,9 @@ import {
   HOST_FEATURE_SESSION_SPAWN_AUTO,
   DEVICE_FEATURE_EXPLICIT_TUI,
   AGENT_ENABLEMENT_FEATURE,
+  AGENT_ENABLEMENT_REVIEW_FEATURE,
   PROTOCOL_VERSION,
+  type AgentDisableReview,
   type AgentKind,
   type HostProviderSummary,
   type AgentSessionSummary,
@@ -665,7 +667,7 @@ export class HostService {
     const modelEpoch = this.#agentStateRegistry.currentModelEpoch();
     const kinds: AgentKind[] = ["pi", "codex", "dsh", "claude"];
     if (this.#backends.some(backend => backend.kind === "codexDesktop")) kinds.push("codexDesktop");
-    const providers = await Promise.all(kinds.filter(kind => !this.#disabledSources.has(kind)).map(async (kind) => {
+    const providers = await Promise.all(kinds.filter(kind => !this.#disabledSources.has(kind) || (kind === "codex" && !this.#disabledSources.has("codexDesktop"))).map(async (kind) => {
       const switching = providerSwitchingFact(this.#providerChanging, kind);
       const empty = { agentKind: kind, availability: "unknown" as const, current: null, profiles: null, authenticated: null, switching,
         usage: { availability: "unknown" as const, detail: null } };
@@ -686,7 +688,7 @@ export class HostService {
       }
       // ADR-0032 §8：profile id 与原生会话 provider 分开；终端和桌面分别核对各自 app-server。
       if (kind === "codex" || kind === "codexDesktop") {
-        const backend = this.#backends.find(candidate => candidate.kind === kind && candidate.isReady());
+        const backend = this.#disabledSources.has(kind) ? undefined : this.#backends.find(candidate => candidate.kind === kind && candidate.isReady());
         let modelProvider: string | undefined;
         try { modelProvider = await backend?.currentProvider?.(); }
         catch (error) { this.#options.log?.(`读取 ${kind} 当前 provider 失败：${describeError(error)}`); }
@@ -1968,7 +1970,7 @@ export class HostService {
       hostFeatures: [
         HOST_FEATURE_DEVICE_FEATURES,
         ...(this.#managedPolicy || this.#codexRuntimes().length || this.#options.ensureCodexRuntime || this.#options.ensureCodexDesktop ? [CODEX_UNIFIED_HISTORY] : []),
-        ...(this.#managedPolicy ? [AGENT_ENABLEMENT_FEATURE] : []),
+        ...(this.#managedPolicy ? [AGENT_ENABLEMENT_FEATURE, AGENT_ENABLEMENT_REVIEW_FEATURE] : []),
         HOST_FEATURE_IMPORT_TARGET,
         HOST_FEATURE_WEB_PREVIEW,
         HOST_FEATURE_NATIVE_FILE_PREVIEW,
@@ -2267,13 +2269,50 @@ export class HostService {
     await runtime.stop();
   }
 
-  verifyAgentDisable(kind: AgentKind): void {
-    const backend = this.#backends.find(item => item.kind === kind);
-    const runtimes = kind === "pi" ? this.localRuntimes : backend?.directoryEntries?.() ?? [];
-    if (runtimes.some(runtime => runtime.status !== "idle") ||
-        [...this.#commandOwners.values()].some(owner => !owner.terminal && backend?.ownsRuntime(owner.runtimeId))) {
-      throw new AgentDisableConfirmationRequired("请确认停用正在工作的 Agent");
+  readonly #agentReviewKey = randomBytes(32);
+
+  runningAgentSessions(): Record<string, { sessions: string[]; total: number }> {
+    const rows = new Map<AgentKind, Map<string, RuntimeMetadata>>();
+    const sources = this.#backends.map(backend => [backend.kind, backend.directoryEntries?.() ?? []] as const);
+    for (const [kind, entries] of [["pi", this.localRuntimes] as const, ...sources]) {
+      if (this.#disabledSources.has(kind)) continue;
+      const runtimes = rows.get(kind) ?? new Map<string, RuntimeMetadata>();
+      for (const entry of entries) if (entry.status !== "idle") runtimes.set(entry.runtimeId, entry);
+      rows.set(kind, runtimes);
     }
+    return Object.fromEntries([...rows].filter(([, entries]) => entries.size).map(([kind, entries]) => [kind, {
+      sessions: [...entries.values()].slice(0, 24).map(runtime => (runtime.sessionName?.trim() || runtime.name.trim() || "未命名会话").slice(0, 256)),
+      total: entries.size,
+    }]));
+  }
+
+  verifyAgentDisable(kind: AgentKind, revision: number, token?: string, audience = "desktop"): void {
+    const review = this.reviewAgentDisable(kind, revision, audience);
+    if (review && review.token !== token) throw new AgentDisableConfirmationRequired(review);
+  }
+
+  reviewAgentDisable(kind: AgentKind, revision: number, audience: string): AgentDisableReview | undefined {
+    const backends = this.#backends.filter(item => item.kind === kind);
+    const runtimes = kind === "pi" ? this.localRuntimes : backends.flatMap(item => item.directoryEntries?.() ?? []);
+    const byRuntime = new Map(runtimes.map(runtime => [runtime.runtimeId, runtime]));
+    const commands = new Map<string, string[]>();
+    for (const owner of this.#commandOwners.values()) {
+      if (!owner.terminal && (byRuntime.has(owner.runtimeId) || backends.some(item => item.ownsRuntime(owner.runtimeId)))) {
+        const bucket = commands.get(owner.runtimeId) ?? [];
+        bucket.push(JSON.stringify([owner.commandId, owner.at])); commands.set(owner.runtimeId, bucket);
+      }
+    }
+    const affected = [...new Set([...runtimes.filter(runtime => runtime.status !== "idle").map(runtime => runtime.runtimeId), ...commands.keys()])].sort();
+    if (!affected.length) return;
+    const label = (runtime?: RuntimeMetadata): string => (runtime?.sessionName?.trim() || runtime?.name.trim() || "未命名会话").slice(0, 256);
+    const fingerprint = affected.map(id => {
+      const runtime = byRuntime.get(id);
+      const key = this.#agentFacts.scopeOf(id);
+      const execution = key ? this.#agentStateRegistry.read<AgentExecutionState>(key, "execution")?.value : undefined;
+      return [id, runtime?.sessionId, runtime?.status, label(runtime), execution?.turn?.turnId, execution?.waitingFor, commands.get(id)?.sort()];
+    });
+    const token = createHmac("sha256", this.#agentReviewKey).update(JSON.stringify([audience, kind, revision, fingerprint])).digest("hex");
+    return { kind, revision, token, sessions: affected.slice(0, 24).map(id => label(byRuntime.get(id))), total: affected.length };
   }
 
   #setManagedPolicy(snapshot: AgentEnablementSnapshot): void {
@@ -2311,18 +2350,25 @@ export class HostService {
     if (!controller || !this.#managedPolicy || !features?.has(AGENT_ENABLEMENT_FEATURE) || !active()) {
       this.#rejectAgentFeature(deviceId, { requestId }); return;
     }
+    const scoped = features.has(AGENT_ENABLEMENT_REVIEW_FEATURE);
     try {
       if (message.type === "agent.enablement.read") {
         const snapshot = await controller.read();
         if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.snapshot", requestId, snapshot: { ...snapshot, agents: [...snapshot.agents] } });
         return;
       }
-      const { kind, enabled, expectedRevision, confirmDisable } = message;
+      const { kind, enabled, expectedRevision, confirmDisable, review } = message;
       if (!this.#managedPolicy.agents.some(row => row.kind === kind)) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
-      const result = await controller.set({ kind, enabled, expectedRevision, ...(confirmDisable ? { confirmDisable } : {}) }, active, source => this.verifyAgentDisable(source));
+      if (review !== undefined && !scoped) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
+      const result = await controller.set({ kind, enabled, expectedRevision, ...(confirmDisable ? { confirmDisable } : {}), ...(review ? { review } : {}) },
+        active, (source, revision, token) => this.verifyAgentDisable(source, revision, token, `paired:${deviceId}`), scoped);
       const snapshot = result.snapshot;
       if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.result", requestId, status: result.status, snapshot: { ...snapshot, agents: [...snapshot.agents] } });
     } catch (error) {
+      if (active() && scoped && error instanceof AgentDisableConfirmationRequired) {
+        this.#sendToDevice(deviceId, { type: "agent.enablement.review", requestId, review: error.review });
+        return;
+      }
       if (active()) this.#sendToDevice(deviceId, { type: "protocol.error", requestId,
         code: error instanceof AgentDisableConfirmationRequired ? "agent_disable_confirmation_required" : "agent_enablement_unavailable",
         message: error instanceof AgentDisableConfirmationRequired ? "请确认停用正在工作的 Agent" : "无法读取或保存 Agent 设置" });
@@ -2647,6 +2693,7 @@ export class HostService {
       const closeChanged = !!previous?.has(RUNTIME_CLOSE_FEATURE) !== message.features.includes(RUNTIME_CLOSE_FEATURE);
       const codexViewChanged = this.#unifiedCodex(deviceId) !== message.features.includes(CODEX_UNIFIED_HISTORY);
       const managementChanged = !!this.#managedPolicy && (!!previous?.has(AGENT_ENABLEMENT_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_FEATURE) ||
+        !!previous?.has(AGENT_ENABLEMENT_REVIEW_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_REVIEW_FEATURE) ||
         !!previous?.has(DEVICE_FEATURE_OPENCLAW) !== message.features.includes(DEVICE_FEATURE_OPENCLAW));
       this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature => feature !== DEVICE_FEATURE_KIMI_CODE || this.#kimi !== undefined || this.#options.createKimiCodeRuntime !== undefined)));
       const hadClaudeSendNow = previous?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ?? false;

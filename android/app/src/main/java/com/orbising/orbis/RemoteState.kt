@@ -546,8 +546,7 @@ data class RemoteState(
     val agentEnablementAvailable: Boolean = false,
     val agentEnablementRows: List<AgentEnablementRow> = emptyList(),
     val agentEnablementRevision: Long? = null,
-    val agentEnablementPending: String? = null,
-    val agentEnablementFailed: Boolean = false,
+    val agentDial: AgentDialSync = AgentDialSync(),
     val notificationEpoch: String? = null,
     val notificationProjections: Map<String, NoticeProjection> = emptyMap(),
     val notificationReceipts: Map<String, Long> = emptyMap(),
@@ -1920,7 +1919,7 @@ internal fun RemoteState.markReconnecting(): RemoteState {
         runtimeCloseNegotiated = false,
         sessionBrowse = sessionBrowse?.takeUnless { it.forDownload && it.isLoading },
         agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
-        agentEnablementPending = null, agentEnablementFailed = false,
+        agentDial = agentDial.disconnected(),
         conversations = conversations.mapValues { (_, conversation) ->
             conversation.withoutActiveTurn().copy(
                 interactions = conversation.interactions.mapValues { (_, interaction) ->
@@ -2463,7 +2462,7 @@ class RelayReducer(
                     e2eReady = false,
                     runtimeCloseNegotiated = false,
                     agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
-                    agentEnablementPending = null, agentEnablementFailed = false,
+                    agentDial = state.agentDial.disconnected(),
                     homeDirectoryReceived = false,
                     kimiCodeSupported = false,
                     prefersAutoSessionSpawn = false,
