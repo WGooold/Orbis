@@ -3753,7 +3753,17 @@ final class OrbisUITests: XCTestCase {
     // IOS-CHAT-13: a real remote history page must prepend through SQLite and
     // receive an applied acknowledgement without moving the same native text.
     func testHistoryPrependPreservesTheVisibleReadingAnchor() throws {
-        let app = launch("tool", arguments: ["--preview-history-prepend", "--preview-reduce-motion", "--preview-scroll-frames"])
+        try checkHistoryPrependPreservesTheVisibleReadingAnchor(reduced: true)
+    }
+
+    // CHAT-PAGING-07: the animated overlay must preserve the same anchor and retire after prepend.
+    func testAnimatedHistoryPrependPreservesTheVisibleReadingAnchor() throws {
+        try checkHistoryPrependPreservesTheVisibleReadingAnchor(reduced: false)
+    }
+
+    private func checkHistoryPrependPreservesTheVisibleReadingAnchor(reduced: Bool) throws {
+        let app = launch("tool", arguments: ["--preview-history-prepend", "--preview-scroll-frames"]
+            + (reduced ? ["--preview-reduce-motion"] : []))
         defer { app.terminate() }
         XCTAssertTrue(app.descendants(matching: .any)["chat-composer"].firstMatch.waitForExistence(timeout: 8))
         let transcript = chatTranscript(app)

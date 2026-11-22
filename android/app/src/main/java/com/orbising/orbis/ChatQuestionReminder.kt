@@ -15,13 +15,15 @@ import com.orbising.orbis.OrbisActionIcon as Icon
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideIn
 import androidx.compose.animation.slideOut
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -30,9 +32,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.FloatState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -41,6 +44,8 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -114,58 +119,123 @@ internal fun AnimatedChatQuestionReminder(
     }
 }
 
+/** The artwork keeps the last positive pull for exit frames; resetting the gesture
+ * must not empty the ring or change its label before it leaves. */
+@Stable
+internal class ChatHistoryPullVisual {
+    var showing by mutableStateOf(false)
+        private set
+    var progress by mutableFloatStateOf(0f)
+        private set
+
+    fun update(value: Float) {
+        if (value > 0f) progress = value
+        showing = value > 0f
+    }
+}
+
+internal enum class ChatHistoryStatus { Hidden, Pull, Loading, Retry }
+
+/** CHAT-PAGING-07: this overlay owns the animation, never the transcript. Pull and
+ * loading retain the same surface; only the live phase has semantics or actions. */
 @Composable
-internal fun ChatHistoryProgress(
+internal fun AnimatedChatHistoryStatus(
+    status: ChatHistoryStatus,
+    pull: ChatHistoryPullVisual,
     modifier: Modifier = Modifier,
-    loading: Boolean,
-    pullProgress: FloatState,
+    retryEnabled: Boolean = false,
+    onRetry: () -> Unit = {},
 ) {
-    // Pixel updates drive only the draw layer; the label changes at the threshold.
-    val armed by remember(loading, pullProgress) { derivedStateOf { !loading && pullProgress.floatValue >= 1f } }
-    val color = if (armed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-    val duration = InteractionMotion.duration(InteractionMotion.State)
-    var settled by remember { mutableStateOf(false) }
-    val arrival by animateFloatAsState(if (settled || duration == 0) 1f else 0f,
-        tween(duration, easing = InteractionMotion.GlyphEase), label = "chat-history-arrival")
-    LaunchedEffect(Unit) { settled = true }
-    // CHAT-PAGING-05: alpha composites into a bounded layer. Keep the transparent
-    // gutter inside that layer so the pill and its outer shadows fade as one.
-    NeumorphSurface(
-        modifier.graphicsLayer {
-            val reveal = if (loading) arrival else pullProgress.floatValue
-            translationY = if (duration == 0) 0f else -6.dp.toPx() * (1f - reveal)
-            alpha = 0.65f + 0.35f * reveal
-        }.padding(horizontal = 16.dp, vertical = 8.dp)
-            .testTag(if (loading) "chat-history-loading" else "chat-history-pull")
-            .semantics(mergeDescendants = true) { if (loading) liveRegion = LiveRegionMode.Polite },
-        shape = RemoteUi.ControlShape, shadowScale = 0.6f,
-    ) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
-                if (loading) {
-                    CircularProgressIndicator(Modifier.size(16.dp).clearAndSetSemantics {}, strokeWidth = 2.dp)
-                } else {
-                    CircularProgressIndicator(progress = { pullProgress.floatValue },
-                        modifier = Modifier.size(16.dp).clearAndSetSemantics {}, color = color,
-                        trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f), strokeWidth = 2.dp)
-                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(10.dp), tint = color)
+    val enter = InteractionMotion.duration(InteractionMotion.State)
+    val exit = InteractionMotion.duration(InteractionMotion.Exit)
+    val offset = with(LocalDensity.current) { IntOffset(0, -6.dp.roundToPx()) }
+    AnimatedContent(targetState = status, modifier = modifier, contentAlignment = Alignment.TopCenter,
+        // Reuse the progress surface when releasing an armed pull.
+        contentKey = { if (it == ChatHistoryStatus.Pull) ChatHistoryStatus.Loading else it },
+        transitionSpec = {
+            val appear = fadeIn(tween(enter, easing = InteractionMotion.GlyphEase),
+                initialAlpha = if (initialState == ChatHistoryStatus.Hidden) 0.65f else 0f)
+            val disappear = fadeOut(tween(exit))
+            ((if (initialState == ChatHistoryStatus.Hidden && targetState != ChatHistoryStatus.Pull && enter > 0)
+                appear + slideIn(tween(enter, easing = InteractionMotion.GlyphEase)) { offset } else appear) togetherWith
+                (if (targetState == ChatHistoryStatus.Hidden && exit > 0)
+                    disappear + slideOut(tween(exit)) { offset } else disappear)).using(null)
+        }, label = "chat-history-status",
+    ) { shown ->
+        val live = shown == status
+        when (shown) {
+            ChatHistoryStatus.Hidden -> Unit
+            ChatHistoryStatus.Pull, ChatHistoryStatus.Loading ->
+                ChatHistoryProgress(loading = shown == ChatHistoryStatus.Loading, pull = pull, live = live)
+            ChatHistoryStatus.Retry -> {
+                // As with progress, leave room inside the animated layer for the soft shadows.
+                Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    ChatHistoryRetry(enabled = live && retryEnabled, onRetry = onRetry, live = live)
                 }
             }
-            val title = when {
-                loading -> L10n.tr("正在加载更早的历史…")
-                armed -> L10n.tr("松手加载")
-                else -> L10n.tr("下拉加载历史")
+        }
+    }
+}
+
+private enum class HistoryProgressContent(val title: String) {
+    Pull("下拉加载历史"), Armed("松手加载"), Loading("正在加载更早的历史…"),
+}
+
+@Composable
+private fun ChatHistoryProgress(loading: Boolean, pull: ChatHistoryPullVisual, live: Boolean) {
+    // Only the threshold invalidates composition; the progress and position read in draw.
+    val armed by remember(pull) { derivedStateOf { pull.progress >= 1f } }
+    val phase = if (loading) HistoryProgressContent.Loading else if (armed) HistoryProgressContent.Armed
+        else HistoryProgressContent.Pull
+    val duration = InteractionMotion.duration(InteractionMotion.State)
+    val accessibility = if (!live) Modifier.clearAndSetSemantics {} else
+        Modifier.testTag(if (loading) "chat-history-loading" else "chat-history-pull").semantics(mergeDescendants = true) {
+            text = AnnotatedString(L10n.tr(phase.title))
+            if (loading) liveRegion = LiveRegionMode.Polite
+        }
+    // CHAT-PAGING-05: alpha composites into a bounded layer. Keep the transparent
+    // gutter inside that layer so the pill and its outer shadows fade as one.
+    Box(Modifier.testTag("chat-history-progress-artwork")) {
+        NeumorphSurface(
+            Modifier.graphicsLayer {
+                val reveal = if (loading) 1f else pull.progress
+                translationY = if (duration == 0) 0f else -6.dp.toPx() * (1f - reveal)
+                alpha = 0.65f + 0.35f * reveal
+            }.padding(horizontal = 16.dp, vertical = 8.dp)
+                .then(accessibility),
+            shape = RemoteUi.ControlShape, shadowScale = 0.6f,
+        ) {
+            AnimatedContent(targetState = phase, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                contentAlignment = Alignment.CenterStart, transitionSpec = {
+                    (fadeIn(tween(duration)) togetherWith fadeOut(tween(duration)))
+                        .using(SizeTransform(clip = false) { _, _ -> tween(duration) })
+                }, label = "chat-history-progress-content",
+            ) { shown ->
+                val color = if (shown == HistoryProgressContent.Armed) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                Row(Modifier.clearAndSetSemantics {}, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+                        if (shown == HistoryProgressContent.Loading) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            CircularProgressIndicator(progress = { pull.progress }, modifier = Modifier.size(16.dp), color = color,
+                                trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f), strokeWidth = 2.dp)
+                            Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(10.dp), tint = color)
+                        }
+                    }
+                    Text(L10n.tr(shown.title), style = MaterialTheme.typography.labelMedium, color = color)
+                }
             }
-            Text(title, style = MaterialTheme.typography.labelMedium, color = color)
         }
     }
 }
 
 @Composable
-internal fun ChatHistoryRetry(enabled: Boolean, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+private fun ChatHistoryRetry(enabled: Boolean, onRetry: () -> Unit, live: Boolean) {
     NeumorphSurface(
-        modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("chat-history-retry"),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).then(
+            if (live) Modifier.testTag("chat-history-retry") else Modifier.clearAndSetSemantics {}),
         shape = RemoteUi.ControlShape, shadowScale = 0.6f, contentPadding = 12.dp,
         onClick = onRetry.takeIf { enabled },
     ) {

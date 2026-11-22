@@ -532,6 +532,8 @@ struct ChatScreenModelTests {
         #expect(viewport.historyPullChanged(1))
         #expect(!viewport.historyPullChanged(0)) // cancelled
         #expect(!viewport.showingHistoryPull && !viewport.awaitingOlderPage)
+        // CHAT-PAGING-07: cancellation clears admission without emptying the exiting ring.
+        #expect(viewport.historyPullProgress == 0 && viewport.historyPullVisualProgress == 1)
         #expect(viewport.historyPullChanged(1))
 
         viewport.acceptedHistory()

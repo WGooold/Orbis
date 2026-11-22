@@ -86,3 +86,11 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 实现见 [iOS 视口](../../ios/Orbis/Orbis/ChatPageScheduling.swift)、[iOS 聊天转录](../../ios/Orbis/Orbis/ChatTranscriptView.swift)和 [Android 分页手势](../../android/app/src/main/java/com/orbising/orbis/HistoryPaging.kt)。自动验证：[iOS 手势和视口单测](../../.artifacts/chat-history-arming-20261120/swift/run.log)、[iOS 分页与阅读锚点](../../.artifacts/chat-history-arming-20261120/ios-device/command.log)、[Android 分页单测](../../.artifacts/chat-history-arming-20261120/android-build/build.log)、[Android 按住、回拉、取消和松手的触感回调](../../.artifacts/chat-history-arming-20261120/android-ui/instrumentation.log)。未部署；真机触感待用户验证。
 
 真机验收使用独立 [QA 候选](../../.artifacts/chat-history-arming-20261120/qa/registration.json) `8472f7bf`；用户领取后构建安装包，不沿用本地模拟器产物。
+
+## CHAT-PAGING-07：聊天顶部历史提示动效（V04）
+
+下拉提示轻入场，位置和进度环直接跟手；跨越或回退阈值时，图标和文案过渡。松手后原位切换到加载圈；取消、成功或读完时收起提示；加载和失败重试在同一个顶部槽过渡。退场只保留画面，读屏和点击只对当前状态有效。沿用系统减少动画设置，不改变分页准入、触感、通知优先级和阅读锚点。
+
+实现见 [iOS 顶部覆盖层](../../ios/Orbis/Orbis/ChatHeaderView.swift)和 [Android 顶部覆盖层](../../android/app/src/main/java/com/orbising/orbis/ChatQuestionReminder.kt)；回归见 [iOS 分页与锚点](../../ios/Orbis/UITests/OrbisUITests.swift)和 [Android 动画时钟及手势](../../android/app/src/androidTest/java/com/orbising/orbis/ChatQuestionReminderInstrumentedTest.kt)。
+
+自动验证（工作区）：[Android 分页单测 6 项](../../.artifacts/chat-history-motion-20261122/android-build/test-results/testDebugUnitTest/TEST-com.orbising.orbis.HistoryPagingTest.xml)、[模拟器逐帧、手势与锚点回归 4 项](../../.artifacts/chat-history-motion-20261122/android-ui/instrumentation.log)、[Swift 手势与视口单测 3 项](../../.artifacts/chat-history-motion-20261122/swift/run.log)、[iOS 模拟器常规与减少动画的分页锚点回归 2 项](../../.artifacts/chat-history-motion-20261122/ios-device/command.log)通过。[共享 QA 第 2 轮](../../.artifacts/chat-history-motion-20261122/qa/registration.json)使用上一轮候选基线，仅加入本次改动；待用户领取后构建安装包，不沿用工作区的模拟器产物。未部署，真机观感待用户验证。

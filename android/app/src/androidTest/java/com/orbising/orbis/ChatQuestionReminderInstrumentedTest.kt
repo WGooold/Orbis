@@ -7,7 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -196,9 +195,74 @@ class ChatQuestionReminderInstrumentedTest {
         assertEquals(position, scroll.firstVisibleItemIndex to scroll.firstVisibleItemScrollOffset)
     }
 
+    // CHAT-PAGING-07: step the animation clock; live labels/actions switch immediately,
+    // but the outgoing artwork stays mounted until its exit has finished.
+    @Test fun historyStatusAnimatesDiscretePhasesAndRetainsOnlyOutgoingArtwork() {
+        val pull = ChatHistoryPullVisual()
+        val status = mutableStateOf(ChatHistoryStatus.Hidden)
+        compose.setContent {
+            OrbisTheme(darkTheme = false) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                    AnimatedChatHistoryStatus(status.value, pull, retryEnabled = true)
+                }
+            }
+        }
+        fun show(next: ChatHistoryStatus, progress: Float = 0f) {
+            compose.runOnIdle { pull.update(progress); status.value = next }
+            compose.mainClock.advanceTimeByFrame()
+        }
+        fun settle() = compose.mainClock.advanceTimeBy(InteractionMotion.State.toLong() + 64)
+        val preview = compose.onNodeWithTag("chat-history-pull")
+        val loading = compose.onNodeWithTag("chat-history-loading")
+        val retry = compose.onNodeWithTag("chat-history-retry")
+        val artwork = compose.onNodeWithTag("chat-history-progress-artwork")
+        val motion = InteractionMotion.duration(InteractionMotion.State) > 0
+        compose.mainClock.autoAdvance = false
+        try {
+            show(ChatHistoryStatus.Pull, 0.5f)
+            preview.assertTextEquals(L10n.tr("下拉加载历史"))
+            settle()
+            val pullWidth = artwork.fetchSemanticsNode().boundsInRoot.width
+            show(ChatHistoryStatus.Pull, 1f)
+            preview.assertTextEquals(L10n.tr("松手加载"))
+            if (motion) assertEquals(pullWidth, artwork.fetchSemanticsNode().boundsInRoot.width, 1f)
+            settle()
+            val armedWidth = artwork.fetchSemanticsNode().boundsInRoot.width
+            assertTrue(armedWidth < pullWidth)
+            show(ChatHistoryStatus.Loading)
+            preview.assertDoesNotExist()
+            loading.assertTextEquals(L10n.tr("正在加载更早的历史…")).assertHasNoClickAction()
+            if (motion) assertEquals(armedWidth, artwork.fetchSemanticsNode().boundsInRoot.width, 1f)
+            settle()
+            assertTrue(artwork.fetchSemanticsNode().boundsInRoot.width > armedWidth)
+            show(ChatHistoryStatus.Retry)
+            loading.assertDoesNotExist()
+            retry.assertHasClickAction()
+            if (motion) artwork.assertExists()
+            settle()
+            artwork.assertDoesNotExist()
+            show(ChatHistoryStatus.Loading)
+            retry.assertDoesNotExist()
+            loading.assertExists()
+            settle()
+            show(ChatHistoryStatus.Hidden)
+            loading.assertDoesNotExist()
+            if (motion) artwork.assertExists()
+            settle()
+            artwork.assertDoesNotExist()
+            show(ChatHistoryStatus.Pull, 0.5f)
+            settle()
+            show(ChatHistoryStatus.Hidden)
+            preview.assertDoesNotExist()
+            if (motion) artwork.assertExists()
+            settle()
+            artwork.assertDoesNotExist()
+        } finally { compose.mainClock.autoAdvance = true }
+    }
+
     // CHAT-PAGING-04: keep a real pointer down to inspect the two preview states before release.
     @Test fun historyPullShowsProgressBeforeReleaseAndDoesNotLoadOnCancellation() {
-        val progress = mutableFloatStateOf(0f)
+        val progress = ChatHistoryPullVisual()
         var loads = 0
         var armingFeedbacks = 0
         var threshold = 0f
@@ -209,13 +273,11 @@ class ChatQuestionReminderInstrumentedTest {
                     Box(Modifier.fillMaxSize().testTag("history-gesture-viewport")
                         .chatHistoryPull(ChatPresentationIdentity("host", "runtime", "session", 0) to "device",
                             nearTop = { true }, canLoad = { true }, onLoad = { loads++ },
-                            onProgress = { progress.floatValue = it }, onArmed = { armingFeedbacks++ }))
-                    if (progress.floatValue > 0f) {
-                        ChatHistoryProgress(
-                            Modifier.align(Alignment.TopCenter),
-                            loading = false, pullProgress = progress,
-                        )
-                    }
+                            onProgress = progress::update, onArmed = { armingFeedbacks++ }))
+                    AnimatedChatHistoryStatus(
+                        if (progress.showing) ChatHistoryStatus.Pull else ChatHistoryStatus.Hidden,
+                        progress, Modifier.align(Alignment.TopCenter),
+                    )
                 }
             }
         }
@@ -223,7 +285,7 @@ class ChatQuestionReminderInstrumentedTest {
         val pill = compose.onNodeWithTag("chat-history-pull")
         transcript.performTouchInput { down(center); moveBy(Offset(0f, threshold * 0.5f)) }
         pill.assertIsDisplayed().assertTextEquals(L10n.tr("下拉加载历史")).assertHasNoClickAction()
-        compose.runOnIdle { assertEquals(0.5f, progress.floatValue, 0.01f); assertEquals(0, loads); assertEquals(0, armingFeedbacks) }
+        compose.runOnIdle { assertEquals(0.5f, progress.progress, 0.01f); assertEquals(0, loads); assertEquals(0, armingFeedbacks) }
         // CHAT-PAGING-05: sample outside the layer while it is translucent, not at full opacity.
         val bounds = pill.fetchSemanticsNode().boundsInRoot
         val frame = capture("history-pull-halfway")
