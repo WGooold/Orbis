@@ -3,6 +3,7 @@
 package com.orbising.orbis
 
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toPixelMap
@@ -21,6 +22,42 @@ import kotlin.math.roundToInt
 
 class HomeSwipeCloseInstrumentedTest {
     @get:Rule val compose = createComposeRule()
+
+    // SESSION-CLOSE-02: reconnect the same card in place so the retained gesture
+    // must submit the new plan rather than its first composition's connection.
+    @Test fun swipeUsesTheCurrentClosePlanAfterReconnectingTheSameCard() {
+        val pairing = HostPairing("host", "Test Host", "test-public", "test-root",
+            relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
+        val id = "same-runtime"
+        val initial = RemoteState(hostId = "host", connection = RelayConnection.ONLINE, e2eReady = true,
+            runtimes = mapOf(id to RuntimeSummary(id, id, "/repo", "idle", sessionId = "same-session", agentKind = "pi",
+                domainAvailability = mapOf("identity" to "ready", "execution" to "ready", "interactions" to "ready"))))
+            .withReadyHomeFixture().ledgerOpenConnection()
+        val live = mutableStateOf(initial)
+        val submitted = mutableListOf<RuntimeClosePlan?>()
+        compose.setContent {
+            val state = live.value
+            OrbisTheme {
+                RuntimeListScreen(state, listOf(HostSnapshot(pairing, state)),
+                    onOpenRuntime = { _, _ -> }, onOpenDownloads = {}, onSelectHost = {},
+                    onCloseRuntimes = { _, ids, plan, _ -> submitted += plan; ids })
+            }
+        }
+        val card = compose.onNodeWithTag("home-runtime-$id").assertIsDisplayed()
+        compose.runOnIdle {
+            // Model publications can conflate the disconnected frame; the runtime,
+            // capability flag and pointer-input keys are all unchanged.
+            live.value = initial.ledgerCloseConnection().ledgerOpenConnection()
+            assertTrue(live.value.ledger.connection != initial.ledger.connection)
+        }
+        card.performTouchInput { swipe(Offset(width * 0.85f, center.y), Offset(width * 0.2f, center.y)) }
+        compose.runOnIdle {
+            val plan = requireNotNull(submitted.single())
+            val target = requireNotNull(live.value.closeTarget(id))
+            assertEquals(live.value.ledger.connection, plan.connection)
+            assertTrue(live.value.closeTargetIsCurrent(plan, target))
+        }
+    }
 
     @Test fun onlyArmingVibratesAndFortyPercentMustBeCrossedBeforeClosingItsRuntime() {
         val pairing = HostPairing("host", "Test Host", "test-public", "test-root",

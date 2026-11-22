@@ -1012,15 +1012,16 @@ internal fun RuntimeListScreen(
         }
         return submitted
     }
-    fun requestClose(hostId: String, ids: Set<String>): Set<String> {
+    // Pointer input survives a reconnect of the same card. Update its handler with
+    // a lambda, not a local function reference whose equality ignores captured state.
+    val currentRequestClose by rememberUpdatedState(fun(hostId: String, ids: Set<String>): Set<String> {
         val plan = state.closePlan(ids)
         if (plan?.requiresConfirmation == true) {
             pendingClose = plan
             return emptySet()
         }
         return submitClose(hostId, ids, plan, false)
-    }
-    val currentRequestClose by rememberUpdatedState(::requestClose)
+    })
     pendingClose?.let { plan ->
         RuntimeCloseDialog(plan, onDismiss = { pendingClose = null }) {
             pendingClose = null
@@ -1098,7 +1099,7 @@ internal fun RuntimeListScreen(
                                     activeHostId?.let { hostId ->
                                         val currentIds = visibleRuntimes.filter { state.homeCardIsCurrent(it.card) && state.canCloseRuntime(it.runtime.runtimeId) }
                                             .map { it.runtime.runtimeId }.toSet()
-                                        selectedRuntimeIds = selectedIds - requestClose(hostId, selectedIds.intersect(currentIds))
+                                        selectedRuntimeIds = selectedIds - currentRequestClose(hostId, selectedIds.intersect(currentIds))
                                     }
                                 },
                                 enabled = state.e2eReady,
