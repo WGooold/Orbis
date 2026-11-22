@@ -113,7 +113,11 @@ struct MultiHostTests {
         let host = try #require(fixture.store.connection(for: "host-1"))
         let transport = try #require(fixture.transports["host-1"])
         let runtime = "shared-runtime"
-        func request() throws -> [String: Any] { try #require(transport.sent.last { $0["type"] as? String == "agent.state.request" }) }
+        func request() throws -> [String: Any] {
+            try #require(transport.sent.last {
+                $0["type"] as? String == "agent.state.request" && $0["runtimeId"] as? String == runtime
+            })
+        }
         func interactions(_ revision: Int, _ completeness: String, _ ids: [String], source: String = "adapter-epoch",
                           availability: String = "ready", request: [String: Any]) async {
             let requests = Dictionary(uniqueKeysWithValues: ids.map { id in
