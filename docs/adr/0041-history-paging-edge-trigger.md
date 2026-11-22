@@ -84,3 +84,9 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 聊天历史下拉从未满切换到「松手加载」时，沿用首页卡片左滑关闭的操作触感。保持拉满不重复反馈；回拉退回后再次拉满可重新反馈。松手仍按原阈值提交，取消不请求；手势提交与分页受理不再补震。显式重试与读屏动作沿用受理反馈。此条更新 CHAT-PAGING-03 / 04 的手势触感时机。
 
 实现见 [iOS 视口](../../ios/Orbis/Orbis/ChatPageScheduling.swift)、[iOS 聊天转录](../../ios/Orbis/Orbis/ChatTranscriptView.swift)和 [Android 分页手势](../../android/app/src/main/java/com/orbising/orbis/HistoryPaging.kt)。自动验证：[iOS 手势和视口单测](../../.artifacts/chat-history-arming-20261120/swift/run.log)、[iOS 分页与阅读锚点](../../.artifacts/chat-history-arming-20261120/ios-device/command.log)、[Android 分页单测](../../.artifacts/chat-history-arming-20261120/android-build/build.log)、[Android 按住、回拉、取消和松手的触感回调](../../.artifacts/chat-history-arming-20261120/android-ui/instrumentation.log)。未部署；真机触感待用户验证。
+
+## CHAT-PAGING-07：聊天顶部历史提示动效（V04）
+
+下拉提示轻入场，位置和进度环直接跟手；跨越或回退阈值时，图标和文案过渡。松手后原位切换到加载圈；取消、成功或读完时收起提示；加载和失败重试在同一个顶部槽过渡。退场只保留画面，读屏和点击只对当前状态有效。沿用系统减少动画设置，不改变分页准入、触感、通知优先级和阅读锚点。
+
+实现见 [iOS 顶部覆盖层](../../ios/Orbis/Orbis/ChatHeaderView.swift)和 [Android 顶部覆盖层](../../android/app/src/main/java/com/orbising/orbis/ChatQuestionReminder.kt)；回归见 [iOS 分页与锚点](../../ios/Orbis/UITests/OrbisUITests.swift)和 [Android 动画时钟及手势](../../android/app/src/androidTest/java/com/orbising/orbis/ChatQuestionReminderInstrumentedTest.kt)。

@@ -4,43 +4,52 @@ private struct ChatHistoryProgress: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.orbisVisualActive) private var visualActive
-    @State private var settled = false
     let loading: Bool
     let viewport: ChatViewportController
-    private var atRest: Bool { settled || reduceMotion || !visualActive }
+    private enum Phase: Equatable {
+        case pull, armed, loading
+        var title: String {
+            switch self {
+            case .pull: L10n.tr("下拉加载历史")
+            case .armed: L10n.tr("松手加载")
+            case .loading: L10n.tr("正在加载更早的历史…")
+            }
+        }
+    }
 
     var body: some View {
-        let progress = loading ? 0 : viewport.historyPullProgress
-        let armed = progress >= 1
+        let progress = viewport.historyPullVisualProgress
+        let phase: Phase = loading ? .loading : progress >= 1 ? .armed : .pull
         let palette = OrbisPalette(scheme)
-        let color = armed ? palette.accent : palette.secondary
+        let color = phase == .armed ? palette.accent : palette.secondary
         HStack(spacing: 8) {
-            Group {
-                if loading { ProgressView().controlSize(.small) }
-                else {
+            ZStack {
+                if loading {
+                    ProgressView().controlSize(.small).transition(.opacity)
+                } else {
                     ZStack {
                         Circle().stroke(palette.secondary.opacity(0.2), lineWidth: 2)
                         Circle().trim(from: 0, to: progress)
                             .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                             .rotationEffect(.degrees(-90))
+                            .animation(nil, value: progress)
                         Image(systemName: "arrow.down").font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(color)
-                    }.padding(1)
+                    }.padding(1).transition(.opacity)
                 }
             }.frame(width: 18, height: 18).accessibilityHidden(true)
-            Text(loading ? L10n.tr("正在加载更早的历史…") : armed ? L10n.tr("松手加载") : L10n.tr("下拉加载历史"))
-                .font(.orbisLabel()).foregroundStyle(color)
+            Text(phase.title).font(.orbisLabel()).foregroundStyle(color)
+                .contentTransition(.opacity)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .neuSurface(radius: OrbisRadius.control, intensity: 0.6, concentric: false)
-        .offset(y: loading ? (atRest ? 0 : -6) : (reduceMotion ? 0 : -6 * (1 - progress)))
-        .opacity(loading ? (atRest ? 1 : 0.65) : (0.65 + 0.35 * progress))
-        .onAppear {
-            withAnimation(reduceMotion || !visualActive ? nil : InteractionMotion.state) { settled = true }
-        }
-        .accessibilityElement(children: .combine)
+        .animation(reduceMotion || !visualActive ? nil : InteractionMotion.state, value: phase)
+        // Position and ring follow the finger, not the discrete phase animation.
+        .offset(y: loading || reduceMotion ? 0 : -6 * (1 - progress))
+        .opacity(loading ? 1 : 0.65 + 0.35 * progress)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(phase.title)
         .accessibilityIdentifier(loading ? "chat-history-loading" : "chat-history-pull")
-        .allowsHitTesting(false)
     }
 }
 
@@ -76,32 +85,57 @@ struct ChatNoticesRegion: View, Equatable {
                     }
                 }.padding(.horizontal, 16).accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
             } else {
-                let history = model.transcript
-                let loadingHistory = history.historyLoading || viewport.awaitingOlderPage
-                if loadingHistory || viewport.showingHistoryPull {
-                    // Share the question/retry slot without inserting a transcript row.
-                    VStack(spacing: 0) {
-                        ChatHistoryProgress(loading: loadingHistory, viewport: viewport)
-                            .padding(.horizontal, 16).padding(.top, 6)
-                        if hasNotices { runtimeNotices }
-                    }
-                } else if history.hasOlder && history.historyError != nil {
-                    VStack(spacing: 0) {
-                        historyRetry(enabled: !history.syncing && (history.canSend || history.cached))
-                        if hasNotices { runtimeNotices }
-                    }
-                } else if hasNotices {
-                    runtimeNotices
-                } else {
+                historySlot
+            }
+        }
+    }
+
+    // CHAT-PAGING-07: one overlay slot, with separate visual and interaction lifetimes.
+    // Keep the transcript, notices, and the live retry's hit target out of the fade.
+    private var historySlot: some View {
+        let history = model.transcript
+        let loading = history.historyLoading || viewport.awaitingOlderPage
+        let progress = loading || viewport.showingHistoryPull
+        let retry = !progress && history.hasOlder && history.historyError != nil
+        let motion = !reduceMotion && visualActive
+        let transition: AnyTransition = motion ? .asymmetric(
+            insertion: .offset(y: -6).combined(with: .opacity).animation(InteractionMotion.state),
+            removal: .offset(y: -6).combined(with: .opacity).animation(InteractionMotion.exit)
+        ) : .identity
+        return VStack(spacing: 0) {
+            ZStack(alignment: .top) {
+                if !progress && !retry && !hasNotices {
                     Group {
                         if showQuestion, let question = viewport.readingQuestion {
                             questionReminder(question).padding(.horizontal, 16).padding(.top, 6)
-                                .transition(reduceMotion || !visualActive ? .identity : InteractionMotion.notice)
+                                .transition(motion ? InteractionMotion.notice : .identity)
                         }
-                    }.animation(reduceMotion || !visualActive ? nil : InteractionMotion.panel, value: showQuestion)
+                    }.animation(motion ? InteractionMotion.panel : nil, value: showQuestion)
+                        .transition(.identity)
                 }
+                Group {
+                    if progress {
+                        ChatHistoryProgress(loading: loading, viewport: viewport)
+                            .padding(.horizontal, 16).padding(.top, 6)
+                            .transition(transition)
+                    }
+                }
+                .accessibilityHidden(!progress)
+                .allowsHitTesting(false)
+                Group {
+                    if retry {
+                        historyRetry(enabled: !history.syncing && (history.canSend || history.cached))
+                            .transition(transition)
+                    }
+                }
+                .accessibilityHidden(!retry)
+                .allowsHitTesting(retry)
             }
+            .animation(motion ? InteractionMotion.state : nil, value: progress)
+            .animation(motion ? InteractionMotion.state : nil, value: retry)
+            if hasNotices { runtimeNotices }
         }
+        .id(mountToken)
     }
     private var runtimeNotices: some View {
         RuntimeNoticesView(model: model, actions: actions, runtimeId: actions.runtimeId,

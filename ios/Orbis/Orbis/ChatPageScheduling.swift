@@ -147,8 +147,10 @@ final class ChatViewportController {
     private(set) var contextGeneration = 0
     private(set) var readingQuestion: ChatQuestion?
     private(set) var awaitingOlderPage = false
-    private(set) var historyPullProgress: CGFloat = 0
+    // Exit frames retain the last drawn ring, but gesture admission/haptics still see zero.
+    private(set) var historyPullVisualProgress: CGFloat = 0
     private(set) var showingHistoryPull = false
+    var historyPullProgress: CGFloat { showingHistoryPull ? historyPullVisualProgress : 0 }
     @ObservationIgnored private(set) var policy = ChatViewportPolicy()
     @ObservationIgnored let arrivals = ReplyCardArrivals()
     @ObservationIgnored var bottomDistance: CGFloat = 0
@@ -226,7 +228,7 @@ final class ChatViewportController {
     @discardableResult func historyPullChanged(_ progress: CGFloat) -> Bool {
         let wasArmed = historyPullProgress >= 1
         let value = progress > 0 && canLoadHistory() ? progress : 0
-        if historyPullProgress != value { historyPullProgress = value }
+        if value > 0 && historyPullVisualProgress != value { historyPullVisualProgress = value }
         if showingHistoryPull != (value > 0) { showingHistoryPull = value > 0 }
         return value >= 1 && !wasArmed
     }

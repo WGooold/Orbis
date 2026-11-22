@@ -2049,11 +2049,10 @@ internal fun ChatScreen(
     val historyFailure = historyPagingFeedback != null || historyRead?.phase == HistoryReadPhase.FAILED
     val historyOwner = presentationIdentity to state.deviceId
     val currentHistoryOwner by rememberUpdatedState(historyOwner)
-    val historyPull = remember(historyOwner) { mutableFloatStateOf(0f) }
-    val showingHistoryPull by remember(historyPull) { derivedStateOf { historyPull.floatValue > 0f } }
+    val historyPull = remember(historyOwner) { ChatHistoryPullVisual() }
     DisposableEffect(historyPull, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE) historyPull.floatValue = 0f
+            if (event == Lifecycle.Event.ON_PAUSE) historyPull.update(0f)
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -2096,7 +2095,7 @@ internal fun ChatScreen(
         lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && canLoadHistory()
     }
     LaunchedEffect(historyPull, canLoadHistory()) {
-        if (!currentCanPage()) historyPull.floatValue = 0f
+        if (!currentCanPage()) historyPull.update(0f)
     }
     val currentLoadPage by rememberUpdatedState { loadHistoryPage() }
     val currentLoadPageAccessibly by rememberUpdatedState { loadHistoryPage(hapticOnAcceptance = true) }
@@ -2725,7 +2724,7 @@ internal fun ChatScreen(
                         nearTop = { listState.firstVisibleItemIndex < chatHeaderCount ||
                             (listState.firstVisibleItemIndex == chatHeaderCount && listState.firstVisibleItemScrollOffset <= nearHistoryTopPx) },
                         canLoad = { currentCanPage() }, onLoad = { currentLoadPage() },
-                        onProgress = { historyPull.floatValue = it },
+                        onProgress = historyPull::update,
                         onArmed = { if (historyOwner == currentHistoryOwner) actionHaptic() })
                     .nestedScroll(scrollIntent)
                     .semantics {
@@ -2851,49 +2850,55 @@ internal fun ChatScreen(
             // Keep the loading state through local admission and the visible prepend.
             val historyLoading = historyAnchorPending || historyRead?.phase?.active == true
             val showHistoryRetry = historyState?.hasOlder == true && historyFailure
-            // One top slot: no outgoing question animation remains when paging takes over.
+            val historyStatus = when {
+                historyLoading -> ChatHistoryStatus.Loading
+                historyPull.showing && canLoadHistory() -> ChatHistoryStatus.Pull
+                showHistoryRetry -> ChatHistoryStatus.Retry
+                else -> ChatHistoryStatus.Hidden
+            }
+            // The overlay can finish a history exit without holding the question or transcript layout.
             Column(Modifier.align(Alignment.TopCenter).fillMaxWidth()) {
                 if (failedLaunch != null) {
                     LaunchNotice(failedLaunch, onRetry = model::retryLaunch, onBack = { model.selectRuntime(null) },
                         onAbandon = if (model.canAbandonConfiguredLaunch(failedLaunch.requestId)) {
                             { model.abandonConfiguredLaunch()?.let(onAbandonLaunch); Unit }
                         } else null)
-                } else if (historyLoading || showingHistoryPull && canLoadHistory()) {
-                    ChatHistoryProgress(
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                        loading = historyLoading, pullProgress = historyPull,
-                    )
-                } else if (showHistoryRetry) {
-                    ChatHistoryRetry(enabled = canLoadHistory(retrying = true),
-                        onRetry = { loadHistoryPage(retrying = true, hapticOnAcceptance = true) },
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
-                } else if (!hasNotices) {
-                    val readingRowId by remember(listState, projection) {
-                        derivedStateOf {
-                            val layout = listState.layoutInfo
-                            val row = layout.visibleItemsInfo.firstOrNull {
-                                it.offset + it.size > layout.viewportStartOffset && it.offset < layout.viewportEndOffset &&
-                                    projection?.byKey?.containsKey(it.key) == true
+                } else {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                        if (historyStatus == ChatHistoryStatus.Hidden && !hasNotices) {
+                            val readingRowId by remember(listState, projection) {
+                                derivedStateOf {
+                                    val layout = listState.layoutInfo
+                                    val row = layout.visibleItemsInfo.firstOrNull {
+                                        it.offset + it.size > layout.viewportStartOffset && it.offset < layout.viewportEndOffset &&
+                                            projection?.byKey?.containsKey(it.key) == true
+                                    }
+                                    row?.key as? String
+                                }
                             }
-                            row?.key as? String
+                            val readingQuestion = remember(projection, readingRowId) {
+                                readingRowId?.let { projection?.readingQuestions?.get(it) }
+                            }
+                            AnimatedChatQuestionReminder(
+                                question = readingQuestion,
+                                visible = initialPositioned && hasBrowsed && lastScrollTowardEarlier && !following && distanceToBottom > lineHeightPx * 3,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                onClick = { question ->
+                                    chatItemIndexById[question.messageId]?.let { index ->
+                                        userScrolling = false
+                                        following = false
+                                        viewportMotion.moved()
+                                        scope.launch { listState.animateScrollToItem(chatHeaderCount + index) }
+                                    }
+                                },
+                            )
+                        }
+                        key(historyOwner) {
+                            AnimatedChatHistoryStatus(historyStatus, historyPull,
+                                retryEnabled = canLoadHistory(retrying = true),
+                                onRetry = { loadHistoryPage(retrying = true, hapticOnAcceptance = true) })
                         }
                     }
-                    val readingQuestion = remember(projection, readingRowId) {
-                        readingRowId?.let { projection?.readingQuestions?.get(it) }
-                    }
-                    AnimatedChatQuestionReminder(
-                        question = readingQuestion,
-                        visible = initialPositioned && hasBrowsed && lastScrollTowardEarlier && !following && distanceToBottom > lineHeightPx * 3,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                        onClick = { question ->
-                            chatItemIndexById[question.messageId]?.let { index ->
-                                userScrolling = false
-                                following = false
-                                viewportMotion.moved()
-                                scope.launch { listState.animateScrollToItem(chatHeaderCount + index) }
-                            }
-                        },
-                    )
                 }
                 if (hasNotices && notices != null) {
                     RuntimeNotifications(notices, state.notificationEpoch, supported = noticesSupported,
