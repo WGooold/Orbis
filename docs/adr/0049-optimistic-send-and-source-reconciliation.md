@@ -199,6 +199,8 @@ SESSION-CLOSE-01：关闭前按当前活动、待处理交互和未确认发送�
 
 SESSION-CLOSE-02：Android 首页保留会话卡片时，左滑松手使用最新连接的关闭计划；已经展示的确认仍绑定原计划。实现见 `RuntimeListScreen`，回归见 `HomeSwipeCloseInstrumentedTest` 与 `.artifacts/session-close-02-20261122/build-manifest.json`。签名候选包已生成，未发布，真机验收待用户验证。
 
+SESSION-CLOSE-03：Android 首页将 Claude Code 卡片的左滑手势与提交关闭分开。旧 Host 仍按后台任务状态限制关闭；左滑到阈值松手只显示原因，不发送 `/quit`，也不启用批量选择。支持 `runtime.close.v1` 的 Host 仍走原有二次确认。实现见 `RuntimeListScreen`、`legacyClaudeBackgroundCloseBlock`，回归见 `BackgroundTasksInstrumentedTest` 与 `.artifacts/session-close-03-20261122/build-manifest.json`。隔离模拟器验证通过，签名候选包已生成，未发布，真机验收待用户验证。
+
 依赖关系：`send` 可以依赖 `config`、`launch` 或附件上传（§6.2 的 `waiting`）；前置被拒绝时，
 依赖它的 `send` 一起转 `rejected`。
 

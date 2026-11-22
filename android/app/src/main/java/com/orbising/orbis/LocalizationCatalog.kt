@@ -1307,6 +1307,7 @@ internal object LocalizationCatalog {
         "松手以确认切换" to "Release to confirm the switch",
         "松手关闭" to "Release to close",
         "松手加载" to "Release to load",
+        "松手查看" to "Release for info",
         "松手确认" to "Release to review",
         "松手退出" to "Release to leave",
         "查看" to "View",
@@ -1384,9 +1385,9 @@ internal object LocalizationCatalog {
         "正在整理语音" to "Finishing speech recognition",
         "正在更新供应商" to "Updating providers",
         "正在查询" to "Querying",
-        "正在查询官方额度" to "Checking official quota",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "正在查询官方额度" to "Checking official quota",
         "正在查询配额" to "Checking quota",
         "正在校验" to "Verifying",
         "正在核对子任务状态，以下为最后已知信息" to "Checking subtask status. Showing the last known information.",
@@ -1536,9 +1537,9 @@ internal object LocalizationCatalog {
         "电脑没有报告此 Agent 的供应商配置" to "The computer has not reported this Agent's provider configuration",
         "电脑没有报这个领域" to "The computer has not reported this domain",
         "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。" to "Orbis Host is not responding: the phone is connected to the relay, but the computer has not answered the encryption handshake.",
-        "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。请在电脑上启动 Orbis Host，打开后 APP 会自动重新连上" to "Orbis Host is not responding to the secure handshake. Start Orbis Host on the computer. The app will reconnect automatically.",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。请在电脑上启动 Orbis Host，打开后 APP 会自动重新连上" to "Orbis Host is not responding to the secure handshake. Start Orbis Host on the computer. The app will reconnect automatically.",
         "电脑端 Orbis 未打开，打开后会自动连接" to "Orbis is not open on your computer. Open it to connect automatically.",
         "电脑端不支持该命令" to "The computer does not support this command",
         "电脑端安全握手未响应，正在重新连接。" to "The computer did not answer the secure handshake. Reconnecting.",
@@ -1639,6 +1640,7 @@ internal object LocalizationCatalog {
         "系统语言为中文时使用简体中文，其他未支持的语言使用英文。" to "Uses your preferred supported language. Falls back to English.",
         "终端启动" to "Open in Terminal",
         "经典" to "Classic",
+        "结束后台任务后重试，或更新电脑端 Orbis。" to "Try again after the background tasks end, or update Orbis on your computer.",
         "结束本次等待？" to "Stop waiting for this launch?",
         "结束等待" to "Stop waiting",
         "结束语音输入" to "Finish voice input",
@@ -1687,10 +1689,10 @@ internal object LocalizationCatalog {
         "获取模型列表" to "Fetch model list",
         "落盘失败 " to "Save failed ",
         "行数未知" to "Line count unknown",
-        "补充要求（可选）" to "Instructions (optional)",
-        "补充说明（可选）" to "Additional notes (optional)",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "补充要求（可选）" to "Instructions (optional)",
+        "补充说明（可选）" to "Additional notes (optional)",
         "补齐历史无法保存，请重试。" to "Could not save catch-up history. Try again.",
         "补齐目标缺失" to "Catch-up target missing",
         "补齐范围未推进，请重试" to "Catch-up range made no progress. Try again.",
@@ -1839,10 +1841,10 @@ internal object LocalizationCatalog {
         "返回聊天" to "Back to chat",
         "还原识别原文" to "Restore original transcript",
         "还有 {0} 个文件" to "{0} more files",
-        "还有更新的没读" to "Newer records remain unread",
-        "还有更早的历史" to "More history available",
     )
     private fun part12(): Map<String, String> = mapOf(
+        "还有更新的没读" to "Newer records remain unread",
+        "还有更早的历史" to "More history available",
         "还没有供应商" to "No providers yet",
         "还没有可显示的会话" to "No sessions to display yet",
         "还没有已配对的电脑，无法下载" to "No paired computer. Cannot download.",
@@ -1991,10 +1993,10 @@ internal object LocalizationCatalog {
         "附件：{0}" to "Attachment: {0}",
         "附近的对话" to "Nearby conversation",
         "限制联网" to "Restrict network access",
-        "随手机的浅色与深色自动切换" to "Match your phone’s light and dark appearance",
-        "集合领域不是对象" to "Collection domain is not an object",
     )
     private fun part13(): Map<String, String> = mapOf(
+        "随手机的浅色与深色自动切换" to "Match your phone’s light and dark appearance",
+        "集合领域不是对象" to "Collection domain is not an object",
         "雾蓝" to "Mist blue",
         "需要切换 provider" to "Provider switch required",
         "需要时询问" to "Ask when required",

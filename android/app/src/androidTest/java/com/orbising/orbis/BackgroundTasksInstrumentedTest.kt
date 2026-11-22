@@ -26,7 +26,8 @@ import org.junit.Test
 class BackgroundTasksInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun homeBlocksUnsupportedCloseAndClearsSelectionWhenBackgroundWorkStarts() {
+    // SESSION-CLOSE-03: the legacy swipe explains the block without submitting /quit.
+    @Test fun homeExplainsLegacyCloseBlockAndClearsSelectionWhenBackgroundWorkStarts() {
         val pairing = HostPairing("host", "Test Host", "test-public", "test-root",
             relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
         var tasks by mutableStateOf(BackgroundTaskInventory("ready",
@@ -34,8 +35,10 @@ class BackgroundTasksInstrumentedTest {
         val closed = mutableListOf<Set<String>>()
         val opened = mutableListOf<String>()
         compose.setContent {
+            val commands = if (tasks.allowsQuit) listOf(RuntimeSlashCommand("quit", source = "builtin")) else emptyList()
             val state = RemoteState(hostId = "host", e2eReady = true, runtimes = mapOf("parent" to
-                RuntimeSummary("parent", "Claude", "/repo", "idle", sessionId = "session", agentKind = "claude", backgroundTasks = tasks)))
+                RuntimeSummary("parent", "Claude", "/repo", "idle", sessionId = "session", agentKind = "claude", backgroundTasks = tasks)),
+                capabilities = mapOf("parent" to RuntimeCapabilities(commands)))
                 .withReadyHomeFixture()
             OrbisTheme {
                 RuntimeListScreen(state, listOf(HostSnapshot(pairing, state)),
@@ -46,8 +49,13 @@ class BackgroundTasksInstrumentedTest {
             }
         }
         val card = compose.onNodeWithTag("home-runtime-parent")
-        compose.onNodeWithText("1 个子代理运行中").assertIsDisplayed()
+        val status = compose.onAllNodesWithText("1 个子代理运行中")
+        assertTrue(status.fetchSemanticsNodes().indices.any { status[it].isDisplayed() })
         card.performTouchInput { swipeLeft() }
+        compose.onNodeWithText("暂不可关闭").assertIsDisplayed()
+        compose.onNodeWithText("后台任务尚未结束，暂不能关闭会话。", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("确认关闭").assertDoesNotExist()
+        compose.onNodeWithText("知道了").performClick()
         card.assertIsDisplayed().assertIsNotSelected()
         compose.runOnIdle { assertTrue(closed.isEmpty()) }
         compose.runOnIdle { tasks = tasks.copy(items = tasks.items.map { it.copy(status = "completed") }) }
@@ -57,6 +65,34 @@ class BackgroundTasksInstrumentedTest {
         card.assertIsNotSelected()
         card.performClick()
         compose.runOnIdle { assertEquals(listOf("parent"), opened); assertTrue(closed.isEmpty()) }
+    }
+
+    // SESSION-CLOSE-03: the same active background work is confirmable on a negotiated Host.
+    @Test fun homeConfirmsClaudeCloseWithBackgroundWorkOnNegotiatedHost() {
+        val pairing = HostPairing("host", "Test Host", "test-public", "test-root",
+            relayUrl = "wss://relay.example", deviceId = "test-device", credential = "test-only")
+        val tasks = BackgroundTaskInventory("ready", listOf(BackgroundTask("child", "测试命令", "shell", "running")), false)
+        val runtime = RuntimeSummary("parent", "Claude", "/repo", "idle", sessionId = "session", agentKind = "claude", backgroundTasks = tasks)
+        val state = RemoteState(hostId = "host", e2eReady = true, runtimes = mapOf("parent" to runtime), runtimeCloseNegotiated = true,
+            capabilities = mapOf("parent" to RuntimeCapabilities(listOf(RuntimeSlashCommand(RUNTIME_CLOSE_CAPABILITY,
+                source = "builtin", closeGeneration = "native-owner"))))).withReadyHomeFixture()
+        val submitted = mutableListOf<Pair<RuntimeClosePlan?, Boolean>>()
+        compose.setContent {
+            OrbisTheme {
+                RuntimeListScreen(state, listOf(HostSnapshot(pairing, state)),
+                    onOpenRuntime = { _, _ -> }, onOpenDownloads = {}, onSelectHost = {},
+                    onCloseRuntimes = { _, ids, plan, confirmed -> submitted += plan to confirmed; ids })
+            }
+        }
+        compose.onNodeWithTag("home-runtime-parent").performTouchInput { swipeLeft() }
+        compose.onNodeWithText("有 1 个活跃后台命令或监听。", substring = true).assertIsDisplayed()
+        compose.runOnIdle { assertTrue(submitted.isEmpty()) }
+        compose.onNodeWithText("确认关闭").performClick()
+        compose.runOnIdle {
+            val (plan, confirmed) = submitted.single()
+            assertTrue(confirmed)
+            assertEquals(RuntimeCloseTarget("parent", "session", "claude", "native-owner"), plan?.entries?.single()?.target)
+        }
     }
 
     @Test fun backgroundInventoryUpdatesInPlaceWithoutClosingDisclosureOrChangingMainPhase() {

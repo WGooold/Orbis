@@ -61,6 +61,18 @@ internal fun RemoteState.closeTarget(id: String): RuntimeCloseTarget? {
     return RuntimeCloseTarget(id, sessionId, runtime.agentKind, command.closeGeneration)
 }
 
+/** SESSION-CLOSE-03: a legacy Claude refusal can be explained locally without submitting /quit. */
+internal fun RemoteState.legacyClaudeBackgroundCloseBlock(id: String): String? {
+    if (runtimeCloseNegotiated) return null
+    val tasks = runtimes[id]?.takeIf { it.agentKind == "claude" }?.backgroundTasks ?: return null
+    if (!tasks.visible || tasks.allowsQuit) return null
+    return when {
+        tasks.truncated -> L10n.tr("后台任务清单不完整，暂不能关闭会话。")
+        !tasks.confirmed -> L10n.tr("后台任务状态待核对，暂不能关闭会话。")
+        else -> L10n.tr("后台任务尚未结束，暂不能关闭会话。")
+    }
+}
+
 internal fun RemoteState.closeImpact(id: String): RuntimeCloseImpact? {
     homeCloseImpacts?.let { return it[id] }
     val runtime = runtimes[id] ?: return null

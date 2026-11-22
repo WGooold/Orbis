@@ -1005,6 +1005,9 @@ internal fun RuntimeListScreen(
     }
     var departing by remember(activeHostId) { mutableStateOf(emptyMap<String, DepartingHomeRow>()) }
     var pendingClose by remember(activeHostId, state.ledger.connection, state.agentModelEpoch, state.e2eReady) { mutableStateOf<RuntimeClosePlan?>(null) }
+    var closeBlockNotice by remember(activeHostId, state.ledger.connection, state.agentModelEpoch, state.e2eReady, state.runtimeCloseNegotiated) {
+        mutableStateOf<String?>(null)
+    }
     fun submitClose(hostId: String, ids: Set<String>, plan: RuntimeClosePlan?, confirmed: Boolean): Set<String> {
         val submitted = onCloseRuntimes(hostId, ids, plan, confirmed)
         departing = departing + latestRuntimes.mapIndexedNotNull { index, row ->
@@ -1022,6 +1025,22 @@ internal fun RuntimeListScreen(
         }
         return submitClose(hostId, ids, plan, false)
     })
+    val currentRequestSwipeClose by rememberUpdatedState(fun(hostId: String, card: HomeRuntimeCard): Boolean {
+        if (state.hostId != hostId || !state.homeCardIsCurrent(card)) return false
+        val runtimeId = card.runtime.runtimeId
+        val blocked = state.legacyClaudeBackgroundCloseBlock(runtimeId)
+        if (blocked != null) {
+            closeBlockNotice = blocked
+            return false
+        }
+        return state.canCloseRuntime(runtimeId) && currentRequestClose(hostId, setOf(runtimeId)).isNotEmpty()
+    })
+    closeBlockNotice?.let { reason ->
+        AlertDialog(onDismissRequest = { closeBlockNotice = null },
+            title = { Text(L10n.tr("暂不可关闭")) },
+            text = { Text("$reason\n\n${L10n.tr("结束后台任务后重试，或更新电脑端 Orbis。")}") },
+            confirmButton = { NeumorphTextButton(L10n.tr("知道了"), { closeBlockNotice = null }) })
+    }
     pendingClose?.let { plan ->
         RuntimeCloseDialog(plan, onDismiss = { pendingClose = null }) {
             pendingClose = null
@@ -1203,7 +1222,9 @@ internal fun RuntimeListScreen(
                             val departure = departing[runtime.runtimeId]
                             val cardCurrent = !draftOpen && departure == null && state.homeCardIsCurrent(row.card)
                             val canClose = cardCurrent && state.canCloseRuntime(runtime.runtimeId)
-                            val currentCanClose by rememberUpdatedState(canClose)
+                            val swipeExplainsBlock = cardCurrent && state.legacyClaudeBackgroundCloseBlock(runtime.runtimeId) != null
+                            val canSwipeClose = canClose || swipeExplainsBlock
+                            val currentCanSwipeClose by rememberUpdatedState(canSwipeClose)
                             val currentCardIsCurrent by rememberUpdatedState(cardCurrent)
                             var cardWidth by remember(row.hostId, runtime.runtimeId) { mutableFloatStateOf(0f) }
                             val closeThreshold = cardWidth * 0.4f
@@ -1227,8 +1248,8 @@ internal fun RuntimeListScreen(
                                     swipeAnim.animateTo(0f, OrbisMotion.drag())
                                 }
                             }
-                            LaunchedEffect(canClose) {
-                                if (!canClose && departure == null) { swipeOffset = 0f; closeArmed = false; swipeAnim.snapTo(0f) }
+                            LaunchedEffect(canSwipeClose) {
+                                if (!canSwipeClose && departure == null) { swipeOffset = 0f; closeArmed = false; swipeAnim.snapTo(0f) }
                             }
                             LaunchedEffect(opening, selecting) {
                                 if (opening) {
@@ -1257,7 +1278,7 @@ internal fun RuntimeListScreen(
                                     if (!selecting) {
                                         val armedColor = MaterialTheme.colorScheme.error
                                         val closeColor by androidx.compose.animation.animateColorAsState(
-                                            if (closeArmed || departure != null) armedColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            if (!swipeExplainsBlock && (closeArmed || departure != null)) armedColor else MaterialTheme.colorScheme.onSurfaceVariant,
                                             tween(InteractionMotion.duration(InteractionMotion.State)), label = "close-threshold")
                                         Row(
                                             Modifier.matchParentSize().background(
@@ -1299,6 +1320,7 @@ internal fun RuntimeListScreen(
                                                     ) { armed ->
                                                         val review = armed && departure == null && state.closeImpact(runtime.runtimeId)?.needsConfirmation == true
                                                         Text(when {
+                                                            swipeExplainsBlock -> if (armed) L10n.tr("松手查看") else L10n.tr("查看说明")
                                                             armed && review -> L10n.tr("松手确认")
                                                             armed && runtime.agentKind == "codexDesktop" -> L10n.tr("松手退出")
                                                             armed -> L10n.tr("松手关闭")
@@ -1320,7 +1342,8 @@ internal fun RuntimeListScreen(
                                                         NeumorphSurface(Modifier.size(28.dp), shape = CircleShape,
                                                             style = if (closeArmed || departure != null) NeumorphStyle.Raised else NeumorphStyle.Pressed, shadowScale = 0.4f) {
                                                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                                                Icon(OrbisSymbols.Close, null, tint = closeColor, modifier = Modifier.size(16.dp))
+                                                                Icon(if (swipeExplainsBlock) OrbisSymbols.Info else OrbisSymbols.Close,
+                                                                    null, tint = closeColor, modifier = Modifier.size(16.dp))
                                                             }
                                                         }
                                                     }
@@ -1334,13 +1357,13 @@ internal fun RuntimeListScreen(
                                             .testTag("home-runtime-${runtime.runtimeId}")
                                             .semantics { selected = runtime.runtimeId in selectedIds }
                                             .immediatePressFeedback(!selecting && cardCurrent) { touchPressed = it }
-                                            .pointerInput(selecting, row.hostId, runtime.runtimeId, runtime.sessionId, runtime.agentKind, cardWidth, canClose) {
-                                                if (!selecting && canClose) {
+                                            .pointerInput(selecting, row.hostId, runtime.runtimeId, runtime.sessionId, runtime.agentKind, cardWidth, canSwipeClose) {
+                                                if (!selecting && canSwipeClose) {
                                                     detectHomeCloseDragGestures(
                                                         onDragEnd = {
                                                             val shouldClose = closeThreshold > 0f && closeArmed && swipeOffset >= closeThreshold * 0.96f
                                                             // 提交成功后卡片从松手位置继续向左离开，不先弹回再消失。
-                                                            val closing = shouldClose && currentCanClose && currentRequestClose(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
+                                                            val closing = shouldClose && currentCanSwipeClose && currentRequestSwipeClose(row.hostId, row.card)
                                                             if (!closing) {
                                                                 swipeOffset = 0f; closeArmed = false
                                                                 swipeScope.launch { swipeAnim.animateTo(0f, OrbisMotion.drag()) }
