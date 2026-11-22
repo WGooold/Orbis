@@ -1,6 +1,8 @@
-import { readFile, rename } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 import { RelayLiveActivities, parseLiveActivityUpdate, type LiveActivityPush, type LiveActivityUpdate } from "./live-activities.js";
@@ -20,6 +22,10 @@ const registration = (token: string | null = oldToken, activityId = "activity-on
 const startRegistration = (token = "d".repeat(64), inputPushToken = true) => ({ version: 1, token, environment: "production", inputPushToken });
 const claimRequest = { version: 1, environment: "production" };
 const pairingRef = "e".repeat(64);
+const nativeImport = createRequire(import.meta.url)("../../../scripts/test-fixtures/import-native.cjs") as
+  (file: string) => Promise<{ RelayLiveActivities: typeof RelayLiveActivities }>;
+const releaseRoot = process.env.ORBIS_LIVE_ACTIVITY_REFERENCE_RUNTIME;
+const released = releaseRoot ? (await nativeImport(pathToFileURL(join(releaseRoot, "packages/relay/dist/live-activities.js")).href)).RelayLiveActivities : undefined;
 
 // LA-R01/04: synthetic registry tests target lost token rotations, revocation,
 // unordered source revisions and seconds-based APNs coalescing. No Apple or
@@ -55,9 +61,22 @@ describe("live activity registry", () => {
       update(1, { phase: "ended", runningCount: 1 }),
     ]) expect(() => parseLiveActivityUpdate(invalid)).toThrow();
     expect(parseLiveActivityUpdate(update(1, { phase: "attention", runningCount: 2048, pendingCount: 131_072 }))).toBeDefined();
-    for (const agentKind of ["kimiCode", "hermes", "openclaw"]) {
+    for (const agentKind of ["hermes", "openclaw", "arbitrary"]) {
       expect(() => parseLiveActivityUpdate({ ...valid, contentState: { ...valid.contentState, agentKind } })).toThrow();
     }
+  });
+
+  // LA-COMPAT-01: both historical producer extensions still parse, but neither leaks to a v1 widget.
+  it.each(["kimiCode", "opencode"] as const)("projects a %s producer into the legacy widget and claim formats", async agentKind => {
+    const f = await create();
+    await f.registry.register("phone", "host", registration(), () => true);
+    const message = parseLiveActivityUpdate(update(1, { agentKind }));
+    expect(message.contentState.agentKind).toBe(agentKind);
+    expect(await f.registry.publish(message, f.connection, 1)).toEqual({ sent: ["phone"], failed: [] });
+    expect(f.send.mock.calls[0]?.[2].contentState).toEqual({ ...message.contentState, agentKind: null });
+    expect(await f.registry.claim("tablet", "host", claimRequest, () => true)).toMatchObject({
+      contentState: { ...message.contentState, agentKind: null, sessionCount: 1 },
+    });
   });
 
   it("registers only live paired devices and scopes cleanup by activity identity", async () => {
@@ -187,14 +206,14 @@ describe("live activity registry", () => {
     await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
     const start = f.send.mock.calls[0]![2];
     if (start.event !== "start") throw new Error("expected a start");
-    const completion = update(2, { phase: "ended", outcome: "completed", runningCount: 0 });
-    await f.registry.publish(completion, f.connection);
+    const completion = update(2, { phase: "ended", outcome: "completed", runningCount: 0, agentKind: "kimiCode" });
+    await f.registry.publish(parseLiveActivityUpdate(completion), f.connection);
     await f.registry.close();
     const restored = await RelayLiveActivities.create(f.options); open.push(restored);
     const activity = { ...registration(), launchId: start.attributes.launchId };
     await restored.register("phone", "host", activity, () => true);
     await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(2), { timeout: 2_000 });
-    expect(f.send.mock.calls[1]![2]).toMatchObject({ event: "end", priority: 10, contentState: completion.contentState });
+    expect(f.send.mock.calls[1]![2]).toMatchObject({ event: "end", priority: 10, contentState: { ...completion.contentState, agentKind: null } });
     expect(f.send.mock.calls[1]![2].timestamp).toBeGreaterThan(start.timestamp);
     await vi.waitFor(async () => expect(JSON.parse(await readFile(f.stateFile!, "utf8")).registrations).toEqual([]));
     await restored.register("phone", "host", activity, () => true); // refresh before iOS displays the end
@@ -270,6 +289,122 @@ describe("live activity registry", () => {
     await f.registry.publish(update(), f.connection);
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.send.mock.calls[0]![1]).toBe(oldToken);
+  });
+
+  // LA-COMPAT-02: the released writer rewrites the v1 file during rollback, even for a token refresh.
+  it.each(["same activity", "replacement", "removed"] as const)("reconciles %s after a rollback writer rewrites registrations", async variant => {
+    const f = await create(true);
+    await f.registry.publish(update(), f.connection);
+    await f.registry.registerStart("tablet", "host", pairingRef, startRegistration(), () => true);
+    const claim = await f.registry.claim("phone", "host", claimRequest, () => true);
+    expect(claim).toBeDefined();
+    const bound = { ...registration(), launchId: claim!.launchId };
+    await f.registry.register("phone", "host", bound, () => true);
+    const path = f.stateFile!;
+    const initial = JSON.parse(await readFile(path, "utf8"));
+    expect(Object.keys(initial).sort()).toEqual(["registrations", "version"]);
+    const launchPath = `${path}.launches.json`;
+    const sidecar = await readFile(launchPath, "utf8");
+    await f.registry.close();
+    const activity = variant === "same activity" ? bound.activityId : "replacement";
+    const legacyInfo = registration(variant === "removed" ? null : newToken, variant === "removed" ? bound.activityId : activity);
+    if (released) {
+      const old = await released.create(f.options); open.push(old);
+      await old.register("phone", "host", legacyInfo, () => true);
+      await old.close();
+    } else {
+      const prior = initial.registrations.find((target: { deviceId: string }) => target.deviceId === "phone");
+      delete prior.launchId; // The released writer drops the field when it changes a registration.
+      await writeFile(path, JSON.stringify({ version: 1, registrations: variant === "removed" ? [] : [{ ...prior, activityId: activity, token: newToken }] }));
+    }
+    expect(await readFile(launchPath, "utf8")).toBe(sidecar);
+    const restored = await RelayLiveActivities.create(f.options); open.push(restored);
+    if (variant === "same activity") {
+      const disk = JSON.parse(await readFile(path, "utf8"));
+      expect(disk.registrations).toContainEqual(expect.objectContaining({ activityId: bound.activityId, token: newToken, launchId: bound.launchId }));
+      await expect(restored.register("phone", "host", { ...bound, token: newToken }, () => true)).resolves.toBeUndefined();
+    } else {
+      await expect(restored.register("phone", "host", bound, () => true)).rejects.toMatchObject({ status: 410 });
+      const disk = JSON.parse(await readFile(path, "utf8"));
+      expect(disk.registrations.filter((target: { deviceId: string }) => target.deviceId === "phone")).toEqual(variant === "removed" ? [] : [expect.objectContaining({ activityId: activity, token: newToken })]);
+    }
+    expect(JSON.parse(await readFile(launchPath, "utf8")).startTargets).toContainEqual(expect.objectContaining({ deviceId: "tablet" }));
+  });
+
+  it("keeps a bound activity eligible to rotate an invalid token after restart", async () => {
+    const f = await create(true);
+    await f.registry.publish(update(), f.connection);
+    const claim = await f.registry.claim("phone", "host", claimRequest, () => true);
+    expect(claim).toBeDefined();
+    f.send.mockResolvedValueOnce("invalid-token");
+    const bound = { ...registration(), launchId: claim!.launchId };
+    await f.registry.register("phone", "host", bound, () => true);
+    await vi.waitFor(async () => expect(JSON.parse(await readFile(f.stateFile!, "utf8")).registrations).toEqual([]), { timeout: 2_000 });
+    await f.registry.close();
+    const restored = await RelayLiveActivities.create(f.options); open.push(restored);
+    await expect(restored.register("phone", "host", { ...bound, activityId: "different", token: newToken }, () => true)).rejects.toMatchObject({ status: 410 });
+    await expect(restored.register("phone", "host", { ...bound, token: newToken }, () => true)).resolves.toBeUndefined();
+    const sidecar = JSON.parse(await readFile(`${f.stateFile!}.launches.json`, "utf8"));
+    expect(sidecar.launches[0]).not.toHaveProperty("invalidToken");
+  });
+
+  it("migrates the original combined file and does not revive entries dropped by the sidecar", async () => {
+    const f = await create(true);
+    const path = f.stateFile!;
+    const launchPath = `${path}.launches.json`;
+    const id = "35d0dd4c-f37b-4a9d-ae9c-75fdd37d75a6";
+    const combined = { version: 1, registrations: [{ deviceId: "phone", hostId: "host", activityId: "activity-one",
+      token: oldToken, environment: "production", expiresAt: Date.now() + 15_000, launchId: id }],
+      startTargets: [], launches: [{ deviceId: "phone", hostId: "host", id, via: "app", issuedAt: Date.now() }] };
+    await writeFile(path, JSON.stringify(combined));
+    const migrated = await RelayLiveActivities.create(f.options); open.push(migrated);
+    expect(JSON.parse(await readFile(path, "utf8"))).not.toHaveProperty("launches");
+    expect(JSON.parse(await readFile(launchPath, "utf8")).launches).toContainEqual(expect.objectContaining({ id, activityId: "activity-one" }));
+    await migrated.close();
+    await writeFile(path, JSON.stringify(combined)); // interrupted or stale legacy rewrite
+    await writeFile(launchPath, JSON.stringify({ version: 1, startTargets: [], launches: [] }));
+    const restarted = await RelayLiveActivities.create(f.options); open.push(restarted);
+    await expect(restarted.register("phone", "host", { ...registration(), launchId: id }, () => true)).rejects.toMatchObject({ status: 410 });
+  });
+
+  // LA-COMPAT-02: a process stop between the two renames cannot restore
+  // a staged binding without the matching committed registration.
+  it("does not revive a binding interrupted before the registration rename", async () => {
+    const f = await create(true);
+    await f.registry.publish(update(), f.connection);
+    const claim = await f.registry.claim("phone", "host", claimRequest, () => true);
+    expect(claim).toBeDefined();
+    const bound = { ...registration(), launchId: claim!.launchId };
+    await f.registry.register("phone", "host", bound, () => true);
+    await f.registry.close();
+    const path = f.stateFile!;
+    await writeFile(path, JSON.stringify({ version: 1, registrations: [] }));
+    const restored = await RelayLiveActivities.create(f.options); open.push(restored);
+    f.send.mockClear();
+    expect(await restored.publish(update(2), f.connection)).toEqual({ sent: [], failed: [] });
+    await expect(restored.register("phone", "host", bound, () => true)).rejects.toMatchObject({ status: 410 });
+    expect(f.send).not.toHaveBeenCalled();
+  });
+
+  // LA-COMPAT-02: if the legacy-file rename fails after staging a binding,
+  // a restart must recover the original reservation, not a phantom activity.
+  it("rolls back a staged binding when committing the registration fails", async () => {
+    const f = await create(true);
+    await f.registry.publish(update(), f.connection);
+    const claim = await f.registry.claim("phone", "host", claimRequest, () => true);
+    expect(claim).toBeDefined();
+    const bound = { ...registration(), launchId: claim!.launchId };
+    const path = f.stateFile!, launchPath = `${path}.launches.json`;
+    const reservation = await readFile(launchPath, "utf8");
+    const realRename = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).rename;
+    vi.mocked(rename).mockImplementationOnce(realRename).mockRejectedValueOnce(new Error("registration commit failed"));
+    await expect(f.registry.register("phone", "host", bound, () => true)).rejects.toThrow("registration commit failed");
+    expect(await readFile(launchPath, "utf8")).toBe(reservation);
+    expect(f.send).not.toHaveBeenCalled();
+    await f.registry.close();
+    const restored = await RelayLiveActivities.create(f.options); open.push(restored);
+    await restored.register("phone", "host", bound, () => true);
+    expect(JSON.parse(await readFile(path, "utf8")).registrations).toContainEqual(expect.objectContaining({ activityId: bound.activityId, launchId: bound.launchId }));
   });
 
   it("restores registrations, removes revoked devices, and prevents failed disk rollback from deleting a later token", async () => {

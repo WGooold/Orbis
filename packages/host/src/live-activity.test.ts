@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { LIVE_ACTIVITY_AGENT_KINDS, type AgentExecutionState, type AgentKey, type AgentKind } from "@orbis/protocol";
 
@@ -66,8 +69,8 @@ describe("Host Live Activity summary", () => {
     await h.publisher.close();
   });
 
-  // The native seed, Relay validator and Host use the same v1 allowlist.
-  it("keeps the iOS wire allowlist aligned with the Host", () => {
+  // The native seed and Host count the same sources, independently of the v1 wire subset.
+  it("keeps iOS and Host activity sources aligned", () => {
     const source = readFileSync(new URL("../../../ios/Orbis/Orbis/LiveActivityAttributes.swift", import.meta.url), "utf8");
     const declaration = source.match(/static let agentKinds: Set<String> = (\[.+\])/u);
     expect(declaration).not.toBeNull();
@@ -83,7 +86,28 @@ describe("Host Live Activity summary", () => {
     h.write(key("existing", included), execution("running"));
     await h.flush();
     expect(h.sent).toHaveLength(1);
-    expect(h.sent[0]?.contentState).toMatchObject({ phase: "running", agentKind: included, runningCount: 1, pendingCount: 0 });
+    expect(h.sent[0]?.contentState).toMatchObject({ phase: "running", agentKind: included === "opencode" ? null : included, runningCount: 1, pendingCount: 0 });
+    await h.publisher.close();
+  });
+
+  // LA-COMPAT-01: an OpenCode-only batch still has an identity, count, and terminal update.
+  it("publishes OpenCode activity with the released v1 generic kind", async () => {
+    const h = setup(); h.publisher.setConnected(true);
+    const agent = key("open", "opencode");
+    h.write(agent, execution("waiting_local_interaction", "turn", Date.now(), ["approval"]));
+    await h.flush();
+    expect(h.sent[0]?.contentState).toMatchObject({ phase: "attention", agentKind: null,
+      focusKey: liveActivityFocusKey(agent), pendingCount: 1 });
+    h.write(agent, execution("idle"), "ready", "completed");
+    await h.flush(250);
+    expect(h.sent.at(-1)).toMatchObject({ event: "end", contentState: { phase: "ended", agentKind: null } });
+    const release = process.env.ORBIS_LIVE_ACTIVITY_REFERENCE_RUNTIME;
+    if (release) {
+      const nativeImport = createRequire(import.meta.url)("../../../scripts/test-fixtures/import-native.cjs") as
+        (file: string) => Promise<{ parseLiveActivityUpdate: (value: unknown) => unknown }>;
+      const released = await nativeImport(pathToFileURL(join(release, "packages/relay/dist/live-activities.js")).href);
+      for (const sent of h.sent) expect(released.parseLiveActivityUpdate(sent)).toEqual(sent);
+    }
     await h.publisher.close();
   });
 

@@ -1,17 +1,23 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { LIVE_ACTIVITY_FRESHNESS_MS, liveActivitySupportsAgent, type LiveActivityContentState } from "@orbis/protocol";
+import { LIVE_ACTIVITY_FRESHNESS_MS, liveActivityV1AgentKind, type LiveActivityAgentKind, type LiveActivityContentState } from "@orbis/protocol";
 import { HttpError } from "./http-utils.js";
 
 export type LiveActivityState = LiveActivityContentState & { sessionCount?: number };
+// v0.1.24 Host sent kimiCode; the initial OpenCode implementation could send opencode.
+// Accept both producer shapes without forwarding either label into a v1 widget.
+type ProducerState = Omit<LiveActivityContentState, "agentKind"> & {
+  agentKind: LiveActivityAgentKind | "kimiCode" | "opencode" | null;
+};
+const widgetState = (state: ProducerState): LiveActivityContentState => ({ ...state, agentKind: liveActivityV1AgentKind(state.agentKind) });
 export type LiveActivityUpdate = {
   version: 1;
   hostId: string;
   producerId: string;
   revision: number;
   event: "update" | "end";
-  contentState: LiveActivityContentState;
+  contentState: ProducerState;
 };
 type StartAttributes = { hostId: string; pairingRef: string; launchId: string };
 export type LiveActivityPush = ({ event: "update" | "end" } | {
@@ -39,6 +45,7 @@ type Launch = {
   deviceId: string; hostId: string; id: string; issuedAt: number;
   via: "app" | "push";
   pendingCount?: number;
+  activityId?: string;
   // A terminal summary must survive a late ActivityKit token, a new Host
   // batch, or a Relay restart. Only a matching launch can replay this end.
   terminal?: { state: LiveActivityContentState; receivedAt: number };
@@ -72,18 +79,23 @@ export const LIVE_ACTIVITY_START_WINDOW_SECONDS = 60;
 const handoffWindow = LIVE_ACTIVITY_START_WINDOW_SECONDS * 1000;
 const launchLifetime = activityLifetime + handoffWindow;
 const capacity = 16_384;
+const launchStateFile = (file: string) => `${file}.launches.json`;
+const readState = async (file: string): Promise<unknown> => {
+  try { return JSON.parse(await readFile(file, "utf8")); }
+  catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+};
 
 // APNs receives neither the device ID nor its credential. The opaque reference
 // distinguishes pairings sharing an ActivityKit start token, including rotation.
 export const liveActivityPairingRef = (hostId: string, deviceId: string, credentialHash: string): string =>
   createHash("sha256").update(JSON.stringify(["orbis.live-activity-pairing-v1", hostId, deviceId, credentialHash]), "utf8").digest("hex");
 
-function validState(state: unknown): state is LiveActivityContentState {
+function validState(state: unknown): state is ProducerState {
   if (!object(state) || !exact(state, stateKeys) || state.version !== 1 || typeof state.phase !== "string" || !["running", "attention", "ended", "stale"].includes(state.phase) ||
     !count(state.runningCount, 2048) || !count(state.pendingCount, 131_072) || !millis(state.updatedAt) ||
     !(state.startedAt === null || millis(state.startedAt) && state.startedAt <= state.updatedAt) ||
     !(state.focusKey === null || typeof state.focusKey === "string" && /^[a-f0-9]{64}$/u.test(state.focusKey)) ||
-    !(state.agentKind === null || liveActivitySupportsAgent(state.agentKind)) ||
+    !(state.agentKind === null || state.agentKind === "kimiCode" || state.agentKind === "opencode" || liveActivityV1AgentKind(state.agentKind) !== null) ||
     !(state.outcome === null || typeof state.outcome === "string" && ["completed", "failed", "cancelled", "unknown"].includes(state.outcome)) ||
     (state.phase !== "ended" && state.outcome !== null) ||
     (state.phase === "running" && (state.runningCount === 0 || state.pendingCount !== 0)) ||
@@ -115,41 +127,80 @@ export class RelayLiveActivities {
   readonly #waits = new Map<string, { timer: ReturnType<typeof setTimeout>; finish: () => void }>();
   #mutation: Promise<void> = Promise.resolve();
   #closed = false;
+  #savedRegistrations: string | undefined;
+  #savedLaunches: string | undefined;
 
   private constructor(readonly options: LiveActivityOptions) {}
 
   static async create(options: LiveActivityOptions): Promise<RelayLiveActivities> {
     const result = new RelayLiveActivities(options);
-    if (options.stateFile) {
-      try {
-        const stored: unknown = JSON.parse(await readFile(options.stateFile, "utf8"));
-        if (!object(stored) || stored.version !== 1 || !Array.isArray(stored.registrations) || stored.registrations.length > capacity ||
-          [stored.startTargets, stored.launches].some(v => v !== undefined && (!Array.isArray(v) || v.length > capacity))) throw new Error("Invalid Relay live activity state file");
-        for (const target of stored.registrations) {
-          if (object(target) && identifier(target.deviceId) && identifier(target.hostId) && identifier(target.activityId) && token(target.token) &&
-            environment(target.environment) && millis(target.expiresAt) && target.expiresAt > Date.now() && (target.launchId === undefined || launchId(target.launchId)) &&
-            options.isPaired(target.deviceId, target.hostId)) result.#targets.set(target.deviceId, target as Registration);
-        }
-        const startTargets = (stored.startTargets ?? []) as unknown[];
-        const launches = (stored.launches ?? []) as unknown[];
-        for (const target of startTargets) {
-          if (object(target) && identifier(target.deviceId) && identifier(target.hostId) && token(target.token) && environment(target.environment) &&
-            typeof target.inputPushToken === "boolean" && digest(target.pairingRef) &&
-            options.isPaired(target.deviceId, target.hostId, target.pairingRef)) result.#startTargets.set(target.deviceId, target as StartTarget);
-        }
-        for (const launch of launches) {
-          if (object(launch) && identifier(launch.deviceId) && identifier(launch.hostId) && launchId(launch.id) && millis(launch.issuedAt) &&
-            launch.issuedAt + launchLifetime > Date.now() && (launch.via === "push" || launch.via === "app") &&
-            (launch.pendingCount === undefined || count(launch.pendingCount, 131_072)) &&
-            (launch.invalidToken === undefined || launch.invalidToken === true) &&
-            (launch.retired === undefined || launch.retired === true) && (launch.terminal === undefined ||
-              object(launch.terminal) && millis(launch.terminal.receivedAt) && validState(launch.terminal.state) && launch.terminal.state.phase === "ended") &&
-            options.isPaired(launch.deviceId, launch.hostId)) result.#launches.set(launch.deviceId, launch as Launch);
-        }
-        // Revocation in the main device registry takes precedence over stale files.
-        if (result.#targets.size !== stored.registrations.length || result.#startTargets.size !== startTargets.length || result.#launches.size !== launches.length) await result.#persist();
-      } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+    const file = options.stateFile;
+    if (!file) return result;
+    const stored = await readState(file);
+    if (stored !== undefined && (!object(stored) || stored.version !== 1 || !Array.isArray(stored.registrations) || stored.registrations.length > capacity)) {
+      throw new Error("Invalid Relay live activity state file");
     }
+    const legacy = stored as { registrations: unknown[]; startTargets?: unknown; launches?: unknown } | undefined;
+    const extension = await readState(launchStateFile(file));
+    if (extension !== undefined && (!object(extension) || extension.version !== 1 || !Array.isArray(extension.startTargets) || !Array.isArray(extension.launches))) {
+      throw new Error("Invalid Relay live activity launch state file");
+    }
+    const launchData = (extension ?? legacy) as { startTargets?: unknown; launches?: unknown } | undefined;
+    const startTargets = launchData?.startTargets === undefined ? [] : launchData.startTargets;
+    const launches = launchData?.launches === undefined ? [] : launchData.launches;
+    if (!Array.isArray(startTargets) || startTargets.length > capacity || !Array.isArray(launches) || launches.length > capacity) {
+      throw new Error("Invalid Relay live activity launch state file");
+    }
+    const registrations = legacy?.registrations ?? [];
+    const now = Date.now();
+    for (const target of registrations) {
+      if (object(target) && identifier(target.deviceId) && identifier(target.hostId) && identifier(target.activityId) && token(target.token) &&
+        environment(target.environment) && millis(target.expiresAt) && target.expiresAt > now && (target.launchId === undefined || launchId(target.launchId)) &&
+        options.isPaired(target.deviceId, target.hostId)) result.#targets.set(target.deviceId, target as Registration);
+    }
+    for (const target of startTargets) {
+      if (object(target) && identifier(target.deviceId) && identifier(target.hostId) && token(target.token) && environment(target.environment) &&
+        typeof target.inputPushToken === "boolean" && digest(target.pairingRef) &&
+        options.isPaired(target.deviceId, target.hostId, target.pairingRef)) result.#startTargets.set(target.deviceId, target as StartTarget);
+    }
+    for (const launch of launches) {
+      if (!object(launch) || !identifier(launch.deviceId) || !identifier(launch.hostId) || !launchId(launch.id) || !millis(launch.issuedAt) ||
+        launch.issuedAt + launchLifetime <= now || (launch.via !== "push" && launch.via !== "app") ||
+        (launch.pendingCount !== undefined && !count(launch.pendingCount, 131_072)) ||
+        (launch.activityId !== undefined && !identifier(launch.activityId)) ||
+        (launch.invalidToken !== undefined && launch.invalidToken !== true) || (launch.retired !== undefined && launch.retired !== true) ||
+        !options.isPaired(launch.deviceId, launch.hostId)) continue;
+      const terminal = launch.terminal;
+      if (terminal !== undefined && (!object(terminal) || !millis(terminal.receivedAt) || !validState(terminal.state) || terminal.state.phase !== "ended")) continue;
+      result.#launches.set(launch.deviceId, { ...launch as Launch,
+        ...(terminal === undefined ? {} : { terminal: { receivedAt: terminal.receivedAt as number, state: widgetState(terminal.state as ProducerState) } }),
+      });
+    }
+    // The legacy file remains authoritative for the APNs token and activity ID.
+    // v0.1.24 can replace a token without copying launchId, or remove a target.
+    // Rejoin only the same activity; a replacement must not inherit its launch.
+    for (const [id, launch] of result.#launches) {
+      const target = result.#targets.get(id);
+      if (target && target.hostId === launch.hostId &&
+        (target.launchId === launch.id || target.launchId === undefined && target.activityId === launch.activityId) &&
+        (launch.activityId === undefined || target.activityId === launch.activityId)) {
+        if (!launch.retired) {
+          result.#targets.set(id, { ...target, launchId: launch.id });
+          result.#launches.set(id, { ...launch, activityId: target.activityId });
+        } else {
+          result.#targets.delete(id);
+        }
+      } else if (launch.activityId !== undefined && !launch.retired && (target || !launch.invalidToken)) {
+        result.#launches.set(id, { ...launch, retired: true });
+      }
+    }
+    for (const [id, target] of result.#targets) {
+      if (target.launchId !== undefined && result.#launches.get(id)?.id !== target.launchId) result.#targets.delete(id);
+    }
+    // Prefer the sidecar even if migration was interrupted before rewriting the v1 file.
+    result.#savedRegistrations = stored === undefined ? result.#registrationState([]) : JSON.stringify(legacy);
+    result.#savedLaunches = extension === undefined ? (legacy?.startTargets === undefined && legacy?.launches === undefined ? result.#launchState([], []) : undefined) : JSON.stringify(extension);
+    await result.#persist();
     return result;
   }
 
@@ -172,7 +223,7 @@ export class RelayLiveActivities {
       // A foreground token refresh is not permission to dismiss the card.
       if (value.token !== null && launch && value.launchId === launch.id && launch.retired && launch.terminal) return;
       if (value.token !== null && value.launchId !== undefined && (!launch || launch.id !== value.launchId || launch.retired ||
-        previous && (previous.activityId !== value.activityId || previous.launchId !== launch.id))) {
+        (launch.activityId !== undefined && launch.activityId !== value.activityId) || previous && (previous.activityId !== value.activityId || previous.launchId !== launch.id))) {
         throw new HttpError(410, "live_activity_launch_changed");
       }
       if (value.token !== null && value.launchId === undefined && (previous?.launchId !== undefined || (launch && !this.#slotAvailable(deviceId) && !previous))) {
@@ -207,6 +258,11 @@ export class RelayLiveActivities {
             expiresAt: previous && previous.activityId === value.activityId ? previous.expiresAt : Date.now() + activityLifetime,
             ...(typeof value.launchId === "string" ? { launchId: value.launchId } : {}) });
         }
+      }
+      if (value.token !== null && launch && value.launchId === launch.id && (launch.activityId === undefined || launch.invalidToken)) {
+        const bound = { ...launch, activityId: value.activityId as string };
+        delete bound.invalidToken;
+        this.#launches.set(deviceId, bound);
       }
       try { await this.#persist(); }
       catch (error) {
@@ -294,7 +350,7 @@ export class RelayLiveActivities {
       }
       if (update.event === "end") {
         const ending = [...this.#launches.values()].filter(launch => launch.hostId === update.hostId && !launch.terminal);
-        const terminal = { state: update.contentState, receivedAt: Date.now() };
+        const terminal = { state: widgetState(update.contentState), receivedAt: Date.now() };
         for (const launch of ending) this.#launches.set(launch.deviceId, { ...launch, terminal });
         if (ending.length > 0) {
           try { await this.#persist(); }
@@ -381,7 +437,8 @@ export class RelayLiveActivities {
     return launch && launch.id === target.launchId ? launch.terminal : undefined;
   }
   #content(cached: Cached, bound: boolean): LiveActivityState {
-    return bound && cached.sessionCount !== undefined ? { ...cached.update.contentState, sessionCount: cached.sessionCount } : cached.update.contentState;
+    const state = widgetState(cached.update.contentState);
+    return bound && cached.sessionCount !== undefined ? { ...state, sessionCount: cached.sessionCount } : state;
   }
   #maybeStart(deviceId: string): void {
     if (this.#closed || this.#startWorkers.has(deviceId)) return;
@@ -438,13 +495,33 @@ export class RelayLiveActivities {
     this.#mutation = pending.then(() => {}, () => {});
     return pending;
   }
+  #registrationState(registrations: Registration[]): string { return JSON.stringify({ version: 1, registrations }); }
+  #launchState(startTargets: StartTarget[], launches: Launch[]): string { return JSON.stringify({ version: 1, startTargets, launches }); }
   async #persist(): Promise<void> {
-    if (!this.options.stateFile) return;
-    const temporary = `${this.options.stateFile}.${process.pid}.tmp`;
-    await mkdir(dirname(this.options.stateFile), { recursive: true });
-    await writeFile(temporary, JSON.stringify({ version: 1, registrations: [...this.#targets.values()],
-      startTargets: [...this.#startTargets.values()], launches: [...this.#launches.values()] }), { mode: 0o600 });
-    await rename(temporary, this.options.stateFile);
+    const file = this.options.stateFile;
+    if (!file) return;
+    const registrations = this.#registrationState([...this.#targets.values()]);
+    const launches = this.#launchState([...this.#startTargets.values()], [...this.#launches.values()]);
+    const write = async (path: string, contents: string) => {
+      const temporary = `${path}.${process.pid}.tmp`;
+      await writeFile(temporary, contents, { mode: 0o600 });
+      await rename(temporary, path);
+    };
+    if (registrations === this.#savedRegistrations && launches === this.#savedLaunches) return;
+    await mkdir(dirname(file), { recursive: true });
+    const previousLaunches = this.#savedLaunches;
+    const sidecar = launchStateFile(file);
+    // Stage the binding (or its retirement) before exposing the registration to the old format.
+    if (launches !== previousLaunches) { await write(sidecar, launches); this.#savedLaunches = launches; }
+    try {
+      if (registrations !== this.#savedRegistrations) { await write(file, registrations); this.#savedRegistrations = registrations; }
+    } catch (error) {
+      if (launches !== previousLaunches && previousLaunches !== undefined) {
+        await write(sidecar, previousLaunches);
+        this.#savedLaunches = previousLaunches;
+      }
+      throw error;
+    }
   }
   #current(cached: Cached): boolean {
     return this.options.currentConnection(cached.update.hostId) === cached.connection && this.#latest.get(cached.update.hostId) === cached;

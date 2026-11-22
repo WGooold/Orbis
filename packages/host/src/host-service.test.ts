@@ -42,6 +42,7 @@ import {
   DEVICE_FEATURE_MESSAGE_RENDER,
   DEVICE_FEATURE_COMPACT_BOOTSTRAP,
   DEVICE_FEATURE_CLAUDE_SEND_NOW,
+  DEVICE_FEATURE_EXPLICIT_TUI,
   RUNTIME_CLOSE_FEATURE,
   CODEX_UNIFIED_HISTORY,
   PROTOCOL_VERSION,
@@ -3736,7 +3737,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   const readyDeviceCapturing = async (input: {
     host: HostService;
     relay: RelayServer;
-  }): Promise<{ device: TestDevice; ready: Record<string, unknown> }> => {
+  }): Promise<{ device: TestDevice; ready: Record<string, unknown>; rehandshake: () => Promise<void> }> => {
     const opened = await input.host.openPairingWindow();
     const connected = await TestDevice.connect({
       relayUrl: input.relay.url,
@@ -3747,7 +3748,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const pskRoot = await connected.device.pair(opened.payload);
     await connected.device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
     const ready = (await connected.device.receiveMessage()) as Record<string, unknown>;
-    return { device: connected.device, ready };
+    return { device: connected.device, ready, rehandshake: () => connected.device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId) };
   };
 
   /** 配对 + 握手 + 吃掉 device.ready / device.path 两条欢迎消息。 */
@@ -4236,6 +4237,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       HOST_FEATURE_IMPORT_TARGET,
       HOST_FEATURE_WEB_PREVIEW,
       HOST_FEATURE_NATIVE_FILE_PREVIEW,
+      DEVICE_FEATURE_EXPLICIT_TUI,
       "message.content-render.v1",
       "agent.openclaw",
       "agent.hermes",
@@ -5503,6 +5505,62 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         .toEqual(["thread/start"]);
     } finally {
       await desktop.stop();
+    }
+  });
+
+  // MOBILE-SPAWN-COMPAT-01: exercise the released phone's unnegotiated TUI
+  // default over the encrypted link, including the durable configured path.
+  it("downgrades the legacy Codex TUI default without downgrading explicit requests", async () => {
+    const previousHead = process.env.ORBIS_CODEX_HEAD;
+    process.env.ORBIS_CODEX_HEAD = "0";
+    try {
+      const cwd = stateDir = await mkdtemp(join(tmpdir(), "orbis-legacy-codex-spawn-"));
+      relay = await startRelayLocal(cwd);
+      let starts = 0;
+      const request = vi.fn(async (method: string) => {
+        if (method === "model/list") return { data: [{ id: "gpt-5.5", displayName: "GPT-5.5", isDefault: true }] };
+        if (method === "config/read") return { config: {} };
+        if (method === "thread/start") return { model: "gpt-5.5", thread: { id: `legacy-thread-${++starts}`, cwd, turns: [] } };
+        if (method === "thread/turns/list") return { data: [] };
+        throw new Error(`unexpected ${method}`);
+      });
+      const codexRuntime = new CodexRuntime({ server: { request, notify: vi.fn() } as unknown as CodexAppServer,
+        onEvent: () => {}, rolloutRoot: join(cwd, "rollouts") });
+      host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+        adminToken: "owner-secret", stateDir: cwd, reconnect: false, lan: false, codexRuntime });
+      await host.start();
+      const connected = await readyDeviceCapturing({ host, relay });
+      device = connected.device;
+      expect(connected.ready.hostFeatures).toEqual(expect.arrayContaining([DEVICE_FEATURE_EXPLICIT_TUI]));
+      const send = (msg: Record<string, unknown>) => sendRequest(connected.device, { protocolVersion: PROTOCOL_VERSION, ...msg });
+      const response = async (requestId: string, accept: (message: Record<string, unknown>) => boolean = () => true) => {
+        for (let i = 0; i < 30; i += 1) {
+          const message = await connected.device.receiveMessage() as Record<string, unknown>;
+          if (message.requestId === requestId && (message.type === "protocol.error" || accept(message))) return message;
+        }
+        throw new Error(`missing device response for ${requestId}`);
+      };
+      const activate = (requestId: string) => send({ type: "session.activate", requestId, spawnMode: "tui", target: { type: "new", agentKind: "codex", cwd } });
+      activate("legacy-activate");
+      expect(await response("legacy-activate")).toMatchObject({ type: "session.activated", sessionId: "legacy-thread-1", spawnMode: "headless" });
+      send({ type: "session.configuration.read", requestId: "config", agentKind: "codex", cwd });
+      const config = await response("config");
+      expect(config).toMatchObject({ type: "session.configuration.result" });
+      send({ type: "session.launch", requestId: "legacy-launch", launchId: "legacy-configured", agentKind: "codex", cwd,
+        binding: config.binding, revision: config.revision, values: config.values, spawnMode: "tui" });
+      expect(await response("legacy-launch", message => ["ready", "failed", "unknown", "absent"].includes(String(message.phase)))).toMatchObject({ phase: "ready", sessionId: "legacy-thread-2", spawnMode: "headless" });
+
+      send({ type: "device.features", features: [DEVICE_FEATURE_EXPLICIT_TUI] });
+      activate("explicit-activate");
+      expect(await response("explicit-activate")).toMatchObject({ type: "protocol.error", code: "spawn_failed" });
+      expect(starts).toBe(2);
+
+      await connected.rehandshake();
+      activate("rolled-back-app");
+      expect(await response("rolled-back-app")).toMatchObject({ type: "session.activated", sessionId: "legacy-thread-3", spawnMode: "headless" });
+      expect(starts).toBe(3);
+    } finally {
+      if (previousHead === undefined) delete process.env.ORBIS_CODEX_HEAD; else process.env.ORBIS_CODEX_HEAD = previousHead;
     }
   });
 

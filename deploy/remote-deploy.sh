@@ -35,6 +35,7 @@ if ! docker inspect "$active_container" >/dev/null 2>&1 && docker inspect pi-rem
 fi
 old_moved=0
 new_started=0
+candidate_data=""
 
 if [[ ! -f "$env_file" ]]; then
   echo "Missing $env_file. Run the one-time server setup before deploying." >&2
@@ -45,6 +46,7 @@ rollback() {
   local status=$?
   set +e
   docker rm -f "$candidate" >/dev/null 2>&1 || true
+  if [[ -n "$candidate_data" ]]; then rm -rf -- "$candidate_data"; fi
   if [[ "$new_started" -eq 1 ]]; then
     docker rm -f orbis-relay >/dev/null 2>&1 || true
   fi
@@ -85,11 +87,9 @@ fi
 # nginx-orbis.conf 的 `try_files $uri @relay_download`），和 CI 归档的 Windows 下载不是
 # 同一个目录。容器必须单独看到它，否则 /v1/site 的 androidVersion 永远是 null。
 android_downloads=/var/www/orbis-downloads
-android_mount=()
-android_env=()
+android_options=()
 if [[ -d "$android_downloads" ]]; then
-  android_mount=(-v "$android_downloads:/android-downloads:ro")
-  android_env=(-e ORBIS_ANDROID_DOWNLOADS_DIR=/android-downloads)
+  android_options=(-v "$android_downloads:/android-downloads:ro" -e ORBIS_ANDROID_DOWNLOADS_DIR=/android-downloads)
 fi
 
 cd "$release_dir"
@@ -98,14 +98,17 @@ docker build --build-arg "ORBIS_RELEASE_COMMIT=$release" -t "$image" -f Dockerfi
 
 # Start an isolated candidate first. It has no host port and receives no public
 # traffic, but proves that the built image can load the persisted state and pass
-# its health endpoint before the active container is touched.
+# its health endpoint before the active container is touched. Startup may
+# migrate or prune data; never let the candidate write into the active mount.
 docker rm -f "$candidate" >/dev/null 2>&1 || true
+candidate_data="$(mktemp -d "$shared/.candidate-data.XXXXXXXX")"
+cp -a "$data_dir/." "$candidate_data/"
 docker run -d \
   --name "$candidate" \
   --env-file "$env_file" \
-  -v "$data_dir:/data" \
+  -v "$candidate_data:/data" \
   -v "$downloads_dir:/downloads:ro" -e ORBIS_DOWNLOADS_DIR=/downloads \
-  "${android_mount[@]}" "${android_env[@]}" \
+  ${android_options[@]+"${android_options[@]}"} \
   "$image" >/dev/null
 
 candidate_healthy=0
@@ -126,6 +129,8 @@ fi
 # version gates with invalid test credentials before touching the active service.
 docker exec "$candidate" node packages/relay/dist/protocol-smoke.js
 docker rm -f "$candidate" >/dev/null
+rm -rf -- "$candidate_data"
+candidate_data=""
 
 # Keep the former container intact until both local and public health checks pass.
 if docker inspect "$previous_name" >/dev/null 2>&1; then
@@ -141,7 +146,7 @@ docker run -d \
   --env-file "$env_file" \
   -v "$data_dir:/data" \
   -v "$downloads_dir:/downloads:ro" -e ORBIS_DOWNLOADS_DIR=/downloads \
-  "${android_mount[@]}" "${android_env[@]}" \
+  ${android_options[@]+"${android_options[@]}"} \
   -p 127.0.0.1:8787:8787 \
   "$image" >/dev/null
 new_started=1

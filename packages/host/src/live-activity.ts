@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { agentKeyId, liveActivitySupportsAgent, type AgentExecutionState, type AgentKey, type LiveActivityContentState, type LiveActivityOutcome, type SessionLiveState } from "@orbis/protocol";
+import { agentKeyId, liveActivitySupportsAgent, liveActivityV1AgentKind, type AgentExecutionState, type AgentKey, type LiveActivityContentState, type LiveActivityOutcome, type SessionLiveState } from "@orbis/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { relayHttpBase } from "./config.js";
@@ -234,7 +234,7 @@ export class LiveActivityPublisher {
       version: 1, phase, runningCount: Math.min(2048, running.length),
       pendingCount: Math.min(131_072, attention.reduce((total, [, , count]) => total + count, 0)),
       focusKey: focused ? liveActivityFocusKey(focused.scope.key) : null,
-      agentKind: liveActivitySupportsAgent(kind) ? kind : null,
+      agentKind: liveActivityV1AgentKind(kind),
       startedAt: focused?.startedAt ?? null, outcome, sessionCount: running.length + attention.length,
     };
     const fingerprint = JSON.stringify(summary);

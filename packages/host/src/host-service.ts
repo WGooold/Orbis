@@ -64,6 +64,7 @@ import {
   HOST_FEATURE_WEB_PREVIEW,
   HOST_FEATURE_NATIVE_FILE_PREVIEW,
   HOST_FEATURE_SESSION_SPAWN_AUTO,
+  DEVICE_FEATURE_EXPLICIT_TUI,
   AGENT_ENABLEMENT_FEATURE,
   PROTOCOL_VERSION,
   type AgentKind,
@@ -1711,7 +1712,8 @@ export class HostService {
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
     if (scope.kind === "agent" && domain === "capabilities" && value && typeof value === "object"
         && Object.hasOwn(value, RUNTIME_CLOSE_CAPABILITY) && !this.#deviceFeatures.get(deviceId)?.has(RUNTIME_CLOSE_FEATURE)) {
-      const { [RUNTIME_CLOSE_CAPABILITY]: _close, ...legacy } = value as Record<string, unknown>;
+      const legacy = { ...value as Record<string, unknown> };
+      delete legacy[RUNTIME_CLOSE_CAPABILITY];
       return legacy;
     }
     if (scope.kind === "agent" && domain === "identity") {
@@ -1970,6 +1972,7 @@ export class HostService {
         HOST_FEATURE_WEB_PREVIEW,
         HOST_FEATURE_NATIVE_FILE_PREVIEW,
         ...(this.#options.preferAutoSessionSpawn === true ? [HOST_FEATURE_SESSION_SPAWN_AUTO] : []),
+        DEVICE_FEATURE_EXPLICIT_TUI,
         DEVICE_FEATURE_MESSAGE_RENDER,
         DEVICE_FEATURE_OPENCLAW,
         DEVICE_FEATURE_HERMES,
@@ -3482,6 +3485,7 @@ export class HostService {
         requireCurrent();
         const activated = await backend.activate({ type: "new", cwd: message.cwd }, {
           deviceId, launchId: message.launchId, requireCurrent, spawnMode: backend.kind === OPENCLAW_KIND ? "headless" : message.spawnMode ?? (backend.kind === "kimiCode" ? "auto" : "tui"), configuration: message.values,
+          legacyCodexSpawn: message.spawnMode === undefined || !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_EXPLICIT_TUI),
           ...(begun.record.nativeLaunchMarker === undefined ? {} : { nativeLaunchMarker: begun.record.nativeLaunchMarker }),
           ...(begun.record.expectedSessionId === undefined ? {} : { expectedSessionId: begun.record.expectedSessionId }),
           onCreated: async result => {
@@ -3556,6 +3560,7 @@ export class HostService {
       const requireCurrent = () => { if (!admitted()) throw new AgentLaunchRevoked(); };
       const backend = await this.#configuredBackend(record.agentKind, admitted);
       const online = backend.directoryEntries?.().some(item => item.sessionId === record.sessionId);
+      let spawnMode = record.spawnMode;
       if (record.phase !== "ready" || !online) {
         if (record.phase !== "ready") {
           const catalog = await backend.sessionConfiguration!(record.cwd);
@@ -3564,12 +3569,13 @@ export class HostService {
         }
         if (!current()) return;
         const result = await backend.activate({ type: "resume", sessionId: record.sessionId }, {
-          deviceId, requireCurrent, spawnMode: record.spawnMode ?? "tui",
+          deviceId, requireCurrent, spawnMode: record.spawnMode ?? "tui", legacyCodexSpawn: true,
           ...(record.phase === "ready" ? {} : { configuration: record.values }),
         });
         if (result.sessionId !== record.sessionId) throw new Error("恢复返回了不同会话身份，已停止发送");
+        spawnMode = result.spawnMode;
       }
-      await ledger.update(deviceId, launchId, { phase: "ready", error: undefined });
+      await ledger.update(deviceId, launchId, { phase: "ready", spawnMode, error: undefined });
       this.#invalidateCatalog();
     } catch (error) {
       // A failed process reattach does not invalidate historically confirmed
@@ -3763,6 +3769,7 @@ export class HostService {
         throw new ActivationError("session_not_found", "会话与 Agent 类型不一致");
       const context = {
         deviceId,
+        legacyCodexSpawn: message.spawnMode === undefined || !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_EXPLICIT_TUI),
         ...(message.spawnMode !== undefined ? { spawnMode: message.spawnMode }
           : target.type === "resume" && isKimiId(target.sessionId) ? { spawnMode: "headless" as const } : {}),
       };

@@ -1669,7 +1669,7 @@ export class CodexRuntime implements AgentBackend {
     // thread 还没进 #threads。计数 >0 时切换检测先宽限，避免把自家广播当 TUI 切换。
     this.#activating += 1;
     try {
-      return await this.#activateInner(target, context, this.#activationSpawnMode(context?.spawnMode));
+      return await this.#activateInner(target, context, this.#activationSpawnMode(context?.spawnMode, context?.legacyCodexSpawn === true));
     } finally {
       this.#activating -= 1;
     }
@@ -1810,10 +1810,10 @@ export class CodexRuntime implements AgentBackend {
     return { sessionId: this.#publicSessionId(id), spawnMode: actualSpawnMode };
   }
 
-  #activationSpawnMode(requested: SpawnMode | undefined): "tui" | "headless" {
+  #activationSpawnMode(requested: SpawnMode | undefined, legacyCodexSpawn: boolean): "tui" | "headless" {
     if (isDesktopAppServer(this.#server)) return "headless";
     const canOpenWindow = (process.platform === "win32" || process.platform === "darwin") && hasDesktopSession();
-    if (requested === "tui") {
+    if (requested === "tui" && !legacyCodexSpawn) {
       if (this.#options.headless === true) {
         throw new ActivationError("spawn_failed", "此 Linux CLI Host 仅支持无头 Codex 会话；请更新手机 App 使用自动启动模式");
       }
@@ -1825,7 +1825,7 @@ export class CodexRuntime implements AgentBackend {
     }
     if (requested === "headless" || this.#options.headless === true
       || orbisEnvironment(process.env, "CODEX_HEAD") === "0") return "headless";
-    if (requested === "auto") return canOpenWindow ? "tui" : "headless";
+    if (requested === "auto" || legacyCodexSpawn) return canOpenWindow ? "tui" : "headless";
     // Keep the legacy default for callers that do not send spawnMode.
     return "tui";
   }

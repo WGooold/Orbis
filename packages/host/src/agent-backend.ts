@@ -58,6 +58,8 @@ export type AgentActivateContext = {
   /** Opaque marker reserved in the launch ledger before Kimi creates a session. */
   nativeLaunchMarker?: string;
   spawnMode?: SpawnMode;
+  /** Old App `tui` defaults and replay of a recorded mode are not explicit window requests. */
+  legacyCodexSpawn?: boolean;
   configuration?: SessionConfigurationValues;
   onCreated?: (activation: BackendActivation) => Promise<void>;
 };

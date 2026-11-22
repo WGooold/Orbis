@@ -1751,6 +1751,24 @@ describe("CodexRuntime", () => {
     h.server.onExit?.(0);
   });
 
+  // MOBILE-SPAWN-COMPAT-01: the released App puts `tui` on default creates and resumes.
+  it.each([false, true])("allows a legacy TUI default without opening a configured-off window (resume=%s)", async resume => {
+    vi.stubEnv("ORBIS_CODEX_HEAD", "0");
+    try {
+      const openHeadWindow = vi.fn();
+      const h = makeHarness({ endpoint: "ws://127.0.0.1:12345", openHeadWindow });
+      const thread = { id: "legacy-thread", cwd: h.rolloutRoot, turns: [] };
+      const target = resume ? { type: "resume" as const, sessionId: thread.id } : { type: "new" as const, cwd: thread.cwd };
+      const activating = h.runtime.activate(target, { spawnMode: "tui", legacyCodexSpawn: true });
+      h.resolveNext({ thread });
+      await expect(activating).resolves.toEqual({ sessionId: thread.id, spawnMode: "headless" });
+      expect(h.requests).toHaveBeenCalledWith(resume ? "thread/resume" : "thread/start", expect.anything());
+      expect(openHeadWindow).not.toHaveBeenCalled();
+      await expect(h.runtime.activate(target, { spawnMode: "tui" })).rejects.toMatchObject({ code: "spawn_failed" });
+      h.server.onExit?.(0);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("rejects an explicit TUI request before creating a thread on a headless Host", async () => {
     const h = makeHarness({ headless: true, endpoint: "ws://127.0.0.1:12345" });
     const activating = h.runtime.activate({ type: "new", cwd: "D:/repo" }, { spawnMode: "tui" });

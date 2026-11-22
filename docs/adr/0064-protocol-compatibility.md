@@ -63,6 +63,10 @@ schema 保持既有字段语义，按消息类别声明扩展性；影响副作�
 
 2026-11-16，CLAUDE-QUESTION-RACE：Claude 插件 0.1.11 新增 Mods 事件 `question.requested` 与轮询回复字段 `questionAnswers`，bridge version 4 不变。协商依据为逐次事件确认：已发布 Host 对未知事件返回 `invalid`（HTTP 400），连接与运行时不变，插件只执行原生调用，随插件分发的经典 PreToolUse Hook 维持原阻塞路径；旧插件不发送该事件，也不读取新字段，新 Host 按原逻辑处理其 Hook。以已安装的发布版 Host 0.1.10 内置插件与 Host dist 分别同真实 TUI v2.1.325 隔离互通；证据见 `.artifacts/claude-question-race/`，细节见 [ADR-0033 §21](0033-claude-code-tui-mods-integration.md#21-askuserquestion-两端竞答2026-11-16源码验证--未部署)。
 
+2026-11-22，LA-COMPAT-01／02：Live Activity v1 摘要只发送旧 Relay 与旧 iOS 共同支持的 Agent 标签；OpenCode 仍计入活动，未协商的标签用 `null`，保留焦点键和计数。Relay 接收历史 `kimiCode`／`opencode` 生产者并在投递时降级。启动令牌与绑定迁入独立文件，回退时普通注册文件仍为权威；再升级只按同配对、同活动恢复绑定，不复活已移除或被替换的活动。部署预检在独立状态副本上迁移，不改写服务中的数据。回归见 [Host](../../packages/host/src/live-activity.test.ts) 与 [Relay](../../packages/relay/src/live-activities.test.ts)。
+
+2026-11-22，MOBILE-SPAWN-COMPAT-01：Codex 将未声明 `session.spawn.explicit-tui.v1` 的移动端 `tui` 视为旧默认；无法开窗时无头启动，回执报告实际形态。配置式创建与恢复同样兼容，已记录的启动身份不重放。明确协商的 TUI 请求在无法开窗时仍失败。回归见 [CodexRuntime](../../packages/host/src/codex-runtime.test.ts) 与 [Host 加密链路](../../packages/host/src/host-service.test.ts)。 交叉版本、类型与预检隔离证据见 `.artifacts/release-compat-fix-20261122/`；未部署，未做真机验收。
+
 ### 6. Relay＋Host 承担兼容，保留已安装 App（2026-11-05）
 
 Relay 适配认证路由外层，Host 在端到端业务边界按设备格式完整收发，App 沿用其已发布能力。业务适配保持加密、身份、原语义与真实回执；长期演进由 Host 保留旧 App 的基础互通。
