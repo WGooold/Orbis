@@ -190,6 +190,29 @@ describe("ClaudeModsBridge", () => {
     await expect(bridge.quit(current.runtimeId)).rejects.toThrow("无法核对");
     bridge.close();
   });
+
+  // SESSION-CLOSE-01: confirmation waives only the work guard, never the native owner check.
+  it.each(["active", "partial", "stale"] as const)("closes confirmed %s Claude work but rejects legacy and unconfirmed quits", async kind => {
+    const terminate = vi.fn(async (_identity, current: () => boolean) => { expect(current()).toBe(true); });
+    const bridge = bridgeWith({ processControl: { capture: async pid => ({ pid, started: "start", executable: "claude", command: "claude" }), terminate } });
+    try {
+      const current = online(bridge, hello({ processId: 4242 }));
+      await Promise.resolve();
+      bridge.receiveEvent(current.runtimeId, current.generation, { type: "tasks.snapshot", tasks: {
+        availability: kind === "partial" ? "unknown" : "ready", truncated: kind === "partial",
+        items: kind === "stale" ? [] : [{ id: "child", title: "test", kind: "shell", status: "running" }],
+      } });
+      if (kind === "stale") bridge.expireStale(Date.now() + 6_000);
+      expect(bridge.capabilities(current.runtimeId)?.commands).toContainEqual({ name: "orbis-close", source: "builtin", closeGeneration: current.generation });
+      expect(bridge.hasCommand(current.runtimeId, "quit")).toBe(false);
+      await expect(bridge.quit(current.runtimeId)).rejects.toThrow("请先在电脑结束子任务");
+      await expect(bridge.quit(current.runtimeId, { closeGeneration: current.generation, confirmed: false })).rejects.toThrow("会话活动已变化");
+      await expect(bridge.quit(current.runtimeId, { closeGeneration: "retired", confirmed: true })).rejects.toThrow("会话已变化");
+      expect(terminate).not.toHaveBeenCalled();
+      await bridge.quit(current.runtimeId, { closeGeneration: current.generation, confirmed: true });
+      expect(terminate).toHaveBeenCalledOnce();
+    } finally { bridge.close(); }
+  });
   it("validates the Claude version and every required native capability", () => {
     const bridge = bridgeWith();
     expect(bridge.hello(hello({ claudeVersion: "2.1.286" }))).toEqual({ ok: false, error: "claude_version_too_old:2.1.287" });

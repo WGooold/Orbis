@@ -651,6 +651,7 @@ export const AgentCapabilityItemSchema = z.strictObject({
   optionCount: z.number().int().nonnegative(),
   hint: z.string().max(256).optional(),
   argument: z.unknown().optional(),
+  closeGeneration: identity.optional(),
 });
 export type AgentCapabilityItem = z.infer<typeof AgentCapabilityItemSchema>;
 

@@ -301,6 +301,9 @@ export const DEVICE_FEATURE_HERMES = "agent.hermes";
 export const DEVICE_FEATURE_COMPACT_BOOTSTRAP = "state.compact-bootstrap.v1";
 /** ADR-0064: clients and Claude mod support interrupting active Claude turns on busy send. */
 export const DEVICE_FEATURE_CLAUDE_SEND_NOW = "claude.send-now.v1";
+/** SESSION-CLOSE-01: opt in to Activity-aware close requests and the Host-owned close capability. */
+export const RUNTIME_CLOSE_FEATURE = "runtime.close.v1";
+export const RUNTIME_CLOSE_CAPABILITY = "orbis-close";
 export const HOST_FEATURE_IMPORT_TARGET = "external-import.target-v1";
 export const DEVICE_FEATURE_OPENCODE = "agent.opencode";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
@@ -875,6 +878,7 @@ export const RuntimeSlashCommandSchema = z.strictObject({
   description: z.string().max(4_000).optional(),
   source: z.enum(["builtin", "extension", "prompt", "skill", "mcp"]),
   argument: RuntimeSlashCommandArgumentSchema.optional(),
+  closeGeneration: z.string().min(1).max(256).optional(),
 });
 export type RuntimeSlashCommand = z.infer<typeof RuntimeSlashCommandSchema>;
 
@@ -1183,6 +1187,9 @@ export const RuntimeCommandSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("permissions.update"), settingId: z.string().min(1).max(256), value: z.string().max(4096) }),
   z.strictObject({ type: z.literal("stop") }),
+  // Only the negotiated Host consumes this. Legacy runtimes continue to receive `/quit`.
+  z.strictObject({ type: z.literal("session.close"), sessionId: z.string().min(1).max(256),
+    confirmed: z.boolean(), closeGeneration: z.string().min(1).max(256).optional() }),
   z.strictObject({
     type: z.literal("interaction.respond"),
     requestId: z.string().min(1),

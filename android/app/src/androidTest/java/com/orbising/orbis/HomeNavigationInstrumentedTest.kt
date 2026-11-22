@@ -42,7 +42,7 @@ class HomeNavigationInstrumentedTest {
                     DisposableEffect(Unit) { mounts++; onDispose { disposals++ } }
                     RuntimeListScreen(state.withReadyHomeFixture(), listOf(HostSnapshot(pairing, state.withReadyHomeFixture())),
                         onOpenRuntime = { _, id -> opened += id; selected.value = id },
-                        onCloseRuntimes = { _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
+                        onCloseRuntimes = { _, _, _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
                         onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> },
                         onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {}, onOpenStatus = {}, onRequestProviders = {})
                 }) {

@@ -52,6 +52,12 @@ import {
   DEVICE_FEATURE_HERMES,
   DEVICE_FEATURE_COMPACT_BOOTSTRAP,
   DEVICE_FEATURE_CLAUDE_SEND_NOW,
+  RUNTIME_CLOSE_FEATURE,
+  RUNTIME_CLOSE_CAPABILITY,
+  agentTasksAllowQuit,
+  type AgentExecutionState,
+  type AgentDeliveryItem,
+  type AgentCapabilityItem,
   CODEX_UNIFIED_HISTORY,
   HOST_FEATURE_DEVICE_FEATURES,
   HOST_FEATURE_IMPORT_TARGET,
@@ -1704,6 +1710,11 @@ export class HostService {
   }
 
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
+    if (scope.kind === "agent" && domain === "capabilities" && value && typeof value === "object"
+        && Object.hasOwn(value, RUNTIME_CLOSE_CAPABILITY) && !this.#deviceFeatures.get(deviceId)?.has(RUNTIME_CLOSE_FEATURE)) {
+      const { [RUNTIME_CLOSE_CAPABILITY]: _close, ...legacy } = value as Record<string, unknown>;
+      return legacy;
+    }
     if (scope.kind === "agent" && domain === "identity") {
       const identity = !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ? omitRuntimeSendNow(value) : value;
       return this.#unifiedCodex(deviceId) ? this.#codexRuntimeIdentity(identity) : identity;
@@ -1738,7 +1749,7 @@ export class HostService {
     if (visible === undefined) return undefined;
     // Policy visibility never changes the set of parsers negotiated by this device.
     const ready = message as { type?: string; deviceFeatures?: string[] };
-    const projected = (this.#managedPolicy || this.#unifiedCodex(deviceId)) && ready.type === "device.ready" ? {
+    const projected = (this.#managedPolicy || this.#unifiedCodex(deviceId) || this.#deviceFeatures.get(deviceId)?.has(RUNTIME_CLOSE_FEATURE)) && ready.type === "device.ready" ? {
       ...visible,
       ...(ready.deviceFeatures ? { deviceFeatures: ready.deviceFeatures } : {}),
       ...(this.#disabledSources.has("dshDesktop") && this.#deviceFeatures.get(deviceId)?.has(negotiatedAgentFeature("dshDesktop")!) ? { dshDesktop: null } : {}),
@@ -1965,11 +1976,12 @@ export class HostService {
         DEVICE_FEATURE_OPENCODE,
         DEVICE_FEATURE_COMPACT_BOOTSTRAP,
         DEVICE_FEATURE_CLAUDE_SEND_NOW,
+        RUNTIME_CLOSE_FEATURE,
         ...(this.#kimi || this.#options.createKimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : []),
         ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : []),
       ],
       sessionConfiguration: 1,
-      ...(features && (features.has(DEVICE_FEATURE_OPENCLAW) || this.#unifiedCodex(deviceId) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
+      ...(features && (features.has(DEVICE_FEATURE_OPENCLAW) || features.has(RUNTIME_CLOSE_FEATURE) || this.#unifiedCodex(deviceId) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
     };
   }
 
@@ -2628,6 +2640,7 @@ export class HostService {
       const before = this.#agentView(deviceId);
       const previous = this.#deviceFeatures.get(deviceId);
       const hadRender = previous?.has(DEVICE_FEATURE_MESSAGE_RENDER) ?? false;
+      const closeChanged = !!previous?.has(RUNTIME_CLOSE_FEATURE) !== message.features.includes(RUNTIME_CLOSE_FEATURE);
       const codexViewChanged = this.#unifiedCodex(deviceId) !== message.features.includes(CODEX_UNIFIED_HISTORY);
       const managementChanged = !!this.#managedPolicy && (!!previous?.has(AGENT_ENABLEMENT_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_FEATURE) ||
         !!previous?.has(DEVICE_FEATURE_OPENCLAW) !== message.features.includes(DEVICE_FEATURE_OPENCLAW));
@@ -2635,7 +2648,7 @@ export class HostService {
       const hadClaudeSendNow = previous?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ?? false;
       if (message.features.includes(DEVICE_FEATURE_COMPACT_BOOTSTRAP)) this.#cancelBootstrapReplay(deviceId);
       const after = this.#agentView(deviceId);
-      if (before === after && !managementChanged && !codexViewChanged && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER) && hadClaudeSendNow === message.features.includes(DEVICE_FEATURE_CLAUDE_SEND_NOW)) return;
+      if (before === after && !managementChanged && !codexViewChanged && !closeChanged && hadRender === message.features.includes(DEVICE_FEATURE_MESSAGE_RENDER) && hadClaudeSendNow === message.features.includes(DEVICE_FEATURE_CLAUDE_SEND_NOW)) return;
       if (codexViewChanged) this.#invalidateCatalog();
       this.#resetAgentView(deviceId);
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
@@ -2889,7 +2902,7 @@ export class HostService {
         message: "导入内容只支持发送普通消息或排队" });
       return;
     }
-    if (this.#providerChanging && ["user_message", "slash.execute", "permissions.update"].includes(command.type) && this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(message.runtimeId))) {
+    if (this.#providerChanging && ["user_message", "slash.execute", "permissions.update", "session.close"].includes(command.type) && this.#backends.some(backend => backend.kind === this.#providerChanging && backend.ownsRuntime(message.runtimeId))) {
       this.#sendToDevice(deviceId, { type: "protocol.error", code: "provider_switching", commandId: message.commandId, message: "正在切换供应商，请稍后重新打开会话" });
       return;
     }
@@ -3122,9 +3135,43 @@ export class HostService {
     });
     this.refreshHostFacts();
     try {
+      let closeKind: AgentKind | undefined;
+      if (command.type === "session.close") {
+        const reject = (error: string) => this.#publishRuntimeEvent(runtimeId, { type: "command.result", commandId, ok: false, status: "failure", error });
+        if (!this.#deviceFeatures.get(deviceId)?.has(RUNTIME_CLOSE_FEATURE)) { reject("unsupported_command"); return; }
+        const scope = inputScope;
+        const available = scope && this.#agentStateRegistry.read<{ runtimeId: string; connected: boolean }>(scope, "availability");
+        if (scope?.kind !== "agent" || scope.key.sessionId !== command.sessionId || available?.availability !== "ready"
+            || available.value?.runtimeId !== runtimeId || !available.value.connected) {
+          reject("会话已变化，请重新确认关闭。"); return;
+        }
+        closeKind = scope.key.agentKind;
+        const menu = this.#agentStateRegistry.read<Record<string, AgentCapabilityItem>>(scope, "capabilities");
+        const capability = menu?.value?.[closeKind === "claude" ? RUNTIME_CLOSE_CAPABILITY : "quit"];
+        if (menu?.availability !== "ready" || capability?.source !== "builtin" || capability.argumentRequired === true
+            || capability.closeGeneration !== command.closeGeneration) {
+          reject("会话已变化，请重新确认关闭。"); return;
+        }
+        if (!command.confirmed) {
+          const fact = this.#agentStateRegistry.read<AgentExecutionState>(scope, "execution");
+          const execution = fact?.value;
+          const tasks = execution?.tasks;
+          const delivery = this.#agentStateRegistry.read<Record<string, AgentDeliveryItem>>(scope, "delivery")?.value;
+          if (fact?.availability !== "ready" || execution?.phase !== "idle" || execution.waitingFor.length > 0
+              || (execution.retry !== "unavailable" && execution.retry.phase === "running")
+              || (execution.compaction !== "unavailable" && execution.compaction.phase === "running")
+              || (tasks && (tasks.items.length > 0 || tasks.truncated) && !agentTasksAllowQuit(tasks))
+              || Object.values(delivery ?? {}).some(item => ["accepted", "not_cancelable", "unconfirmed"].includes(item.state))) {
+            reject("会话活动已变化，请重新确认关闭。"); return;
+          }
+        }
+      }
       for (const backend of this.#backends) {
         if (!backend.isReady() || !backend.ownsRuntime(runtimeId)) continue;
-        const result = backend.dispatchCommand(runtimeId, commandId, command);
+        if (closeKind !== undefined && closeKind !== backend.kind) continue;
+        // Old Pi/runtime bridges see only their existing command shape. Claude owns its generation-aware process close.
+        const result = backend.dispatchCommand(runtimeId, commandId, command.type === "session.close" && closeKind !== "claude"
+          ? { type: "slash.execute", name: "quit", args: "" } : command);
         if (result === "handled") return;
         const error = result === "offline" ? "runtime_offline" : "unsupported_command";
         this.#commandOwners.receive(runtimeId, { type: "command.result", commandId, ok: false, status: "failure", error });
@@ -3923,7 +3970,13 @@ export class HostService {
   }
 
   #encodeForDevice(deviceId: string, message: object): Buffer {
-    const { runtimeId } = message as { runtimeId?: string };
+    const outgoing = message as Partial<Extract<RelayToDeviceMessage, { type: "runtime.event" }>>;
+    const { runtimeId } = outgoing;
+    if (outgoing.type === "runtime.event" && outgoing.event?.type === "runtime.capabilities"
+        && !this.#deviceFeatures.get(deviceId)?.has(RUNTIME_CLOSE_FEATURE)) {
+      const { event } = outgoing;
+      message = { ...message, event: { ...event, capabilities: { commands: event.capabilities.commands.filter(command => command.name !== RUNTIME_CLOSE_CAPABILITY) } } };
+    }
     const scope = runtimeId === undefined ? undefined : this.#agentFacts.scopeOf(runtimeId);
     const codex = runtimeId !== undefined && this.#isCodexRuntime(runtimeId);
     const rich = this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_MESSAGE_RENDER) === true;
@@ -4194,16 +4247,14 @@ export class HostService {
       }
       return;
     }
-    const payload = encodeDeviceMessage(message);
     if (message.type === "runtime.event" && message.event.type === "runtime.capabilities") {
-      for (const [deviceId, link] of this.#links) {
+      for (const deviceId of this.#links.keys()) {
         if (this.#compactStateSubscriptions.owns(deviceId, message.runtimeId, "capabilities")) continue;
-        if (!visible(deviceId)) continue;
-        try { this.#measurePayload(payload, message); link.send(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength)); }
-        catch (error) { this.#options.onDeviceError?.(deviceId, error); }
+        this.#sendToDevice(deviceId, message);
       }
       return;
     }
+    const payload = encodeDeviceMessage(message);
     this.#broadcastPayload(payload, channelForDeviceMessage(message), outboundQueueSource(message, payload.byteLength),
       visible);
   }

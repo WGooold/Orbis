@@ -124,7 +124,7 @@ class FeedbackPositionInstrumentedTest {
                 if (!showDrawer.value) {
                     RuntimeListScreen(
                         state, listOf(HostSnapshot(pairing, state)),
-                        onOpenRuntime = { _, _ -> }, onCloseRuntimes = { _, _ -> emptySet() },
+                        onOpenRuntime = { _, _ -> }, onCloseRuntimes = { _, _, _, _ -> emptySet() },
                         onOpenDownloads = {}, onUnpairHost = {}, onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> },
                         onNewSession = { _, _ -> }, onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {},
                         onOpenStatus = {}, onRequestProviders = {},

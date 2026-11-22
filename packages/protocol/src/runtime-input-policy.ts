@@ -3,7 +3,7 @@ import type { RuntimeCommand } from "./index.js";
 /** ADR-0055: adding a wire input requires an explicit owner, including non-command ACKs. */
 export const runtimeInputOwners = {
   user_message: "backend", "user_message.cancel": "backend", "slash.execute": "backend",
-  "permissions.update": "backend", stop: "backend", "interaction.respond": "backend",
+  "permissions.update": "backend", stop: "backend", "session.close": "backend", "interaction.respond": "backend",
   "session.sync": "history", "session.snapshot.ack": "history", "session.entry.request": "history",
   "session.tools.open": "tools", "session.tools.read": "tools",
   "session.tool.content.read": "tools", "session.tool.content.cancel": "tools",

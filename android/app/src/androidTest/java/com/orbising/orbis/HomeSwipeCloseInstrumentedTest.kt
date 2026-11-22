@@ -40,7 +40,7 @@ class HomeSwipeCloseInstrumentedTest {
                 OrbisTheme {
                     RuntimeListScreen(state.withReadyHomeFixture(), listOf(HostSnapshot(pairing, state.withReadyHomeFixture())),
                         onOpenRuntime = { _, id -> opened += id },
-                        onCloseRuntimes = { host, ids -> closed += host to ids; ids },
+                        onCloseRuntimes = { host, ids, _, _ -> closed += host to ids; ids },
                         onOpenDownloads = {}, onUnpairHost = {},
                         onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> },
                         onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {}, onOpenStatus = {}, onRequestProviders = {})

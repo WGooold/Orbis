@@ -873,6 +873,7 @@ struct HomeView: View, Equatable {
             lhs.draftCloseRequest == rhs.draftCloseRequest && lhs.pageCovered == rhs.pageCovered
     }
 
+    @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
@@ -891,7 +892,11 @@ struct HomeView: View, Equatable {
     @State private var swipingRuntimeIds: Set<String> = []
     @State private var runtimeCardFrames: [String: CGRect] = [:]
     @State private var homeListGeometry = HomeListGeometry()
-    @State private var closeSwipeRuntimeId: String?
+    private struct CloseSwipeTarget {
+        let hostId: String
+        let card: HomeRuntimeCard
+    }
+    @State private var closeSwipeTarget: CloseSwipeTarget?
     @State private var closeSwipeDirectionDecided = false
     @GestureState private var closeSwipeActive = false
     var draftOpen = false
@@ -1004,7 +1009,7 @@ struct HomeView: View, Equatable {
             }
             .onChange(of: selectableRuntimeIds) { _, ids in
                 selectedRuntimeIds.formIntersection(ids)
-                if let active = closeSwipeRuntimeId, !ids.contains(active) { resetCloseSwipes() }
+                if let active = closeSwipeTarget, !ids.contains(active.card.id) { resetCloseSwipes() }
             }
             .onChange(of: closableRuntimeIds) { _, ids in
                 armedCloseRuntimeIds.formIntersection(ids)
@@ -1125,7 +1130,7 @@ struct HomeView: View, Equatable {
         swipeTranslations = swipeTranslations.filter { exitingCards[$0.key] != nil }
         armedCloseRuntimeIds = []
         swipingRuntimeIds = []
-        closeSwipeRuntimeId = nil
+        closeSwipeTarget = nil
         closeSwipeDirectionDecided = false
     }
 
@@ -1144,11 +1149,11 @@ struct HomeView: View, Equatable {
                           let card = host.homeCards.first(where: {
                               runtimeCardFrames[$0.id]?.contains(start) == true
                           }), host.connection.homeCardIsCurrent(card) else { return }
-                    closeSwipeRuntimeId = card.id
+                    closeSwipeTarget = CloseSwipeTarget(hostId: host.hostId, card: card)
                 }
-                guard let id = closeSwipeRuntimeId,
-                      let card = host.homeCards.first(where: { $0.id == id }),
-                      host.connection.homeCardIsCurrent(card) else { return }
+                guard let target = closeSwipeTarget, target.hostId == host.hostId,
+                      host.connection.homeCardIsCurrent(target.card) else { return }
+                let id = target.card.id
                 let width = runtimeCardFrames[id]?.width ?? 0
                 let threshold = width * 0.4
                 let horizontal = value.translation.width
@@ -1163,17 +1168,17 @@ struct HomeView: View, Equatable {
                 else { armedCloseRuntimeIds.remove(id) }
             }
             .onEnded { value in
-                let id = closeSwipeRuntimeId
-                closeSwipeRuntimeId = nil
+                let target = closeSwipeTarget
+                closeSwipeTarget = nil
                 closeSwipeDirectionDecided = false
-                guard !selecting, let id else { return }
+                guard !selecting, let target else { return }
+                let id = target.card.id
                 // Let this release's button action finish before accepting taps again.
                 DispatchQueue.main.async { swipingRuntimeIds.remove(id) }
                 let threshold = (runtimeCardFrames[id]?.width ?? 0) * 0.4
                 var closing = false
-                if let host = currentHost,
-                   let card = host.homeCards.first(where: { $0.id == id }),
-                   host.connection.homeCardIsCurrent(card), threshold > 0 {
+                if let host = currentHost, host.hostId == target.hostId,
+                   host.connection.homeCardIsCurrent(target.card), threshold > 0 {
                     let canClose = host.connection.canCloseRuntime(id)
                     let committed = armedCloseRuntimeIds.contains(id) && value.translation.width <= -(threshold * 0.96)
                     // A deliberate blocked swipe reaches the same threshold, explains why,
@@ -1213,8 +1218,23 @@ struct HomeView: View, Equatable {
     }
 
     @discardableResult private func beginClose(_ ids: Set<String>, host: HostSnapshot) -> Set<String> {
+        let targets = ids.intersection(selectableRuntimeIds)
+        let plan = host.connection.closePlan(targets)
+        if plan.requiresConfirmation {
+            overlay.confirmRuntimeClose(plan) {
+                guard let current = currentHost, current.hostId == host.hostId, current.connection === host.connection else { return }
+                // A changed selection must never broaden the dialog's original targets.
+                let presented = Set(plan.entries.map(\.target.runtimeId))
+                selectedRuntimeIds.subtract(submitClose(presented, host: current, plan: plan, confirmed: true))
+            }
+            return []
+        }
+        return submitClose(targets, host: host, plan: plan, confirmed: false)
+    }
+
+    private func submitClose(_ ids: Set<String>, host: HostSnapshot, plan: RuntimeClosePlan, confirmed: Bool) -> Set<String> {
         let cards = host.homeCards
-        let submitted = store.closeRuntimes(hostId: host.hostId, runtimeIds: ids.intersection(selectableRuntimeIds))
+        let submitted = store.closeRuntimes(hostId: host.hostId, runtimeIds: ids, plan: plan, confirmed: confirmed)
         for (index, card) in cards.enumerated() where submitted.contains(card.id) {
             let exit = ExitingCard(card: card, index: index)
             exitingCards[card.id] = exit
@@ -1270,12 +1290,16 @@ struct HomeView: View, Equatable {
         let reveal = min(cardWidth, max(0, -translation))
         let canClose = host.connection.canCloseRuntime(runtime.runtimeId)
         let armed = (canClose && armedCloseRuntimeIds.contains(runtime.runtimeId)) || exitingCards[runtime.runtimeId] != nil
+        let viewOnly = runtime.agentKind == "codexDesktop"
+        let closeLabel = canClose ? (viewOnly ? L10n.tr("退出视图") : L10n.tr("关闭")) : L10n.tr("暂不可关闭")
+        let review = armed && exitingCards[runtime.runtimeId] == nil && host.connection.closeImpact(runtime.runtimeId)?.needsConfirmation == true
+        let releaseLabel = review ? L10n.tr("松手确认") : viewOnly ? L10n.tr("松手退出") : L10n.tr("松手关闭")
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 0) {
                 ZStack(alignment: .trailing) {
                     if !selecting {
                         HStack(spacing: 12) {
-                            OrbisMotionText(armed ? L10n.tr("松手关闭") : canClose ? L10n.tr("关闭") : L10n.tr("暂不可关闭"))
+                            OrbisMotionText(armed ? releaseLabel : closeLabel)
                                 .font(.orbisLabel(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
                                 .frame(width: 100, alignment: .trailing)
                             ZStack {

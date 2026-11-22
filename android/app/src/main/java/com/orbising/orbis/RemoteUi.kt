@@ -114,6 +114,14 @@ internal fun NeumorphMenuItem(
     }
 }
 
+@Composable
+internal fun RuntimeCloseDialog(plan: RuntimeClosePlan, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    NeumorphDialog(onDismissRequest = onDismiss,
+        title = { Text(plan.dialogTitle) }, text = { Text(plan.message) },
+        dismissButton = { NeumorphTextButton(L10n.tr("取消"), onDismiss) },
+        confirmButton = { NeumorphTextButton(plan.actionTitle, onConfirm, danger = !plan.viewOnly) })
+}
+
 /** Keep the native modal semantics; use a soft raised slab and wrapping actions inside it. */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable

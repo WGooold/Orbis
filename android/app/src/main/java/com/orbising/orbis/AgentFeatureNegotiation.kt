@@ -11,6 +11,8 @@ internal fun readyAdmitsCodexHistory(ready: JsonObject): Boolean =
     CODEX_UNIFIED_HISTORY in ready.features("hostFeatures") && CODEX_UNIFIED_HISTORY in ready.features("deviceFeatures")
 internal fun readyAdmitsAgentEnablement(ready: JsonObject): Boolean =
     AGENT_ENABLEMENT_FEATURE in ready.features("hostFeatures") && AGENT_ENABLEMENT_FEATURE in ready.features("deviceFeatures")
+internal fun readyAdmitsRuntimeClose(ready: JsonObject): Boolean =
+    RUNTIME_CLOSE_FEATURE in ready.features("hostFeatures") && RUNTIME_CLOSE_FEATURE in ready.features("deviceFeatures")
 
 private fun JsonObject.features(key: String): List<String> = (get(key) as? JsonArray).orEmpty()
     .mapNotNull { (it as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.contentOrNull }
@@ -25,6 +27,7 @@ internal fun requestedAgentFeatures(ready: JsonObject): List<String> {
     val hostSupportsOpenClaw = "agent.openclaw" in features
     if ("dshDesktop" in ready && (!hostSupportsOpenClaw || readyAdmitsOpenClaw(ready)) &&
         (AGENT_ENABLEMENT_FEATURE !in features || readyAdmitsAgentEnablement(ready)) &&
-        (CODEX_UNIFIED_HISTORY !in features || readyAdmitsCodexHistory(ready))) return emptyList()
+        (CODEX_UNIFIED_HISTORY !in features || readyAdmitsCodexHistory(ready)) &&
+        (RUNTIME_CLOSE_FEATURE !in features || readyAdmitsRuntimeClose(ready))) return emptyList()
     return deviceAgentFeatures(ready)
 }

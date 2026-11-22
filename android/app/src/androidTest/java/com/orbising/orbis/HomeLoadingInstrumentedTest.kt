@@ -37,7 +37,7 @@ class HomeLoadingInstrumentedTest {
             CompositionLocalProvider(LocalDensity provides Density(density.density, scale.value)) {
                 OrbisTheme(darkTheme = dark) {
                     RuntimeListScreen(state.value, listOf(HostSnapshot(pairing, state.value)),
-                        onOpenRuntime = { _, id -> opened += id }, onCloseRuntimes = { _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
+                        onOpenRuntime = { _, id -> opened += id }, onCloseRuntimes = { _, _, _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
                         onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> },
                         onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {}, onOpenStatus = {}, onRequestProviders = {},
                         onRetryHome = {

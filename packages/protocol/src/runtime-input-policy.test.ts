@@ -6,7 +6,7 @@ describe("all runtime inputs and states (AIN-01/02)", () => {
   it("registers exactly every wire input, including service requests and one-way ACKs", () => {
     const types = RuntimeCommandSchema.options.map(option => option.shape.type.value);
     expect(Object.keys(runtimeInputOwners).sort()).toEqual(types.sort());
-    expect(types).toHaveLength(20);
+    expect(runtimeInputOwners["session.close"]).toBe("backend");
     expect(RuntimeCommandSchema.safeParse({ type: "future.input" }).success).toBe(false);
     expect(RuntimeCommandStatusSchema.parse("unconfirmed")).toBe("unconfirmed");
     expect(RuntimeEventSchema.safeParse({ type: "message.queued", queueId: "q", text: "hi", delivery: "followUp", state: "unconfirmed" }).success).toBe(true);

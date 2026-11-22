@@ -173,16 +173,23 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
         if presentationStatus == "background_commands" { return L10n.tr("空闲 · {0}", summary) }
         return summary
     }
-    func allowsRemoteClose(_ commands: [SlashCommand]) -> Bool {
-        remoteCloseBlockReason(commands) == nil
+    func allowsRemoteClose(_ commands: [SlashCommand], negotiated: Bool = false) -> Bool {
+        remoteCloseBlockReason(commands, negotiated: negotiated) == nil
     }
-    func remoteCloseBlockReason(_ commands: [SlashCommand]) -> RuntimeCloseBlockReason? {
-        if let tasks = backgroundTasks, tasks.visible, !tasks.allowsQuit {
+    func remoteCloseBlockReason(_ commands: [SlashCommand], negotiated: Bool = false) -> RuntimeCloseBlockReason? {
+        if !negotiated, let tasks = backgroundTasks, tasks.visible, !tasks.allowsQuit {
             if tasks.truncated { return .incompleteTasks }
             if !tasks.confirmed { return .unconfirmedTasks }
             return .activeTasks
         }
-        return commands.contains { $0.name == "quit" && $0.argument?.required != true } ? nil : .unavailableCommand
+        return remoteCloseCommand(commands, negotiated: negotiated) == nil ? .unavailableCommand : nil
+    }
+    func remoteCloseCommand(_ commands: [SlashCommand], negotiated: Bool) -> SlashCommand? {
+        let name = negotiated && agentKind == "claude" ? SlashCommand.closeCapability : "quit"
+        return commands.first {
+            $0.name == name && $0.argument?.required != true && (!negotiated || $0.source == "builtin") &&
+                (name != SlashCommand.closeCapability || $0.closeGeneration?.isEmpty == false)
+        }
     }
 }
 
@@ -196,6 +203,76 @@ enum RuntimeCloseBlockReason: Equatable {
         case .unconfirmedTasks: L10n.tr("后台任务状态待核对，暂不能关闭会话。")
         case .activeTasks: L10n.tr("后台任务尚未结束，暂不能关闭会话。")
         case .unavailableCommand: L10n.tr("部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。")
+        }
+    }
+}
+
+/// SESSION-CLOSE-01: the dialog describes a set of explicit targets, not the current selection at confirmation time.
+struct RuntimeClosePlan {
+    struct Target: Equatable {
+        let runtimeId: String
+        let sessionId: String
+        let agentKind: String?
+        let closeGeneration: String?
+    }
+    struct Entry {
+        let target: Target
+        let title: String
+        let impact: RuntimeCloseImpact
+    }
+    let connectionGeneration: UUID
+    let connection: Int
+    let modelEpoch: String?
+    let negotiated: Bool
+    let entries: [Entry]
+    var requiresConfirmation: Bool { entries.contains { $0.impact.needsConfirmation } }
+    var viewOnly: Bool { entries.allSatisfy { $0.impact.viewOnly } }
+    var actionTitle: String { viewOnly ? L10n.tr("退出视图") : L10n.tr("确认关闭") }
+    var dialogTitle: String {
+        if viewOnly && entries.count > 1 { return L10n.tr("退出 {0} 个手机视图？", entries.count) }
+        if entries.count > 1 { return L10n.tr("关闭 {0} 个会话？", entries.count) }
+        return viewOnly ? L10n.tr("退出手机视图？") : L10n.tr("关闭会话？")
+    }
+    var message: String {
+        let blocks = entries.map { entry in
+            "\(entry.title)\n" + (entry.impact.activity + [entry.impact.effect]).joined(separator: "\n")
+        }
+        return (blocks + (viewOnly ? [] : [L10n.tr("已保存的历史会保留；未保存的输出可能丢失，已执行的操作不会撤销。")])).joined(separator: "\n\n")
+    }
+}
+
+struct RuntimeCloseImpact {
+    let activity: [String]
+    let effect: String
+    let viewOnly: Bool
+    var needsConfirmation: Bool { !activity.isEmpty }
+
+    init(_ runtime: RuntimeSummary, negotiated: Bool, waiting: Bool, queued: Int, retrying: Bool = false) {
+        var details: [String] = []
+        if runtime.status == "running" { details.append(L10n.tr("当前回合正在运行。")) }
+        else if !["idle", "waiting_local_interaction"].contains(runtime.status) { details.append(L10n.tr("当前回合状态未确认。")) }
+        if waiting || runtime.status == "waiting_local_interaction" { details.append(L10n.tr("有待处理的交互。")) }
+        if runtime.compactionPhase == "running" { details.append(L10n.tr("正在压缩上下文。")) }
+        if retrying { details.append(L10n.tr("任务正在重试。")) }
+        let tasks = runtime.backgroundTasks
+        if let tasks, tasks.confirmed || tasks.truncated {
+            if tasks.activeAgentCount > 0 { details.append(L10n.tr("有 {0} 个活跃子代理。", tasks.activeAgentCount)) }
+            if tasks.activeCommandCount > 0 { details.append(L10n.tr("有 {0} 个活跃后台命令或监听。", tasks.activeCommandCount)) }
+        }
+        if tasks?.truncated == true { details.append(L10n.tr("后台任务清单不完整，可能还有其他任务。")) }
+        else if tasks?.confirmed != true, tasks?.visible == true || (negotiated && runtime.agentKind == "claude") {
+            details.append(L10n.tr("后台任务状态未确认，可能仍有任务运行。"))
+        }
+        if queued > 0 { details.append(L10n.tr("有 {0} 条消息尚未确认送达，关闭后可能不会发送。", queued)) }
+        activity = details
+        viewOnly = runtime.agentKind == "codexDesktop"
+        switch runtime.agentKind {
+        case "codexDesktop": effect = L10n.tr("只退出手机视图，不会停止电脑端的工作。")
+        case "claude": effect = L10n.tr("将结束电脑上的 Claude Code 进程；不能确认所有后台任务都会停止。")
+        case "codex": effect = L10n.tr("将尝试关闭电脑上的 Codex 终端；不能确认所有后台任务都会停止。")
+        case "dsh", "dshDesktop": effect = L10n.tr("关闭会尝试停止当前回合；不能确认所有后台任务都会停止。")
+        case "pi": effect = L10n.tr("将请求退出电脑上的 Pi 会话；不能确认所有后台任务都会停止。")
+        default: effect = L10n.tr("关闭可能中断电脑端的工作；不能确认所有后台任务都会停止。")
         }
     }
 }
@@ -602,10 +679,12 @@ struct RuntimeOption: Codable, Hashable, Identifiable {
 }
 
 struct SlashCommand: Codable, Hashable, Identifiable {
+    static let closeCapability = "orbis-close"
     let name: String
     let description: String?
     let source: String
     var argument: Argument?
+    var closeGeneration: String? = nil
     var id: String { name }
     struct Argument: Codable, Hashable {
         let kind: String
