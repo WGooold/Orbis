@@ -36,7 +36,7 @@ class HomeMaterialInstrumentedTest {
         compose.setContent {
             OrbisTheme(darkTheme = dark) {
                 RuntimeListScreen(state, hosts,
-                    onOpenRuntime = { _, _ -> }, onCloseRuntimes = { _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
+                    onOpenRuntime = { _, _ -> }, onCloseRuntimes = { _, _, _, _ -> emptySet() }, onOpenDownloads = {}, onUnpairHost = {},
                     onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> },
                     onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {}, onOpenStatus = {}, onRequestProviders = {})
             }

@@ -39,7 +39,7 @@ class BackgroundTasksInstrumentedTest {
                 .withReadyHomeFixture()
             OrbisTheme {
                 RuntimeListScreen(state, listOf(HostSnapshot(pairing, state)),
-                    onOpenRuntime = { _, id -> opened += id }, onCloseRuntimes = { _, ids -> closed += ids; ids },
+                    onOpenRuntime = { _, id -> opened += id }, onCloseRuntimes = { _, ids, _, _ -> closed += ids; ids },
                     onOpenDownloads = {}, onUnpairHost = {}, onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> },
                     onNewSession = { _, _ -> }, onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {},
                     onOpenStatus = {}, onRequestProviders = {})

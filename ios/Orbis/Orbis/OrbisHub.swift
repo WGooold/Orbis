@@ -417,8 +417,8 @@ final class OrbisStore: ObservableObject {
     func executeSlash(_ name: String, args: String = "", composerDraft: String? = nil) -> Bool {
         activeConnection.executeSlash(name, args: args, composerDraft: composerDraft)
     }
-    func closeRuntimes(hostId: String, runtimeIds: Set<String>) -> Set<String> {
-        connections[hostId]?.closeRuntimes(runtimeIds) ?? []
+    func closeRuntimes(hostId: String, runtimeIds: Set<String>, plan: RuntimeClosePlan? = nil, confirmed: Bool = false) -> Set<String> {
+        connections[hostId]?.closeRuntimes(runtimeIds, plan: plan, confirmed: confirmed) ?? []
     }
     func canUpdatePermission(settingId: String, value: String) -> Bool { activeConnection.canUpdatePermission(settingId: settingId, value: value) }
     @discardableResult func updatePermission(settingId: String, value: String) -> Bool { activeConnection.updatePermission(settingId: settingId, value: value) }

@@ -70,7 +70,11 @@ struct ChatScreenSnapshot {
         uploads = tasks.filter { uploadIds.contains($0.id) }
         attached = tasks.filter { $0.direction == "upload" && $0.runtimeId == id && $0.sessionId == session && $0.attached }
         preparing = source.transfers.preparing
-        commands = source.commands[id] ?? []; workingBranch = source.workingBranches[id]
+        let availableCommands = source.commands[id] ?? []
+        let menu = availableCommands.filter { $0.name != SlashCommand.closeCapability }
+        commands = availableCommands.contains { $0.name == SlashCommand.closeCapability } && !menu.contains { $0.name == "quit" }
+            ? menu + [SlashCommand(name: "quit", description: nil, source: "builtin")] : menu
+        workingBranch = source.workingBranches[id]
         draftRevision = source.draftRevision; draft = runtime.map(source.draft) ?? ""
         inputError = source.composerError(id) ?? source.objectError(id, includeCardOnly: false) ?? runtime.flatMap(source.transfers.uploadError)
         menuErrors = Dictionary(uniqueKeysWithValues: source.menuErrors.compactMap { key, value in let prefix = id + "\u{0}"; return key.hasPrefix(prefix) ? (String(key.dropFirst(prefix.count)), value) : nil })

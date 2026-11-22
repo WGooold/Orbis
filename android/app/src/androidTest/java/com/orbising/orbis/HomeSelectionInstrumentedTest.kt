@@ -33,7 +33,7 @@ class HomeSelectionInstrumentedTest {
                 OrbisTheme {
                     RuntimeListScreen(state.withReadyHomeFixture(), listOf(HostSnapshot(pairing, state.withReadyHomeFixture())),
                         onOpenRuntime = { _, id -> opened += id },
-                        onCloseRuntimes = { host, ids ->
+                        onCloseRuntimes = { host, ids, _, _ ->
                             assertEquals("host", host); closed += ids
                             state = state.copy(runtimes = state.runtimes - ids)
                             ids

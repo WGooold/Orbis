@@ -781,6 +781,14 @@ class RelayClient internal constructor(
             messageId?.let { put("messageId", it) }
         }, commandId)
 
+    internal fun closeSession(target: RuntimeCloseTarget, confirmed: Boolean, commandId: String): String? =
+        sendCommand(target.runtimeId, buildJsonObject {
+            put("type", "session.close")
+            put("sessionId", target.sessionId)
+            put("confirmed", confirmed)
+            target.closeGeneration?.let { put("closeGeneration", it) }
+        }, commandId)
+
     fun updatePermissions(runtimeId: String, settingId: String, value: String): String? = sendCommand(runtimeId, buildJsonObject {
         put("type", "permissions.update")
         put("settingId", settingId)

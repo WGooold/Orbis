@@ -392,14 +392,14 @@ export class ClaudeBackend implements AgentBackend {
           ...(command.delivery === undefined ? {} : { delivery: command.delivery }) });
       return this.#reportModsCommandResult(runtimeId, commandId, result);
     }
-    if (command.type === "slash.execute") {
+    if (command.type === "slash.execute" || command.type === "session.close") {
       if (!this.#options.modsBridge.isOnline(runtimeId)) return "unsupported";
-      if (!this.#options.modsBridge.hasCommand(runtimeId, command.name)) return "unsupported";
-      if (command.name === "quit") {
-        if (command.args.trim()) return "unsupported";
+      if (command.type === "slash.execute" && !this.#options.modsBridge.hasCommand(runtimeId, command.name)) return "unsupported";
+      if (command.type === "session.close" || command.name === "quit") {
+        if (command.type === "slash.execute" && command.args.trim()) return "unsupported";
         const generation = this.#options.modsBridge.generationOf(runtimeId);
         this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: true, status: "pending" });
-        void this.#options.modsBridge.quit(runtimeId).then(() => {
+        void this.#options.modsBridge.quit(runtimeId, command.type === "session.close" ? command : undefined).then(() => {
           this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: true, status: "success" });
           if (this.#options.modsBridge.generationOf(runtimeId) !== generation) return;
           this.#options.bridge.cancelRuntime(runtimeId, "owner_closed");

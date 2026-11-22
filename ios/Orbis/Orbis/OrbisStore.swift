@@ -1109,6 +1109,7 @@ final class HostConnection: ObservableObject {
     private var identity: DeviceIdentity?
     private var pairingTransport: RelayTransport?
     private var connectionGeneration = UUID()
+    private var runtimeCloseNegotiated = false { didSet { if oldValue != runtimeCloseNegotiated { homeViewRevision &+= 1 } } }
     private var historyGeneration = UUID()
     private var historyConnected = false
     private var projectionInputRevision = 0
@@ -1413,7 +1414,7 @@ final class HostConnection: ObservableObject {
         pairings = []
         guard selectedHostId == hostId else { return }
         importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
-        connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
+        connectionGeneration = UUID(); runtimeCloseNegotiated = false; filteredReady = nil; resetAgentEnablement()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
@@ -1437,7 +1438,7 @@ final class HostConnection: ObservableObject {
     func shutdown() {
         clearFeedbackScope()
         importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
-        connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
+        connectionGeneration = UUID(); runtimeCloseNegotiated = false; filteredReady = nil; resetAgentEnablement()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
@@ -1471,7 +1472,7 @@ final class HostConnection: ObservableObject {
         notificationDirectoryUpdates = 0; notificationOfflineRuntimes = []
         defaultSessionSpawnMode = "tui"
         importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
-        connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
+        connectionGeneration = UUID(); runtimeCloseNegotiated = false; filteredReady = nil; resetAgentEnablement()
         inboundTask?.cancel(); inboundTask = nil; incomingMessages = []; incomingBytes = 0
         admittedRuntimeSessions = [:]; admittedModelEpoch = nil; runtimeOwnership = [:]
         cancelPendingWork()
@@ -2717,6 +2718,10 @@ final class HostConnection: ObservableObject {
 
     @discardableResult
     func executeSlash(_ name: String, args: String = "", composerDraft: String? = nil) -> Bool {
+        if name == "quit", args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let runtime = selectedRuntime {
+            return closeRuntimes([runtime.runtimeId], cardOnly: false).contains(runtime.runtimeId)
+        }
+        guard name != SlashCommand.closeCapability else { return false }
         guard canSend, let runtime = selectedRuntime,
               let command = commands[runtime.runtimeId]?.first(where: { $0.name == name }),
               command.argument?.required != true || !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
@@ -2824,27 +2829,70 @@ final class HostConnection: ObservableObject {
 
     /// Close a home-list selection without changing the active conversation or its draft.
     func canCloseRuntime(_ id: String) -> Bool {
-        runtimeIndex[id]?.allowsRemoteClose(commands[id] ?? []) == true
+        runtimeIndex[id]?.allowsRemoteClose(commands[id] ?? [], negotiated: runtimeCloseNegotiated) == true
     }
 
-    func closeRuntimes(_ runtimeIds: Set<String>) -> Set<String> {
+    func closeImpact(_ id: String) -> RuntimeCloseImpact? {
+        guard let runtime = runtimeIndex[id] else { return nil }
+        let waiting = interactions[id]?.isEmpty == false
+        let hostQueued = queuedMessages[id]?.filter { ["accepted", "not_cancelable", "unconfirmed"].contains($0.state) }.map(\.queueId) ?? []
+        let localQueued = pendingSends.items.filter { item in
+            guard item.sessionId == runtime.sessionId, item.runtimeId == nil || item.runtimeId == id, !item.submissionConfirmed else { return false }
+            if case .failed = item.state { return false }
+            return true
+        }.map(\.messageId)
+        let queued = Set(hostQueued + localQueued).count
+        return RuntimeCloseImpact(runtime, negotiated: runtimeCloseNegotiated, waiting: waiting, queued: queued,
+            retrying: agentState.snapshots[id]?.domains["execution"]?.value["retry"]["phase"].string == "running")
+    }
+
+    private func closeTarget(_ runtime: RuntimeSummary) -> RuntimeClosePlan.Target? {
+        guard let session = runtime.sessionId, !session.isEmpty,
+              let command = runtime.remoteCloseCommand(commands[runtime.runtimeId] ?? [], negotiated: runtimeCloseNegotiated) else { return nil }
+        return .init(runtimeId: runtime.runtimeId, sessionId: session, agentKind: runtime.agentKind, closeGeneration: command.closeGeneration)
+    }
+
+    func closePlan(_ ids: Set<String>) -> RuntimeClosePlan {
+        RuntimeClosePlan(connectionGeneration: connectionGeneration, connection: ledger.connection, modelEpoch: authenticatedModelEpoch, negotiated: runtimeCloseNegotiated,
+            entries: runtimes.compactMap { runtime in
+                guard ids.contains(runtime.runtimeId), canCloseRuntime(runtime.runtimeId),
+                      let target = closeTarget(runtime), let impact = closeImpact(runtime.runtimeId) else { return nil }
+                return .init(target: target, title: displayName(runtime), impact: impact)
+            })
+    }
+
+    func closeRuntimes(_ runtimeIds: Set<String>, plan: RuntimeClosePlan? = nil, confirmed: Bool = false, cardOnly: Bool = true) -> Set<String> {
         guard connection == .secured else {
-            for id in runtimeIds { inlineFeedback(L10n.tr("关闭会话未发送：请先连接电脑。"), runtimeId: id, cardOnly: true) }; return []
+            for id in runtimeIds { inlineFeedback(L10n.tr("关闭会话未发送：请先连接电脑。"), runtimeId: id, cardOnly: cardOnly) }; return []
         }
         var submitted: Set<String> = []
         for runtime in runtimes where runtimeIds.contains(runtime.runtimeId) {
-            if let reason = runtime.remoteCloseBlockReason(commands[runtime.runtimeId] ?? []) {
+            let id = runtime.runtimeId
+            if let reason = runtime.remoteCloseBlockReason(commands[id] ?? [], negotiated: runtimeCloseNegotiated) {
                 agentState.subscribe(runtime: runtime, force: true)
-                inlineFeedback(reason.message, runtimeId: runtime.runtimeId, cardOnly: true)
+                inlineFeedback(reason.message, runtimeId: id, cardOnly: cardOnly)
                 continue
             }
-            if submitQuit(runtime.runtimeId) { submitted.insert(runtime.runtimeId) }
+            guard let target = closeTarget(runtime) else { continue }
+            let entry = plan?.entries.first(where: { $0.target == target })
+            if let plan {
+                guard plan.connectionGeneration == connectionGeneration, plan.connection == ledger.connection, plan.modelEpoch == authenticatedModelEpoch,
+                      plan.negotiated == runtimeCloseNegotiated, entry != nil else {
+                    inlineFeedback(L10n.tr("会话已变化，请重新确认关闭。"), runtimeId: id, cardOnly: cardOnly); continue
+                }
+            }
+            let consent = confirmed && entry?.impact.needsConfirmation == true
+            if closeImpact(id)?.needsConfirmation == true, !consent {
+                inlineFeedback(L10n.tr("会话活动已变化，请重新确认关闭。"), runtimeId: id, cardOnly: cardOnly); continue
+            }
+            if submitQuit(target, confirmed: consent) { submitted.insert(id) }
         }
         return submitted
     }
 
     /// ADR-0049 §7.5 `quit`：先记入账本、再写入通道，卡片随账本叠加立即隐藏。
-    private func submitQuit(_ runtimeId: String) -> Bool {
+    private func submitQuit(_ target: RuntimeClosePlan.Target, confirmed: Bool) -> Bool {
+        let runtimeId = target.runtimeId
         let commandId = UUID().uuidString
         let creation = ledger.create(opId: commandId, kind: OperationKinds.quit, target: OperationKinds.quitTarget(runtimeId),
                                      policy: OperationKinds.quitPolicy, basis: ledgerBasis(OperationKinds.runtimesDomain),
@@ -2855,7 +2903,12 @@ final class HostConnection: ObservableObject {
         case .duplicate, .full:
             inlineFeedback(L10n.tr("关闭会话未发送：待确认的操作过多，请稍后重试。"), runtimeId: runtimeId, cardOnly: true); return false
         }
-        guard sendCommand(runtimeId: runtimeId, commandId: commandId, command: ["type": "slash.execute", "name": "quit", "args": ""]) else {
+        var command: [String: Any] = ["type": "slash.execute", "name": "quit", "args": ""]
+        if runtimeCloseNegotiated {
+            command = ["type": "session.close", "sessionId": target.sessionId, "confirmed": confirmed]
+            command["closeGeneration"] = target.closeGeneration
+        }
+        guard sendCommand(runtimeId: runtimeId, commandId: commandId, command: command) else {
             ledger.remove(commandId)
             inlineFeedback(L10n.tr("关闭会话未发送：请连接电脑后重试。"), runtimeId: runtimeId, cardOnly: true); return false
         }
@@ -2876,6 +2929,7 @@ final class HostConnection: ObservableObject {
 
     /// 连接断开：已写入的操作统一转结果不明，旧连接上的核对读取作废（L4）。
     private func ledgerCloseConnection() {
+        runtimeCloseNegotiated = false
         guard ledgerConnectionOpen else { return }
         ledgerConnectionOpen = false; ledgerReads = [:]; ledgerFresh = []
         handleLedger(ledger.connectionLost())
@@ -3006,7 +3060,7 @@ final class HostConnection: ObservableObject {
                 }
                 // 批量归档同时被拒绝时写明数量（ADR-0049 §6.4）。
                 if let text = OperationKinds.message(for: op) { if case .archive(let sessionId, _, _) = op.payload { sessionOperationErrors[sessionId] = text }
-                    else if case .quit(let runtimeId) = op.payload { inlineFeedback(text, runtimeId: runtimeId, cardOnly: true) }
+                    else if case .quit(let runtimeId) = op.payload { inlineFeedback(text, runtimeId: runtimeId) }
                     else if case .queueCancel(let runtimeId, let queueId) = op.payload { queueErrors[runtimeId + "\u{0}" + queueId] = text; if queuedMessages[runtimeId]?.contains(where: { $0.queueId == queueId }) != true { inlineFeedback(text, runtimeId: runtimeId) } }
                     else if case .respond(let runtimeId, _, _) = op.payload { interactionErrors[runtimeId] = text } }
                 if OperationKinds.removesOnRejection(op) { ledger.remove(op.opId) }
@@ -3725,9 +3779,10 @@ final class HostConnection: ObservableObject {
             let supportsRender = features.contains(messageRenderFeature)
             let admittedOpenClaw = features.contains("agent.openclaw") && (message["deviceFeatures"] as? [String])?.contains("agent.openclaw") == true
             let admittedCodex = readyAdmitsCodexHistory(message)
+            let admittedClose = readyAdmitsRuntimeClose(message)
             let filtered = features.contains("device.features") && (message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw ||
                features.contains(Self.agentEnablementFeature) && !readyAdmitsAgentEnablement(message) ||
-               features.contains(codexUnifiedHistoryFeature) && !admittedCodex)
+               features.contains(codexUnifiedHistoryFeature) && !admittedCodex || features.contains(runtimeCloseFeature) && !admittedClose)
             if filtered, message["_orbisFilteredFallback"] == nil {
                 if filteredReady != nil { return }
                 let requested = deviceAgentFeatures(message)
@@ -3777,6 +3832,7 @@ final class HostConnection: ObservableObject {
             notifications.setConnection(selectedHost, connected: true)
             guard hostState.beginEpoch(message["modelEpoch"] as? String), agentState.beginEpoch(message["modelEpoch"] as? String) else { return }
             let modelEpoch = message["modelEpoch"] as? String
+            runtimeCloseNegotiated = admittedClose
             let hostRestarted = modelEpoch != nil && authenticatedModelEpoch != nil && modelEpoch != authenticatedModelEpoch
             if let modelEpoch { authenticatedModelEpoch = modelEpoch }
             importReady = (message["hostFeatures"] as? [String])?.contains("external-import.target-v1") == true

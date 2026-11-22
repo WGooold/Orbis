@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { AgentTaskInventorySchema, agentTasksAllowQuit, type AgentTaskInventory } from "@orbis/protocol";
+import { AgentTaskInventorySchema, agentTasksAllowQuit, RUNTIME_CLOSE_CAPABILITY, type AgentTaskInventory } from "@orbis/protocol";
 import type { ToolContentStore } from "@orbis/runtime-bridge";
 import {
   ChatMessageSchema,
@@ -212,10 +212,10 @@ export class ClaudeModsBridge {
   configDirs(): string[] { return [...new Set([...this.#sessions.values()].map(session => session.history.configDir))]; }
   capabilities(runtimeId: string): RuntimeCapabilities | undefined {
     const session = this.#sessions.get(runtimeId);
-    return session === undefined ? undefined : claudeCapabilities(session.state, session.process !== undefined && agentTasksAllowQuit(session.tasks));
+    return session === undefined ? undefined : this.#sessionCapabilities(session);
   }
   hasCommand(runtimeId: string, name: string): boolean {
-    return this.capabilities(runtimeId)?.commands.some(command => command.name === name) ?? false;
+    return name !== RUNTIME_CLOSE_CAPABILITY && (this.capabilities(runtimeId)?.commands.some(command => command.name === name) ?? false);
   }
   /** Claude reports compaction through Mods; it has no visible retry state. */
   activity(runtimeId: string): Extract<RuntimeEvent, { type: "execution.activity" }> | undefined {
@@ -374,6 +374,7 @@ export class ClaudeModsBridge {
     const busy = session.activeTurn !== undefined || session.compaction === "running";
     const commands: { commandId: string; command: ClaudeModsCommand }[] = [];
     for (const entry of session.commands.values()) {
+      if (session.closing !== undefined) break;
       if (entry.command.type === "user_message" && entry.command.delivery === "followUp" && busy && !entry.polled) {
         continue;
       }
@@ -403,7 +404,7 @@ export class ClaudeModsBridge {
 
   sendCommand(runtimeId: string, commandId: string, command: ClaudeModsCommand): ClaudeModsCommandResult {
     const session = this.#sessions.get(runtimeId);
-    if (session === undefined) return "offline";
+    if (session === undefined || session.closing !== undefined) return "offline";
     const previous = session.commands.get(commandId);
     if (previous !== undefined) return JSON.stringify(previous.command) === JSON.stringify(command) ? "accepted" : "id_conflict";
     if (command.type === "stop" && (session.activeTurn === undefined || session.pendingStopId !== undefined)) return "not_cancelable";
@@ -634,17 +635,24 @@ export class ClaudeModsBridge {
 
   generationOf(runtimeId: string): string | undefined { return this.#sessions.get(runtimeId)?.generation; }
 
-  /** Host-owned /quit: keep the row online until the exact native process has exited. */
-  async quit(runtimeId: string): Promise<void> {
+  /** Keep the row online until the exact native process exits. Confirmation waives activity, not identity. */
+  async quit(runtimeId: string, request?: { closeGeneration?: string | undefined; confirmed: boolean }): Promise<void> {
     const session = this.#sessions.get(runtimeId);
     if (session?.process === undefined) throw new Error("无法核对 Claude Code 进程，请更新插件并重新打开会话。");
-    if (!agentTasksAllowQuit(session.tasks) || Date.now() - session.tasksCheckedAt > 5_000) {
+    if (request && request.closeGeneration !== session.generation) throw new Error("会话已变化，请重新确认关闭。");
+    const tasksClear = () => agentTasksAllowQuit(session.tasks) && Date.now() - session.tasksCheckedAt <= 5_000;
+    const activityAllowsClose = () => request?.confirmed === true || (tasksClear() && (request === undefined ||
+      (session.runtime.status === "idle" && session.compaction !== "running" && session.commands.size === 0 &&
+        (this.#options.pendingInteractions?.(runtimeId) ?? 0) === 0)));
+    if (!activityAllowsClose()) {
+      if (request) throw new Error("会话活动已变化，请重新确认关闭。");
       throw new Error("请先在电脑结束子任务，待状态同步后再关闭会话。");
     }
     session.closing ??= this.#processControl.terminate(session.process, () => this.#sessions.get(runtimeId) === session &&
-      agentTasksAllowQuit(session.tasks) && Date.now() - session.tasksCheckedAt <= 5_000);
-    try { await session.closing; }
-    catch (error) { delete session.closing; throw error; }
+      activityAllowsClose());
+    const closing = session.closing;
+    try { await closing; }
+    catch (error) { if (session.closing === closing) delete session.closing; throw error; }
   }
 
   expireStale(now = Date.now(), leaseMs = 15_000): number {
@@ -673,7 +681,7 @@ export class ClaudeModsBridge {
     if (session === undefined) return;
     this.#options.onEvent?.(runtimeId, { type: "runtime.metadata", metadata: session.runtime });
     this.#options.onEvent?.(runtimeId, { type: "execution.tasks", tasks: session.tasks });
-    this.#options.onEvent?.(runtimeId, { type: "runtime.capabilities", capabilities: claudeCapabilities(session.state, session.process !== undefined && agentTasksAllowQuit(session.tasks)) });
+    this.#options.onEvent?.(runtimeId, { type: "runtime.capabilities", capabilities: this.#sessionCapabilities(session) });
     const delivery = this.deliverySnapshot(runtimeId);
     if (delivery !== undefined) this.#options.onEvent?.(runtimeId, delivery);
   }
@@ -761,8 +769,13 @@ export class ClaudeModsBridge {
     this.#options.onEvent?.(runtimeId, { type: "runtime.metadata", metadata: session.runtime });
   }
 
+  #sessionCapabilities(session: Session): RuntimeCapabilities {
+    return claudeCapabilities(session.state, session.process !== undefined && agentTasksAllowQuit(session.tasks),
+      session.process === undefined ? undefined : session.generation);
+  }
+
   #publishCapabilities(runtimeId: string, session: Session): void {
-    const capabilities = claudeCapabilities(session.state, session.process !== undefined && agentTasksAllowQuit(session.tasks));
+    const capabilities = this.#sessionCapabilities(session);
     const encoded = JSON.stringify(capabilities);
     if (encoded === session.published.capabilities) return;
     session.published.capabilities = encoded;
@@ -796,8 +809,9 @@ const HIDDEN_BUILTINS = new Set([
 const SOURCES: Record<string, RuntimeSlashCommand["source"]> = { builtin: "builtin", plugin: "extension", user: "prompt", mcp: "mcp" };
 
 /** The slash menu the phone can use: model and effort as choices, then what runs headless. */
-export function claudeCapabilities(state: ClaudeSessionState, canQuit = false): RuntimeCapabilities {
+export function claudeCapabilities(state: ClaudeSessionState, canQuit = false, closeGeneration?: string): RuntimeCapabilities {
   const commands: RuntimeSlashCommand[] = canQuit ? [{ name: "quit", description: "关闭这个 Claude Code 会话（保留历史）", source: "builtin" }] : [];
+  if (closeGeneration !== undefined) commands.push({ name: RUNTIME_CLOSE_CAPABILITY, source: "builtin", closeGeneration });
   const models = (state.modelOptions ?? []).filter(option => text(option, 256));
   if (models.length > 0) {
     commands.push({ name: "model", description: `切换模型${state.modelName === undefined ? "" : `（当前 ${state.modelName}）`}`, source: "builtin",

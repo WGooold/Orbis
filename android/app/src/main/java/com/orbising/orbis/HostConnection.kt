@@ -2430,6 +2430,8 @@ internal class HostConnection(
     }
 
     fun executeSlashCommand(name: String, args: String): String? {
+        // Quit must use the scoped close plan; an ordinary slash send cannot consume confirmation.
+        if (name == "quit" || name == RUNTIME_CLOSE_CAPABILITY) return null
         val runtimeId = mutableState.value.selectedRuntimeId
         if (runtimeId == null) {
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=no_runtime")
@@ -2536,21 +2538,37 @@ internal class HostConnection(
     }
 
     /** Home selections are routed explicitly, without opening a chat or changing its draft. */
-    fun closeRuntimes(runtimeIds: Set<String>): Set<String> {
+    internal fun closeRuntimes(runtimeIds: Set<String>, plan: RuntimeClosePlan? = null, confirmed: Boolean = false,
+                               fromChat: Boolean = false): Set<String> {
         val state = mutableState.value
+        fun failure(id: String, message: String) = updateState { current ->
+            if (fromChat && current.selectedRuntimeId == id) current.composerFailure(id, message) else current.closeTargetFailures(setOf(id), message)
+        }
         if (!state.e2eReady) {
             val message = L10n.tr("关闭会话未发送：请先连接电脑。")
-            updateState { current -> current.closeTargetFailures(runtimeIds, message) }
+            runtimeIds.forEach { failure(it, message) }
             return emptySet()
         }
         return runtimeIds.filterTo(mutableSetOf()) { runtimeId ->
-            if (runtimeId !in state.runtimes) return@filterTo false
-            if (!state.canCloseRuntime(runtimeId)) {
+            val current = mutableState.value
+            if (runtimeId !in current.runtimes || fromChat && current.selectedRuntimeId != runtimeId) return@filterTo false
+            if (!current.canCloseRuntime(runtimeId)) {
                 refreshAgentModel(runtimeId, force = true)
-                updateState { it.sessionFailure(runtimeId, L10n.tr("部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。")) }
+                failure(runtimeId, L10n.tr("部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。"))
                 return@filterTo false
             }
-            submitQuit(runtimeId)
+            val target = current.closeTarget(runtimeId) ?: return@filterTo false
+            val entry = plan?.entries?.firstOrNull { it.target == target }
+            if (!current.e2eReady || plan != null && (entry == null || !current.closeTargetIsCurrent(plan, target))) {
+                failure(runtimeId, L10n.tr("会话已变化，请重新确认关闭。"))
+                return@filterTo false
+            }
+            val consent = confirmed && entry?.impact?.needsConfirmation == true
+            if (current.closeImpact(runtimeId)?.needsConfirmation == true && !consent) {
+                failure(runtimeId, L10n.tr("会话活动已变化，请重新确认关闭。"))
+                return@filterTo false
+            }
+            submitQuit(target, consent, current.runtimeCloseNegotiated)
         }
     }
 
@@ -2567,7 +2585,8 @@ internal class HostConnection(
     }
 
     /** ADR-0049 §7.5 `quit`：先记入账本、再写入通道，卡片随账本叠加立即隐藏；结算全部交给账本。 */
-    private fun submitQuit(runtimeId: String): Boolean {
+    private fun submitQuit(target: RuntimeCloseTarget, confirmed: Boolean, negotiated: Boolean): Boolean {
+        val runtimeId = target.runtimeId
         val commandId = UUID.randomUUID().toString()
         var creation: LedgerCreation<LedgerPayload>? = null
         updateState { state ->
@@ -2583,7 +2602,9 @@ internal class HostConnection(
                 return false
             }
         }
-        if (relay.executeSlashCommand(runtimeId, "quit", "", commandId) == null) {
+        val sent = if (negotiated) relay.closeSession(target, confirmed, commandId)
+            else relay.executeSlashCommand(runtimeId, "quit", "", commandId)
+        if (sent == null) {
             updateState { it.copy(ledger = it.ledger.remove(commandId)).sessionFailure(runtimeId, L10n.tr("关闭会话未发送，请连接电脑后重试")) }
             return false
         }

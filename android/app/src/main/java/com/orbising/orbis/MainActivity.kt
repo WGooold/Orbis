@@ -939,7 +939,7 @@ internal fun RuntimeListScreen(
     state: RemoteState,
     hosts: List<HostSnapshot>,
     onOpenRuntime: (String, String) -> Unit,
-    onCloseRuntimes: (String, Set<String>) -> Set<String>,
+    onCloseRuntimes: (String, Set<String>, RuntimeClosePlan?, Boolean) -> Set<String>,
     onOpenDownloads: () -> Unit,
     onUnpairHost: (String) -> Unit = {},
     onOpenSession: (String, String) -> Unit = { _, _ -> },
@@ -1004,12 +1004,28 @@ internal fun RuntimeListScreen(
         activeHost?.let { host -> state.homeCards.map { HostRuntimeRow(host.hostId, host.name, it) } }.orEmpty()
     }
     var departing by remember(activeHostId) { mutableStateOf(emptyMap<String, DepartingHomeRow>()) }
-    fun submitClose(hostId: String, ids: Set<String>): Set<String> {
-        val submitted = onCloseRuntimes(hostId, ids)
+    var pendingClose by remember(activeHostId, state.ledger.connection, state.agentModelEpoch, state.e2eReady) { mutableStateOf<RuntimeClosePlan?>(null) }
+    fun submitClose(hostId: String, ids: Set<String>, plan: RuntimeClosePlan?, confirmed: Boolean): Set<String> {
+        val submitted = onCloseRuntimes(hostId, ids, plan, confirmed)
         departing = departing + latestRuntimes.mapIndexedNotNull { index, row ->
             if (row.runtime.runtimeId in submitted) row.runtime.runtimeId to DepartingHomeRow(row, index) else null
         }
         return submitted
+    }
+    fun requestClose(hostId: String, ids: Set<String>): Set<String> {
+        val plan = state.closePlan(ids)
+        if (plan?.requiresConfirmation == true) {
+            pendingClose = plan
+            return emptySet()
+        }
+        return submitClose(hostId, ids, plan, false)
+    }
+    val currentRequestClose by rememberUpdatedState(::requestClose)
+    pendingClose?.let { plan ->
+        RuntimeCloseDialog(plan, onDismiss = { pendingClose = null }) {
+            pendingClose = null
+            selectedRuntimeIds -= submitClose(plan.hostId, plan.runtimeIds, plan, true)
+        }
     }
     val presentedRuntimes = remember(latestRuntimes, departing) {
         latestRuntimes.toMutableList().also { rows ->
@@ -1021,7 +1037,7 @@ internal fun RuntimeListScreen(
     val latestHomeRows by rememberUpdatedState(latestRuntimes)
     val visibleRuntimes = rememberViewportItems(presentedRuntimes, homeListState, activeHostId)
     val visibleIds = remember(visibleRuntimes) { visibleRuntimes.map { it.runtime.runtimeId }.toSet() }
-    val closableIds = remember(visibleRuntimes, state.runtimes, state.capabilities) {
+    val closableIds = remember(visibleRuntimes, state.runtimes, state.capabilities, state.runtimeCloseNegotiated) {
         visibleRuntimes.filter { state.canCloseRuntime(it.runtime.runtimeId) }.map { it.runtime.runtimeId }.toSet()
     }
     val selectedIds = selectedRuntimeIds.intersect(visibleIds).intersect(closableIds)
@@ -1082,7 +1098,7 @@ internal fun RuntimeListScreen(
                                     activeHostId?.let { hostId ->
                                         val currentIds = visibleRuntimes.filter { state.homeCardIsCurrent(it.card) && state.canCloseRuntime(it.runtime.runtimeId) }
                                             .map { it.runtime.runtimeId }.toSet()
-                                        selectedRuntimeIds = selectedIds - submitClose(hostId, selectedIds.intersect(currentIds))
+                                        selectedRuntimeIds = selectedIds - requestClose(hostId, selectedIds.intersect(currentIds))
                                     }
                                 },
                                 enabled = state.e2eReady,
@@ -1280,7 +1296,14 @@ internal fun RuntimeListScreen(
                                                         animationSpec = tween(InteractionMotion.duration(InteractionMotion.State)),
                                                         label = "close-threshold",
                                                     ) { armed ->
-                                                        Text(if (armed) L10n.tr("松手关闭") else L10n.tr("关闭"),
+                                                        val review = armed && departure == null && state.closeImpact(runtime.runtimeId)?.needsConfirmation == true
+                                                        Text(when {
+                                                            armed && review -> L10n.tr("松手确认")
+                                                            armed && runtime.agentKind == "codexDesktop" -> L10n.tr("松手退出")
+                                                            armed -> L10n.tr("松手关闭")
+                                                            runtime.agentKind == "codexDesktop" -> L10n.tr("退出视图")
+                                                            else -> L10n.tr("关闭")
+                                                        },
                                                             modifier = Modifier.fillMaxWidth(), color = closeColor,
                                                             style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold,
                                                             maxLines = 1, softWrap = false, overflow = TextOverflow.Clip, textAlign = TextAlign.End)
@@ -1310,13 +1333,13 @@ internal fun RuntimeListScreen(
                                             .testTag("home-runtime-${runtime.runtimeId}")
                                             .semantics { selected = runtime.runtimeId in selectedIds }
                                             .immediatePressFeedback(!selecting && cardCurrent) { touchPressed = it }
-                                            .pointerInput(selecting, runtime.runtimeId, cardWidth, canClose) {
+                                            .pointerInput(selecting, row.hostId, runtime.runtimeId, runtime.sessionId, runtime.agentKind, cardWidth, canClose) {
                                                 if (!selecting && canClose) {
                                                     detectHomeCloseDragGestures(
                                                         onDragEnd = {
                                                             val shouldClose = closeThreshold > 0f && closeArmed && swipeOffset >= closeThreshold * 0.96f
                                                             // 提交成功后卡片从松手位置继续向左离开，不先弹回再消失。
-                                                            val closing = shouldClose && currentCanClose && submitClose(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
+                                                            val closing = shouldClose && currentCanClose && currentRequestClose(row.hostId, setOf(runtime.runtimeId)).isNotEmpty()
                                                             if (!closing) {
                                                                 swipeOffset = 0f; closeArmed = false
                                                                 swipeScope.launch { swipeAnim.animateTo(0f, OrbisMotion.drag()) }
@@ -1895,6 +1918,14 @@ internal fun ChatScreen(
     var pendingMessageCommandId by remember(runtimeId) { mutableStateOf<String?>(null) }
     var pendingMessageText by remember(runtimeId) { mutableStateOf("") }
     var showDeliveryChoices by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    var pendingClose by remember(state.hostId, runtimeId, sessionId, state.ledger.connection, state.agentModelEpoch, state.e2eReady) { mutableStateOf<RuntimeClosePlan?>(null) }
+    val slashCommands = state.capabilities[runtimeId]?.commands.orEmpty().visibleSlashCommands()
+    pendingClose?.let { plan ->
+        RuntimeCloseDialog(plan, onDismiss = { pendingClose = null }) {
+            pendingClose = null
+            if (model.closeSessionFromChat(plan.hostId, runtimeId, plan, confirmed = true)) actionHaptic()
+        }
+    }
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val voiceInput = remember(context, runtimeId, sessionId) { VoiceInputController(context) }
@@ -2519,7 +2550,7 @@ internal fun ChatScreen(
                     }
                     if (!openClawComposer) SlashCommandPicker(
                         input = input,
-                        commands = state.capabilities[runtimeId]?.commands.orEmpty(),
+                        commands = slashCommands,
                         selectedCommandName = selectedSlashCommandName,
                         // 命令词表的 source 在 Pi 与 Codex 下都叫 "builtin"，但徽标文案不同：
                         // Codex 的命令来自 app-server，标成 "Pi" 会让用户以为点错了后端。
@@ -2718,7 +2749,7 @@ internal fun ChatScreen(
                         ComposerAction.Abort -> runtime != null
                         ComposerAction.Send -> (runtime != null || launchOpen) && (!openClawComposer || runtime?.status != "running") && canSubmitInput(
                             input,
-                            state.capabilities[runtimeId]?.commands.orEmpty(),
+                            slashCommands,
                             selectedSlashCommandName,
                             hasAttachments = hasComposerAttachments,
                         ) && pendingMessageCommandId == null &&
@@ -2740,13 +2771,18 @@ internal fun ChatScreen(
                                     }
 
                                     ComposerAction.Send -> {
-                                        val selectedCommand = state.capabilities[runtimeId]?.commands
-                                            ?.find { it.name == selectedSlashCommandName }
+                                        val selectedCommand = slashCommands.find { it.name == selectedSlashCommandName }
                                         val slash = parseSlashInvocation(input)
                                         if (selectedCommand != null && slash?.first == selectedCommand.name) {
                                             showDeliveryChoices = false
                                             // ADR-0049 §6.1：产生对话的 Slash 与消息一样，气泡立即出现、输入框清空。
-                                            if (model.producesMessage(selectedCommand, runtime)) {
+                                            if (selectedCommand.name == "quit" && slash.second.isBlank()) {
+                                                val plan = state.closePlan(setOf(runtimeId))
+                                                if (plan?.requiresConfirmation == true) pendingClose = plan
+                                                else state.hostId?.let { host ->
+                                                    if (model.closeSessionFromChat(host, runtimeId, plan, confirmed = false)) actionHaptic()
+                                                }
+                                            } else if (model.producesMessage(selectedCommand, runtime)) {
                                                 submitMessage(executeSlash(selectedCommand.name, slash.second))
                                             } else if (OperationKinds.isConfigSetting(selectedCommand.name) && slash.second.isNotBlank()) {
                                                 // Config owns its receipt and confirmation in the ledger. It can also

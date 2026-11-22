@@ -44,7 +44,7 @@ class HomeViewportInstrumentedTest {
             OrbisTheme(darkTheme = darkTheme) {
                 RuntimeListScreen(state.value, listOf(HostSnapshot(pairing, state.value)),
                     onOpenRuntime = { _, id -> opened += id },
-                    onCloseRuntimes = { _, ids ->
+                    onCloseRuntimes = { _, ids, _, _ ->
                         if (closeAccepted) {
                             state.value = state.value.copy(
                                 runtimes = state.value.runtimes - ids,

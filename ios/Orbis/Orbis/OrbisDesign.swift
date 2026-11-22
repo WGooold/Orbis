@@ -1575,6 +1575,12 @@ final class OrbisOverlay: ObservableObject {
         menu = nil
         dialog = DialogRequest(title: title, message: message, actions: actions.isEmpty ? [OrbisDialogAction(title: L10n.tr("知道了"), role: .cancel)] : actions)
     }
+    func confirmRuntimeClose(_ plan: RuntimeClosePlan, perform: @escaping () -> Void) {
+        showDialog(plan.dialogTitle, message: plan.message, actions: [
+            OrbisDialogAction(title: L10n.tr("取消"), role: .cancel),
+            OrbisDialogAction(title: plan.actionTitle, role: plan.viewOnly ? .normal : .destructive, action: perform),
+        ])
+    }
     func dismissMenu() { menu = nil }
     func dismissMenu(owner: String) { if menu?.owner == owner { menu = nil } }
     func moveMenu(owner: String, to frame: CGRect) {

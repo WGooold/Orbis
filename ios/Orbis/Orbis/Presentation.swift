@@ -228,8 +228,15 @@ func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
         "agent.enablement.v1",
         "state.compact-bootstrap.v1",
         "claude.send-now.v1",
+        runtimeCloseFeature,
         codexUnifiedHistoryFeature,
     ].filter { advertised.contains($0) }
+}
+
+let runtimeCloseFeature = "runtime.close.v1"
+func readyAdmitsRuntimeClose(_ ready: [String: Any]) -> Bool {
+    (ready["hostFeatures"] as? [String] ?? []).contains(runtimeCloseFeature) &&
+        (ready["deviceFeatures"] as? [String] ?? []).contains(runtimeCloseFeature)
 }
 
 let codexUnifiedHistoryFeature = "codex.history-unified.v1"

@@ -143,8 +143,8 @@ data class RuntimeSummary(
             if (presentationStatus == "background_commands") return L10n.tr("空闲 · {0}", summary)
             return summary
         }
-    fun allowsRemoteClose(commands: List<RuntimeSlashCommand>): Boolean =
-        (backgroundTasks?.takeIf { it.visible }?.allowsQuit != false) && commands.any { it.name == "quit" && it.argument?.required != true }
+    fun allowsRemoteClose(commands: List<RuntimeSlashCommand>, negotiated: Boolean = false): Boolean =
+        (negotiated || backgroundTasks?.takeIf { it.visible }?.allowsQuit != false) && remoteCloseCommand(commands, negotiated) != null
 
     /**
      * 这条 Runtime 是不是 Codex 会话。codex 的对外 runtimeId 形如 `codex:<threadId>`
@@ -234,7 +234,7 @@ data class BackgroundTaskInventory(val availability: String, val items: List<Bac
 }
 
 internal fun RemoteState.canCloseRuntime(id: String): Boolean =
-    runtimes[id]?.allowsRemoteClose(capabilities[id]?.commands.orEmpty()) == true
+    runtimes[id]?.allowsRemoteClose(capabilities[id]?.commands.orEmpty(), runtimeCloseNegotiated) == true
 
 @Serializable
 data class RemoteArtifact(
@@ -384,6 +384,7 @@ data class RuntimeSlashCommand(
     val description: String? = null,
     val source: String,
     val argument: RuntimeSlashCommandArgument? = null,
+    val closeGeneration: String? = null,
 )
 
 @Serializable
@@ -540,6 +541,8 @@ data class SessionActivationInfo(
 data class AgentEnablementRow(val kind: String, val label: String, val enabled: Boolean)
 
 data class RemoteState(
+    val runtimeCloseNegotiated: Boolean = false,
+    internal val homeCloseImpacts: Map<String, RuntimeCloseImpact>? = null,
     val agentEnablementAvailable: Boolean = false,
     val agentEnablementRows: List<AgentEnablementRow> = emptyList(),
     val agentEnablementRevision: Long? = null,
@@ -1914,6 +1917,7 @@ internal fun RemoteState.markReconnecting(): RemoteState {
         currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
         e2eReady = false,
+        runtimeCloseNegotiated = false,
         sessionBrowse = sessionBrowse?.takeUnless { it.forDownload && it.isLoading },
         agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
         agentEnablementPending = null, agentEnablementFailed = false,
@@ -2251,6 +2255,7 @@ class RelayReducer(
                     kimiCodeSupported = kimiCodeSupported,
                     openClawNegotiated = openClawNegotiated,
                     unifiedCodexHistory = unifiedCodexHistory,
+                    runtimeCloseNegotiated = readyAdmitsRuntimeClose(message),
                     prefersAutoSessionSpawn = (message["hostFeatures"] as? JsonArray)?.contains(JsonPrimitive("session.spawn.auto")) == true,
                     sessions = sessions,
                     sessionGraphs = state.sessionGraphs,
@@ -2456,6 +2461,7 @@ class RelayReducer(
                 val interrupted = state.pendingCommands.keys
                 state.copy(
                     e2eReady = false,
+                    runtimeCloseNegotiated = false,
                     agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
                     agentEnablementPending = null, agentEnablementFailed = false,
                     homeDirectoryReceived = false,

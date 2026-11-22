@@ -38,7 +38,7 @@ class SettingsEntryInstrumentedTest {
         compose.setContent {
             OrbisTheme {
                 RuntimeListScreen(state, listOf(HostSnapshot(pairing("host", "Work"), state), HostSnapshot(pairing("other", "Home"), state.copy(hostId = "other"))),
-                    onOpenRuntime = { _, _ -> }, onCloseRuntimes = { _, _ -> emptySet() }, onOpenDownloads = { downloads++ }, onUnpairHost = {},
+                    onOpenRuntime = { _, _ -> }, onCloseRuntimes = { _, _, _, _ -> emptySet() }, onOpenDownloads = { downloads++ }, onUnpairHost = {},
                     onOpenSession = { _, _ -> }, onOpenHistory = { _, _ -> }, onNewSession = { _, _ -> },
                     onSetArchived = { _, _, _ -> }, onSelectHost = {}, onAddHost = {}, onOpenStatus = { settings++ }, onRequestProviders = {})
             }

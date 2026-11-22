@@ -26,13 +26,25 @@ internal class HomeUiWorker {
             old.state.runtimes !== source.runtimes || old.state.agentStateReads !== source.agentStateReads ||
             old.state.agentStateSnapshots !== source.agentStateSnapshots) sync = source.homeSyncStatus
         syncInput = HomePresentationRequest(source, language)
+        // Publish only the facts needed by the close dialog, never a conversation or an outbox.
+        val closeImpacts = source.runtimes.keys.associateWith { id ->
+            val previousState = old?.state
+            val before = previousState?.conversations?.get(id)
+            val after = source.conversations[id]
+            val reuse = previousState != null && old.language == language && previousState.hostId == source.hostId &&
+                previousState.runtimeCloseNegotiated == source.runtimeCloseNegotiated && previousState.runtimes[id] == source.runtimes[id] &&
+                previousState.agentStateSnapshots === source.agentStateSnapshots && previousState.pendingSends === source.pendingSends &&
+                before?.queuedMessages === after?.queuedMessages && before?.interactions === after?.interactions
+            (if (reuse) previous?.state?.homeCloseImpacts?.get(id) else null) ?: checkNotNull(source.closeImpact(id))
+        }
         val state = RemoteState(hostId = source.hostId, hostName = source.hostName,
             connection = source.connection, e2eReady = source.e2eReady, path = source.path,
+            runtimeCloseNegotiated = source.runtimeCloseNegotiated, homeCloseImpacts = closeImpacts, agentModelEpoch = source.agentModelEpoch,
             runtimes = source.runtimes, sessions = source.sessions, homeSnapshot = source.homeSnapshot?.map { card -> card.copy(error = source.sessionOperationErrors[card.runtime.runtimeId]) },
             sessionOperationErrors = source.sessionOperationErrors, sessionListError = source.sessionListError,
             catalogQuery = source.catalogQuery,
             capabilities = source.capabilities, currentProviders = source.currentProviders,
-            sessionActivateRequests = source.sessionActivateRequests, ledger = OperationLedger(operations = source.ledger.operations.filter {
+            sessionActivateRequests = source.sessionActivateRequests, ledger = OperationLedger(connection = source.ledger.connection, operations = source.ledger.operations.filter {
                 it.payload is LedgerPayload.Archive || it.payload is LedgerPayload.Quit
             }))
         val menu = hosts.map { host -> HostSnapshot(host.pairing,

@@ -664,6 +664,19 @@ struct ChatComposerView: View, Equatable {
     }
     private func submit(delivery: String? = nil) {
         guard actions.isCurrent, canSubmit else { return }
+        if slash, let command, command.name == "quit", commandArguments(command).isEmpty {
+            let id = actions.runtimeId
+            let plan = actions.connection.closePlan([id])
+            let close: (Bool) -> Void = { confirmed in
+                guard actions.isCurrent else { return }
+                if actions.connection.closeRuntimes([id], plan: plan, confirmed: confirmed, cardOnly: false).contains(id) {
+                    OrbisHaptics.commit()
+                }
+            }
+            if plan.requiresConfirmation { overlay.confirmRuntimeClose(plan) { close(true) } }
+            else { close(false) }
+            return
+        }
         let text = currentDraft
         let existing = Set(actions.pendingSends.items.map(\.messageId))
         let accepted: Bool

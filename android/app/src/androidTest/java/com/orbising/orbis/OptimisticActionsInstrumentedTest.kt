@@ -108,7 +108,7 @@ class OptimisticActionsInstrumentedTest {
                 RuntimeListScreen(state.value.withReadyHomeFixture(), listOf(HostSnapshot(pairing, state.value.withReadyHomeFixture())),
                     onOpenRuntime = { _, _ -> },
                     // Mirrors HostConnection.closeRuntimes: the command is written, the Host has not answered.
-                    onCloseRuntimes = { _, ids ->
+                    onCloseRuntimes = { _, ids, _, _ ->
                         state.value = ids.fold(state.value) { current, id ->
                             current.createQuit("quit-$id", id, 0).first.ledgerWritten("quit-$id", 0)
                         }

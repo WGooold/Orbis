@@ -545,8 +545,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun executeSlashCommand(name: String, args: String): String? =
         active()?.executeSlashCommand(name, args)
 
-    fun closeRuntimesOn(hostId: String, runtimeIds: Set<String>): Set<String> =
-        connectionFor(hostId)?.closeRuntimes(runtimeIds).orEmpty()
+    internal fun closeRuntimesOn(hostId: String, runtimeIds: Set<String>, plan: RuntimeClosePlan?, confirmed: Boolean): Set<String> =
+        if (activeHostId.value == hostId) connectionFor(hostId)?.closeRuntimes(runtimeIds, plan, confirmed).orEmpty() else emptySet()
+
+    internal fun closeSessionFromChat(hostId: String, runtimeId: String, plan: RuntimeClosePlan?, confirmed: Boolean): Boolean =
+        activeHostId.value == hostId && connectionFor(hostId)?.closeRuntimes(setOf(runtimeId), plan, confirmed, fromChat = true)?.contains(runtimeId) == true
 
     fun updatePermissions(settingId: String, value: String): String? =
         active()?.updatePermissions(settingId, value)
