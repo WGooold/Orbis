@@ -1,46 +1,42 @@
 /**
- * Orbis 包装器在 Host 这一侧的接线：找到它、用它拉起桌面版、读它发布的端点。
+ * Host side of the Codex Desktop wrapper (ADR-0022, ADR-0096): stage the entry Codex runs through
+ * `CODEX_CLI_PATH`, register it, and open the registered application.
  *
- * 包装器本体是 `codex-launcher.exe` + `codex-desktop-wrapper.js`（随 Host 运行时
- * 一起分发）。通过用户级 `CODEX_CLI_PATH` 接入包装器，GUI 使用 Windows 注册的
- * 应用标识启动，保留正式图标和不依赖安装版本目录的任务栏快捷方式。
+ * Opening Codex never depends on Orbis: whenever the wrapper cannot be prepared or registered, Host
+ * opens Codex natively and records why it is not attached.
  *
- * macOS 不分发 launcher：暂存时生成一段 sh 脚本（见 `renderMacCodexLauncher`），
- * 它直接用运行 Host 的那个 node 跑包装器。
+ * Windows ships `codex-launcher.exe`; it and node stay resident for the whole Desktop session, so both
+ * are staged outside the install directory and a stub forwards to the installed implementation. macOS
+ * can replace files held open by running processes, so Host only generates a launcher that executes the
+ * installed node and wrapper directly.
  */
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { launchCodexDesktopApp } from "./codex-desktop-app.js";
-import { renderMacCodexLauncher } from "./codex-desktop-macos.js";
-import { ensureCodexDesktopEntry, readWindowsCodexDesktopEntry, suspendCodexDesktopEntry } from "./codex-shim-install.js";
-import type { DesktopRefreshEndpoint } from "./codex-desktop-refresh-bridge.js";
 import { windowsDesktopCliCandidates } from "./codex-desktop-cli.js";
+import { launcherEndpoint, macDesktopCliCandidates, readLaunchdEnvironment, renderMacCodexLauncher } from "./codex-desktop-macos.js";
+import { desktopDigestCachePath, markDesktopRecoveryRetry, nativeDesktopEnvironment, readDesktopRecoveryPhase, recordDesktopStartupFailure, recordDesktopUnattached, recoverNativeDesktop } from "./codex-desktop-recovery.js";
 import { selectStartupCli, startupProbeArgs } from "./codex-desktop-startup.js";
-import { desktopDigestCachePath, markDesktopRecoveryRetry, nativeDesktopEnvironment, readDesktopRecoveryReason, recoverNativeDesktop } from "./codex-desktop-recovery.js";
+import { CODEX_DESKTOP_ENTRY_NAME, ensureCodexDesktopEntry, looksLikeOrbisWrapperEntry, readWindowsCodexDesktopEntry, suspendCodexDesktopEntry } from "./codex-shim-install.js";
+
+export { codexDesktopEndpointPath, readCodexDesktopEndpoint, type CodexDesktopEndpoint } from "./codex-desktop-endpoint.js";
 
 export type CodexDesktopWrapper = {
-  /** 桌面版要启动的 CLI（我们的包装器，不是真 codex）。 */
+  /** What Codex runs as its CLI (the Orbis launcher, not the real codex). */
   launcher: string;
-  /** 跑包装器脚本的 node。 */
+  /** Node that runs the wrapper script. */
   node: string;
-  /** 包装器脚本（`codex-desktop-wrapper.js`）。 */
+  /** `codex-desktop-wrapper.js`. */
   script: string;
 };
 
-/** 端点描述文件的位置：Host 状态目录下的固定名字，包装器与 Host 必须一致。 */
-export function codexDesktopEndpointPath(stateDir: string): string {
-  return join(stateDir, "codex-desktop-endpoint.json");
-}
-
 /**
- * 包装器运行时的落地目录：**必须在 Host 安装目录之外**。
- *
- * 桌面版一启动，launcher 与 node 就整个会话期常驻，于是它们会被锁住；如果它们就住在
- * Host 的 runtime 里，Host 升级时安装器替换不掉那两个文件（用户会看到“文件被占用”）。
+ * Where the staged entry lives: always outside the Host install directory, because Windows locks the
+ * launcher and node for the whole Desktop session and a Host update could not replace them.
  */
 export function codexWrapperRoot(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
   const explicit = env.ORBIS_CODEX_WRAPPER_ROOT?.trim();
@@ -49,10 +45,7 @@ export function codexWrapperRoot(env: NodeJS.ProcessEnv = process.env, platform:
   return join(env.LOCALAPPDATA ?? homedir(), "Orbis", "wrapper");
 }
 
-/**
- * 已复制过的源文件身份（大小 + mtime）。用它而不是比较目标 mtime：`utimes` 在 Windows 上
- * 会被截断到更粗的粒度，拷完再比 mtime 永远不相等，结果就是每次拉起桌面版都重拷 80MB+。
- */
+/** Copied-source identity (size + mtime); Windows truncates copied mtimes, so the target cannot be compared. */
 type WrapperStamp = Record<string, { size: number; mtimeMs: number }>;
 const WINDOWS_STUB_MARKER = "// Orbis Codex Desktop bootstrap (Windows)";
 const ENDPOINT_DEFAULT = "process.env.ORBIS_CODEX_DESKTOP_ENDPOINT ??= ";
@@ -71,35 +64,38 @@ function checkWindowsWrapperFiles(wrapper: CodexDesktopWrapper): void {
   }
 }
 
-/** The registered Windows launcher can read the stub concurrently with Host staging. */
-function replaceWindowsStub(path: string, content: string): void {
+/** Codex may read the staged launcher or stub while Host replaces it. */
+function replaceStagedFile(path: string, content: string, mode = 0o644): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    writeFileSync(temporary, content, { flag: "wx" });
+    writeFileSync(temporary, content, { flag: "wx", mode });
     renameSync(temporary, path);
   } finally {
     try { rmSync(temporary, { force: true }); } catch { /* Preserve the original staging error. */ }
   }
 }
 
+/** Whether a path lies in a directory (absolute, separator- and case-insensitive). */
+function isInsideDirectory(path: string, directory: string): boolean {
+  const target = join(directory).replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase();
+  const candidate = join(path).replaceAll("/", "\\").toLowerCase();
+  return candidate === target || candidate.startsWith(`${target}\\`);
+}
+
 /**
- * 把包装器运行时搬到安装目录之外。
- *
- * 只搬**会被锁住**的那两个文件：launcher 与 node 在整个桌面版会话期间常驻（所以如果它们
- * 住在 Host 安装目录里，升级就替换不掉）；而 `codex-desktop-wrapper.js` 与它的兄弟模块只
- * 在启动时被读一次，文件并不会被持着，所以它们可以留在安装目录里，永远是最新的。
- *
- * 布局保持与打包 runtime 一致（`bin/` + `node/` + `packages/host/dist/`），并在脚本位置上
- * 放一个转发到真实实现的 stub：launcher 的“相对自身解析”回退因此仍然能用（用户自己带
- * 持久环境变量启动桌面版的场景）。
+ * Stage the entry Codex runs. Windows copies only the two files Codex keeps locked (launcher and node)
+ * and writes a stub that forwards to the installed implementation; macOS generates the launcher only.
  */
 export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrapperRoot(), endpointPath?: string,
   platform: NodeJS.Platform = process.platform): CodexDesktopWrapper {
-  if (platform === "darwin") return stageMacCodexWrapper(wrapper, root, endpointPath);
+  return platform === "darwin" ? stageMacCodexWrapper(wrapper, root, endpointPath) : stageWindowsCodexWrapper(wrapper, root, endpointPath);
+}
+
+function stageWindowsCodexWrapper(wrapper: CodexDesktopWrapper, root: string, endpointPath?: string): CodexDesktopWrapper {
   const staged = windowsStagedWrapper(root);
   if (isInsideDirectory(wrapper.launcher, root)) {
-    // A staged launcher is also a valid source for its own binary files, never for its stub.
+    // A staged launcher is a valid source for its own binaries, never for its stub.
     checkWindowsWrapperFiles(staged);
     if (!readFileSync(staged.script, "utf8").startsWith(WINDOWS_STUB_MARKER + "\n")) {
       throw new Error("Codex 包装器必须从 Host 安装目录重新暂存");
@@ -118,17 +114,17 @@ export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrap
     ["launcher", wrapper.launcher, staged.launcher],
     ["node", wrapper.node, staged.node],
   ];
-  for (const [key, source, target] of copies) {
-    const from = statSync(source, { throwIfNoEntry: false });
-    if (from === undefined) continue;
+  for (const [key, from, target] of copies) {
+    const info = statSync(from, { throwIfNoEntry: false });
+    if (info === undefined) continue;
     const known = stamp[key];
-    if (known !== undefined && known.size === from.size && known.mtimeMs === from.mtimeMs && existsSync(target)) continue;
+    if (known !== undefined && known.size === info.size && known.mtimeMs === info.mtimeMs && existsSync(target)) continue;
     try {
       mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(source, target);
-      next[key] = { size: from.size, mtimeMs: from.mtimeMs };
+      copyFileSync(from, target);
+      next[key] = { size: info.size, mtimeMs: info.mtimeMs };
     } catch {
-      // 目标可能正被运行中的桌面版占用：本次不记身份，下次启动再试。
+      // A running Desktop may hold the target open: keep the old copy and retry next time.
     }
   }
   const known = stamp.script;
@@ -136,7 +132,7 @@ export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrap
   try { currentStub = readFileSync(staged.script, "utf8"); } catch { /* First staging or unreadable entry. */ }
   const stub = windowsWrapperStub(wrapper.script, endpointPath ?? savedEndpointDefault(currentStub));
   if (currentStub !== stub || known === undefined || known.size !== source.size || known.mtimeMs !== source.mtimeMs) {
-    replaceWindowsStub(staged.script, stub);
+    replaceStagedFile(staged.script, stub);
   }
   checkWindowsWrapperFiles(staged);
   next.script = { size: source.size, mtimeMs: source.mtimeMs };
@@ -146,7 +142,7 @@ export function stageCodexWrapper(wrapper: CodexDesktopWrapper, root = codexWrap
     if (entry !== undefined) merged[key] = entry;
   }
   try { writeFileSync(stampPath, JSON.stringify(merged)); }
-  catch { /* 写不了只影响下次是否重拷，不影响能不能用 */ }
+  catch { /* Only affects whether the next staging copies again. */ }
   return staged;
 }
 
@@ -158,65 +154,6 @@ function savedEndpointDefault(stub: string | undefined): string | undefined {
     const value: unknown = JSON.parse(line.slice(ENDPOINT_DEFAULT.length, -1));
     return typeof value === "string" ? value : undefined;
   } catch { return undefined; }
-}
-
-/** CODEX-DESKTOP-BOOTSTRAP-01: the installer only refreshes a previously registered staged entry. */
-export async function repairWindowsCodexDesktopEntry(wrapper: CodexDesktopWrapper | undefined, root = codexWrapperRoot()): Promise<void> {
-  const current = await readWindowsCodexDesktopEntry();
-  if (current === undefined || resolve(current.trim()).toLowerCase() !== resolve(windowsStagedWrapper(root).launcher).toLowerCase()) return;
-  try {
-    if (wrapper === undefined) throw new Error("Host 安装目录缺少 Codex 包装器");
-    stageCodexWrapper(wrapper, root, undefined, "win32");
-  } catch (error) {
-    // Do not leave the old broken override active when an upgrade cannot refresh it.
-    await suspendCodexDesktopEntry(current.trim());
-    throw error;
-  }
-}
-
-/**
- * macOS 的暂存：文件被运行中的进程打开时照样能替换，所以不复制 node，也不需要身份戳；
- * 只生成两样东西——转发到安装目录实现的 stub，以及桌面版经 `CODEX_CLI_PATH` 执行的
- * sh launcher。内容不变就不重写，避免每次拉起都改动 mtime。
- */
-function stageMacCodexWrapper(wrapper: CodexDesktopWrapper, root: string, endpointPath?: string): CodexDesktopWrapper {
-  const script = isInsideDirectory(wrapper.script, root) ? wrapper.script : join(root, "packages", "host", "dist", "codex-desktop-wrapper.js");
-  const staged: CodexDesktopWrapper = { launcher: join(root, "bin", "codex-launcher"), node: wrapper.node, script };
-  const writeIfChanged = (path: string, content: string, mode: number) => {
-    let current: string | undefined;
-    try { current = readFileSync(path, "utf8"); } catch { /* 首次暂存 */ }
-    if (current !== content) {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, content, { mode });
-    }
-    chmodSync(path, mode);
-  };
-  try {
-    if (script !== wrapper.script) writeIfChanged(script, macWrapperStub(wrapper.script, endpointPath), 0o644);
-    writeIfChanged(staged.launcher, renderMacCodexLauncher(staged.node, staged.script), 0o755);
-  } catch {
-    // 写不进去时 launcher 不存在：入口不会指向它，拉起也会回退到普通应用激活。
-  }
-  return staged;
-}
-
-/** 这个路径是否落在某个目录里（都取绝对路径比较，不管结尾斜杠与大小写）。 */
-function isInsideDirectory(path: string, directory: string): boolean {
-  const target = join(directory).replaceAll("/", "\\").replace(/[\\]+$/u, "").toLowerCase();
-  const candidate = join(path).replaceAll("/", "\\").toLowerCase();
-  return candidate === target || candidate.startsWith(`${target}\\`);
-}
-
-/** 转发到安装目录里那份实现；自己跑 `main`，不依赖“模块即入口”的判定。 */
-function macWrapperStub(source: string, endpointPath?: string): string {
-  return [
-    "// 由 Orbis Host 生成：真正的包装器实现住在 Host 安装目录里（只读一次，不会被锁住）。",
-    `import { main } from ${JSON.stringify(pathToFileURL(source).href)};`,
-    // Shell 激活不依赖 Host 的临时环境；自定义状态目录也必须让包装器找得到。
-    ...(endpointPath === undefined ? [] : [`${ENDPOINT_DEFAULT}${JSON.stringify(endpointPath)};`]),
-    "await main(process.argv.slice(2));",
-    "",
-  ].join("\n");
 }
 
 /** Keep the legacy launcher filename; use only syntax valid in both CommonJS and ESM. */
@@ -234,80 +171,141 @@ function windowsWrapperStub(source: string, endpointPath?: string): string {
   ].join("\n");
 }
 
+/** CODEX-DESKTOP-BOOTSTRAP-01: the installer only refreshes a previously registered staged entry. */
+export async function repairWindowsCodexDesktopEntry(wrapper: CodexDesktopWrapper | undefined, root = codexWrapperRoot()): Promise<void> {
+  const current = await readWindowsCodexDesktopEntry();
+  if (current === undefined || resolve(current.trim()).toLowerCase() !== resolve(windowsStagedWrapper(root).launcher).toLowerCase()) return;
+  try {
+    if (wrapper === undefined) throw new Error("Host 安装目录缺少 Codex 包装器");
+    stageCodexWrapper(wrapper, root, undefined, "win32");
+  } catch (error) {
+    // Do not leave the old broken override active when an upgrade cannot refresh it.
+    await suspendCodexDesktopEntry(current.trim());
+    throw error;
+  }
+}
+
+/** macOS: one generated launcher that runs the installed wrapper and carries the Host endpoint. */
+function stageMacCodexWrapper(wrapper: CodexDesktopWrapper, root: string, endpointPath?: string): CodexDesktopWrapper {
+  const launcher = join(root, "bin", "codex-launcher");
+  let current: string | undefined;
+  try { current = readFileSync(launcher, "utf8"); } catch { /* First staging. */ }
+  const endpoint = endpointPath ?? launcherEndpoint(current);
+  const content = renderMacCodexLauncher({ node: wrapper.node, script: wrapper.script, ...(endpoint === undefined ? {} : { endpoint }) });
+  // Unchanged content keeps its mtime: Codex may be reading it right now.
+  if (current !== content) replaceStagedFile(launcher, content, 0o755);
+  chmodSync(launcher, 0o755);
+  // Earlier launchers executed a forwarding stub here; the launcher above no longer references it.
+  try { rmSync(join(root, "packages", "host", "dist", "codex-desktop-wrapper.js"), { force: true }); } catch { /* Harmless leftover. */ }
+  return { launcher, node: wrapper.node, script: wrapper.script };
+}
+
 /**
- * 包装器随 Host 运行时一起分发；缺任何一件就当没有包装器。
- * 环境变量只用于开发/测试时的显式覆盖。
+ * The wrapper ships with the Host runtime; anything missing means there is no wrapper. Environment
+ * overrides exist for development and tests, but never name a staged artifact as the source.
  */
 export function resolveCodexWrapper(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): CodexDesktopWrapper | undefined {
+  const root = codexWrapperRoot(env, platform);
+  const override = (value: string | undefined): string | undefined => {
+    const path = value?.trim();
+    return path && !isInsideDirectory(path, root) ? path : undefined;
+  };
   const runtimeRoot = fileURLToPath(new URL("../../../", import.meta.url));
-  const node = env.ORBIS_CODEX_WRAPPER_NODE?.trim() || process.execPath;
-  const script = env.ORBIS_CODEX_WRAPPER_SCRIPT?.trim() || fileURLToPath(new URL("./codex-desktop-wrapper.js", import.meta.url));
-  // macOS 的 launcher 在暂存时生成，这里只给出它将要在的位置。
+  const node = override(env.ORBIS_CODEX_WRAPPER_NODE) ?? process.execPath;
+  const script = override(env.ORBIS_CODEX_WRAPPER_SCRIPT) ?? fileURLToPath(new URL("./codex-desktop-wrapper.js", import.meta.url));
+  // macOS generates its launcher while staging; this is only where it will be.
   const launcher = env.ORBIS_CODEX_WRAPPER?.trim()
-    || (platform === "darwin" ? join(codexWrapperRoot(env, platform), "bin", "codex-launcher") : join(runtimeRoot, "bin", "codex-launcher.exe"));
+    || (platform === "darwin" ? join(root, "bin", "codex-launcher") : join(runtimeRoot, "bin", "codex-launcher.exe"));
   if (!existsSync(script) || (platform === "darwin" ? !existsSync(node) : !existsSync(launcher))) return undefined;
   return { launcher, node, script };
 }
 
-/** 包装器发布端点、Host 读端点，两边靠同一个文件对齐。 */
-export type CodexDesktopEndpoint = { url: string; bridgePid: number; refresh?: DesktopRefreshEndpoint };
+export type LaunchCodexDesktopOptions = { root?: string; signal?: AbortSignal };
 
-function processAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+/** The user-facing reason Codex was opened without Orbis, recorded for Host and the phone. */
+class UnattachedLaunch extends Error {}
+
+function unattachedReason(error: unknown): string {
+  if (error instanceof UnattachedLaunch) return error.message;
+  const cause = (error instanceof Error ? error.message : String(error)).slice(0, 120);
+  return `Orbis 未能启用桌面接入（${cause}），已以原生方式打开 Codex，本次未接入。请检查 Orbis Host 安装后，完全退出 Codex 再从 Orbis 打开。`;
+}
+
+const WRAPPER_MISSING = "Orbis 安装中缺少 Codex 包装器，已以原生方式打开 Codex，本次未接入。请重新安装 Orbis Host。";
+
+function entryRefused(detail: string): UnattachedLaunch {
+  return new UnattachedLaunch(`Orbis 无法登记桌面接入入口（${detail}），已以原生方式打开 Codex，本次未接入。`);
+}
+
+/**
+ * Open the registered Codex Desktop, through the wrapper when it can be prepared and registered,
+ * natively otherwise. Rejects only when Codex itself cannot be opened or the launch was cancelled.
+ */
+export async function launchCodexDesktop(wrapper: CodexDesktopWrapper | undefined, endpointPath: string,
+  options: LaunchCodexDesktopOptions = {}): Promise<void> {
+  options.signal?.throwIfAborted();
+  if (process.platform === "darwin") return launchMacCodexDesktop(wrapper, endpointPath, options);
+  if (process.platform === "win32") return launchWindowsCodexDesktop(wrapper, endpointPath, options);
+  throw new Error("Codex 桌面版只支持 Windows 与 macOS");
+}
+
+async function launchMacCodexDesktop(wrapper: CodexDesktopWrapper | undefined, endpointPath: string, { root, signal }: LaunchCodexDesktopOptions): Promise<void> {
+  let failure: unknown;
+  const phase = readDesktopRecoveryPhase(endpointPath);
+  // These phases are cleared only by a passing preflight (or a ready bridge), never by a native open.
+  const suspended = phase === "native" || phase === "failed";
   try {
-    process.kill(pid, 0);
-    return true;
+    if (wrapper === undefined) throw new UnattachedLaunch(WRAPPER_MISSING);
+    const staged = stageCodexWrapper(wrapper, root, endpointPath, "darwin");
+    for (const [file, mode] of [[staged.launcher, constants.X_OK], [staged.node, constants.X_OK], [staged.script, constants.R_OK]] as const) {
+      if (!statSync(file, { throwIfNoEntry: false })?.isFile()) throw new Error(`缺少 Codex 包装器文件：${file}`);
+      accessSync(file, mode);
+    }
+    signal?.throwIfAborted();
+    if (suspended) {
+      // Re-enable the entry only when the installed Desktop's CLI answers the read-only probe.
+      const { candidates } = await macDesktopCliCandidates(process.env, { launchingPid: 0 });
+      signal?.throwIfAborted();
+      await selectStartupCli(candidates, startupProbeArgs([]), process.env, () => {});
+      signal?.throwIfAborted();
+    }
+    const entry = await ensureCodexDesktopEntry(staged.launcher);
+    if (entry.state !== "enabled") throw entryRefused(entry.detail);
+    signal?.throwIfAborted();
+    // From here a fresh wrapper result, not the old record, describes this launch.
+    if (phase !== undefined) {
+      try { markDesktopRecoveryRetry(endpointPath); } catch { /* Diagnostics never block a launch. */ }
+    }
+    await launchCodexDesktopApp({ ...process.env, CODEX_CLI_PATH: staged.launcher, ORBIS_CODEX_DESKTOP_ENDPOINT: endpointPath }, signal);
+    return;
   } catch (error) {
-    // 权限不足说明进程还在（只是我们看不见它）；ESRCH 才是真没了。
-    return (error as { code?: unknown }).code === "EPERM";
+    signal?.throwIfAborted();
+    failure = error;
   }
-}
 
-/**
- * 读包装器发布的端点。
- *
- * 只认 `127.0.0.1` 的 ws：app-server 本来就只绑回环，把别的地址当端点等于给
- * Host 开一条通往任意地址的连接。桥接进程已经退出时也必须当作没有端点，否则
- * 会对着一个死端口反复重试，状态页会一直停在“接入失败”。
- */
-export function readCodexDesktopEndpoint(path: string): CodexDesktopEndpoint | undefined {
-  let text: string;
-  try { text = readFileSync(path, "utf8"); }
-  catch { return undefined; }
-  let parsed: unknown;
-  try { parsed = JSON.parse(text); }
-  catch { return undefined; }
-  if (parsed === null || typeof parsed !== "object") return undefined;
-  const value = parsed as { url?: unknown; bridgePid?: unknown; schema?: unknown; refresh?: unknown };
-  if (value.schema !== 1 || typeof value.url !== "string" || !/^ws:\/\/127\.0\.0\.1:\d{1,5}$/.test(value.url)) return undefined;
-  const bridgePid = Number(value.bridgePid);
-  if (!Number.isInteger(bridgePid) || !processAlive(bridgePid)) return undefined;
-  const refresh = value.refresh as Partial<DesktopRefreshEndpoint> | undefined;
-  if (refresh != null && typeof refresh === "object" && typeof refresh.url === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(refresh.url)
-    && typeof refresh.token === "string" && /^[a-f0-9-]{36}$/u.test(refresh.token)
-    && typeof refresh.instanceId === "string" && /^[a-f0-9-]{36}$/u.test(refresh.instanceId)) {
-    return { url: value.url, bridgePid, refresh: refresh as DesktopRefreshEndpoint };
-  }
-  return { url: value.url, bridgePid };
-}
-
-/**
- * 准备包装器后通过 Windows 注册的应用标识打开桌面版 GUI。
- *
- * 用的是安装目录之外的那份包装器运行时（见 `stageCodexWrapper`），所以桌面版活着的时候
- * 不会锁住 Host 安装目录里任何文件。
- *
- * 返回 `false` 时调用方应回退到普通应用激活：宁可打开一个接不上的桌面版，
- * 也不要因为包装器缺失而让用户打不开它。
- */
-export async function launchCodexDesktopThroughWrapper(
-  wrapper: CodexDesktopWrapper,
-  endpointPath: string,
-  root?: string,
-  signal?: AbortSignal,
-): Promise<boolean> {
+  const env = nativeDesktopEnvironment(process.env);
+  const installed = await readLaunchdEnvironment(CODEX_DESKTOP_ENTRY_NAME).catch(() => undefined);
   signal?.throwIfAborted();
-  const recovering = process.platform === "win32" && readDesktopRecoveryReason(endpointPath) !== undefined;
+  // LaunchServices passes the login-session override, not our unset: neutralize only an Orbis value.
+  if (installed !== undefined) {
+    if (looksLikeOrbisWrapperEntry(installed)) env.CODEX_CLI_PATH = "";
+    else delete env.CODEX_CLI_PATH;
+  }
+  try { await launchCodexDesktopApp(env, signal); }
+  catch (error) {
+    signal?.throwIfAborted();
+    try { recordDesktopStartupFailure(endpointPath, "无法打开 Codex 桌面版，请检查桌面版安装。", `${String(failure)}\n${String(error)}`); }
+    catch { /* Preserve the launch error. */ }
+    throw error;
+  }
+  if (suspended) return;
+  try { recordDesktopUnattached(endpointPath, unattachedReason(failure), failure); }
+  catch { /* Codex is already open; the record is diagnostic only. */ }
+}
+
+async function launchWindowsCodexDesktop(wrapper: CodexDesktopWrapper | undefined, endpointPath: string, { root, signal }: LaunchCodexDesktopOptions): Promise<void> {
+  const phase = readDesktopRecoveryPhase(endpointPath);
+  const recovering = phase === "native" || phase === "retrying";
   if (recovering) {
     try {
       const candidates = await windowsDesktopCliCandidates(process.env, { parentPid: 0, digestCacheFile: desktopDigestCachePath(endpointPath) });
@@ -318,41 +316,52 @@ export async function launchCodexDesktopThroughWrapper(
       await recoverNativeDesktop(endpointPath, error);
       signal?.throwIfAborted();
       await launchCodexDesktopApp(nativeDesktopEnvironment(process.env), signal);
-      return true;
+      return;
     }
   }
   signal?.throwIfAborted();
+  const openNatively = async (reason: unknown): Promise<void> => {
+    await launchCodexDesktopApp(process.env, signal);
+    try { recordDesktopUnattached(endpointPath, unattachedReason(reason), reason); } catch { /* Diagnostic only. */ }
+  };
+  if (wrapper === undefined) {
+    await openNatively(new UnattachedLaunch(WRAPPER_MISSING));
+    return;
+  }
   let staged: CodexDesktopWrapper;
-  try { staged = stageCodexWrapper(wrapper, root, endpointPath); }
+  try { staged = stageCodexWrapper(wrapper, root, endpointPath, "win32"); }
   catch (error) {
-    if (process.platform !== "win32") return false;
     signal?.throwIfAborted();
-    // Failure to record the recovery must not prevent an attempt to open the native app.
+    // Failing to record recovery must not prevent opening the native app.
     const launcher = windowsStagedWrapper(root ?? codexWrapperRoot()).launcher;
     await recoverNativeDesktop(endpointPath, error, () => suspendCodexDesktopEntry(launcher), "wrapper").catch(() => {});
     signal?.throwIfAborted();
     await launchCodexDesktopApp(nativeDesktopEnvironment(process.env), signal);
-    return true;
+    return;
   }
-  const effective = process.platform === "win32" || [staged.launcher, staged.node].every(existsSync) ? staged : wrapper;
+  let refused: unknown;
   try {
-    // 等待用户入口就位，避免首次打开时 Shell 先启动了未包装的 GUI。
-    const entry = await ensureCodexDesktopEntry(effective.launcher);
+    // Register the user entry first so Shell activation never starts an unwrapped GUI.
+    const entry = await ensureCodexDesktopEntry(staged.launcher);
     signal?.throwIfAborted();
-    if (entry.state !== "enabled") return false;
-    if (recovering) markDesktopRecoveryRetry(endpointPath);
-    await launchCodexDesktopApp({
-      ...process.env,
-      CODEX_CLI_PATH: effective.launcher,
-      ORBIS_CODEX_WRAPPER_NODE: effective.node,
-      ORBIS_CODEX_WRAPPER_SCRIPT: effective.script,
-      ORBIS_CODEX_DESKTOP_ENDPOINT: endpointPath,
-    }, signal);
-  } catch {
+    refused = entryRefused(entry.detail);
+    if (entry.state === "enabled") {
+      if (recovering) markDesktopRecoveryRetry(endpointPath, "匹配 CLI 已通过启动检查，正在等待桌面接入。若 Codex 已在原生模式运行，请自行完全退出，再从 Orbis 打开；无需重启 Host。");
+      await launchCodexDesktopApp({
+        ...process.env,
+        CODEX_CLI_PATH: staged.launcher,
+        ORBIS_CODEX_WRAPPER_NODE: staged.node,
+        ORBIS_CODEX_WRAPPER_SCRIPT: staged.script,
+        ORBIS_CODEX_DESKTOP_ENDPOINT: endpointPath,
+      }, signal);
+      return;
+    }
+  } catch (error) {
     signal?.throwIfAborted();
-    return false;
+    refused = error;
   }
-  return true;
+  // A foreign or unwritable entry, or a failed wrapped activation: open Codex as the Start menu would.
+  await openNatively(refused);
 }
 
 if (process.platform === "win32" && process.argv[2] === "--repair-windows-entry"

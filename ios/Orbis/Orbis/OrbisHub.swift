@@ -44,6 +44,7 @@ private struct DirectorySurfaceKey: Equatable {
 @MainActor
 final class OrbisStore: ObservableObject {
     @Published private(set) var pairings: [HostPairing] = [] { didSet { hubFactsChanged() } }
+    private(set) var pairingInventoryConfirmed: Bool
     @Published private(set) var selectedHostId: String? { didSet { hubFactsChanged() } }
     @Published private(set) var isPairing = false { didSet { hubFactsChanged() } }
     @Published private(set) var pairingError: String? { didSet { hubFactsChanged() } }
@@ -79,7 +80,8 @@ final class OrbisStore: ObservableObject {
     init(secure: SecureStorage = SecureStore.shared, transport: OrbisTransport? = nil, deviceName: String? = nil,
          autoConnect: Bool = true, preferences: UserDefaults? = .standard, transferRoot: URL? = nil,
          transportFactory: ((HostPairing) -> OrbisTransport)? = nil, localStores: HostLocalStores? = nil) {
-        self.secure = secure; self.preferences = preferences
+        let stored = secure.confirmedPairings()
+        self.secure = secure; self.preferences = preferences; pairingInventoryConfirmed = stored != nil
         self.localStores = localStores ?? HostLocalStores()
         #if canImport(UIKit)
         self.deviceName = deviceName ?? UIDevice.current.name
@@ -96,7 +98,7 @@ final class OrbisStore: ObservableObject {
         }
         emptyConnection = HostConnection(secure: secure, autoConnect: false, preferences: nil,
             transferRoot: root.appendingPathComponent("Unpaired"), isolated: true)
-        for pairing in secure.pairings() {
+        for pairing in stored ?? [] {
             if let index = pairings.firstIndex(where: { $0.hostId == pairing.hostId }) { pairings[index] = pairing }
             else { pairings.append(pairing) }
         }
@@ -231,6 +233,7 @@ final class OrbisStore: ObservableObject {
             return
         }
         observations.removeValue(forKey: hostId)?.cancel(); started.remove(hostId)
+        pairingInventoryConfirmed = true
         connection.purgeLocalData(); connections[hostId] = nil; pairings = next
         let cleanupId = UUID()
         cleanupTasks[cleanupId] = Task { [weak self] in
@@ -263,7 +266,7 @@ final class OrbisStore: ObservableObject {
                     var next = self.pairings
                     if let index = next.firstIndex(where: { $0.hostId == pairing.hostId }) { next[index] = pairing } else { next.append(pairing) }
                     do {
-                        try self.secure.savePairings(next); self.pairings = next
+                        try self.secure.savePairings(next); self.pairingInventoryConfirmed = true; self.pairings = next
                         self.install(pairing, connect: true); self.selectHost(pairing.hostId)
                     } catch { self.pairingError = FeedbackText.reason(error.localizedDescription) }
                 case .failure(let error): self.pairingError = FeedbackText.reason(error.localizedDescription)

@@ -1064,8 +1064,6 @@ export class HostService {
     this.#agentStateRegistry = agentStateRegistry;
     this.#liveActivities = new LiveActivityPublisher({ registry: agentStateRegistry,
       hostId: this.#identity.hostId, relayUrl: options.relayUrl, credential: options.credential,
-      // The relay activity endpoint is a host-wide fanout, without per-device feature negotiation.
-      includeAgent: key => key.agentKind !== KIMI_KIND,
       ...(options.log === undefined ? {} : { log: options.log }) });
     this.#conversationState = new AgentConversationState(agentStateRegistry);
     this.#toolInventory = new AgentToolInventory(agentStateRegistry);

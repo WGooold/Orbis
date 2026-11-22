@@ -29,7 +29,9 @@ export type ActivationErrorCode =
   | "cwd_missing"
   | "spawn_limit_reached"
   | "spawn_failed"
-  | "agent_unsupported";
+  | "agent_unsupported"
+  /** Another native writer (terminal, another Codex window, an orphaned backend) holds the thread. */
+  | "session_busy";
 
 export class ActivationError extends Error {
   readonly code: ActivationErrorCode;

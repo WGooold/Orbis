@@ -37,6 +37,12 @@ describe("registered Codex desktop activation", () => {
     await launchCodexDesktopApp({}, live.signal);
     expect(activation.spawn).toHaveBeenCalledWith(expect.any(String), expect.any(Array), expect.objectContaining({ signal: live.signal }));
   });
+  it.runIf(process.platform === "darwin")("can override an inherited broken CLI entry for one native launch", async () => {
+    await launchCodexDesktopApp({ CODEX_CLI_PATH: "" });
+    expect(activation.spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/open", [
+      "-b", "com.openai.codex", "--env", "CODEX_CLI_PATH=",
+    ], expect.any(Object));
+  });
   it.runIf(process.platform === "darwin")("reopens a local thread in the Codex bundle without restarting the Mac app", async () => {
     await openCodexDesktopThread("thread-123", "local");
     expect(activation.spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/open", [

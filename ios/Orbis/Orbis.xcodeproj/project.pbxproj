@@ -9,6 +9,9 @@
 /* Begin PBXBuildFile section */
 		F09300010000000000000005 /* preview.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000005; };
 		F09300010000000000000004 /* NativeFileReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000004; };
+        7EA200000000000000000002 /* LiveActivityDisplayCache in App */ = {isa = PBXBuildFile; fileRef = 7EA200000000000000000001; };
+        7EA200000000000000000003 /* LiveActivityDisplayCache in Widget */ = {isa = PBXBuildFile; fileRef = 7EA200000000000000000001; };
+        7EA200000000000000000008 /* Localizable.strings in App */ = {isa = PBXBuildFile; fileRef = 7EA200000000000000000007; };
 		F09300010000000000000003 /* ChatFilePreviewRendererTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000003; };
 		F09300010000000000000002 /* ChatFilePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000002; };
 		F09300010000000000000001 /* ChatFilePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = F09310010000000000000001; };
@@ -126,6 +129,10 @@
 /* Begin PBXFileReference section */
 		F09310010000000000000005 /* preview.mp4 */ = {isa = PBXFileReference; lastKnownFileType = file; path = ../../shared/file-preview-tests/preview.mp4; sourceTree = SOURCE_ROOT; };
 		F09310010000000000000004 /* NativeFileReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFileReader.swift; sourceTree = "<group>"; };
+        7EA200000000000000000001 /* LiveActivityDisplayCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityDisplayCache.swift; sourceTree = "<group>"; };
+        7EA200000000000000000004 /* LiveActivityWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LiveActivityWidget.entitlements; sourceTree = "<group>"; };
+        7EA200000000000000000005 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+        7EA200000000000000000006 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		F09310010000000000000003 /* ChatFilePreviewRendererTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTests/ChatFilePreviewRendererTests.swift; sourceTree = SOURCE_ROOT; };
 		F09310010000000000000002 /* ChatFilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFilePreviewView.swift; sourceTree = "<group>"; };
 		F09310010000000000000001 /* ChatFilePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFilePreview.swift; sourceTree = "<group>"; };
@@ -260,7 +267,7 @@
         A11120010000000000000001 /* NotificationService */ = {isa = PBXGroup; children = (A11110010000000000000002, A11110010000000000000003, A11110010000000000000004); path = NotificationService; sourceTree = "<group>"; };
         A08720010000000000000001 /* LiveActivityWidget */ = {
             isa = PBXGroup;
-            children = (A08710010000000000000005 /* OrbisLiveActivityWidget.swift */, A08710010000000000000006 /* Info.plist */);
+            children = (A08710010000000000000005 /* OrbisLiveActivityWidget.swift */, A08710010000000000000006 /* Info.plist */, 7EA200000000000000000004 /* LiveActivityWidget.entitlements */);
             path = LiveActivityWidget;
             sourceTree = "<group>";
         };
@@ -311,6 +318,7 @@
 				A00110010000000000000032 /* OrbisHub.swift */,
 				A00110010000000000000031 /* Notifications.swift */,
 				A08710010000000000000001 /* LiveActivityAttributes.swift */,
+                7EA200000000000000000001 /* LiveActivityDisplayCache.swift */, 7EA200000000000000000007 /* Localizable.strings */,
 				A0871001000000000000000A /* AgentIdentity.swift */,
                 A11110010000000000000001 /* NotificationSource.swift */,
 				A08710010000000000000008 /* LiveActivityLifecycle.swift */,
@@ -461,7 +469,7 @@
 						CreatedOnToolsVersion = 16.0;
 						SystemCapabilities = { com.apple.Push = { enabled = 1; }; com.apple.ApplicationGroups.iOS = { enabled = 1; }; };
 					};
-                    A08730010000000000000001 = { CreatedOnToolsVersion = 16.0; };
+                    A08730010000000000000001 = { CreatedOnToolsVersion = 16.0; SystemCapabilities = { com.apple.ApplicationGroups.iOS = { enabled = 1; }; }; };
                     A11130010000000000000001 = { CreatedOnToolsVersion = 16.0; SystemCapabilities = { com.apple.ApplicationGroups.iOS = { enabled = 1; }; }; };
                     F08630010000000000000001 = { CreatedOnToolsVersion = 16.0; SystemCapabilities = { com.apple.ApplicationGroups.iOS = { enabled = 1; }; }; };
 				};
@@ -501,6 +509,7 @@
 				A0010001000000000000000C /* Assets.xcassets in Resources */,
 				F08000010000000000000003 /* MathResources in Resources */,
 				C06300010000000000000003 /* InfoPlist.strings in Resources */,
+                7EA200000000000000000008 /* Localizable.strings in App */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -526,7 +535,7 @@
 /* Begin PBXSourcesBuildPhase section */
         F08640010000000000000001 /* Share Extension Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (F08600010000000000000001 /* ShareViewController.swift in Sources */, F08600010000000000000002 /* ExternalImportStore.swift in Share Extension Sources */, F08600010000000000000003 /* ExternalImportLabels.swift in Share Extension Sources */, F08600010000000000000004 /* ExternalShareReader.swift in Sources */, F08600010000000000000005 /* ExternalShareSelection.swift in Sources */, F08600010000000000000006 /* Localization.swift in Share Extension Sources */, F08600010000000000000007 /* LocalizationCatalog.swift in Share Extension Sources */); runOnlyForDeploymentPostprocessing = 0; };
         A11140010000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A11100010000000000000003, A11100010000000000000004); runOnlyForDeploymentPostprocessing = 0; };
-        A08740010000000000000001 /* Widget Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A08700010000000000000005 /* OrbisLiveActivityWidget.swift in Sources */, A08700010000000000000006 /* LiveActivityAttributes.swift in Widget Sources */, A0870001000000000000000B /* AgentIdentity.swift in Widget Sources */, A11100010000000000000002 /* NotificationSource in Widget */); runOnlyForDeploymentPostprocessing = 0; };
+        A08740010000000000000001 /* Widget Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A08700010000000000000005 /* OrbisLiveActivityWidget.swift in Sources */, A08700010000000000000006 /* LiveActivityAttributes.swift in Widget Sources */, A0870001000000000000000B /* AgentIdentity.swift in Widget Sources */, A11100010000000000000002 /* NotificationSource in Widget */, 7EA200000000000000000003 /* LiveActivityDisplayCache in Widget */); runOnlyForDeploymentPostprocessing = 0; };
 		A00140010000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -563,6 +572,7 @@
 				A00100010000000000000032 /* OrbisHub.swift in Sources */,
 				A00100010000000000000031 /* Notifications.swift in Sources */,
 				A08700010000000000000001 /* LiveActivityAttributes.swift in Sources */,
+                7EA200000000000000000002 /* LiveActivityDisplayCache in App */,
 				A0870001000000000000000A /* AgentIdentity.swift in App Sources */,
                 A11100010000000000000001 /* NotificationSource in App */,
 				A08700010000000000000009 /* LiveActivityLifecycle.swift in Sources */,
@@ -624,6 +634,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXVariantGroup section */
+        7EA200000000000000000007 /* Localizable.strings */ = {isa = PBXVariantGroup; children = (7EA200000000000000000005, 7EA200000000000000000006); name = Localizable.strings; sourceTree = "<group>"; };
 		C06320010000000000000001 /* InfoPlist.strings */ = {
 			isa = PBXVariantGroup;
 			children = (C06310010000000000000003, C06310010000000000000004);
@@ -705,6 +716,7 @@
                 DEVELOPMENT_TEAM = Z5KBY7SP63;
                 GENERATE_INFOPLIST_FILE = NO;
                 INFOPLIST_FILE = LiveActivityWidget/Info.plist;
+                CODE_SIGN_ENTITLEMENTS = LiveActivityWidget/LiveActivityWidget.entitlements;
                 IPHONEOS_DEPLOYMENT_TARGET = 17.0;
                 LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
                 MARKETING_VERSION = 0.1.3;
@@ -729,6 +741,7 @@
                 DEVELOPMENT_TEAM = Z5KBY7SP63;
                 GENERATE_INFOPLIST_FILE = NO;
                 INFOPLIST_FILE = LiveActivityWidget/Info.plist;
+                CODE_SIGN_ENTITLEMENTS = LiveActivityWidget/LiveActivityWidget.entitlements;
                 IPHONEOS_DEPLOYMENT_TARGET = 17.0;
                 LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
                 MARKETING_VERSION = 0.1.3;

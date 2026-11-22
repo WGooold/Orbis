@@ -5,6 +5,12 @@ protocol SecureStorage {
     func deviceIdentity() throws -> DeviceIdentity
     func savePairings(_ pairings: [HostPairing]) throws
     func pairings() -> [HostPairing]
+    /// Nil means the inventory could not be read, not that all Hosts were removed.
+    func confirmedPairings() -> [HostPairing]?
+}
+
+extension SecureStorage {
+    func confirmedPairings() -> [HostPairing]? { pairings() }
 }
 
 final class SecureStore: SecureStorage {
@@ -39,9 +45,12 @@ final class SecureStore: SecureStorage {
         try save(data, service: defaultsKey)
     }
 
-    func pairings() -> [HostPairing] {
-        guard let data = try? read(service: defaultsKey), let value = try? JSONDecoder().decode([HostPairing].self, from: data) else { return [] }
-        return value
+    func pairings() -> [HostPairing] { confirmedPairings() ?? [] }
+    func confirmedPairings() -> [HostPairing]? {
+        do {
+            guard let data = try read(service: defaultsKey) else { return [] }
+            return try JSONDecoder().decode([HostPairing].self, from: data)
+        } catch { return nil }
     }
 
     func pendingPushRemovals() throws -> [PushRegistrationTarget] {
@@ -56,6 +65,13 @@ final class SecureStore: SecureStorage {
     func liveActivityRegistrations() throws -> [LiveActivityRegistrationTarget] {
         guard let data = try read(service: "orbis.liveActivityRegistrations") else { return [] }
         return try JSONDecoder().decode([LiveActivityRegistrationTarget].self, from: data)
+    }
+
+    /// A background ActivityKit launch must not treat a locked or unreadable
+    /// Keychain as a confirmed empty pairing inventory.
+    func liveActivityPairings() throws -> [HostPairing] {
+        guard let data = try read(service: defaultsKey) else { return [] }
+        return try JSONDecoder().decode([HostPairing].self, from: data)
     }
 
     func saveLiveActivityRegistrations(_ targets: [LiveActivityRegistrationTarget]) throws {

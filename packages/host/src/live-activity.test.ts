@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
-import type { AgentExecutionState, AgentKey, AgentKind } from "@orbis/protocol";
+import { LIVE_ACTIVITY_AGENT_KINDS, type AgentExecutionState, type AgentKey, type AgentKind } from "@orbis/protocol";
 
 import { AgentStateRegistry, type RegistryMutation } from "./agent-state-registry.js";
 import { LiveActivityPublisher, liveActivityFocusKey, type LiveActivityUpdateRequest } from "./live-activity.js";
@@ -14,8 +15,9 @@ function setup(over: { send?: (request: LiveActivityUpdateRequest, signal: Abort
   vi.useFakeTimers({ now: 1_800_000_000_000 });
   const registry = new AgentStateRegistry();
   const sent: LiveActivityUpdateRequest[] = [];
+  const sessions: number[] = [];
   const publisher = new LiveActivityPublisher({ registry, hostId, relayUrl: "wss://relay.test", credential: "host-secret", producerId: "producer-1",
-    send: async (request, signal) => { sent.push(structuredClone(request)); return over.send?.(request, signal) ?? 200; } });
+    send: async (request, signal, sessionCount) => { sent.push(structuredClone(request)); sessions.push(sessionCount); return over.send?.(request, signal) ?? 200; } });
   let revision = 0;
   const write = (agent: AgentKey, value: AgentExecutionState, availability: "ready" | "unknown" = "ready", outcome?: "completed" | "failed" | "cancelled" | "unknown") => {
     const scope = { kind: "agent" as const, key: agent };
@@ -29,7 +31,7 @@ function setup(over: { send?: (request: LiveActivityUpdateRequest, signal: Abort
     expect(registry.commitTransaction(changes).ok).toBe(true);
   };
   const flush = async (ms = 0) => { await Promise.resolve(); await vi.advanceTimersByTimeAsync(ms); };
-  return { registry, sent, publisher, write, flush };
+  return { registry, sent, sessions, publisher, write, flush };
 }
 
 afterEach(() => { vi.useRealTimers(); });
@@ -64,17 +66,40 @@ describe("Host Live Activity summary", () => {
     await h.publisher.close();
   });
 
-  // OPENCLAW-02: unnegotiated Relay/APNs metadata must keep its released kind set.
-  it("does not count OpenClaw in Live Activity traffic for old Relays or Apps", async () => {
+  // The native seed, Relay validator and Host use the same v1 allowlist.
+  it("keeps the iOS wire allowlist aligned with the Host", () => {
+    const source = readFileSync(new URL("../../../ios/Orbis/Orbis/LiveActivityAttributes.swift", import.meta.url), "utf8");
+    const declaration = source.match(/static let agentKinds: Set<String> = (\[.+\])/u);
+    expect(declaration).not.toBeNull();
+    expect(JSON.parse(declaration![1]!)).toEqual([...LIVE_ACTIVITY_AGENT_KINDS]);
+  });
+
+  it.each([["openclaw", "codex"], ["hermes", "opencode"], ["hermes", "claude"], ["kimiCode", "pi"]] as const)("excludes %s rather than losing or skewing the %s activity", async (excluded, included) => {
     const h = setup();
     h.publisher.setConnected(true);
-    h.write(key("claw", "openclaw"), execution("running"));
+    h.write(key("excluded", excluded), execution("waiting_local_interaction"));
     await h.flush();
     expect(h.sent).toEqual([]);
-    h.write(key("existing"), execution("running"));
+    h.write(key("existing", included), execution("running"));
     await h.flush();
     expect(h.sent).toHaveLength(1);
-    expect(h.sent[0]?.contentState).toMatchObject({ phase: "running", agentKind: "codex", runningCount: 1 });
+    expect(h.sent[0]?.contentState).toMatchObject({ phase: "running", agentKind: included, runningCount: 1, pendingCount: 0 });
+    await h.publisher.close();
+  });
+
+  // Clearing the last request is immediate, and two requests on one session
+  // must not look like two sessions in the compact activity.
+  it("publishes the approval-clear edge without the ordinary 30-second delay", async () => {
+    const h = setup(); h.publisher.setConnected(true);
+    h.write(key("focus"), execution("waiting_local_interaction", "turn", Date.now(), ["a", "b"]));
+    await h.flush();
+    expect(h.sessions).toEqual([1]);
+    expect(h.sent[0]!.contentState).toMatchObject({ phase: "attention", pendingCount: 2 });
+    h.write(key("focus"), execution("running", "turn"));
+    await h.flush();
+    expect(h.sent).toHaveLength(2);
+    expect(h.sent[1]!.contentState).toMatchObject({ phase: "running", pendingCount: 0 });
+    expect(h.sent[1]!.contentState).not.toHaveProperty("sessionCount");
     await h.publisher.close();
   });
 

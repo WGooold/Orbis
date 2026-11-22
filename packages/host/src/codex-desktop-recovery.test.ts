@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
-import { clearDesktopRecovery, desktopRecoveryPath, markDesktopRecoveryRetry, nativeDesktopEnvironment, readDesktopRecoveryReason, recoverNativeDesktop } from "./codex-desktop-recovery.js";
+import { clearDesktopRecovery, desktopRecoveryPath, markDesktopRecoveryRetry, nativeDesktopEnvironment, readDesktopRecoveryPhase, readDesktopRecoveryStatus, recoverNativeDesktop } from "./codex-desktop-recovery.js";
+
+const readDesktopRecoveryReason = (endpoint: string, duringStartup = false) => readDesktopRecoveryStatus(endpoint, duringStartup)?.reason;
 
 describe("Desktop native startup recovery", () => {
   it("records recovery, keeps retry guidance until bridge success, then clears it", async () => {
@@ -14,9 +16,11 @@ describe("Desktop native startup recovery", () => {
     expect(reason).toContain("自行完全退出");
     expect(readDesktopRecoveryReason(endpoint, true)).toBe(reason);
     expect(JSON.parse(await readFile(desktopRecoveryPath(endpoint), "utf8")).detail).toContain("EPERM");
+    expect(readDesktopRecoveryPhase(endpoint)).toBe("native");
     markDesktopRecoveryRetry(endpoint);
     expect(readDesktopRecoveryReason(endpoint, true)).toBeUndefined();
-    expect(readDesktopRecoveryReason(endpoint)).toContain("已通过启动检查");
+    expect(readDesktopRecoveryReason(endpoint)).toContain("正在等待 Codex 桌面版接入");
+    expect(readDesktopRecoveryPhase(endpoint)).toBe("retrying");
     clearDesktopRecovery(endpoint);
     expect(readDesktopRecoveryReason(endpoint)).toBeUndefined();
   });

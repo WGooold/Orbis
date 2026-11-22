@@ -85,6 +85,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-compact", "Run the smoke test at the minimum window size"});
     parser.addOption({"screenshot", "Save the smoke-test window image", "path"});
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
+    parser.addOption({"smoke-codex-desktop", "Check Codex Desktop recovery status in overview and diagnostics with isolated data"});
     parser.addOption({"smoke-agent-entry", "Check overview CLI recovery status, hover hint, and path dialog with isolated data"});
     parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
     parser.addOption({"smoke-exit", "Verify exit and update confirmation cancellation in the isolated smoke window"});
@@ -273,6 +274,55 @@ int main(int argc, char *argv[]) {
             if (report.open(QIODevice::WriteOnly)) report.write(QJsonDocument(QJsonObject{{"bridgeReady", controller.bridgeReady()}, {"windowVisible", window->isVisible()}, {"screenshotSaved", imageOk}, {"message", controller.message()}, {"claudeInstalled", controller.claudeInstalled()}, {"agents", QJsonArray::fromVariantList(controller.agents())}}).toJson());
             if (!controller.bridgeReady() || !imageOk) { app.exit(5); return; }
 #ifdef ORBIS_SMOKE_INTERACTION
+            if (parser.isSet("smoke-codex-desktop")) {
+                // CODEX-DESKTOP-MAC-RECOVERY-01: never claim phone availability from a launchable
+                // backend alone. A native fallback leaves local opening available and explains why.
+                auto snapshot = QJsonObject::fromVariantMap(controller.agentEnablement());
+                snapshot.insert("revision", snapshot.value("revision").toInt() + 1);
+                snapshot.insert("agents", QJsonArray{QJsonObject{{"kind", "codexDesktop"}, {"label", "Codex Desktop"}, {"enabled", true}}});
+                controller.smokeReceive({{"event", "agentEnablement"}, {"snapshot", snapshot}});
+                for (int i = 0; i < 100 && (controller.busy() || controller.activityKinds().contains("agents")); ++i) QTest::qWait(50);
+                controller.smokeAgents({QVariantMap{{"kind", "codex"}, {"installed", true}, {"desktopInstalled", true}}});
+                const auto publish = [&](const QString &state, const QString &reason) {
+                    controller.smokeReceive({{"event", "codexDesktop"}, {"status", QJsonObject{{"state", state}, {"reason", reason}}}});
+                    QTest::qWait(100);
+                };
+                const auto item = [&](const QString &name) { return findVisualItem(window->contentItem(), name); };
+                const QString reason = "Codex 已改用原生连接，未接入 Orbis；请完全退出后从 Orbis 打开。";
+                publish("closed", reason);
+                auto *notice = item("overviewCodexDesktopNotice");
+                auto *dot = item("overviewAgentState-codexDesktop");
+                auto *open = item("overviewAgent-codexDesktop");
+                const auto screenshot = parser.value("screenshot");
+                if (!screenshot.isEmpty() && !window->grabWindow().save(screenshot + ".unattached.png")) { app.exit(102); return; }
+                if (!notice || !notice->isVisible() || notice->property("text").toString() != "未接入"
+                    || !dot || dot->property("detail").toString() != reason || dot->property("canEdit").toBool()
+                    || !open || !open->isEnabled()) {
+                    qWarning() << "Codex desktop overview validation failed"
+                        << (notice && notice->isVisible()) << (notice ? notice->property("text") : QVariant())
+                        << (dot ? dot->property("detail") : QVariant()) << (dot && dot->property("canEdit").toBool())
+                        << (open && open->isEnabled()) << controller.busy() << controller.codexDesktop();
+                    app.exit(101); return;
+                }
+                if (!QMetaObject::invokeMethod(dot, "activate")) { app.exit(103); return; }
+                QTest::qWait(400);
+                const auto diagnosticText = [&](const QString &name) {
+                    auto *label = item(name);
+                    return label && label->isVisible() ? label->property("text").toString() : QString();
+                };
+                if (diagnosticText("codexDesktopAttachLabel") != "未接入" || diagnosticText("codexDesktopAttachReason") != reason) { app.exit(104); return; }
+                if (!screenshot.isEmpty() && !window->grabWindow().save(screenshot + ".diagnostics.png")) { app.exit(105); return; }
+                const QString error = "Orbis 未找到可运行的匹配 CLI";
+                publish("error", error);
+                if (diagnosticText("codexDesktopAttachLabel") != "接入失败" || diagnosticText("codexDesktopAttachReason") != error) { app.exit(106); return; }
+                QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 0));
+                QTest::qWait(400);
+                if (diagnosticText("overviewCodexDesktopNotice") != "接入失败") { app.exit(107); return; }
+                publish("attached", "已接入 Codex 桌面版");
+                if (!diagnosticText("overviewCodexDesktopNotice").isEmpty()) { app.exit(108); return; }
+                app.exit(0);
+                return;
+            }
             if (parser.isSet("smoke-agent-entry")) {
                 // HOST-CLI-DISCOVERY-01: the help belongs to the settled status dot,
                 // never a pending detection or a healthy CLI on a stopped Host.

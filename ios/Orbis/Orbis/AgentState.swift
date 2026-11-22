@@ -194,6 +194,7 @@ struct AgentSnapshot {
     var truncated = false
     var error: String?
     var stateFormat: String?
+    var approvalInventory: NotificationApprovalInventory?
 }
 
 /// Mirrors the same committed per-domain model as Android. Chat ranges remain owned by session.sync.
@@ -225,6 +226,7 @@ final class AgentState: ObservableObject {
         let domains: Set<String>
         let stateFormat: String?
         let runtime: RuntimeSummary
+        let requestedAt: Date
     }
 
     func setConnection(_ pairing: HostPairing?, connected: Bool) {
@@ -235,7 +237,10 @@ final class AgentState: ObservableObject {
             snapshots = [:]; retiredEpochs = []; interests = [:]
             pageInterests = [:]; leaseStateId = UUID()
         }
-        for id in snapshots.keys { snapshots[id]?.pending = [] }
+        for id in snapshots.keys {
+            snapshots[id]?.pending = []
+            snapshots[id]?.approvalInventory?.confirmedAt = nil
+        }
         hostKey = key; self.connected = connected; epoch = nil
         preferredFormat = "compact-v2"
     }
@@ -282,7 +287,7 @@ final class AgentState: ObservableObject {
         subscribe(runtime: currentRuntime)
     }
 
-    func subscribe(runtime: RuntimeSummary, force: Bool = false) {
+    func subscribe(runtime: RuntimeSummary, force: Bool = false, recheck: Bool = false) {
         guard connected, let session = runtime.sessionId, !session.isEmpty else { return }
         let pageDomains = pageInterests.reduce(into: Set<String>()) { result, entry in
             if entry.key.runtimeId == runtime.runtimeId && entry.key.sessionId == session { result.formUnion(entry.value) }
@@ -290,16 +295,18 @@ final class AgentState: ObservableObject {
         let wanted = Self.homeDomains.union(interests[runtime.runtimeId]?.domains ?? []).union(pageDomains)
         // A request without agentKind is already bound by runtime/session. Learning the kind
         // from identity must not replace that live subscription and restart its pending reads.
-        if !force, reads.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == session &&
+        if !force && !recheck, reads.values.contains(where: { $0.runtimeId == runtime.runtimeId && $0.sessionId == session &&
             ($0.agentKind == nil || $0.agentKind == runtime.agentKind) && $0.domains == wanted }) { return }
         removeRead(runtime.runtimeId)
         var snapshot = snapshots[runtime.runtimeId].flatMap { $0.sessionId == session ? $0 : nil }
             ?? AgentSnapshot(runtimeId: runtime.runtimeId, sessionId: session)
         snapshot.pending = wanted; snapshot.error = nil
+        snapshot.approvalInventory?.confirmedAt = nil
         snapshots[runtime.runtimeId] = snapshot
         let id = UUID().uuidString
         let format = preferredFormat
-        let read = Read(id: id, runtimeId: runtime.runtimeId, sessionId: session, agentKind: runtime.agentKind, domains: wanted, stateFormat: format, runtime: runtime)
+        let read = Read(id: id, runtimeId: runtime.runtimeId, sessionId: session, agentKind: runtime.agentKind, domains: wanted,
+            stateFormat: format, runtime: runtime, requestedAt: Date())
         reads[id] = read
         let known: [[String: Any]] = force || snapshot.stateFormat != format ? [] : snapshot.domains.values.filter { wanted.contains($0.domain) }.map {
             ["domain": $0.domain, "modelEpoch": $0.modelEpoch, "revision": $0.revision]
@@ -354,7 +361,10 @@ final class AgentState: ObservableObject {
               let truncated = message["truncated"] as? Bool,
               message["unchanged"] == nil || message["unchanged"] is [String] else { reject(read); return true }
         var snapshot = snapshots[read.runtimeId] ?? AgentSnapshot(runtimeId: read.runtimeId, sessionId: read.sessionId)
-        if snapshot.modelEpoch != newEpoch || snapshot.stateFormat != read.stateFormat { snapshot.domains = [:]; snapshot.missing = [:] }
+        if snapshot.modelEpoch != newEpoch || snapshot.stateFormat != read.stateFormat {
+            snapshot.domains = [:]; snapshot.missing = [:]; snapshot.approvalInventory = nil
+        }
+        let previousInteractions = snapshot.domains["interactions"]
         var incoming: [String: HostDomain] = [:]
         for source in rawDomains {
             let raw: [String: Any]
@@ -384,6 +394,14 @@ final class AgentState: ObservableObject {
         }
         for name in unchanged { accepted[name] = snapshot.domains[name] }
         guard didProject?(read.runtimeId, read.sessionId, accepted) != false else { reject(read); return true }
+        if missing["interactions"] != nil || truncated && accepted["interactions"] != nil {
+            snapshot.approvalInventory = nil
+        } else if let domain = accepted["interactions"] {
+            // Only a correlated read requested after delivery can prove a previously
+            // unknown event is absent; live updates can also prove exact removals.
+            snapshot.approvalInventory = NotificationApprovalInventory.reconcile(domain, previous: previousInteractions,
+                inventory: snapshot.approvalInventory, readAt: read.requestedAt)
+        }
         snapshot.modelEpoch = newEpoch; snapshot.error = nil; snapshot.truncated = truncated
         snapshot.stateFormat = read.stateFormat
         snapshot.missing.merge(missing) { _, incoming in incoming }

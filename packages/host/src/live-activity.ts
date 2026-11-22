@@ -1,22 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import { agentKeyId, type AgentExecutionState, type AgentKey, type AgentKind, type SessionLiveState } from "@orbis/protocol";
+import { agentKeyId, liveActivitySupportsAgent, type AgentExecutionState, type AgentKey, type LiveActivityContentState, type LiveActivityOutcome, type SessionLiveState } from "@orbis/protocol";
 
 import { AgentStateRegistry, type StateScope } from "./agent-state-registry.js";
 import { relayHttpBase } from "./config.js";
-
-export type LiveActivityOutcome = "completed" | "failed" | "cancelled" | "unknown";
-export type LiveActivityContentState = {
-  version: 1;
-  phase: "running" | "attention" | "ended" | "stale";
-  runningCount: number;
-  pendingCount: number;
-  focusKey: string | null;
-  agentKind: AgentKind | null;
-  startedAt: number | null;
-  updatedAt: number;
-  outcome: LiveActivityOutcome | null;
-};
 
 export type LiveActivityUpdateRequest = {
   version: 1;
@@ -43,7 +30,8 @@ type Tracked = {
   backgroundAgentWork: boolean;
   backgroundContinued: boolean;
 };
-type SemanticState = Omit<LiveActivityContentState, "updatedAt">;
+type SemanticState = Omit<LiveActivityContentState, "updatedAt"> & { sessionCount: number };
+type Publication = { request: LiveActivityUpdateRequest; sessionCount: number };
 
 type LiveActivityPublisherOptions = {
   registry: AgentStateRegistry;
@@ -53,12 +41,11 @@ type LiveActivityPublisherOptions = {
   now?: () => number;
   producerId?: string;
   /** Ordinary changes coalesce; a quiet activity only needs a bounded freshness renewal. */
-  includeAgent?: (key: AgentKey) => boolean;
   coalesceMs?: number;
   heartbeatMs?: number;
   terminalCoalesceMs?: number;
   retryMs?: number;
-  send?: (request: LiveActivityUpdateRequest, signal: AbortSignal) => Promise<number>;
+  send?: (request: LiveActivityUpdateRequest, signal: AbortSignal, sessionCount: number) => Promise<number>;
   log?: (message: string) => void;
 };
 
@@ -67,7 +54,7 @@ type LiveActivityPublisherOptions = {
 export class LiveActivityPublisher {
   readonly #options: LiveActivityPublisherOptions;
   readonly #now: () => number;
-  readonly #send: (request: LiveActivityUpdateRequest, signal: AbortSignal) => Promise<number>;
+  readonly #send: NonNullable<LiveActivityPublisherOptions["send"]>;
   readonly #producerId: string;
   readonly #unsubscribe: () => void;
   readonly #tracked = new Map<string, Tracked>();
@@ -86,7 +73,7 @@ export class LiveActivityPublisher {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #timerDue = Number.POSITIVE_INFINITY;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
-  #desired: LiveActivityUpdateRequest | undefined;
+  #desired: Publication | undefined;
   #sending: Promise<void> | undefined;
   #controller: AbortController | undefined;
 
@@ -95,12 +82,13 @@ export class LiveActivityPublisher {
     this.#now = options.now ?? Date.now;
     this.#producerId = options.producerId ?? randomUUID();
     const endpoint = new URL("/v1/live-activities/update", relayHttpBase(options.relayUrl));
-    this.#send = options.send ?? (async (request, signal) => {
+    this.#send = options.send ?? (async (request, signal, sessionCount) => {
       // APNs registration credentials are never forwarded through a redirect or plain HTTP.
       if (endpoint.protocol !== "https:") return 501;
       const response = await fetch(endpoint, {
         method: "POST", redirect: "error", signal,
-        headers: { authorization: `Bearer ${options.credential}`, "content-type": "application/json" },
+        // Released Relays strictly parse the v1 JSON body and ignore this header.
+        headers: { authorization: `Bearer ${options.credential}`, "content-type": "application/json", "x-orbis-activity-sessions": String(sessionCount) },
         body: JSON.stringify(request),
       });
       // Drain the small response so the pooled connection can be reused.
@@ -110,7 +98,7 @@ export class LiveActivityPublisher {
     this.#unsubscribe = options.registry.subscribe(change => {
       if (this.#closing || this.#closed) return;
       if (change.kind === "reset") { this.#queueCollection(); return; }
-      if (change.scope.kind !== "agent" || change.scope.key.hostId !== options.hostId || change.scope.key.agentKind === "openclaw" || change.scope.key.agentKind === "hermes" || options.includeAgent?.(change.scope.key) === false ||
+      if (change.scope.kind !== "agent" || change.scope.key.hostId !== options.hostId || !liveActivitySupportsAgent(change.scope.key.agentKind) ||
           !["execution", "availability"].includes(change.domain)) return;
       const id = agentKeyId(change.scope.key);
       const tracked = this.#tracked.get(id);
@@ -234,6 +222,7 @@ export class LiveActivityPublisher {
     const focus = candidates.find(([id]) => id === this.#focus) ?? candidates[0];
     if (focus) this.#focus = focus[0];
     const focused = focus?.[1] ?? (this.#focus ? this.#tracked.get(this.#focus) : undefined);
+    const kind = focused?.scope.key.agentKind;
     const phase = attention.length > 0 ? "attention" : uncertain.length > 0 ? "stale" : running.length > 0 ? "running" : "ended";
     // Empty startup is not a terminal observation. A mobile activity may still be
     // waiting for the Host's first authenticated source baselines after restart.
@@ -245,13 +234,14 @@ export class LiveActivityPublisher {
       version: 1, phase, runningCount: Math.min(2048, running.length),
       pendingCount: Math.min(131_072, attention.reduce((total, [, , count]) => total + count, 0)),
       focusKey: focused ? liveActivityFocusKey(focused.scope.key) : null,
-      agentKind: focused?.scope.key.agentKind ?? null,
-      startedAt: focused?.startedAt ?? null, outcome,
+      agentKind: liveActivitySupportsAgent(kind) ? kind : null,
+      startedAt: focused?.startedAt ?? null, outcome, sessionCount: running.length + attention.length,
     };
     const fingerprint = JSON.stringify(summary);
     if (fingerprint === this.#fingerprint) return;
     this.#summary = summary; this.#fingerprint = fingerprint;
-    const critical = summary.phase === "attention" && (previous?.phase !== "attention" || summary.pendingCount > previous.pendingCount);
+    const critical = (summary.phase === "attention" && (previous?.phase !== "attention" || summary.pendingCount > previous.pendingCount)) ||
+      (summary.phase === "running" && previous?.phase === "attention");
     const delay = summary.phase === "ended" ? this.#options.terminalCoalesceMs ?? 250 :
       critical || summary.phase === "stale" || previous === undefined ? 0 : Math.max(0, this.#lastSentAt + (this.#options.coalesceMs ?? 30_000) - this.#now());
     this.#schedule(delay);
@@ -272,10 +262,11 @@ export class LiveActivityPublisher {
     if (!this.#summary || !this.#connected || this.#unsupported || this.#closed) return;
     const updatedAt = Math.max(this.#now(), this.#lastPublicationAt + 1);
     this.#lastPublicationAt = updatedAt;
-    this.#desired = {
+    const { sessionCount, ...state } = this.#summary;
+    this.#desired = { sessionCount, request: {
       version: 1, hostId: this.#options.hostId, producerId: this.#producerId, revision: ++this.#revision,
-      event: this.#summary.phase === "ended" ? "end" : "update", contentState: { ...this.#summary, updatedAt },
-    };
+      event: state.phase === "ended" ? "end" : "update", contentState: { ...state, updatedAt },
+    } };
     if (!this.#sending) {
       this.#sending = this.#drain().finally(() => {
         this.#sending = undefined;
@@ -287,12 +278,12 @@ export class LiveActivityPublisher {
 
   async #drain(): Promise<void> {
     while (this.#desired && this.#connected && !this.#closed && !this.#unsupported) {
-      const request = this.#desired; this.#desired = undefined;
+      const publication = this.#desired; this.#desired = undefined;
       const generation = this.#connectionGeneration;
       const controller = new AbortController(); this.#controller = controller;
       const timeout = setTimeout(() => controller.abort(), 5_000); timeout.unref();
       let status = 0;
-      try { status = await this.#send(request, controller.signal); }
+      try { status = await this.#send(publication.request, controller.signal, publication.sessionCount); }
       catch { /* Optional push retries never break the committed business state. */ }
       finally { clearTimeout(timeout); if (this.#controller === controller) this.#controller = undefined; }
       if (generation !== this.#connectionGeneration) {
@@ -301,14 +292,14 @@ export class LiveActivityPublisher {
         if (this.#connected) this.#schedule(0);
         return;
       }
-      if (!this.#connected || this.#closed) { this.#desired ??= request; return; }
+      if (!this.#connected || this.#closed) { this.#desired ??= publication; return; }
       if (status >= 200 && status < 300) { this.#lastSentAt = this.#now(); continue; }
       if ([401, 403, 404, 409, 501].includes(status)) {
         // Unknown endpoint, producer mismatch or rejected credentials wait for a
         // new authenticated Relay connection, never a request loop.
         this.#unsupported = true; this.#desired = undefined; return;
       }
-      if (!this.#desired) this.#desired = request;
+      if (!this.#desired) this.#desired = publication;
       if (!this.#closing) {
         this.#options.log?.(`Live Activity update deferred (${status || "transport"})`);
         this.#schedule(this.#options.retryMs ?? 30_000);

@@ -21,7 +21,7 @@ export type CodexDesktopLifecycleOptions = {
    */
   resolveEndpoint?: () => Promise<string | undefined>;
   /** Persisted wrapper recovery; retrying markers wait for an endpoint during launch. */
-  resolveStartupFailure?: (duringStartup?: boolean) => string | undefined;
+  resolveStartupFailure?: (duringStartup?: boolean) => CodexDesktopAttach | undefined;
   launchApp?: (signal?: AbortSignal) => Promise<void>;
   createServer?: () => Promise<CodexAppServer>;
   createExternal?: (endpoint: string) => Promise<CodexAppServer>;
@@ -32,6 +32,20 @@ export type CodexDesktopLifecycleOptions = {
   pollIntervalMs?: number;
   /** 端点模式下等桌面版把端点交出来的时长（手机按需拉起时会打开 GUI）。 */
   endpointWaitMs?: number;
+  /**
+   * ADR-0096: stop backends whose wrapper bridge is gone. They keep native thread writer locks, so a
+   * later Desktop backend would reject those threads. Runs on first probe, whenever the endpoint
+   * changes or disappears, and every `reapIntervalMs`.
+   */
+  reapBackends?: () => Promise<{ stopped: readonly number[] } | void>;
+  reapIntervalMs?: number;
+  /**
+   * Why a running Desktop has no endpoint, when it can be told precisely. `pending`: a wrapper is
+   * still starting, so waiting is worthwhile.
+   */
+  diagnoseNoEndpoint?: () => Promise<{ status: CodexDesktopAttach; pending?: boolean } | undefined>;
+  /** How long to wait for an endpoint when Codex was already running before the launch request. */
+  runningWaitMs?: number;
   desktopRefresh?: CodexDesktopRefreshOptions;
 };
 
@@ -43,13 +57,15 @@ function describeAttachFailure(error: unknown): string {
   return `接入 Codex 桌面版失败：${error instanceof Error ? error.message : String(error)}；Orbis 会自动重试，无需重启 Host`;
 }
 
-const NO_ENDPOINT_REASON = "桌面版没有可接入的 app-server 端点：它可能不是由 Orbis 启动的（请先关闭 Codex 桌面版，再从 Orbis 打开它），也可能 Orbis 包装器没有随本次安装一起就位";
+const NO_ENDPOINT_REASON = "Codex 桌面版正在运行，但没有可接入的 app-server 端点：它是以未接入方式打开的。请完全退出 Codex 后从 Orbis 重新打开；仍未接入时，请检查 Orbis Host 安装。";
 
 /** Owns the GUI presence, proxy connection and desktop Codex runtime as one unit. */
 export class CodexDesktopLifecycle {
   #runtime: CodexRuntime | undefined;
   #watcher: NodeJS.Timeout | undefined;
   #starting: Promise<CodexRuntime> | undefined;
+  #launching: Promise<void> | undefined;
+  #launchFailure: string | undefined;
   #probing: Promise<CodexRuntime | undefined> | undefined;
   #generation = 0;
   #abort = new AbortController();
@@ -57,6 +73,8 @@ export class CodexDesktopLifecycle {
   /** 端点模式下当前接上的端点；端点变了就必须重接。 */
   #endpoint: string | undefined;
   #status: CodexDesktopAttach = { state: "closed", reason: "正在检测 Codex 桌面版" };
+  #reaping: Promise<boolean> | undefined;
+  #reapedAt = Number.NEGATIVE_INFINITY;
   readonly #options: CodexDesktopLifecycleOptions;
 
   constructor(options: CodexDesktopLifecycleOptions = {}) {
@@ -85,11 +103,62 @@ export class CodexDesktopLifecycle {
 
   #current(generation: number): boolean { return !this.#stopping && generation === this.#generation; }
   #assertCurrent(generation: number): void { if (!this.#current(generation)) throw new Error("Codex 桌面版正在关闭"); }
-  async #launch(generation: number): Promise<void> {
+  #launch(generation: number): Promise<void> {
     this.#assertCurrent(generation);
-    if (this.#options.launchApp) await this.#options.launchApp(this.#abort.signal);
-    else await launchCodexDesktopApp(process.env, this.#abort.signal);
-    this.#assertCurrent(generation);
+    if (this.#launching !== undefined) return this.#launching;
+    this.#launchFailure = undefined;
+    const pending = (async () => {
+      try {
+        if (this.#options.launchApp) await this.#options.launchApp(this.#abort.signal);
+        else await launchCodexDesktopApp(process.env, this.#abort.signal);
+        this.#assertCurrent(generation);
+      } catch (error) {
+        if (this.#current(generation)) {
+          this.#launchFailure = `无法打开 Codex 桌面版：${error instanceof Error ? error.message : String(error)}`;
+          this.#setStatus("error", this.#launchFailure);
+        }
+        throw error;
+      }
+    })().finally(() => { if (this.#launching === pending) this.#launching = undefined; });
+    return this.#launching = pending;
+  }
+
+  /**
+   * Single flight; `force` skips the interval (endpoint change, writer conflict). Resolves whether a
+   * backend was stopped. Failures are only logged.
+   */
+  #reap(force = false): Promise<boolean> {
+    const reap = this.#options.reapBackends;
+    if (reap === undefined || this.#stopping) return Promise.resolve(false);
+    if (this.#reaping !== undefined) return this.#reaping;
+    if (!force && Date.now() - this.#reapedAt < (this.#options.reapIntervalMs ?? 60_000)) return Promise.resolve(false);
+    this.#reapedAt = Date.now();
+    const pending = reap().then(result => (result?.stopped.length ?? 0) > 0, error => {
+      this.#options.log?.(`回收遗留 Codex 桌面后端失败：${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }).finally(() => { if (this.#reaping === pending) this.#reaping = undefined; });
+    return this.#reaping = pending;
+  }
+
+  async #diagnose(): Promise<{ status: CodexDesktopAttach; pending?: boolean } | undefined> {
+    try { return await this.#options.diagnoseNoEndpoint?.(); }
+    catch (error) {
+      this.#options.log?.(`诊断 Codex 桌面版接入失败：${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
+  async #guiRunning(): Promise<boolean> {
+    try { return (await detectCodexDesktopPresence(this.#options.presence)).ready; }
+    catch { return false; }
+  }
+
+  /** A local Open action is independent of whether the phone can attach. */
+  async openApp(): Promise<void> {
+    const generation = this.#generation;
+    this.#startWatcher();
+    if (this.#starting === undefined) await this.#launch(generation);
+    if (this.#current(generation)) void this.probe().catch(() => {});
   }
 
   /** 未就绪的探测结果落到哪一档：查询失败、平台不支持、没装、还是装了但没开窗。 */
@@ -144,6 +213,7 @@ export class CodexDesktopLifecycle {
 
   async #probe(generation: number): Promise<CodexRuntime | undefined> {
     if (this.endpointMode) {
+      void this.#reap(this.#reapedAt === Number.NEGATIVE_INFINITY);
       const endpoint = await this.#readEndpoint();
       if (!this.#current(generation)) return undefined;
       if (endpoint === undefined) { await this.#reportNoEndpoint(generation); return undefined; }
@@ -183,6 +253,7 @@ export class CodexDesktopLifecycle {
     if (this.#watcher !== undefined) clearInterval(this.#watcher);
     this.#watcher = undefined;
     this.#starting = undefined; this.#probing = undefined;
+    this.#launching = undefined; this.#launchFailure = undefined;
     const runtime = this.#runtime;
     this.#runtime = undefined;
     this.#endpoint = undefined;
@@ -197,22 +268,32 @@ export class CodexDesktopLifecycle {
     const existing = await this.#readEndpoint();
     this.#assertCurrent(generation);
     if (existing !== undefined) return this.#attachEndpoint(existing, generation);
+    // An already running Codex keeps its environment: opening it only brings it forward, so an endpoint
+    // can still arrive only from a wrapper that is starting. Do not make the request wait the full time.
+    const runningBefore = await this.#guiRunning();
+    this.#assertCurrent(generation);
     await this.#launch(generation);
-    const deadline = Date.now() + (this.#options.endpointWaitMs ?? 45_000);
-    while (this.#current(generation) && Date.now() < deadline) {
+    const started = Date.now();
+    const fullWait = this.#options.endpointWaitMs ?? 45_000;
+    const runningWait = Math.min(fullWait, this.#options.runningWaitMs ?? 8_000);
+    while (this.#current(generation)) {
       const endpoint = await this.#readEndpoint();
       this.#assertCurrent(generation);
       if (endpoint !== undefined) return this.#attachEndpoint(endpoint, generation);
       const failure = this.#options.resolveStartupFailure?.(true);
-      if (failure !== undefined) { this.#setStatus("error", failure); throw new Error(failure); }
+      if (failure !== undefined) { this.#setStatus(failure.state, failure.reason); throw new Error(failure.reason); }
+      const elapsed = Date.now() - started;
+      if (elapsed >= fullWait) break;
+      if (runningBefore && elapsed >= runningWait && (await this.#diagnose())?.pending !== true) break;
       await delay(250);
     }
     this.#assertCurrent(generation);
     const recovery = this.#options.resolveStartupFailure?.();
-    if (recovery !== undefined) { this.#setStatus("error", recovery); throw new Error(recovery); }
-    const reason = "Codex 桌面版没有交出可接入的 app-server 端点";
-    this.#setStatus("error", `${reason}；请手动打开 Codex 桌面版，或检查 Orbis 包装器是否随 Host 一起安装`);
-    throw new Error(reason);
+    if (recovery !== undefined) { this.#setStatus(recovery.state, recovery.reason); throw new Error(recovery.reason); }
+    await this.#reportNoEndpoint(generation);
+    this.#assertCurrent(generation);
+    // The desktop might still be usable locally; a missing endpoint alone does not prove it failed to launch.
+    throw new Error(this.#status.reason);
   }
 
   async #ensureReadyInner(generation: number): Promise<CodexRuntime> {
@@ -244,15 +325,22 @@ export class CodexDesktopLifecycle {
 
   async #reportNoEndpoint(generation = this.#generation): Promise<void> {
     if (!this.#current(generation)) return;
+    if (this.#launchFailure !== undefined) { this.#setStatus("error", this.#launchFailure); return; }
     const failure = this.#options.resolveStartupFailure?.();
-    if (failure !== undefined) { this.#setStatus("error", failure); return; }
+    if (failure !== undefined) { this.#setStatus(failure.state, failure.reason); return; }
     let presence: CodexDesktopPresence;
     try { presence = await detectCodexDesktopPresence(this.#options.presence); }
     catch (error) {
       this.#options.log?.(`Codex 桌面版探测失败：${error instanceof Error ? error.message : String(error)}`);
       return;
     }
-    if (this.#current(generation) && !this.ready) this.#presenceStatus(presence);
+    if (!this.#current(generation) || this.ready) return;
+    // A running GUI without endpoint: say exactly why when that is known (wrapper starting, entry
+    // owned by someone else, Codex opened before the entry existed).
+    const diagnosis = presence.ready && presence.scanError === undefined && this.endpointMode ? await this.#diagnose() : undefined;
+    if (!this.#current(generation) || this.ready) return;
+    if (diagnosis !== undefined) this.#setStatus(diagnosis.status.state, diagnosis.status.reason);
+    else this.#presenceStatus(presence);
   }
 
   /** 端点模式：接别人已经在跑的 app-server，自己不拥有任何进程。 */
@@ -292,6 +380,8 @@ export class CodexDesktopLifecycle {
   async #mount(server: CodexAppServer, reason: string, generation: number): Promise<CodexRuntime> {
     if (!this.#current(generation)) { await server.stop().catch(() => {}); this.#assertCurrent(generation); }
     const runtime = new CodexRuntime({ server, sourceCoalesceMs: CODEX_SOURCE_COALESCE_MS, ...(this.#options.log === undefined ? {} : { log: this.#options.log }),
+      // An orphaned backend is the usual holder of a Desktop thread's writer lock: clear it, then retry once.
+      ...(this.endpointMode ? { resolveWriterConflict: () => this.#reap(true) } : {}),
       ...(this.#options.desktopRefresh === undefined ? {} : { desktopRefresh: this.#options.desktopRefresh }), onEvent: () => {} });
     try {
       this.#assertCurrent(generation);
@@ -302,6 +392,7 @@ export class CodexDesktopLifecycle {
       this.#assertCurrent(generation);
       if (!runtime.isReady()) runtime.markStarted();
       this.#runtime = runtime;
+      this.#launchFailure = undefined;
       this.#startWatcher();
       this.#setStatus("attached", reason);
       this.#options.log?.(`Codex 桌面版已就绪：${reason}`);
@@ -367,6 +458,8 @@ export class CodexDesktopLifecycle {
     const runtime = this.#runtime;
     const endpoint = await this.#readEndpoint();
     if (!this.#current(generation) || this.#runtime !== runtime) return;
+    // A changed or missing endpoint is when a previous bridge may have left its backend behind.
+    void this.#reap(runtime !== undefined && endpoint !== this.#endpoint);
     if (runtime !== undefined && (!runtime.isReady() || endpoint === undefined || endpoint !== this.#endpoint)) {
       this.#runtime = undefined;
       this.#endpoint = undefined;

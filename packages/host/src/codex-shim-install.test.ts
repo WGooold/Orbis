@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const registry = vi.hoisted(() => ({ exec: vi.fn() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: registry.exec }));
+import { codexDesktopEntryAgentPath, renderCodexDesktopEntryAgent } from "./codex-desktop-macos.js";
 import { installCodexShim, codexShimStatus, ensureCodexShimWinsPath, codexDesktopEntryDecision, looksLikeOrbisWrapperEntry, suspendCodexDesktopEntry, ensureCodexDesktopEntry } from "./codex-shim-install.js";
 
 let root: string | undefined;
@@ -12,6 +13,35 @@ afterEach(async () => {
   vi.unstubAllEnvs(); registry.exec.mockReset();
   if (root) await rm(root, { recursive: true, force: true });
   root = undefined;
+});
+
+// CODEX-DESKTOP-MAC-RECOVERY-01: every launchctl call is mocked; no user entry or login item is touched.
+it.runIf(process.platform === "darwin")("suspends only the matching macOS override and its generated login item", async () => {
+  root = await mkdtemp(join(tmpdir(), "orbis-launchd-recovery-"));
+  vi.stubEnv("HOME", root);
+  const launcher = join(root, "Orbis", "wrapper", "bin", "codex-launcher");
+  const agent = codexDesktopEntryAgentPath(root);
+  await mkdir(dirname(agent), { recursive: true });
+  await writeFile(agent, renderCodexDesktopEntryAgent("CODEX_CLI_PATH", launcher));
+  let current: string | undefined = "/Users/test/bin/custom-codex";
+  registry.exec.mockImplementation((program: string, args: string[], _options, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => {
+    expect(program).toBe("/bin/launchctl");
+    if (args[0] === "unsetenv") current = undefined;
+    callback(null, { stdout: current ?? "", stderr: "" });
+  });
+  await expect(suspendCodexDesktopEntry(launcher)).rejects.toThrow("不是 Orbis");
+  expect(registry.exec.mock.calls.filter(call => call[1][0] === "unsetenv")).toHaveLength(0);
+
+  current = launcher;
+  await writeFile(agent, "not our generated login item");
+  await expect(suspendCodexDesktopEntry(launcher)).rejects.toThrow("登录项已改变");
+  expect(current).toBe(launcher);
+  expect(await readFile(agent, "utf8")).toBe("not our generated login item");
+
+  await writeFile(agent, renderCodexDesktopEntryAgent("CODEX_CLI_PATH", launcher));
+  await suspendCodexDesktopEntry(launcher);
+  expect(current).toBeUndefined();
+  await expect(readFile(agent)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 describe("Codex user PATH registration", () => {

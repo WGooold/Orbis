@@ -24,7 +24,7 @@ import { createWebHandler } from "./web.js";
 import { RelayBandwidth } from "./bandwidth.js";
 import { BulkSendBudget, DEFAULT_BULK_BYTES_PER_SECOND } from "./bulk-send-budget.js";
 import { APNsSender, type APNsConfig } from "./apns.js";
-import { RelayLiveActivities, parseLiveActivityUpdate } from "./live-activities.js";
+import { RelayLiveActivities, liveActivityPairingRef, parseLiveActivityUpdate } from "./live-activities.js";
 
 export interface RelayDeviceCredential {
   deviceId: string;
@@ -357,7 +357,8 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
   if (pushTokens.size !== restoredPushCount) await persistPushTokens();
   const liveActivities = await RelayLiveActivities.create({
     ...(options.stateFile ? { stateFile: `${options.stateFile}.live-activities.json` } : {}),
-    isPaired: isPushDevice,
+    isPaired: (deviceId, hostId, pairingRef) => pairingRef === undefined ? isPushDevice(deviceId, hostId) : !admin.isDisabled(hostId) &&
+      [...devicesByCredential].some(([hash, device]) => device.deviceId === deviceId && device.hostId === hostId && liveActivityPairingRef(hostId, deviceId, hash) === pairingRef),
     currentConnection: hostId => {
       const current = runtimes.get(hostId);
       return current?.socket.readyState === WebSocket.OPEN && !admin.isDisabled(hostId) ? current : undefined;
@@ -425,7 +426,8 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         if (!options.apns) throw new HttpError(503, "push_unavailable");
         const environment = requestURL.searchParams.get("environment") ?? options.apns.environment;
         if (!apns.has(environment as APNsConfig["environment"])) throw new HttpError(409, "push_environment_mismatch");
-        jsonResponse(response, 200, { version: 1, environment }); return;
+        jsonResponse(response, 200, { version: 1, environment,
+          ...(requestURL.searchParams.get("launch") === "1" ? { launch: true } : {}) }); return;
       }
       if (request.method === "POST" && path === "/v1/live-activities/register") {
         const bearer = pushBearer();
@@ -435,6 +437,28 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         const body = await readJson(request);
         if (body && typeof body === "object" && "token" in body && body.token !== null && apns.size === 0) throw new HttpError(503, "push_unavailable");
         await liveActivities.register(device.deviceId, device.hostId, body, () => devicesByCredential.get(hash!) === device);
+        jsonResponse(response, 204); return;
+      }
+      if (request.method === "POST" && ["/v1/live-activities/register-start", "/v1/live-activities/claim", "/v1/live-activities/claim/cancel"].includes(path)) {
+        const bearer = pushBearer();
+        const hash = bearer ? hashCredential(bearer).toString("hex") : undefined;
+        const device = hash ? devicesByCredential.get(hash) : undefined;
+        if (!device?.hostId || !isPushDevice(device.deviceId, device.hostId)) throw new HttpError(401, "unauthorized");
+        const body = await readJson(request);
+        const authorized = () => devicesByCredential.get(hash!) === device;
+        if (path === "/v1/live-activities/register-start") {
+          if (body && typeof body === "object" && "token" in body && body.token !== null && apns.size === 0) throw new HttpError(503, "push_unavailable");
+          await liveActivities.registerStart(device.deviceId, device.hostId, liveActivityPairingRef(device.hostId, device.deviceId, hash!), body, authorized);
+        } else if (path === "/v1/live-activities/claim/cancel") {
+          await liveActivities.cancelClaim(device.deviceId, device.hostId, body, authorized);
+        } else {
+          // Without an ActivityKit provider there is no authoritative update
+          // channel; do not start an orphan via the legacy local fallback.
+          if (apns.size === 0) throw new HttpError(409, "push_unavailable");
+          response.setHeader("cache-control", "no-store");
+          const claim = await liveActivities.claim(device.deviceId, device.hostId, body, authorized);
+          if (claim) { jsonResponse(response, 200, claim); return; }
+        }
         jsonResponse(response, 204); return;
       }
       if (request.method === "POST" && path === "/v1/live-activities/update") {
@@ -450,7 +474,12 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         const registeredHost = options.registration?.hostForCredential(bearer);
         if (!host || admin.isDisabled(update.hostId) || registeredHost !== undefined && registeredHost !== update.hostId) throw new HttpError(401, "unauthorized");
         if (runtimes.get(update.hostId) !== host || host.socket.readyState !== WebSocket.OPEN) throw new HttpError(409, "host_connection_changed");
-        const result = await liveActivities.publish(update, host);
+        const rawCount = request.headers["x-orbis-activity-sessions"];
+        const sessionCount = typeof rawCount === "string" && /^\d{1,4}$/u.test(rawCount) ? Number(rawCount) : undefined;
+        const { runningCount, pendingCount, phase } = update.contentState;
+        if (rawCount !== undefined && (sessionCount === undefined || sessionCount < runningCount + (phase === "attention" ? 1 : 0) ||
+          sessionCount > Math.min(2048, runningCount + pendingCount))) throw new HttpError(400, "invalid_live_activity_session_count");
+        const result = await liveActivities.publish(update, host, sessionCount);
         jsonResponse(response, result.failed.length > 0 ? 502 : 200, result); return;
       }
       if (request.method === "GET" && path === "/v1/push/config") {

@@ -10,6 +10,8 @@ import { loadDeviceStore, saveDeviceStore } from "@orbis/e2e";
 import { DesktopRuntime, validateDesktopRelay, type DesktopEvent } from "./desktop-runtime.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexDesktopLifecycle } from "./codex-desktop-lifecycle.js";
+import { codexDesktopEndpointPath } from "./codex-desktop-launcher.js";
+import { clearDesktopRecovery, recordDesktopStdioFallback, recordDesktopStartupFailure } from "./codex-desktop-recovery.js";
 import * as claudeInstallation from "./claude-integration-install.js";
 import * as claudeVersion from "./claude-version.js";
 import { KimiRuntime } from "./kimi-runtime.js";
@@ -45,6 +47,29 @@ describe("desktop Host lifecycle", () => {
       const reopened = new DesktopRuntime(() => {}, root);
       try { expect(await reopened.readAgentEnablement()).toEqual(changed.snapshot); }
       finally { await reopened.close(); }
+    } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // CODEX-DESKTOP-MAC-RECOVERY-01: the Qt status event follows a wrapper result produced after launch,
+  // even when no Relay service owns a desktop lifecycle. An unchanged record is not a heartbeat.
+  it("publishes local Codex desktop recovery while the Host is paused", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-local-recovery-"));
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), root);
+    const endpoint = codexDesktopEndpointPath(root);
+    try {
+      const existing = await runtime.readAgentEnablement();
+      await runtime.setAgentEnablement({ kind: "codexDesktop", enabled: true, expectedRevision: existing.revision });
+      recordDesktopStdioFallback(endpoint, "bridge closed before connecting");
+      runtime.status(); runtime.status();
+      recordDesktopStartupFailure(endpoint, "Codex 原生进程已异常退出", "exit 127");
+      runtime.status();
+      clearDesktopRecovery(endpoint);
+      runtime.status();
+      expect(events.filter(e => e.event === "codexDesktop").map(e => e.status)).toEqual([
+        expect.objectContaining({ state: "closed", reason: expect.stringContaining("未接入 Orbis") }),
+        { state: "error", reason: "Codex 原生进程已异常退出" }, null,
+      ]);
     } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
   });
 

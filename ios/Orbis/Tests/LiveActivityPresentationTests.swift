@@ -3,146 +3,163 @@ import XCTest
 @testable import OrbisCore
 
 final class LiveActivityPresentationTests: XCTestCase {
-    // SC111: Host identity is retained for every phase, never inferred from the
-    // Agent icon or the selected Host, and attention outranks running activities.
-    func testHostSourceAndPriorityRemainIndependentFromTaskState() {
-        let sources = NotificationSource.make([.init(hostId: "one", name: "Work Mac", pairingKey: "p")], language: "en")
-        let p = OrbisLiveActivityPresentation(state: state(), isStale: false, language: "en", hostId: "one", source: sources["one"])
-        XCTAssertEqual(p.source.name, "Work Mac")
-        XCTAssertTrue(p.sourceAccessibilityLabel.hasPrefix("Work Mac, "))
-        XCTAssertEqual(state().relevanceScore, 50)
-        var attention = state(); attention.phase = "attention"; attention.pendingCount = 1
-        XCTAssertEqual(attention.relevanceScore, 100)
-        var stale = state(); stale.phase = "stale"
-        XCTAssertEqual(stale.relevanceScore, 0)
-        let legacy = OrbisLiveActivityPresentation(state: state(), isStale: true, language: "en", hostId: "one")
-        XCTAssertTrue(legacy.source.name.hasPrefix("Computer "))
-        XCTAssertTrue(legacy.sourceAccessibilityLabel.contains("Update needed"))
-    }
     private let focus = String(repeating: "a", count: 64)
+    private let otherFocus = String(repeating: "b", count: 64)
+    private let reference = String(repeating: "c", count: 64)
     private func state(_ phase: String = "running", running: Int = 1, pending: Int = 0,
-                       outcome: String? = nil) -> OrbisLiveActivityState {
+                       outcome: String? = nil, sessions: Int? = nil) -> OrbisLiveActivityState {
         OrbisLiveActivityState(phase: phase, runningCount: running, pendingCount: pending,
-            focusKey: focus, agentKind: "codex", startedAt: 1_000, updatedAt: 139_000, outcome: outcome)
+            focusKey: focus, agentKind: "claude", startedAt: 1_000, updatedAt: 139_000, outcome: outcome, sessionCount: sessions)
     }
     private func presentation(_ state: OrbisLiveActivityState, stale: Bool = false) -> OrbisLiveActivityPresentation {
-        OrbisLiveActivityPresentation(state: state, isStale: stale, language: "zh-Hans")
+        OrbisLiveActivityPresentation(state: state, isStale: stale, language: "zh-Hans", hostId: "host")
     }
 
-    // LA-02: the compact single-session state uses confirmed approximate minutes,
-    // while a multi-session state replaces time with a count, never both numbers.
-    func testSingleAndMultipleCompactValuesUseDifferentSemantics() {
-        let single = presentation(state())
-        XCTAssertEqual(single.compactText, "约 2 分钟")
-        XCTAssertEqual(single.assetName, "AgentCodex")
-        XCTAssertNil(single.otherRunningText)
-        let multiple = presentation(state(running: 3))
-        XCTAssertEqual(multiple.compactText, "3 个")
-        XCTAssertEqual(multiple.assetName, "OrbisMark")
-        XCTAssertEqual(multiple.otherRunningCount, 2)
-        XCTAssertEqual(multiple.otherRunningText, "另有 2 个会话运行中")
+    // LIVE-ACTIVITY-02: the clock is absolute and compact; advancing Host
+    // freshness does not change it. Request counts do not masquerade as sessions.
+    func testStaticClockAndCompactAgentIdentity() throws {
+        let one = presentation(state())
+        XCTAssertEqual(one.compactAgent?.title, "Claude Code")
+        XCTAssertEqual(one.compactAgent?.assetName(dark: true), "AgentClaude")
+        let clock = try XCTUnwrap(one.compactText)
+        XCTAssertEqual(clock.count, 5)
+        XCTAssertTrue(clock.contains(":"))
+        XCTAssertEqual(one.startedText, try XCTUnwrap(one.clockText) + " 开始")
+        var heartbeat = state(); heartbeat.updatedAt += 600_000
+        XCTAssertEqual(presentation(heartbeat).compactText, clock)
+        XCTAssertEqual(presentation(heartbeat).startedText, one.startedText)
+        let singleWaiting = presentation(state("attention", running: 0, pending: 3, sessions: 1))
+        XCTAssertNotNil(singleWaiting.compactAgent)
+        XCTAssertNil(presentation(state("attention", running: 0, pending: 3, sessions: 2)).compactAgent)
+        let multiple = presentation(state(running: 2048))
+        XCTAssertNil(multiple.compactAgent)
+        XCTAssertEqual(multiple.compactText, "99+")
+        XCTAssertNil(multiple.startedText)
     }
 
-    // AGENT-MARK-01: use the OpenCode mark only for a non-stale single session;
-    // ActivityKit's aggregate and fallback states still use the Orbis mark.
-    func testOpenCodeUsesItsMarkOnDarkActivitySurface() {
-        var activity = state()
-        activity.agentKind = "opencode"
-        XCTAssertEqual(presentation(activity).assetName, "AgentOpenCodeDark")
-        XCTAssertTrue(presentation(activity).markUsesOriginalColors)
-        XCTAssertEqual(presentation(activity, stale: true).assetName, "OrbisMark")
-        activity.runningCount = 2
-        XCTAssertEqual(presentation(activity).assetName, "OrbisMark")
-        XCTAssertFalse(presentation(activity).markUsesOriginalColors)
-    }
-
-    // LA-03: waiting for a person takes visual priority; running sessions remain
-    // visible only in the expanded secondary summary.
-    func testAttentionWinsCompactCountAndKeepsOtherRunningSessions() {
-        let p = presentation(state("attention", running: 3, pending: 1))
+    // Pending and running totals are shown once. Compact leading announces only
+    // the source; trailing announces status. Minimal combines them once.
+    func testAttentionKeepsDistinctCountsAndRelevance() {
+        let p = presentation(state("attention", running: 3, pending: 1, sessions: 4))
+        XCTAssertEqual(p.headline, "1 项待处理 · 3 个运行中")
         XCTAssertEqual(p.compactText, "1")
-        XCTAssertTrue(p.isAttention)
-        XCTAssertEqual(p.headline, "1 项待处理")
-        XCTAssertEqual(p.otherRunningCount, 3)
-        XCTAssertEqual(p.otherRunningText, "另有 3 个会话运行中")
-        XCTAssertEqual(p.actionText, "查看请求")
+        XCTAssertEqual(p.state.relevanceScore, 100)
+        XCTAssertEqual(p.compactStatusAccessibilityLabel, p.headline)
+        XCTAssertEqual(p.sourceAccessibilityLabel, p.source.name + ", " + p.headline)
+        XCTAssertEqual(state().relevanceScore, 50)
+        XCTAssertEqual(state("stale").relevanceScore, 0)
     }
 
-    // LA-04: an expired/unsupported/invalid summary must not keep claiming the
-    // agent is running, or expose an elapsed counter or actionable approval.
-    func testStaleAndInvalidStatesStopMakingRunningClaims() {
-        var invalid = state(); invalid.version = 2
-        var negative = state(); negative.runningCount = -1
-        var invalidTime = state(); invalidTime.startedAt = 140_000
-        var invalidFocus = state(); invalidFocus.focusKey = "untrusted"
-        var invalidOutcome = state("stale"); invalidOutcome.outcome = "completed"
-        var tooMany = state(); tooMany.runningCount = 2049
-        for p in [presentation(state(), stale: true), presentation(invalid), presentation(negative),
-                  presentation(invalidTime), presentation(invalidFocus), presentation(invalidOutcome),
-                  presentation(tooMany), presentation(state("stale"))] {
-            XCTAssertTrue(p.isStale)
-            XCTAssertFalse(p.isAttention)
-            XCTAssertEqual(p.compactText, "—")
-            XCTAssertEqual(p.statusText, "状态待更新")
-            XCTAssertNil(p.elapsedText)
-            XCTAssertNil(p.otherRunningText)
+    // Invalid/out-of-date content does not claim a running task. An APNs end
+    // keeps its result even if surfaced with an old system staleness flag.
+    func testStaleAndTerminalHaveSeparateSemanticsAndSymbols() {
+        var unsupported = state(); unsupported.agentKind = "hermes"
+        var wrongCounts = state("attention", running: 2048, pending: 1, sessions: 2048)
+        for p in [presentation(state(), stale: true), presentation(unsupported), presentation(wrongCounts), presentation(state("stale"))] {
+            XCTAssertEqual(p.status, .stale)
+            XCTAssertEqual(p.headline, "待更新")
+            XCTAssertNil(p.compactText)
+            XCTAssertNil(p.startedAt)
         }
-    }
-
-    // LA-05: a generic end is not success, and a completed result remains
-    // terminal when ActivityKit marks an old lock-screen card stale.
-    func testTerminalOutcomeDoesNotInventSuccess() {
-        for (outcome, expected) in [("completed", "已完成"), ("failed", "执行失败"),
-                                    ("cancelled", "已取消"), ("unknown", "已结束")] {
+        wrongCounts = state(); wrongCounts.startedAt = 140_000
+        XCTAssertFalse(wrongCounts.isValid)
+        for (outcome, status, symbol) in [("completed", OrbisLiveActivityPresentation.Status.completed, "checkmark.circle.fill"),
+                                          ("failed", .failed, "xmark.circle.fill"), ("cancelled", .cancelled, "slash.circle"),
+                                          ("unknown", .ended, "minus.circle")] {
             let p = presentation(state("ended", running: 0, outcome: outcome), stale: true)
-            XCTAssertTrue(p.isEnded)
-            XCTAssertEqual(p.statusText, expected)
-            XCTAssertEqual(p.detail, "约 2 分钟")
-            XCTAssertNil(p.otherRunningText)
+            XCTAssertEqual(p.status, status)
+            XCTAssertEqual(p.statusSymbol, symbol)
+            XCTAssertNil(p.startedText)
         }
-        XCTAssertEqual(presentation(state("ended", running: 0)).statusText, "已结束")
     }
 
-    // LA-06: only the same opaque focus can recover a locally stored title.
-    // Focus changes through APNs fall back to a generic title without leaking
-    // or mislabelling the previous session.
-    func testLocalTitleIsBoundToExactFocus() {
-        XCTAssertEqual(OrbisLiveActivityPresentation(state: state(), isStale: false, language: "zh-Hans",
-            initialFocusKey: focus, initialTitle: "修复登录问题").title, "修复登录问题")
-        XCTAssertEqual(OrbisLiveActivityPresentation(state: state(), isStale: false, language: "zh-Hans",
-            initialFocusKey: String(repeating: "b", count: 64), initialTitle: "旧会话").title, "当前任务")
-        var noFocus = state(); noFocus.focusKey = nil
-        XCTAssertEqual(OrbisLiveActivityPresentation(state: noFocus, isStale: false, language: "en",
-            initialTitle: "Old session").title, "Current task")
+    // Same computer, different focus; same session, different computer; and
+    // same computer after re-pairing are three different display identities.
+    func testTitlesFollowFocusAndNeverCrossPairings() throws {
+        let oldKey = String(repeating: "1", count: 64)
+        var cache = LiveActivityDisplayCache()
+        cache.reconcile([.init(hostId: "host", name: "Rex's MacBook Pro", pairingKey: oldKey, pairingRef: reference)], language: "en")
+        cache.merge([.init(focusKey: focus, text: " First task\n "), .init(focusKey: otherFocus, text: "Second task")], hostId: "host", pairingRef: reference)
+        let attrs = OrbisLiveActivityAttributes(hostId: "host", pairingRef: reference)
+        func show(_ attrs: OrbisLiveActivityAttributes, _ state: OrbisLiveActivityState) -> OrbisLiveActivityPresentation {
+            cache.presentation(attributes: attrs, state: state, isStale: false, fallbackLanguage: "en")
+        }
+        XCTAssertEqual(show(attrs, state()).title, "First task")
+        XCTAssertEqual(show(attrs, state()).source.name, "Rex's MacBook Pro")
+        XCTAssertNil(show(attrs, state()).badge)
+        var next = state(); next.focusKey = otherFocus
+        XCTAssertEqual(show(attrs, next).title, "Second task")
+        XCTAssertNil(show(.init(hostId: "different-host", pairingRef: reference), state()).title)
+        XCTAssertNil(show(.init(hostId: "host", pairingRef: otherFocus), state()).title)
+        next.focusKey = nil
+        XCTAssertNil(show(attrs, next).title)
+        XCTAssertEqual(show(attrs, next).details, "Claude Code")
+
+        let legacy = OrbisLiveActivityAttributes(hostId: "host", pairingKey: oldKey, initialFocusKey: focus, initialTitle: "Legacy title")
+        XCTAssertEqual(show(legacy, state()).title, "First task")
+        cache.reconcile([.init(hostId: "host", name: "Same host, new pairing", pairingKey: "2", pairingRef: otherFocus)], language: "en")
+        cache.merge([.init(focusKey: focus, text: "Late old write")], hostId: "host", pairingRef: reference)
+        XCTAssertNil(show(attrs, state()).title)
+        XCTAssertNil(show(legacy, state()).title)
+        XCTAssertNil(show(.init(hostId: "host", pairingRef: otherFocus), state()).title)
     }
 
-    // LA-01: the Swift decoder accepts the server's complete nullable schema,
-    // and the serialized content cannot contain a local session title.
-    func testNullableWireSchemaRoundTripsWithoutPrivateTitle() throws {
+    // Compact Host markers are stable opaque codes, not a prefix of the user's
+    // computer name; same-named computers are distinguishable.
+    func testMultiComputerMarkersAreStableAndNamesStayInFullView() {
+        let inputs: [LiveActivityDisplayCache.Input] = [
+            .init(hostId: "one", name: "Mac mini", pairingKey: "1", pairingRef: reference),
+            .init(hostId: "two", name: "Mac mini", pairingKey: "2", pairingRef: otherFocus),
+            .init(hostId: "three", name: "王小明的MacBook Pro", pairingKey: "3", pairingRef: focus)
+        ]
+        var cache = LiveActivityDisplayCache(); cache.reconcile(inputs, language: "zh-Hans")
+        let badges = cache.hosts.mapValues(\.badge)
+        XCTAssertEqual(Set(badges.values.compactMap { $0 }).count, 3)
+        XCTAssertTrue(badges.values.compactMap { $0 }.allSatisfy { $0.count <= 6 })
+        XCTAssertEqual(cache.hosts["three"]?.source.name, "王小明的MacBook Pro")
+        cache.reconcile(Array(inputs.reversed()), language: "zh-Hans")
+        XCTAssertEqual(badges, cache.hosts.mapValues(\.badge))
+    }
+
+    func testReleasedAndPushStartAttributesAreDecodableWithoutPrivatePayloadFields() throws {
+        let released = Data("""
+        {"hostId":"host","language":"en","pairingKey":"\(reference)","initialTitle":"Old title","initialFocusKey":"\(focus)"}
+        """.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(OrbisLiveActivityAttributes.self, from: released).initialTitle, "Old title")
+        let start = Data("""
+        {"hostId":"host","pairingRef":"\(reference)","launchId":"00000000-0000-4000-8000-000000000001"}
+        """.utf8)
+        let attrs = try JSONDecoder().decode(OrbisLiveActivityAttributes.self, from: start)
+        XCTAssertNil(attrs.language)
+        XCTAssertNil(attrs.initialTitle)
+        XCTAssertEqual(LiveActivityOpenTarget(url: try XCTUnwrap(attrs.url(focusKey: focus)))?.focusKey, focus)
         let wire = """
         {"version":1,"phase":"running","runningCount":1,"pendingCount":0,"focusKey":null,
         "agentKind":null,"startedAt":null,"updatedAt":139000,"outcome":null}
         """
-        let state = try JSONDecoder().decode(OrbisLiveActivityState.self, from: Data(wire.utf8))
-        XCTAssertTrue(state.isValid)
-        XCTAssertNil(state.focusKey)
-        XCTAssertNil(presentation(state).elapsedText)
-        let data = try JSONEncoder().encode(state)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertNil(object["title"])
-        XCTAssertNil(object["initialTitle"])
-        XCTAssertNil(object["source"])
+        let parsed = try JSONDecoder().decode(OrbisLiveActivityState.self, from: Data(wire.utf8))
+        XCTAssertTrue(parsed.isValid)
+        XCTAssertNil(parsed.sessionCount)
+        XCTAssertNil(presentation(parsed).details)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(parsed)) as? [String: Any])
+        for field in ["title", "initialTitle", "source"] { XCTAssertNil(object[field]) }
     }
 
-    // LA-02: cap large compact counts, preserve full expanded counts, and use
-    // English singular copy without creating a timer-based duration view.
-    func testCompactCountCapAndEnglishSingular() {
-        let p = OrbisLiveActivityPresentation(state: state(running: 2048), isStale: false, language: "en")
-        XCTAssertEqual(p.compactText, "99+")
-        XCTAssertEqual(p.headline, "2048 running")
-        let two = OrbisLiveActivityPresentation(state: state(running: 2), isStale: false, language: "en")
-        XCTAssertEqual(two.otherRunningText, "1 other session running")
-        let one = OrbisLiveActivityPresentation(state: state(), isStale: false, language: "en")
-        XCTAssertEqual(one.elapsedText, "~2 min")
+    func testDisplayFileIsBoundedAndDropsRemovedPairings() throws {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let file = temp.appendingPathComponent("activity-display.json")
+        let inputs = (0..<32).map { LiveActivityDisplayCache.Input(hostId: "host-\($0)", name: "Mac",
+            pairingKey: reference, pairingRef: reference) }
+        var cache = LiveActivityDisplayCache(); cache.reconcile(inputs, language: "en")
+        let titles = (0..<64).map { LiveActivityDisplayCache.Title(focusKey: NotificationSource.digest("\($0)"), text: String(repeating: "🧭", count: 160)) }
+        for host in inputs { cache.merge(titles, hostId: host.hostId, pairingRef: reference) }
+        try cache.write(to: file, prioritizing: "host-31")
+        let restored = try XCTUnwrap(LiveActivityDisplayCache.read(from: file))
+        XCTAssertEqual(restored.hosts["host-31"]?.titles.first?.text.utf8.count, 256)
+        cache.reconcile([], language: "en")
+        try cache.write(to: file, prioritizing: nil)
+        XCTAssertEqual(LiveActivityDisplayCache.read(from: file)?.hosts.count, 0)
     }
 }

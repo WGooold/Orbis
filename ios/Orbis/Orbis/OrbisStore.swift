@@ -132,8 +132,8 @@ final class HostConnection: ObservableObject {
     private var sessionCatalogTaskID = UUID()
     private var runtimeIndex: [String: RuntimeSummary] = [:]
     @Published private(set) var messages: [ChatMessage] = [] { didSet { scheduleTranscript() } }
-    @Published private(set) var selectedRuntimeId: String? { didSet { directoryViewRevision &+= 1 } }
-    @Published private(set) var connection: ConnectionState = .offline { didSet { markHomeMetadataChanged(); directoryViewRevision &+= 1 } }
+    @Published private(set) var selectedRuntimeId: String? { didSet { directoryViewRevision &+= 1; notificationCleanupChanged.send() } }
+    @Published private(set) var connection: ConnectionState = .offline { didSet { markHomeMetadataChanged(); directoryViewRevision &+= 1; notificationCleanupChanged.send() } }
     @Published private(set) var activePath: String? { didSet { homeViewRevision &+= 1 } }
     @Published private(set) var feedback = FeedbackState()
     /// Read-only compatibility projection; every writer declares F3/F4 at the call site.
@@ -486,6 +486,13 @@ final class HostConnection: ObservableObject {
     /// 此快照只在当前配对的内存中保留，不把磁盘目录缓存当成本次在线会话。
     @Published private(set) var homePresentation: HomePresentation = .preparing { didSet { homeViewRevision &+= 1 } }
     private var homeDirectoryReceived = false { didSet { markHomeMetadataChanged() } }
+    // SC121: keep destructive notification reads separate from the cached home UI.
+    let notificationCleanupChanged = PassthroughSubject<Void, Never>()
+    private var notificationConnectionStartedAt = Date()
+    private var notificationDirectoryConfirmedAt: Date?
+    private var notificationDirectoryUpdates = 0
+    private var notificationOfflineRuntimes: Set<String> = []
+    private var replyNotificationCompletions: Set<ReplyNotificationCleanup.Turn> = []
     private var homeInputRevision = 0
     private var homeMetadataRevision = 0
     private var preparedSyncRevision = -1
@@ -547,6 +554,68 @@ final class HostConnection: ObservableObject {
     /// 独立于已展示列表的同步进度，只用于首页的小状态行。
     var homeRuntimesUpdating: Bool {
         connection != .secured || !homeDirectoryReceived || !runtimes.allSatisfy(homeFactsComplete)
+    }
+    func liveActivityInventoryComplete(_ eligibleRuntimes: [RuntimeSummary]) -> Bool {
+        connection == .secured && homeDirectoryReceived && eligibleRuntimes.allSatisfy(homeFactsComplete)
+    }
+
+    func replyNotificationFacts() -> ReplyNotificationCleanup.HostFacts? {
+        guard connection == .secured, homeDirectoryReceived, filteredReady == nil, notificationDirectoryUpdates == 0,
+              let directoryConfirmedAt = notificationDirectoryConfirmedAt else { return nil }
+        var facts = ReplyNotificationCleanup.HostFacts(generation: historyGeneration, approvals: notificationOfflineRuntimes.isEmpty ? [:] : nil,
+            approvalsConfirmedThrough: runtimes.isEmpty ? directoryConfirmedAt : nil)
+        let completionReady = !homeRuntimesUpdating
+        if completionReady {
+            facts.knownCompletions = replyNotificationCompletions
+            facts.localTurnStarts = replyCompletions.completedTurnStarts
+        }
+        for runtime in runtimes {
+            let id = runtime.runtimeId
+            let snapshot = agentState.snapshots[id]
+            if let session = runtime.sessionId, let snapshot, snapshot.sessionId == session, snapshot.error == nil, !snapshot.truncated {
+                if completionReady, !snapshot.pending.contains("execution"), snapshot.missing["execution"] == nil,
+                   let execution = snapshot.domains["execution"], execution.availability == "ready", execution.completeness == "complete",
+                   let turn = ReplyNotificationCleanup.Turn(runtime: id, session: session, value: execution.value["turn"]) {
+                    facts.latestTurns.append(turn)
+                }
+                if !snapshot.pending.contains("interactions"), snapshot.missing["interactions"] == nil,
+                   let approvals = snapshot.approvalInventory, let checked = approvals.confirmedAt {
+                    facts.approvals?[id] = approvals.pending
+                    facts.settledApprovals[id] = approvals.removed
+                    facts.approvalsConfirmedThrough = min(facts.approvalsConfirmedThrough ?? checked, checked)
+                    continue
+                }
+            }
+            // One unreconciled runtime is sufficient to withhold Host-wide absence.
+            facts.approvals = nil
+        }
+        if completionReady, historyWindowVisible, !isLaunchPage, let selected = selectedRuntime, let session = selected.sessionId,
+           !session.isEmpty, runtimes.filter({ $0.sessionId == session }).count <= 1 {
+            facts.viewedSessions.insert(session)
+            // An offline Codex selection can carry the catalog ID rather than the
+            // wire ID. Use the committed catalog alias only when it is unique.
+            if selectedOfflineSession != nil {
+                let live = runtimes.filter { $0.directorySessionId == session }
+                if live.count == 1, let wireSession = live[0].sessionId,
+                   runtimes.filter({ $0.sessionId == wireSession }).count == 1 { facts.viewedSessions.insert(wireSession) }
+            }
+        }
+        return facts
+    }
+
+    func recheckReplyNotificationApprovals() {
+        guard connection == .secured, homeDirectoryReceived, notificationDirectoryUpdates == 0 else { return }
+        for runtime in runtimes { agentState.subscribe(runtime: runtime, recheck: true) }
+    }
+
+    private func rememberReplyNotificationCompletions(_ turns: [ReplyNotificationCleanup.Turn]) {
+        let count = replyNotificationCompletions.count
+        replyNotificationCompletions.formUnion(turns)
+        guard replyNotificationCompletions.count != count else { return }
+        if replyNotificationCompletions.count > 512 {
+            replyNotificationCompletions = Set(replyNotificationCompletions.sorted { $0.startedAt > $1.startedAt }.prefix(512))
+        }
+        notificationCleanupChanged.send()
     }
     var homeCards: [HomeRuntimeCard] {
         guard case .ready(let cards) = homePresentation else { return [] }
@@ -930,7 +999,7 @@ final class HostConnection: ObservableObject {
     private let downloadBrowserPaths: DownloadBrowserPathStore
     let historyWorker: SessionHistoryWorker
     @Published private(set) var cachedSessionIds: Set<String> = []
-    @Published private(set) var selectedOfflineSession: SessionSummary?
+    @Published private(set) var selectedOfflineSession: SessionSummary? { didSet { notificationCleanupChanged.send() } }
     @Published private(set) var cachedHistoryOptions: [RuntimeOption] = []
     @Published private(set) var turnTimings: [String: SessionTurnTiming] = [:] { didSet { scheduleTranscript() } }
     @Published private(set) var chatTranscript = ChatTranscript.empty
@@ -1142,6 +1211,7 @@ final class HostConnection: ObservableObject {
         agentState.send = { [weak self] in self?.transport.send($0) ?? false }
         agentStateObservation = agentState.objectWillChange.sink { [weak self] _ in
             self?.markHomeMetadataChanged()
+            self?.notificationCleanupChanged.send()
             self?.objectWillChange.send()
         }
         notifications.send = { [weak self] in self?.transport.send($0) ?? false }
@@ -1151,6 +1221,11 @@ final class HostConnection: ObservableObject {
                   let projection = AgentProjection.make(runtime: self.runtimes[index], hostId: hostId, domains: domains,
                     commands: self.commands[runtimeId] ?? [], interactions: self.interactions[runtimeId] ?? [], queuedMessages: self.queuedMessages[runtimeId] ?? []) else { return false }
             self.runtimes[index] = projection.runtime
+            if let execution = domains["execution"], execution.availability == "ready", execution.completeness == "complete",
+               execution.value["turn"]["outcome"].string == "completed",
+               let turn = ReplyNotificationCleanup.Turn(runtime: runtimeId, session: sessionId, value: execution.value["turn"]) {
+                self.rememberReplyNotificationCompletions([turn])
+            }
             if domains["identity"]?.availability == "ready" { self.persistIdentity(projection.runtime) }
             self.commands[runtimeId] = projection.commands
             self.interactions[runtimeId] = projection.interactions
@@ -1392,6 +1467,8 @@ final class HostConnection: ObservableObject {
 
     private func connect(pairing: HostPairing, identity: DeviceIdentity) {
         homeDirectoryReceived = false
+        notificationConnectionStartedAt = Date(); notificationDirectoryConfirmedAt = nil
+        notificationDirectoryUpdates = 0; notificationOfflineRuntimes = []
         defaultSessionSpawnMode = "tui"
         importReady = false; finishExternalImport(.unconfirmed); finishExternalLaunch(.unconfirmed)
         connectionGeneration = UUID(); filteredReady = nil; resetAgentEnablement()
@@ -1445,7 +1522,10 @@ final class HostConnection: ObservableObject {
             guard let self, self.connectionGeneration == generation else { return }
             self.setHistoryConnection(state == .secured)
             // 断线时已写入的操作结果未知，列表类保持叠加（L4）；新连接的首个 device.ready 再核对。
-            if state != .secured { self.pendingSends.connectionLost(); self.ledgerCloseConnection(); self.replyCompletions.resetActive() }
+            if state != .secured {
+                if self.connection == .secured { self.notificationConnectionStartedAt = Date() }
+                self.pendingSends.connectionLost(); self.ledgerCloseConnection(); self.replyCompletions.resetActive()
+            }
             else { self.ledgerOpenConnection() }
             self.connection = state
             if state != .secured, self.browse?.forDownload == true, self.browse?.loading == true { self.dismissDownloadBrowser() }
@@ -1787,7 +1867,9 @@ final class HostConnection: ObservableObject {
     }
 
     func setHistoryWindowVisible(_ visible: Bool) {
+        let changed = visible != historyWindowVisible
         historyWindowVisible = visible
+        if changed { notificationCleanupChanged.send() }
         sendHistoryInterest()
         if !visible {
             for runtime in runtimes { cancelAutomaticHistoryReads(runtimeId: runtime.runtimeId) }
@@ -2150,7 +2232,7 @@ final class HostConnection: ObservableObject {
         await localStores.flush()
     }
 
-    private var incomingMessages: [(message: [String: Any], channel: String?, payload: Data?, ownership: UUID?)] = []
+    private var incomingMessages: [(message: [String: Any], channel: String?, payload: Data?, ownership: UUID?, directoryUpdate: Bool)] = []
     private var incomingBytes = 0
     private var inboundTask: Task<Void, Never>?
     private var admittedRuntimeSessions: [String: String] = [:]
@@ -2204,7 +2286,13 @@ final class HostConnection: ObservableObject {
         }
         fenceIncomingOwnership(message, channel: channel)
         let ownership = (message["runtimeId"] as? String).flatMap { runtimeOwnership[$0] }
-        incomingMessages.append((message, channel, payload, ownership)); incomingBytes += bytes
+        let directoryUpdate: Bool
+        switch message["type"] as? String {
+        case "device.ready", "runtime.online", "runtime.offline": directoryUpdate = channel != nil
+        default: directoryUpdate = false
+        }
+        if directoryUpdate { notificationDirectoryUpdates += 1; notificationCleanupChanged.send() }
+        incomingMessages.append((message, channel, payload, ownership, directoryUpdate)); incomingBytes += bytes
         guard inboundTask == nil else { return }
         let generation = connectionGeneration
         inboundTask = Task { [weak self] in
@@ -2214,6 +2302,9 @@ final class HostConnection: ObservableObject {
                 let item = self.incomingMessages.removeFirst()
                 self.incomingBytes -= item.payload?.count ?? 4096
                 await self.receive(item.message, channel: item.channel, payload: item.payload, ownership: item.ownership)
+                if item.directoryUpdate, generation == self.connectionGeneration {
+                    self.notificationDirectoryUpdates -= 1; self.notificationCleanupChanged.send()
+                }
                 await Task.yield()
             }
             if generation == self.connectionGeneration { self.inboundTask = nil }
@@ -3634,10 +3725,10 @@ final class HostConnection: ObservableObject {
             let supportsRender = features.contains(messageRenderFeature)
             let admittedOpenClaw = features.contains("agent.openclaw") && (message["deviceFeatures"] as? [String])?.contains("agent.openclaw") == true
             let admittedCodex = readyAdmitsCodexHistory(message)
-            if features.contains("device.features"), message["_orbisFilteredFallback"] == nil,
-               message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw ||
+            let filtered = features.contains("device.features") && (message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw ||
                features.contains(Self.agentEnablementFeature) && !readyAdmitsAgentEnablement(message) ||
-               features.contains(codexUnifiedHistoryFeature) && !admittedCodex {
+               features.contains(codexUnifiedHistoryFeature) && !admittedCodex)
+            if filtered, message["_orbisFilteredFallback"] == nil {
                 if filteredReady != nil { return }
                 let requested = deviceAgentFeatures(message)
                 if transport.send(["type": "device.features", "protocolVersion": orbisProtocolVersion, "features": requested]) {
@@ -3690,6 +3781,10 @@ final class HostConnection: ObservableObject {
             if let modelEpoch { authenticatedModelEpoch = modelEpoch }
             importReady = (message["hostFeatures"] as? [String])?.contains("external-import.target-v1") == true
             homeDirectoryReceived = true
+            // Older empty directories cannot retire an APNs alert that arrived
+            // during the handshake; the next ready/inventory can reconcile it.
+            notificationDirectoryConfirmedAt = filtered ? nil : notificationConnectionStartedAt
+            notificationOfflineRuntimes = []
             let selectedLeafChanged = next.first(where: { $0.runtimeId == selectedRuntimeId }).map { next in
                 runtimes.first(where: { $0.runtimeId == next.runtimeId })?.sessionLeafId != next.sessionLeafId
             } ?? false
@@ -3737,6 +3832,7 @@ final class HostConnection: ObservableObject {
             refreshSessions()
         case "runtime.online":
             if let object = message["runtime"] as? [String: Any], let incoming: RuntimeSummary = jsonDecode(object) {
+                notificationOfflineRuntimes.remove(incoming.runtimeId)
                 let runtime = reprojectRuntime(incoming)
                 if let index = runtimes.firstIndex(where: { $0.runtimeId == runtime.runtimeId }) {
                     if runtimes[index].sessionId != runtime.sessionId { invalidateConversation(runtime.runtimeId) }
@@ -3763,6 +3859,8 @@ final class HostConnection: ObservableObject {
             }
         case "runtime.offline":
             if let id = message["runtimeId"] as? String {
+                // Adapter loss is not proof that an outstanding request ended.
+                if runtimeIndex[id] != nil { notificationOfflineRuntimes.insert(id) }
                 pendingSends.runtimeLost(runtimeId: id, sessionId: runtimes.first { $0.runtimeId == id }?.sessionId)
                 runtimes.removeAll { $0.runtimeId == id }
                 ledgerAuthority(OperationKinds.runtimesDomain, read: nil, complete: false)
@@ -4406,6 +4504,10 @@ final class HostConnection: ObservableObject {
             cachedSessionIds.insert(storageId)
             if committed.epochChanged { timingsBySession[storageId] = [:] }
             for timing in committed.turnTimings { timingsBySession[storageId, default: [:]][timing.turnId] = timing }
+            rememberReplyNotificationCompletions(committed.turnTimings.compactMap { timing in
+                guard timing.durationMs != nil else { return nil }
+                return ReplyNotificationCleanup.Turn(runtime: runtime.runtimeId, session: sessionId, id: timing.turnId, startedAt: timing.startedAt)
+            })
             return committed
         } catch { return nil }
     }
@@ -4513,11 +4615,19 @@ final class HostConnection: ObservableObject {
             await contentWorker.remember(event, runtime: runtimeId)
             guard !Task.isCancelled, generation == historyGeneration,
                   branch == branchGenerations[runtimeId] ?? 0 else { return false }
+            let turn = ((event["live"] as? [String: Any])?["turn"] as? [String: Any])
+            if let turnId = turn?["turnId"] as? String, !turnId.isEmpty, turnId.utf16.count <= 256,
+               let startedAt = integer(turn?["startedAt"]), turn?["outcome"] as? String == "completed",
+               (event["source"] as? [String: Any])?["ready"] as? Bool == true,
+               (event["live"] as? [String: Any])?["complete"] as? Bool == true {
+                rememberReplyNotificationCompletions([.init(runtime: runtimeId, session: session, id: turnId, startedAt: startedAt)])
+            }
             if replyCompletions.consume(event, sessionId: session) {
+                notificationCleanupChanged.send()
                 #if canImport(UIKit) && canImport(UserNotifications)
                 if preferences != nil, !(historyWindowVisible && selectedRuntimeId == runtimeId),
                    let hostId = selectedHostId, let pairing = pairings.first(where: { $0.hostId == hostId }),
-                   let turnId = ((event["live"] as? [String: Any])?["turn"] as? [String: Any])?["turnId"] as? String,
+                   let turnId = turn?["turnId"] as? String,
                    let epoch = (event["source"] as? [String: Any])?["epoch"] as? String,
                    let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }) {
                     ReplyCompletionNotifications.shared.post(hostId: hostId, pairingKey: PushNotificationIdentity.pairingKey(pairing),

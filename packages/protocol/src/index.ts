@@ -24,6 +24,7 @@ import { ToolSummarySchema, ToolContentReadRequestSchema, ToolContentCancelSchem
   ToolInventoryPatchSchema, ToolInventoryChangedSchema, ToolInventoryProducedSchema, ToolInventoryReferenceSchema,
   ToolInventoryOpenRequestSchema, ToolInventoryOpenedSchema } from "./tool-activity.js";
 export * from "./notifications.js";
+export * from "./live-activity.js";
 export * from "./subscription-quota.js";
 export { RecoverableSessionSource } from "./session-source.js";
 export * from "./tool-activity.js";

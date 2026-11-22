@@ -5,6 +5,8 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { macDesktopCliCandidates, type MacDesktopCliOptions } from "./codex-desktop-macos.js";
+
 export type DesktopCli = { command: string; prefixArgs: string[] };
 export type DesktopCliCandidate = DesktopCli & { source: string };
 export type WindowsDesktopDiscovery = {
@@ -207,4 +209,35 @@ export async function windowsDesktopCliCandidates(env: NodeJS.ProcessEnv, option
   finally { digests.save(); }
   add(packaged, packaged === desktopOverride ? "ORBIS_CODEX_DESKTOP_CLI" : "desktop-package");
   return candidates;
+}
+
+export type DesktopCliOptions = WindowsDesktopCliOptions & MacDesktopCliOptions & { platform?: NodeJS.Platform };
+export type DesktopCliResolution = {
+  candidates: DesktopCliCandidate[];
+  /**
+   * The invocation was started by the Codex Desktop GUI whose CLI these candidates belong to. Only
+   * then may the wrapper publish its backend as the Desktop endpoint (ADR-0096).
+   */
+  fromDesktop: boolean;
+  /** Whether the caller is the Desktop could not be checked (macOS process table unreadable). */
+  uncertain?: string;
+};
+
+/**
+ * ADR-0096: the CLI that belongs to the launching Desktop, never a PATH or terminal CLI. Windows keeps
+ * the package/official-copy matching of ADR-0022; macOS uses the bundle among the process ancestors.
+ */
+export async function resolveDesktopCli(env: NodeJS.ProcessEnv, options: DesktopCliOptions = {}): Promise<DesktopCliResolution> {
+  const platform = options.platform ?? process.platform;
+  if (platform === "win32") return { candidates: await windowsDesktopCliCandidates(env, options), fromDesktop: true };
+  if (platform === "darwin") {
+    const resolved = await macDesktopCliCandidates(env, options);
+    return { candidates: resolved.candidates, fromDesktop: resolved.origin === "ancestor" || resolved.origin === "explicit",
+      ...(resolved.uncertain === undefined ? {} : { uncertain: resolved.uncertain }) };
+  }
+  // No Desktop exists here; an explicit CLI keeps development and isolated tests runnable.
+  const explicit = env.ORBIS_CODEX_REAL?.trim();
+  if (explicit && isFile(explicit)) return { candidates: [{ command: explicit, prefixArgs: [], source: "ORBIS_CODEX_REAL" }], fromDesktop: true };
+  options.log?.(explicit ? "ORBIS_CODEX_REAL 文件不存在：" + explicit : "当前平台没有 Codex 桌面版");
+  return { candidates: [], fromDesktop: false };
 }
