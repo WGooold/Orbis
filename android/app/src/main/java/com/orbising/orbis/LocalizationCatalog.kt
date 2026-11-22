@@ -427,6 +427,7 @@ internal object LocalizationCatalog {
         "允许会话访问网络。" to "Allows the session to access the network.",
         "允许修改当前工作目录及临时目录。切换范围会清除额外可写目录。" to "Allows editing the current working directory and temporary directories. Changing the scope clears additional writable directories.",
         "允许在工作区中编辑文件，需要时请求确认。" to "Allows file edits in the workspace and asks for approval when needed.",
+        "允许并自动接受本会话的后续编辑" to "Allow and accept future edits in this session",
         "允许相机权限" to "Allow camera access",
         "允许联网" to "Allow network access",
         "允许访问工作区外文件，仍受电脑账户权限限制。" to "Allows access to files outside the workspace, subject to computer account permissions.",
@@ -472,9 +473,9 @@ internal object LocalizationCatalog {
         "内容暂不可显示" to "Content cannot be displayed",
         "内容版本已变化，请关闭并重新打开详情" to "Content version changed. Close and reopen the details.",
         "内容版本已变化，请重新打开详情。" to "Content version changed. Reopen the details.",
-        "内容版本或范围不匹配，请重新打开详情。" to "Content version or range mismatch. Reopen the details.",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "内容版本或范围不匹配，请重新打开详情。" to "Content version or range mismatch. Reopen the details.",
         "内容缺口声明无效。" to "Invalid content gap declaration.",
         "内容范围不完整。" to "Incomplete content range.",
         "内容读取已过期，请关闭并重新打开详情" to "Content read expired. Close and reopen the details.",
@@ -624,9 +625,9 @@ internal object LocalizationCatalog {
         "取消" to "Cancel",
         "取消回答" to "Cancel answer",
         "取消导出" to "Cancel export",
-        "取消添加电脑" to "Cancel adding computer",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "取消添加电脑" to "Cancel adding computer",
         "取消请求" to "Cancel request",
         "取消配对" to "Unpair",
         "取消配对 {0}" to "Unpair {0}",
@@ -776,9 +777,9 @@ internal object LocalizationCatalog {
         "导出已取消。" to "Export cancelled.",
         "导出当前部分" to "Export this section",
         "导出达到 64 MiB 上限" to "Export reached the 64 MiB limit",
-        "导出达到 64 MiB 上限。" to "Export reached the 64 MiB limit.",
     )
     private fun part5(): Map<String, String> = mapOf(
+        "导出达到 64 MiB 上限。" to "Export reached the 64 MiB limit.",
         "将 {0} {1}。" to "{0} {1}.",
         "将切换 Host 配置，并重新加载后台 Agent。已有会话需要重新打开。" to "This changes the Host configuration and reloads the background Agent. Existing sessions must be reopened.",
         "将尝试关闭电脑上的 Codex 终端；不能确认所有后台任务都会停止。" to "This will try to close the Codex terminal on the computer. Some background tasks may continue.",
@@ -928,9 +929,9 @@ internal object LocalizationCatalog {
         "开始 {0}" to "Start {0}",
         "开始新的 Codex 会话" to "Start a new Codex session",
         "开始语音输入" to "Start voice input",
-        "异常" to "Error",
     )
     private fun part6(): Map<String, String> = mapOf(
+        "异常" to "Error",
         "引用来源暂不可显示" to "Source unavailable",
         "强制使用 QUIC；准备失败时保留当前连接并报告错误" to "Always use QUIC; if preparation fails, keep the current connection and report an error.",
         "强制使用 WS" to "Always use WS",
@@ -1080,9 +1081,9 @@ internal object LocalizationCatalog {
         "收到 hs2 但没有进行中的握手" to "Received hs2 with no active handshake",
         "收到不支持的中继服务器消息，请在电脑端检查协议版本" to "Unsupported relay message. Check the protocol version on the computer.",
         "收到无效的 Session graph 快照" to "Invalid session graph snapshot received",
-        "收到无效的 Session 历史快照" to "Invalid session history snapshot received",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "收到无效的 Session 历史快照" to "Invalid session history snapshot received",
         "收到无效的 Session 状态 patch" to "Invalid session state patch received",
         "收到无效的中继服务器消息" to "Invalid relay message received",
         "收到无效的会话历史快照" to "Received an invalid session history snapshot",
@@ -1232,9 +1233,9 @@ internal object LocalizationCatalog {
         "未捕获完整的轮次前后版本" to "Full before-and-after versions were not captured",
         "未接入" to "Not connected",
         "未收到新会话确认" to "No confirmation from the new session yet",
-        "未收到电脑确认" to "No confirmation from the computer yet",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "未收到电脑确认" to "No confirmation from the computer yet",
         "未核对" to "Not checked",
         "未生效" to "Not applied",
         "未知" to "Unknown",
@@ -1384,9 +1385,9 @@ internal object LocalizationCatalog {
         "正在更新供应商" to "Updating providers",
         "正在查询" to "Querying",
         "正在查询官方额度" to "Checking official quota",
-        "正在查询配额" to "Checking quota",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "正在查询配额" to "Checking quota",
         "正在校验" to "Verifying",
         "正在核对子任务状态，以下为最后已知信息" to "Checking subtask status. Showing the last known information.",
         "正在检查…" to "Checking…",
@@ -1536,9 +1537,9 @@ internal object LocalizationCatalog {
         "电脑没有报这个领域" to "The computer has not reported this domain",
         "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。" to "Orbis Host is not responding: the phone is connected to the relay, but the computer has not answered the encryption handshake.",
         "电脑端 Host 没有打开：这台手机已经连上中继，但电脑一直没有回应端到端加密握手。请在电脑上启动 Orbis Host，打开后 APP 会自动重新连上" to "Orbis Host is not responding to the secure handshake. Start Orbis Host on the computer. The app will reconnect automatically.",
-        "电脑端 Orbis 未打开，打开后会自动连接" to "Orbis is not open on your computer. Open it to connect automatically.",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "电脑端 Orbis 未打开，打开后会自动连接" to "Orbis is not open on your computer. Open it to connect automatically.",
         "电脑端不支持该命令" to "The computer does not support this command",
         "电脑端安全握手未响应，正在重新连接。" to "The computer did not answer the secure handshake. Reconnecting.",
         "电脑端已结束此交互" to "The computer ended this interaction",
@@ -1688,9 +1689,9 @@ internal object LocalizationCatalog {
         "行数未知" to "Line count unknown",
         "补充要求（可选）" to "Instructions (optional)",
         "补充说明（可选）" to "Additional notes (optional)",
-        "补齐历史无法保存，请重试。" to "Could not save catch-up history. Try again.",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "补齐历史无法保存，请重试。" to "Could not save catch-up history. Try again.",
         "补齐目标缺失" to "Catch-up target missing",
         "补齐范围未推进，请重试" to "Catch-up range made no progress. Try again.",
         "计划模式" to "Plan mode",
@@ -1840,9 +1841,9 @@ internal object LocalizationCatalog {
         "还有 {0} 个文件" to "{0} more files",
         "还有更新的没读" to "Newer records remain unread",
         "还有更早的历史" to "More history available",
-        "还没有供应商" to "No providers yet",
     )
     private fun part12(): Map<String, String> = mapOf(
+        "还没有供应商" to "No providers yet",
         "还没有可显示的会话" to "No sessions to display yet",
         "还没有已配对的电脑，无法下载" to "No paired computer. Cannot download.",
         "还没有已配对的电脑，无法继续下载" to "No paired computer. Cannot resume download.",
@@ -1992,9 +1993,9 @@ internal object LocalizationCatalog {
         "限制联网" to "Restrict network access",
         "随手机的浅色与深色自动切换" to "Match your phone’s light and dark appearance",
         "集合领域不是对象" to "Collection domain is not an object",
-        "雾蓝" to "Mist blue",
     )
     private fun part13(): Map<String, String> = mapOf(
+        "雾蓝" to "Mist blue",
         "需要切换 provider" to "Provider switch required",
         "需要时询问" to "Ask when required",
         "需要相机权限才能扫描配对二维码。" to "Camera access is required to scan a pairing QR code.",
@@ -2080,9 +2081,11 @@ internal object LocalizationCatalog {
         "会话权限预设",
         "会话正在执行任务或有待处理审批，请完成后再修改权限。",
         "何时申请审批",
+        "允许一次",
         "允许会话访问网络。",
         "允许修改当前工作目录及临时目录。切换范围会清除额外可写目录。",
         "允许在工作区中编辑文件，需要时请求确认。",
+        "允许并自动接受本会话的后续编辑",
         "允许联网",
         "允许访问工作区外文件，仍受电脑账户权限限制。",
         "允许读取文件；写入需要额外授权。",
@@ -2127,6 +2130,7 @@ internal object LocalizationCatalog {
         "当前设置",
         "恢复另一个 Codex 会话",
         "所有操作都不再询问",
+        "拒绝",
         "按需询问",
         "文件编辑直接执行，其他操作仍会询问",
         "文件范围未知",

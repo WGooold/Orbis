@@ -141,8 +141,11 @@ object OperationKinds {
     /** 回答摘要：确认结果、选项名或“已提交”；自由文本与敏感输入不回显（ADR-0049 §6.5）。 */
     fun confirmSummary(request: PendingInteraction, approved: Boolean) =
         if (approved) L10n.tr("已{0}", request.confirmLabel ?: L10n.tr("允许")) else L10n.tr("已{0}", request.cancelLabel ?: L10n.tr("拒绝"))
-    fun valueSummary(request: PendingInteraction, value: String) =
-        if (request.kind != "select" || request.secret) L10n.tr("已提交") else L10n.tr("已选择：{0}", request.options.firstOrNull { it.value == value }?.label ?: value)
+    fun valueSummary(request: PendingInteraction, value: String): String {
+        if (request.kind != "select" || request.secret) return L10n.tr("已提交")
+        val label = request.options.firstOrNull { it.value == value }?.label ?: value
+        return L10n.tr("已选择：{0}", if (request.extensionId == "claude-code") L10n.hostText(label) else label)
+    }
     fun valuesSummary(request: PendingInteraction, values: List<String>) =
         if (request.secret || values.isEmpty()) L10n.tr("已提交") else L10n.tr("已选择：") + values.joinToString(L10n.tr("、")) { value -> request.options.firstOrNull { it.value == value }?.label ?: value }
 

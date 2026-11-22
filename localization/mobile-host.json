@@ -1,5 +1,8 @@
 {
   "exact": {
+    "允许一次": "Allow once",
+    "允许并自动接受本会话的后续编辑": "Allow and accept future edits in this session",
+    "拒绝": "Deny",
     "权限设置尚未确认，请稍后重试": "Permissions are unconfirmed. Try again shortly.",
     "权限设置正在保存，请稍后重试": "Permission settings are being saved. Try again shortly.",
     "工作区写入": "Workspace write",

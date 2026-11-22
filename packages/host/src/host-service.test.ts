@@ -5922,7 +5922,7 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
       return await response.json() as Record<string, unknown>;
     };
     const hello = await post("/v1/claude/mods/hello", { type: "hello", instanceId: "tui-1", sessionId: "live-session", cwd: stateDir,
-      claudeVersion: "2.1.312", bridgeVersion: "4", interactive: true, configDir: config,
+      claudeVersion: "2.1.326", bridgeVersion: "4", interactive: true, configDir: config,
       capabilities: ["prompt.submit", "turn.abort", "session.append", "turn.start", "turn.complete", "turn.step.delta", "tool.call", "turn.step.identity", "agent.list"] });
     expect(hello).toMatchObject({ ok: true, runtimeId: "claude:live-session" });
     const generation = hello.generation as string;
@@ -5992,6 +5992,23 @@ describe("Claude Code TUI 接线（ADR-0033）", () => {
     await hookReply;
     expect(waiting).toMatchObject({ event: { metadata: { sessionGraphSync: true } } });
 
+
+    // CLAUDE-PERMISSION-01: the existing encrypted select/reply lane transports a scoped native mode update.
+    const modeReply = post("/v1/claude/hook", { hook_event_name: "PermissionRequest", session_id: "live-session",
+      cwd: stateDir, permission_mode: "default", tool_name: "Bash", tool_input: { command: "fixture-only-approval" } });
+    const approval = (await until(message => message.runtimeId === "claude:live-session" &&
+      (message.event as RuntimeEvent | undefined)?.type === "interaction.requested" &&
+      (message.event as Extract<RuntimeEvent, { type: "interaction.requested" }>).request.kind === "select", "Claude mode approval"))
+      .event as Extract<RuntimeEvent, { type: "interaction.requested" }>;
+    expect(approval.request).toMatchObject({ options: [{ value: "allow-once" }, { value: "allow-and-accept-edits" }, { value: "deny" }] });
+    device.sendPayload(Buffer.from(JSON.stringify({ type: "runtime.command", protocolVersion: PROTOCOL_VERSION, runtimeId: "claude:live-session",
+      commandId: "claude-mode-approval", command: { type: "interaction.respond", requestId: approval.request.requestId,
+        extensionId: approval.request.extensionId, response: { kind: "select", value: "allow-and-accept-edits" } } })));
+    expect(await modeReply).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow",
+      updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] } } });
+    const modeReceipt = await until(message => (message.event as { commandId?: string } | undefined)?.commandId === "claude-mode-approval" &&
+      (message.event as { status?: string }).status !== "pending", "Claude mode approval receipt");
+    expect(modeReceipt).toMatchObject({ event: { type: "command.result", ok: true, status: "success" } });
 
     // A refused bridge leaves a diagnostic instead of failing silently.
     expect(await post("/v1/claude/mods/hello", { type: "hello", instanceId: "old", sessionId: "old-session", cwd: stateDir,

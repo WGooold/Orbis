@@ -220,6 +220,14 @@ CLAUDE-QUESTION-RACE-03：v2.1.325 在显示问题框时还会为 AskUserQuestio
 
 部署与验收：未打包、未部署；需随新版 Host 与内置插件交付，在手机 App 上的人工验收待用户完成。
 
+### 22. 工具审批时接受后续编辑（2026-11-22，CLAUDE-PERMISSION-01）
+
+Claude Code 2.1.326 起，已识别的 Manual 主会话收到 `PermissionRequest` 时，手机可选择「允许一次」「允许并自动接受本会话的后续编辑」或「拒绝」。Host 只为第二项回传 `updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }]`。回执表示审批已交给原生 Hook；实际模式仍由 Claude 原生事件确认。不新增 Plan 入口或独立权限切换，也不修改启动默认值。
+
+请求按 runtime、extension、请求 ID、有效期与会话连接代次校验；断线、超时与电脑接管沿用原生处理路径。子 Agent、计划切换提示、模式未知或较旧版本继续显示原二选一。手机复用已发布的 `select` 事件和响应，不增协议字段；经典 Hook 原样透传，旧 Host 保留二选一。
+
+验证见 [Hook 单测](../../packages/host/src/claude-hook-bridge.test.ts)、[加密设备链路](../../packages/host/src/host-service.test.ts) 和 `.artifacts/claude-permission-approval-20261122/`。真实 Claude 2.1.326 隔离会话用新 Host 搭配同版及 Host 0.1.24 内置插件均确认模式变化与下一次免审批写入；回退到 Host 0.1.24 或配 Claude 2.1.325 时仍只允许当前工具。未部署，手机真机操作待用户验证。
+
 ## Alternatives not selected
 
 - **Agent SDK 执行后端**：适合独立管理会话，但不能替代附着到用户正在操作的 TUI；不作为自动回退。

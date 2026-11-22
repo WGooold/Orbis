@@ -5109,7 +5109,7 @@ internal fun InteractionPanel(
                                 contentInset = 12.dp,
                             ) {
                                 Column(Modifier.fillMaxWidth().heightIn(min = RemoteUi.TouchTarget).padding(12.dp)) {
-                                    Text(option.label)
+                                    Text(if (request.extensionId == "claude-code") L10n.hostText(option.label) else option.label)
                                     option.description?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                                 }
                             }

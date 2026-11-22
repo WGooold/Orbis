@@ -59,6 +59,15 @@ class LocalizationTest {
         assertEquals("1 个文件已更改", L10n.format("{0} 个文件已更改", listOf("1"), AppLanguage.Chinese))
     }
 
+    @Test fun claudeApprovalChoicesDistinguishOneCallFromFutureEdits() {
+        // CLAUDE-PERMISSION-01: the two allow choices must stay distinct in either language.
+        val acceptEdits = "允许并自动接受本会话的后续编辑"
+        assertEquals("Allow once", L10n.hostText("允许一次", AppLanguage.English))
+        assertEquals("Allow and accept future edits in this session", L10n.hostText(acceptEdits, AppLanguage.English))
+        assertEquals(acceptEdits, L10n.hostText(acceptEdits, AppLanguage.Chinese))
+        assertEquals("Deny", L10n.hostText("拒绝", AppLanguage.English))
+    }
+
     @Test fun hostUiCopyPreservesUnknownTextAndOpaqueValues() {
         // SC85: permission recovery is not presented as an active conversation.
         assertEquals("Permissions are unconfirmed. Try again shortly.", L10n.hostText("权限设置尚未确认，请稍后重试", AppLanguage.English))

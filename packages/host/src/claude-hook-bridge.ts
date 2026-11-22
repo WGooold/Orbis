@@ -15,7 +15,10 @@ type RuntimeStatus = "idle" | "running" | "waiting_local_interaction";
 export type ClaudeHookOutput = {
   hookSpecificOutput?: {
     hookEventName: "PermissionRequest";
-    decision: { behavior: ClaudeHookDecision; message?: string };
+    decision: { behavior: "deny"; message: string } | {
+      behavior: "allow";
+      updatedPermissions?: [{ type: "setMode"; mode: "acceptEdits"; destination: "session" }];
+    };
   } | {
     hookEventName: "PreToolUse";
     permissionDecision: ClaudeHookDecision;
@@ -25,6 +28,8 @@ export type ClaudeHookOutput = {
 };
 
 type HookKind = "PermissionRequest" | "AskUserQuestion";
+type PermissionChoice = "allow-once" | "allow-and-accept-edits" | "deny";
+type ResponseTarget = Pick<InteractionRequest, "runtimeId" | "extensionId">;
 
 /** A phone answer the Mods plugin returns as the native AskUserQuestion result. */
 export type ClaudeQuestionAnswer = { toolCallId: string; answers: Record<string, string> } | { toolCallId: string; deny: string };
@@ -45,6 +50,7 @@ type Pending = {
   fingerprint: string;
   rawToolInput: Record<string, unknown>;
   rawQuestions?: readonly unknown[];
+  modeUpdateGeneration?: string;
   abortCleanup: () => void;
   /** Registered by the Mods plugin, which keeps the native dialog open; it never blocks Claude Code. */
   raced?: true;
@@ -63,6 +69,8 @@ export type ClaudeHookBridgeOptions = {
   baseStatus?: (runtimeId: string) => RuntimeStatus | undefined;
   /** Explicit child Hooks can only use an already identified parent Session. */
   hasSession?: (runtimeId: string) => boolean;
+  /** Only advertise a session-wide change to a native version verified to apply it. */
+  acceptEditsApprovalGeneration?: (runtimeId: string) => string | undefined;
   onRuntimeOnline?: (runtime: RuntimeMetadata) => void;
   onRuntimeOffline?: (runtimeId: string, reason: string) => void;
   onEvent?: (runtimeId: string, event: RuntimeEvent) => void;
@@ -84,7 +92,7 @@ export class ClaudeHookBridge {
   readonly #options: ClaudeHookBridgeOptions;
   readonly #generation = randomUUID();
   readonly #pending = new Map<string, Pending>();
-  readonly #finished = new Map<string, { generation: string; fingerprint?: string; output: ClaudeHookOutput }>();
+  readonly #finished = new Map<string, { generation: string; target: ResponseTarget; fingerprint?: string; output: ClaudeHookOutput }>();
   readonly #sessions = new Map<string, ClaudeSession>();
   /** Raced questions by tool call: kept until the plugin reports the call finished, so a lost poll reply is resent. */
   readonly #raced = new Map<string, { runtimeId: string; agentId?: string; answer?: ClaudeQuestionAnswer }>();
@@ -180,9 +188,12 @@ export class ClaudeHookBridge {
     const requestId = `claude-hook:${randomUUID()}`;
     const timeoutMs = this.#timeoutMs();
     const expiresAt = Date.now() + timeoutMs;
-    const request = makeInteraction(parsed, runtimeId, requestId, expiresAt);
+    // CLAUDE-PERMISSION-01: only a verified main-session approval in Manual may change the mode.
+    const modeUpdateGeneration = parsed.hook === "PermissionRequest" && parsed.request.permission_mode === "default" &&
+      !childTranscript && parsed.agentId === undefined && parsed.toolName !== "EnterPlanMode" && parsed.toolName !== "ExitPlanMode"
+      ? this.#options.acceptEditsApprovalGeneration?.(runtimeId) : undefined;
+    const request = makeInteraction(parsed, runtimeId, requestId, expiresAt, modeUpdateGeneration !== undefined);
     const fingerprint = JSON.stringify({ hook: parsed.hook, sessionId: parsed.sessionId, request: parsed.request });
-    const requestWithExpiry = { ...request, expiresAt } as InteractionRequest;
     return await new Promise<ClaudeHookOutput>((resolve) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -193,7 +204,7 @@ export class ClaudeHookBridge {
         if (timer !== undefined) clearTimeout(timer);
         abortCleanup();
         this.#pending.delete(requestId);
-        this.#finished.set(requestId, { generation: this.#generation,
+        this.#finished.set(requestId, { generation: this.#generation, target: { runtimeId, extensionId: request.extensionId },
           ...(finishedFingerprint === undefined ? {} : { fingerprint: finishedFingerprint }), output });
         while (this.#finished.size > FINISHED_LIMIT) this.#finished.delete(this.#finished.keys().next().value!);
         if (reason !== undefined) this.#options.onEvent?.(runtimeId, { type: "interaction.cancelled", requestId, reason });
@@ -208,19 +219,20 @@ export class ClaudeHookBridge {
         return;
       }
       signal?.addEventListener("abort", onAbort, { once: true });
-      this.#pending.set(requestId, { request: requestWithExpiry, hook: parsed.hook, sessionId: parsed.sessionId, toolName: parsed.toolName,
+      this.#pending.set(requestId, { request, hook: parsed.hook, sessionId: parsed.sessionId, toolName: parsed.toolName,
         ...(parsed.agentId === undefined ? {} : { agentId: parsed.agentId }),
         ...(parsed.toolCallId === undefined ? {} : { toolCallId: parsed.toolCallId }),
         generation: this.#generation, settle: (output, responseFingerprint, reason) => {
           finish(output, responseFingerprint, reason);
         }, timer, fingerprint, rawToolInput: parsed.toolInput,
+        ...(modeUpdateGeneration === undefined ? {} : { modeUpdateGeneration }),
         ...(parsed.rawQuestions === undefined ? {} : { rawQuestions: parsed.rawQuestions }), abortCleanup, ...(raced ? { raced: true as const } : {}) });
-      this.#options.onEvent?.(runtimeId, { type: "interaction.requested", request: requestWithExpiry });
+      this.#options.onEvent?.(runtimeId, { type: "interaction.requested", request });
       this.#options.onEvent?.(runtimeId, { type: "runtime.status", status: "waiting_local_interaction" });
     });
   }
 
-  respond(requestId: string, generation: string, response: InteractionResponse): "accepted" | "duplicate" | "conflict" | "stale" | "unknown" {
+  respond(requestId: string, generation: string, response: InteractionResponse, target: ResponseTarget): "accepted" | "duplicate" | "conflict" | "stale" | "unknown" {
     const pending = this.#pending.get(requestId);
     const parsed = InteractionResponseSchema.safeParse(response);
     if (!parsed.success) return "conflict";
@@ -229,12 +241,23 @@ export class ClaudeHookBridge {
       const finished = this.#finished.get(requestId);
       if (finished === undefined) return "unknown";
       if (generation !== finished.generation) return "stale";
+      if (!sameTarget(finished.target, target)) return "conflict";
       return finished.fingerprint !== undefined && finished.fingerprint === fingerprint ? "duplicate" : "conflict";
     }
     if (generation !== pending.generation) return "stale";
+    if (!sameTarget(pending.request, target)) return "conflict";
+    if (Date.now() >= pending.request.expiresAt) {
+      pending.settle(passthrough(), undefined, "timeout");
+      return "conflict";
+    }
     const data = parsed.data;
+    let output: ClaudeHookOutput;
     if (pending.hook === "PermissionRequest") {
-      if (data.kind !== "confirm" && data.kind !== "cancel") return "conflict";
+      const choice = permissionChoice(pending.request, data);
+      if (choice === undefined || (choice === "allow-and-accept-edits" &&
+          (pending.modeUpdateGeneration === undefined ||
+           this.#options.acceptEditsApprovalGeneration?.(target.runtimeId) !== pending.modeUpdateGeneration))) return "conflict";
+      output = permissionOutput(choice);
     } else {
       if (data.kind === "cancel") {
         const output = denyQuestion("Claude Code 问题已取消");
@@ -243,10 +266,8 @@ export class ClaudeHookBridge {
       }
       if (data.kind !== "questionnaire") return "conflict";
       if (!validAnswers(pending.request, data)) return "conflict";
+      output = questionnaireOutput(pending.request, data.answers, pending.rawToolInput);
     }
-    const output = pending.hook === "PermissionRequest"
-      ? permissionOutput(data.kind === "confirm" && data.value)
-      : questionnaireOutput(pending.request, data.kind === "questionnaire" ? data.answers : [], pending.rawToolInput);
     const runtimeId = `claude:${pending.sessionId}`;
     this.#options.onEvent?.(runtimeId, { type: "interaction.resolved", requestId, source: "remote" });
     pending.settle(output, fingerprint);
@@ -361,11 +382,16 @@ function parseHookInput(input: unknown): ParsedHook | undefined {
   return undefined;
 }
 
-function makeInteraction(parsed: ParsedHook, runtimeId: string, requestId: string, expiresAt: number): InteractionRequest {
+function makeInteraction(parsed: ParsedHook, runtimeId: string, requestId: string, expiresAt: number, offerAcceptEdits: boolean): InteractionRequest {
   if (parsed.hook === "PermissionRequest") {
-    return { kind: "confirm", runtimeId, requestId, extensionId: "claude-code", title: `允许 Claude 使用 ${parsed.toolName}？`,
-      description: "Claude Code 请求工具权限。", toolName: parsed.toolName, argumentSummary: safeSummary(parsed.toolInput),
-      confirmLabel: "允许", cancelLabel: "拒绝", expiresAt };
+    const base = { runtimeId, requestId, extensionId: "claude-code", title: `允许 Claude 使用 ${parsed.toolName}？`,
+      description: "Claude Code 请求工具权限。", toolName: parsed.toolName, argumentSummary: safeSummary(parsed.toolInput), expiresAt };
+    if (offerAcceptEdits) return { ...base, kind: "select", options: [
+      { value: "allow-once", label: "允许一次" },
+      { value: "allow-and-accept-edits", label: "允许并自动接受本会话的后续编辑" },
+      { value: "deny", label: "拒绝" },
+    ] };
+    return { ...base, kind: "confirm", confirmLabel: "允许", cancelLabel: "拒绝" };
   }
   const questions = (parsed.toolInput.questions as unknown[]).map((question) => toQuestion(question));
   return { kind: "questionnaire", runtimeId, requestId, extensionId: "claude-code", title: "Claude Code 需要你的回答", description: "请回答 Claude Code 的问题。", questions, expiresAt };
@@ -462,8 +488,26 @@ function boundedText(value: string, max: number): boolean {
   return value.trim().length > 0 && value.length <= max;
 }
 
-function permissionOutput(allow: boolean): ClaudeHookOutput {
-  return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: allow ? "allow" : "deny", ...(allow ? {} : { message: "Orbis 拒绝了 Claude Code 工具权限请求" }) } } };
+function sameTarget(a: ResponseTarget, b: ResponseTarget): boolean {
+  return a.runtimeId === b.runtimeId && a.extensionId === b.extensionId;
+}
+
+function permissionChoice(request: InteractionRequest, response: InteractionResponse): PermissionChoice | undefined {
+  if (response.kind === "cancel") return "deny"; // Preserve the existing explicit-cancel decision.
+  if (request.kind === "confirm" && response.kind === "confirm") return response.value ? "allow-once" : "deny";
+  if (request.kind !== "select" || response.kind !== "select" || !request.options.some(option => option.value === response.value)) return undefined;
+  switch (response.value) {
+    case "allow-once": case "allow-and-accept-edits": case "deny": return response.value;
+    default: return undefined;
+  }
+}
+
+function permissionOutput(choice: PermissionChoice): ClaudeHookOutput {
+  return { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: choice === "deny"
+    ? { behavior: "deny", message: "Orbis 拒绝了 Claude Code 工具权限请求" }
+    : { behavior: "allow", ...(choice === "allow-and-accept-edits" ? {
+      updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
+    } : {}) } } };
 }
 
 function denyQuestion(reason: string): ClaudeHookOutput {

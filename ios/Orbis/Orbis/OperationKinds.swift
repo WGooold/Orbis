@@ -132,7 +132,8 @@ enum OperationKinds {
         case "confirm": return L10n.tr("已{0}", response["value"] as? Bool == true ? (request.confirmLabel ?? L10n.tr("允许")) : (request.cancelLabel ?? L10n.tr("拒绝")))
         case "select":
             guard request.secret != true, let value = response["value"] as? String else { return L10n.tr("已提交") }
-            return L10n.tr("已选择：") + label(value)
+            let selected = label(value)
+            return L10n.tr("已选择：") + (request.extensionId == "claude-code" ? L10n.hostText(selected) : selected)
         case "multi-select":
             guard request.secret != true, let values = response["values"] as? [String], !values.isEmpty else { return L10n.tr("已提交") }
             return L10n.tr("已选择：") + values.map(label).joined(separator: L10n.tr("、"))

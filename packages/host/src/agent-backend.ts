@@ -360,7 +360,8 @@ export class ClaudeBackend implements AgentBackend {
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
     if (!this.ownsRuntime(runtimeId)) return "offline";
     if (command.type === "interaction.respond") {
-      const result = this.#options.bridge.respond(command.requestId, this.#options.bridge.generation, command.response);
+      const result = this.#options.bridge.respond(command.requestId, this.#options.bridge.generation, command.response,
+        { runtimeId, extensionId: command.extensionId });
       if (result === "accepted") {
         this.#options.onCommandResult?.(runtimeId, { type: "command.result", commandId, ok: true, status: "success" });
         return "handled";

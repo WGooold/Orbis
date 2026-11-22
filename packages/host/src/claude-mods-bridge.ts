@@ -201,6 +201,11 @@ export class ClaudeModsBridge {
   isOnline(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   supportsTurnConfiguration(runtimeId: string): boolean { return this.#sessions.get(runtimeId)?.capabilities.has("configuration.turn") === true; }
   supportsPromptSendNow(runtimeId: string): boolean { return this.#sessions.get(runtimeId)?.capabilities.has("prompt.sendNow") === true; }
+  acceptEditsApprovalGeneration(runtimeId: string): string | undefined {
+    const session = this.#sessions.get(runtimeId);
+    // This is the first build verified to apply the classic Hook's session setMode reply.
+    return session !== undefined && supportsClaudeMods(session.claudeVersion, "2.1.326") ? session.generation : undefined;
+  }
   statusOf(runtimeId: string): RuntimeMetadata["status"] | undefined { return this.#sessions.get(runtimeId)?.runtime.status; }
   runtimeMetadata(): RuntimeMetadata[] { return [...this.#sessions.values()].map(session => session.runtime); }
   findLaunch(launchId: string, expectedSessionId: string): RuntimeMetadata | undefined {

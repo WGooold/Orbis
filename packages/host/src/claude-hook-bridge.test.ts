@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ClaudeHookBridge, ClaudeHookInputError } from "./claude-hook-bridge.js";
-import type { RuntimeEvent } from "@orbis/protocol";
+import { RuntimeEventSchema, type InteractionResponse, type RuntimeEvent } from "@orbis/protocol";
 
 const permission = (sessionId = "session-1") => ({
   hook_event_name: "PermissionRequest",
@@ -30,6 +30,12 @@ function interaction(events: RuntimeEvent[]): Extract<RuntimeEvent, { type: "int
   return event;
 }
 
+const target = (sessionId = "session-1") => ({ runtimeId: `claude:${sessionId}`, extensionId: "claude-code" });
+const acceptEdits = { kind: "select", value: "allow-and-accept-edits" } as const;
+function respond(bridge: ClaudeHookBridge, requestId: string, response: InteractionResponse) {
+  return bridge.respond(requestId, bridge.generation, response, target());
+}
+
 describe("ClaudeHookBridge", () => {
   it("holds PermissionRequest and returns the official allow decision", async () => {
     const events: RuntimeEvent[] = [];
@@ -38,7 +44,7 @@ describe("ClaudeHookBridge", () => {
     await Promise.resolve();
     const request = interaction(events).request;
     expect(request.kind).toBe("confirm");
-    expect(bridge.respond(request.requestId, bridge.generation, { kind: "confirm", value: true })).toBe("accepted");
+    expect(respond(bridge, request.requestId, { kind: "confirm", value: true })).toBe("accepted");
     await expect(pending).resolves.toEqual({
       hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } },
     });
@@ -51,9 +57,84 @@ describe("ClaudeHookBridge", () => {
     await Promise.resolve();
     const requestId = interaction(events).request.requestId;
     const response = { kind: "confirm" as const, value: false };
-    expect(bridge.respond(requestId, bridge.generation, response)).toBe("accepted");
-    expect(bridge.respond(requestId, bridge.generation, response)).toBe("duplicate");
+    expect(respond(bridge, requestId, response)).toBe("accepted");
+    expect(respond(bridge, requestId, response)).toBe("duplicate");
     await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { decision: { behavior: "deny" } } });
+  });
+
+  // CLAUDE-PERMISSION-01: only the explicit choice may attach a native session update.
+  it.each([
+    ["allow-once", { behavior: "allow" }],
+    ["deny", { behavior: "deny", message: "Orbis 拒绝了 Claude Code 工具权限请求" }],
+    [acceptEdits.value, { behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] }],
+  ] as const)("resolves the advertised %s choice on the same request and session", async (value, decision) => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ acceptEditsApprovalGeneration: () => "generation-1", onEvent: (_id, event) => events.push(event) });
+    const pending = bridge.accept({ ...permission(), permission_mode: "default" });
+    const request = interaction(events).request;
+    expect(RuntimeEventSchema.parse(interaction(events)).type).toBe("interaction.requested");
+    expect(request).toMatchObject({ kind: "select", ...target(), toolName: "Bash", options: [
+      { value: "allow-once" }, { value: acceptEdits.value }, { value: "deny" },
+    ] });
+    expect(bridge.pendingRequests(target().runtimeId)).toEqual([request]);
+    const response = { kind: "select", value } as const;
+    expect(bridge.respond(request.requestId, bridge.generation, response, target("wrong-session"))).toBe("conflict");
+    expect(bridge.respond(request.requestId, bridge.generation, response, { ...target(), extensionId: "wrong-extension" })).toBe("conflict");
+    expect(bridge.respond(request.requestId, "old-generation", response, target())).toBe("stale");
+    expect(respond(bridge, request.requestId, { kind: "select", value: "bypassPermissions" })).toBe("conflict");
+    expect(respond(bridge, request.requestId, { kind: "confirm", value: true })).toBe("conflict");
+    expect(respond(bridge, request.requestId, response)).toBe("accepted");
+    expect(respond(bridge, request.requestId, response)).toBe("duplicate");
+    expect(respond(bridge, request.requestId, { kind: "select", value: "differs" })).toBe("conflict");
+    expect(bridge.respond(request.requestId, bridge.generation, response, target("wrong-session"))).toBe("conflict");
+    await expect(pending).resolves.toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } });
+    expect(events.filter(event => event.type === "interaction.resolved")).toEqual([
+      { type: "interaction.resolved", requestId: request.requestId, source: "remote" },
+    ]);
+  });
+
+  // Never widen legacy, unknown, non-Manual, plan-dialog or subagent approvals.
+  it.each([
+    ["unverified native version", false, { permission_mode: "default" }],
+    ["absent native mode", true, {}],
+    ["Plan", true, { permission_mode: "plan" }],
+    ["Auto", true, { permission_mode: "auto" }],
+    ["Accept Edits", true, { permission_mode: "acceptEdits" }],
+    ["EnterPlanMode", true, { permission_mode: "default", tool_name: "EnterPlanMode" }],
+    ["ExitPlanMode", true, { permission_mode: "default", tool_name: "ExitPlanMode" }],
+    ["subagent", true, { permission_mode: "default", agent_id: "child" }],
+  ] as const)("keeps the binary approval for %s", async (_label, supported, nativeFields) => {
+    const events: RuntimeEvent[] = [];
+    const bridge = new ClaudeHookBridge({ hasSession: () => true, acceptEditsApprovalGeneration: () => supported ? "generation-1" : undefined,
+      onEvent: (_id, event) => events.push(event) });
+    const pending = bridge.accept({ ...permission(), ...nativeFields });
+    const { request } = interaction(events);
+    expect(request.kind).toBe("confirm");
+    expect(respond(bridge, request.requestId, acceptEdits)).toBe("conflict");
+    expect(respond(bridge, request.requestId, { kind: "confirm", value: true })).toBe("accepted");
+    await expect(pending).resolves.toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+  });
+
+  it("won't change mode if the session disconnects, changes generation, or the request expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const events: RuntimeEvent[] = [];
+      let generation: string | undefined = "generation-1";
+      const bridge = new ClaudeHookBridge({ acceptEditsApprovalGeneration: () => generation, timeoutMs: 10,
+        onEvent: (_id, event) => events.push(event) });
+      const pending = bridge.accept({ ...permission(), permission_mode: "default" });
+      const request = interaction(events).request;
+      expect(request.kind).toBe("select");
+      generation = undefined;
+      expect(respond(bridge, request.requestId, acceptEdits)).toBe("conflict");
+      generation = "generation-2";
+      expect(respond(bridge, request.requestId, acceptEdits)).toBe("conflict");
+      generation = "generation-1";
+      vi.setSystemTime(request.expiresAt);
+      expect(respond(bridge, request.requestId, acceptEdits)).toBe("conflict");
+      await expect(pending).resolves.toEqual({});
+      expect(events).toContainEqual({ type: "interaction.cancelled", requestId: request.requestId, reason: "timeout" });
+    } finally { vi.useRealTimers(); }
   });
 
   it("maps AskUserQuestion answers to the official PreToolUse updatedInput shape", async () => {
@@ -68,7 +149,7 @@ describe("ClaudeHookBridge", () => {
     const second = request.questions[1];
     if (first === undefined || second === undefined) throw new Error("expected two questions");
     expect(second).toMatchObject({ question: "备注？", allowOther: true, options: [] });
-    expect(bridge.respond(request.requestId, bridge.generation, {
+    expect(respond(bridge, request.requestId, {
       kind: "questionnaire",
       answers: [
         { id: first.id, values: ["dev"] },
@@ -88,8 +169,8 @@ describe("ClaudeHookBridge", () => {
     const pending = bridge.accept(ask());
     await Promise.resolve();
     const requestId = interaction(events).request.requestId;
-    expect(bridge.respond(requestId, bridge.generation, { kind: "questionnaire", answers: [] })).toBe("conflict");
-    expect(bridge.respond(requestId, bridge.generation, { kind: "confirm", value: true })).toBe("conflict");
+    expect(respond(bridge, requestId, { kind: "questionnaire", answers: [] })).toBe("conflict");
+    expect(respond(bridge, requestId, { kind: "confirm", value: true })).toBe("conflict");
     bridge.cancelRuntime("claude:session-1");
     await expect(pending).resolves.toEqual({});
   });
@@ -138,7 +219,7 @@ describe("ClaudeHookBridge", () => {
     const bridge = new ClaudeHookBridge({ onEvent: (_runtimeId, event) => events.push(event) });
     const pending = bridge.accept(ask());
     await Promise.resolve();
-    expect(bridge.respond(interaction(events).request.requestId, bridge.generation, { kind: "cancel" })).toBe("accepted");
+    expect(respond(bridge, interaction(events).request.requestId, { kind: "cancel" })).toBe("accepted");
     await expect(pending).resolves.toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
   });
 
@@ -163,11 +244,11 @@ describe("ClaudeHookBridge", () => {
     await Promise.resolve();
     const [a, b] = events.filter((event): event is Extract<RuntimeEvent, { type: "interaction.requested" }> => event.type === "interaction.requested");
     expect(bridge.runtimeMetadata()).toMatchObject([{ runtimeId: "claude:session-1", status: "waiting_local_interaction" }]);
-    bridge.respond(a!.request.requestId, bridge.generation, { kind: "confirm", value: true });
+    respond(bridge, a!.request.requestId, { kind: "confirm", value: true });
     await first;
     expect(bridge.runtimeIds()).toEqual(["claude:session-1"]);
     expect(offline).not.toHaveBeenCalled();
-    bridge.respond(b!.request.requestId, bridge.generation, { kind: "confirm", value: true });
+    respond(bridge, b!.request.requestId, { kind: "confirm", value: true });
     await second;
     expect(bridge.runtimeIds()).toEqual([]);
     expect(offline).toHaveBeenCalledWith("claude:session-1", "interaction_settled");
@@ -191,7 +272,7 @@ describe("ClaudeHookBridge", () => {
     expect(events).toContainEqual({ type: "interaction.resolved", requestId: firstRequest!.request.requestId, source: "local" });
     expect(bridge.pendingRequests("claude:session-1").map(request => request.requestId)).toEqual([otherRequest!.request.requestId]);
     // A late phone answer is refused; Claude already decided.
-    expect(bridge.respond(firstRequest!.request.requestId, bridge.generation, { kind: "confirm", value: true })).toBe("conflict");
+    expect(respond(bridge, firstRequest!.request.requestId, { kind: "confirm", value: true })).toBe("conflict");
     bridge.resolveLocally("claude:session-1");
     await expect(other).resolves.toEqual({});
     expect(bridge.runtimeIds()).toEqual([]);
@@ -225,7 +306,7 @@ describe("ClaudeHookBridge", () => {
 
     const [first, second] = request.questions;
     if (first === undefined || second === undefined) throw new Error("expected two questions");
-    expect(bridge.respond(request.requestId, bridge.generation, { kind: "questionnaire",
+    expect(respond(bridge, request.requestId, { kind: "questionnaire",
       answers: [{ id: first.id, values: ["prod"] }, { id: second.id, values: [], other: "none" }] })).toBe("accepted");
     // The answer is recorded once the settled Hook output resolves, before any later poll request.
     await new Promise(resolve => setImmediate(resolve));
@@ -276,7 +357,7 @@ describe("ClaudeHookBridge", () => {
     expect(events).toContainEqual({ type: "interaction.resolved", requestId: a, source: "local" });
     expect(bridge.pendingRequests("claude:session-1")).toHaveLength(2);
 
-    expect(bridge.respond(b!, bridge.generation, { kind: "cancel" })).toBe("accepted");
+    expect(respond(bridge, b!, { kind: "cancel" })).toBe("accepted");
     // The answer is recorded once the settled Hook output resolves, before any later poll request.
     await new Promise(resolve => setImmediate(resolve));
     expect(bridge.questionAnswers("claude:session-1")).toEqual([{ toolCallId: "toolu_b", deny: "Claude Code 问题已取消" }]);

@@ -976,6 +976,7 @@ export class HostService {
       hasRemoteDevice: () => [...this.#links.values()].some(link => link.active !== undefined),
       baseStatus: runtimeId => this.#claudeModsBridge.statusOf(runtimeId),
       hasSession: runtimeId => this.#claudeModsBridge.isOnline(runtimeId),
+      acceptEditsApprovalGeneration: runtimeId => this.#claudeModsBridge.acceptEditsApprovalGeneration(runtimeId),
       onRuntimeOnline: runtime => this.#registerClaudeRuntime(runtime),
       onRuntimeOffline: (runtimeId, reason) => this.#unregisterClaudeRuntime(runtimeId, reason),
       onEvent: (runtimeId, event) => this.#publishRuntimeEvent(runtimeId, event),

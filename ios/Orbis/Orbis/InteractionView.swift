@@ -372,7 +372,8 @@ private struct InteractionRequestView: View {
                     .orbisIconBaseline(OrbisTextSize.body)
                     .scaleEffect(selected ? 1 : 0.92).animation(.orbisPop, value: selected)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(option.label).font(.orbisBody(.medium))
+                    Text(request.extensionId == "claude-code" && request.kind == "select" ? L10n.hostText(option.label) : option.label)
+                        .font(.orbisBody(.medium))
                     if let description = option.description { Text(description).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.padding(12).frame(minHeight: 48)

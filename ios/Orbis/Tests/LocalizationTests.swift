@@ -79,6 +79,15 @@ struct LocalizationTests {
         #expect(!L10n.matches("Original backend detail", source: source))
     }
 
+    @Test func claudeApprovalChoicesDistinguishOneCallFromFutureEdits() {
+        // CLAUDE-PERMISSION-01: the two allow choices must stay distinct in either language.
+        let once = "允许一次", acceptEdits = "允许并自动接受本会话的后续编辑"
+        #expect(L10n.hostText(once, language: .english) == "Allow once")
+        #expect(L10n.hostText(acceptEdits, language: .english) == "Allow and accept future edits in this session")
+        #expect(L10n.hostText(acceptEdits, language: .chinese) == acceptEdits)
+        #expect(L10n.hostText("拒绝", language: .english) == "Deny")
+    }
+
     @Test func hostUiCopyIsLocalizedWithoutInterpretingPermissionsOrDynamicValues() {
         // SC85: permission recovery uses the same localized reason on controls and failed sends.
         #expect(L10n.hostText("权限设置尚未确认，请稍后重试", language: .english) == "Permissions are unconfirmed. Try again shortly.")
