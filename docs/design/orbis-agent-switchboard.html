@@ -1,0 +1,1983 @@
+<title>Agent 接线台</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Design plan: the Orbis design system itself (porcelain-mist slab, sage as the second material, paired soft shadows,
+   system type at 28/20/15/13/12, motion tokens shared with the native apps).
+   Layout: a lab strip (controls, live phone and desktop mocks sharing one simulated Host, protocol trace), then the spec on the same slab. */
+:root{
+  --surface-base:#e6ebf4;--surface-lift:#edf1f8;--surface-top:#f3f6fb;--highlight:#ffffff;--shade:#a6b2c6;--hairline:#c9d1de;--scrim:#2a3344;
+  --ink:#232a36;--ink-muted:#4a5364;--ink-faint:#737d90;--accent:#2f5287;--accent-soft:#d0d9e7;--on-accent:#ffffff;
+  --success:#1a6a4d;--warning:#845000;--danger:#ad241c;
+  --agent-pi:#8c3870;--agent-codex:#00655d;--agent-deepseek:#3550cf;--agent-claude:#9a4521;
+  --raised-sm:2px 2px 5px #a6b2c68c,-2px -2px 5px #ffffffe6;
+  --raised-md:4px 4px 10px #a6b2c68c,-4px -4px 10px #ffffffe6;
+  --raised-lg:8px 8px 22px #a6b2c68c,-8px -8px 22px #ffffffe6;
+  --inset-sm:inset 2px 2px 4px #a6b2c68c,inset -2px -2px 4px #ffffffe6;
+  --inset-md:inset 3px 3px 7px #a6b2c68c,inset -3px -3px 7px #ffffffe6;
+  --focus-halo:0 0 0 1px #2f528747,0 0 0 6px #2f52871a;--focus-ring:var(--accent);
+  --device:#1f242d;--island:#0b0d10;
+  --sans:system-ui,-apple-system,"SF Pro Text","PingFang SC",Roboto,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,"Roboto Mono","Cascadia Mono",Consolas,monospace;
+  --dur-press:80ms;--dur-release:160ms;--dur-state:160ms;--dur-panel:220ms;--dur-exit:160ms;--dur-page:320ms;--dur-loop:1100ms;--dur-orbit:560ms;
+  --ease-emphasized:cubic-bezier(.2,0,0,1);--ease-out:cubic-bezier(0,0,.2,1);--ease-in:cubic-bezier(.4,0,1,1);--ease-standard:cubic-bezier(.4,0,.2,1);--ease-pop:cubic-bezier(.34,1.4,.64,1);--ease-page:cubic-bezier(.32,.72,0,1);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --surface-base:#23262e;--surface-lift:#292d36;--surface-top:#2f333d;--highlight:#343946;--shade:#0a0c11;--hairline:#3a4150;--scrim:#05070a;
+  --ink:#dde1e9;--ink-muted:#b8c0ce;--ink-faint:#858d9c;--accent:#afc6e6;--accent-soft:#343944;--on-accent:#16233a;
+  --success:#84d6b3;--warning:#f2c26b;--danger:#ffb4ab;
+  --agent-pi:#f0a9d3;--agent-codex:#77d6c7;--agent-deepseek:#a9bbff;--agent-claude:#f0b48c;
+  --raised-sm:2px 2px 5px #0a0c11b3,-2px -2px 5px #343946cc;--raised-md:4px 4px 10px #0a0c11b3,-4px -4px 10px #343946cc;--raised-lg:8px 8px 22px #0a0c11b3,-8px -8px 22px #343946cc;
+  --inset-sm:inset 2px 2px 4px #0a0c11b3,inset -2px -2px 4px #343946cc;--inset-md:inset 3px 3px 7px #0a0c11b3,inset -3px -3px 7px #343946cc;
+  --focus-halo:0 0 0 1px #afc6e652,0 0 0 6px #afc6e61f;--device:#0c0e12;color-scheme:dark}}
+:root[data-theme="dark"]{
+  --surface-base:#23262e;--surface-lift:#292d36;--surface-top:#2f333d;--highlight:#343946;--shade:#0a0c11;--hairline:#3a4150;--scrim:#05070a;
+  --ink:#dde1e9;--ink-muted:#b8c0ce;--ink-faint:#858d9c;--accent:#afc6e6;--accent-soft:#343944;--on-accent:#16233a;
+  --success:#84d6b3;--warning:#f2c26b;--danger:#ffb4ab;
+  --agent-pi:#f0a9d3;--agent-codex:#77d6c7;--agent-deepseek:#a9bbff;--agent-claude:#f0b48c;
+  --raised-sm:2px 2px 5px #0a0c11b3,-2px -2px 5px #343946cc;--raised-md:4px 4px 10px #0a0c11b3,-4px -4px 10px #343946cc;--raised-lg:8px 8px 22px #0a0c11b3,-8px -8px 22px #343946cc;
+  --inset-sm:inset 2px 2px 4px #0a0c11b3,inset -2px -2px 4px #343946cc;--inset-md:inset 3px 3px 7px #0a0c11b3,inset -3px -3px 7px #343946cc;
+  --focus-halo:0 0 0 1px #afc6e652,0 0 0 6px #afc6e61f;--device:#0c0e12;color-scheme:dark}
+:root[data-material="sage"]{
+  --surface-base:#e0e7df;--surface-lift:#e8eee5;--surface-top:#f0f5ed;--highlight:#f8fbf5;--shade:#b2c0b0;--hairline:#c7d1c5;--scrim:#203626;
+  --ink:#2f4235;--ink-muted:#4f6153;--ink-faint:#6e7f6f;--accent:#41603f;--accent-soft:#d3dcd2;--on-accent:#ffffff;
+  --success:#1a6a4d;--warning:#845000;--danger:#ad241c;
+  --agent-pi:#8c3870;--agent-codex:#00655d;--agent-deepseek:#3550cf;--agent-claude:#9a4521;
+  --raised-sm:2px 2px 5px #b2c0b0a6,-2px -2px 5px #f8fbf5cc;--raised-md:4px 4px 10px #b2c0b0a6,-4px -4px 10px #f8fbf5cc;--raised-lg:8px 8px 22px #b2c0b0a6,-8px -8px 22px #f8fbf5cc;
+  --inset-sm:inset 2px 2px 4px #b2c0b0a6,inset -2px -2px 4px #f8fbf5cc;--inset-md:inset 3px 3px 7px #b2c0b0a6,inset -3px -3px 7px #f8fbf5cc;
+  --focus-halo:0 0 0 1px #41603f47,0 0 0 6px #41603f1a;--device:#26302a}
+@media (prefers-color-scheme:dark){:root[data-material="sage"]:not([data-theme="light"]){
+  --surface-base:#33393d;--surface-lift:#3a4246;--surface-top:#424b50;--highlight:#4a555a;--shade:#1c2427;--hairline:#4a5653;--scrim:#0b1214;
+  --ink:#eff3f0;--ink-muted:#bac7c2;--ink-faint:#8e9c97;--accent:#a9ddc1;--accent-soft:#414d4d;--on-accent:#173322;
+  --success:#8fddb8;--warning:#f2c26b;--danger:#ffb4ab;
+  --agent-pi:#f0a9d3;--agent-codex:#77d6c7;--agent-deepseek:#a9bbff;--agent-claude:#f0b48c;
+  --raised-sm:2px 2px 5px #1c2427b3,-2px -2px 5px #4a555ab3;--raised-md:4px 4px 10px #1c2427b3,-4px -4px 10px #4a555ab3;--raised-lg:8px 8px 22px #1c2427b3,-8px -8px 22px #4a555ab3;
+  --inset-sm:inset 2px 2px 4px #1c2427b3,inset -2px -2px 4px #4a555ab3;--inset-md:inset 3px 3px 7px #1c2427b3,inset -3px -3px 7px #4a555ab3;
+  --focus-halo:0 0 0 1px #a9ddc152,0 0 0 6px #a9ddc11f;--device:#101614;color-scheme:dark}}
+:root[data-material="sage"][data-theme="dark"]{
+  --surface-base:#33393d;--surface-lift:#3a4246;--surface-top:#424b50;--highlight:#4a555a;--shade:#1c2427;--hairline:#4a5653;--scrim:#0b1214;
+  --ink:#eff3f0;--ink-muted:#bac7c2;--ink-faint:#8e9c97;--accent:#a9ddc1;--accent-soft:#414d4d;--on-accent:#173322;
+  --success:#8fddb8;--warning:#f2c26b;--danger:#ffb4ab;
+  --agent-pi:#f0a9d3;--agent-codex:#77d6c7;--agent-deepseek:#a9bbff;--agent-claude:#f0b48c;
+  --raised-sm:2px 2px 5px #1c2427b3,-2px -2px 5px #4a555ab3;--raised-md:4px 4px 10px #1c2427b3,-4px -4px 10px #4a555ab3;--raised-lg:8px 8px 22px #1c2427b3,-8px -8px 22px #4a555ab3;
+  --inset-sm:inset 2px 2px 4px #1c2427b3,inset -2px -2px 4px #4a555ab3;--inset-md:inset 3px 3px 7px #1c2427b3,inset -3px -3px 7px #4a555ab3;
+  --focus-halo:0 0 0 1px #a9ddc152,0 0 0 6px #a9ddc11f;--device:#101614;color-scheme:dark}
+
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{background:var(--surface-base);color:var(--ink)}
+body{font:15px/24px var(--sans);-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;transition:background-color var(--dur-panel)}
+button{font:inherit;color:inherit;-webkit-tap-highlight-color:transparent}
+.ico{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none;display:block}
+.page{max-width:1480px;margin:0 auto;padding-block:40px 72px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:56px}
+.card{background:var(--surface-base);border-radius:24px;box-shadow:var(--raised-md)}
+[data-tone=success]{color:var(--success)}[data-tone=warning]{color:var(--warning)}[data-tone=danger]{color:var(--danger)}
+[data-tone=muted]{color:var(--ink-muted)}[data-tone=faint]{color:var(--ink-faint)}[data-tone=accent]{color:var(--accent)}
+
+/* ---------- document ---------- */
+.head{display:grid;gap:16px;max-width:980px}
+.eyebrow{font-size:13px;line-height:20px;color:var(--ink-muted);letter-spacing:.04em;display:flex;flex-wrap:wrap;gap:8px 16px}
+.eyebrow b{color:var(--accent);font-weight:600}
+.head h1{margin:0;font-size:40px;line-height:48px;font-weight:600;letter-spacing:-.01em;text-wrap:balance}
+.head p{margin:0;font-size:17px;line-height:28px;color:var(--ink-muted);max-width:68ch}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip-s{display:inline-flex;align-items:center;min-height:28px;padding:0 12px;border-radius:999px;box-shadow:var(--raised-sm);font-size:12px;line-height:18px;color:var(--ink-muted)}
+.sec{display:grid;gap:20px}
+.sec>h2{margin:0;font-size:20px;line-height:28px;font-weight:600}
+.sec>p.lead{margin:-8px 0 0;color:var(--ink-muted);max-width:72ch}
+.principles{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
+.pr{padding:20px;display:grid;gap:12px;align-content:start}
+.pr h3{margin:0;font-size:15px;line-height:24px;font-weight:600}
+.pr p{margin:0;font-size:14px;line-height:22px;color:var(--ink-muted)}
+.pr svg.ill{width:72px;height:72px}
+.tblwrap{overflow-x:auto;border-radius:24px;box-shadow:var(--raised-md)}
+.tbl{width:100%;min-width:640px;border-collapse:collapse;font-size:14px;line-height:22px}
+.tbl th{text-align:left;font-size:13px;line-height:20px;font-weight:600;color:var(--ink-muted);padding:16px 16px 10px}
+.tbl td{padding:12px 16px;vertical-align:top;border-top:1px solid var(--hairline)}
+.tbl td:first-child{font-weight:600;white-space:nowrap}
+.tbl td small{display:block;color:var(--ink-muted);font-size:13px;line-height:20px}
+.tbl code,.land code{font:12px/18px var(--mono);color:var(--ink-muted)}
+.zone{display:grid;grid-template-columns:372px minmax(0,1fr);gap:24px;align-items:center}
+.zonefig{width:min(372px,100%)}
+@media (max-width:1080px){.zone{grid-template-columns:minmax(0,1fr)}.zonefig{justify-self:center}}
+.land{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px}
+.land .card{padding:20px}
+.land h3{margin:0 0 8px;font-size:15px;line-height:24px}
+.land ul{margin:0;padding-left:18px;color:var(--ink-muted);font-size:14px;line-height:22px;display:grid;gap:6px}
+.land li b{color:var(--ink);font-weight:600}
+
+/* ---------- lab ---------- */
+.lab{display:grid;gap:24px}
+.ctl{padding:16px 20px;display:flex;flex-wrap:wrap;gap:16px 28px;align-items:center}
+.ctl-g{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ctl-l{font-size:12px;line-height:18px;color:var(--ink-muted);min-width:2em}
+.seg{display:inline-flex;gap:2px;padding:3px;border-radius:14px;box-shadow:var(--raised-sm)}
+.seg button{min-height:34px;padding:0 12px;border:0;border-radius:11px;background:none;color:var(--ink-muted);font-size:13px;cursor:pointer;transition:box-shadow var(--dur-state),color var(--dur-state)}
+.seg button[aria-pressed=true]{box-shadow:var(--inset-sm);color:var(--accent);font-weight:600}
+.tbtn{min-height:34px;padding:0 12px;border:0;border-radius:12px;background:var(--surface-base);box-shadow:var(--raised-sm);font-size:13px;color:var(--ink);cursor:pointer;transition:box-shadow var(--dur-press) var(--ease-emphasized),color var(--dur-state)}
+.tbtn:active,.tbtn[aria-pressed=true]{box-shadow:var(--inset-sm)}
+.tbtn[aria-pressed=true]{color:var(--accent);font-weight:600}
+.seg button:focus-visible,.tbtn:focus-visible,.btn:focus-visible,.disc:focus-visible,.lrow:focus-visible,.grow:focus-visible,.navb:focus-visible,.toast button:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.stagearea{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}
+.mocks{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;justify-content:center;flex:0 1 auto;min-width:0;max-width:100%}
+.mocks[data-platform=phone] .mock-desk,.mocks[data-platform=desk] .mock-phone{display:none}
+.mock{display:grid;gap:10px;min-width:0;max-width:100%}
+.mcap{font-size:12px;line-height:18px;color:var(--ink-muted);display:flex;gap:8px;align-items:center;padding-left:6px}
+.mcap b{color:var(--ink);font-weight:600}
+.dscroll{overflow-x:auto;max-width:calc(100% + 64px);padding:32px;margin:-32px}
+.side{flex:1 1 320px;min-width:min(100%,320px);display:grid;gap:20px;align-content:start}
+.notes{padding:20px;display:grid;gap:12px}
+.notes h3,.logc h3{margin:0;font-size:15px;line-height:24px;font-weight:600}
+.notes ul{margin:0;padding-left:18px;display:grid;gap:8px;font-size:14px;line-height:22px;color:var(--ink-muted)}
+.notes .tn{margin:0;font-size:13px;line-height:20px;color:var(--accent)}
+.logc{padding:20px;display:grid;gap:10px}
+.logh{display:flex;align-items:center;gap:8px}.logh h3{flex:1}
+.logh small{font-size:12px;color:var(--ink-muted)}
+.log{list-style:none;margin:0;padding:8px 10px;max-height:340px;overflow:auto;border-radius:12px;box-shadow:var(--inset-sm);font:12px/18px var(--mono)}
+.log li{display:grid;grid-template-columns:48px 116px minmax(0,1fr);gap:8px;padding:3px 0;color:var(--ink-muted)}
+.log li time{color:var(--ink-faint)}
+.log li .ln{color:var(--ink);white-space:nowrap}
+.log li[data-k=phone] .ln{color:var(--accent)}
+.log li[data-k=host] .ln{color:var(--success)}
+.log li[data-k=other] .ln{color:var(--warning)}
+.log li .lx{overflow-wrap:anywhere}
+.log:empty::before{content:"操作后这里会出现 agent.enablement 帧与接入投影";color:var(--ink-faint)}
+
+/* ---------- phone device ---------- */
+.device{width:390px;max-width:100%;height:844px;padding:10px;border-radius:58px;background:var(--device);box-shadow:var(--raised-lg)}
+.screen{position:relative;height:100%;border-radius:48px;overflow:hidden;background:var(--surface-base);isolation:isolate}
+.sbar{position:absolute;left:0;right:0;top:0;height:46px;display:flex;align-items:center;justify-content:space-between;padding:4px 30px 0;font:600 15px/20px var(--sans);z-index:6;pointer-events:none}
+.island{position:absolute;left:50%;top:11px;width:112px;height:32px;border-radius:20px;background:var(--island);transform:translateX(-50%)}
+.sbar-r{display:flex;gap:6px;align-items:center}
+.sbar-r i{display:block;background:var(--ink);border-radius:2px}
+.homebar{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:128px;height:5px;border-radius:3px;background:var(--ink);opacity:.35;z-index:60;pointer-events:none}
+.scr{position:absolute;left:0;right:0;top:46px;bottom:0;display:flex;flex-direction:column;background:var(--surface-base);transition:transform var(--dur-page) var(--ease-page)}
+.scr-agents{transform:translateX(100%);z-index:2}
+.screen[data-screen=agents] .scr-agents{transform:none;box-shadow:-12px 0 32px color-mix(in srgb,var(--scrim) 22%,transparent)}
+.screen[data-screen=agents] .scr-root{transform:translateX(-24%)}
+.abar{display:flex;align-items:center;gap:8px;min-height:56px;padding:0 16px;flex:none}
+.abar h2{flex:1;margin:0;font-size:20px;line-height:28px;font-weight:600}
+.disc{width:40px;height:40px;flex:none;border:0;border-radius:50%;background:var(--surface-base);box-shadow:var(--raised-md);display:grid;place-items:center;color:var(--ink-muted);cursor:pointer;transition:box-shadow var(--dur-press) var(--ease-emphasized)}
+.disc:active{box-shadow:var(--inset-sm)}
+.disc .ico{transition:transform var(--dur-press) var(--ease-emphasized)}
+.disc:active .ico{transform:scale(.94)}
+.hstrip{display:flex;align-items:center;gap:8px;padding:0 20px 6px;font-size:13px;line-height:20px;color:var(--ink-muted);flex:none;min-height:30px}
+.hstrip b{color:var(--ink);font-weight:600}
+.hstrip .ico{width:18px;height:18px}
+.hstrip small{margin-left:auto;font-size:12px;color:var(--ink-faint)}
+.pill{display:inline-flex;align-items:center;gap:6px;min-height:24px;padding:0 10px;border-radius:999px;box-shadow:var(--raised-sm);font-size:12px;line-height:18px;white-space:nowrap}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pane{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:0 16px 32px;scrollbar-width:none}
+.scroll{flex:1;overflow:auto;padding:0 20px 20px;scrollbar-width:none}
+.gtitle{margin:20px 4px 8px;font-size:13px;line-height:20px;color:var(--ink-muted)}
+.group{border-radius:24px;box-shadow:var(--raised-md);padding:2px 16px}
+.grow{display:flex;align-items:center;gap:12px;min-height:56px;width:100%;border:0;background:none;padding:0;text-align:left;color:var(--ink)}
+button.grow{cursor:pointer;border-radius:16px}
+button.grow:active{box-shadow:var(--inset-md)}
+.grow+.grow{border-top:1px solid var(--hairline)}
+.grow .gt{flex:1;min-width:0;display:flex;flex-direction:column}
+.grow .gt b{font-weight:600}
+.grow .gt small,.grow>small{font-size:13px;line-height:20px;color:var(--ink-muted)}
+.grow .ico{color:var(--ink-muted)}
+.grow .chv{width:16px;height:16px}
+.gglyph{width:40px;height:40px;border-radius:50%;box-shadow:var(--inset-sm);display:grid;place-items:center;flex:none}
+.tabbar{display:flex;justify-content:space-around;align-items:flex-start;height:78px;padding:6px 12px 0;flex:none}
+.tabbar span{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:12px;line-height:18px;color:var(--ink-muted);min-width:64px}
+.tabbar span.on{color:var(--accent);font-weight:600}
+
+/* ---------- desktop window ---------- */
+.win{position:relative;width:1000px;height:800px;border-radius:24px;overflow:hidden;background:var(--surface-base);box-shadow:var(--raised-lg);display:flex;flex-direction:column;isolation:isolate}
+.wbar{height:38px;display:flex;align-items:center;gap:12px;padding:0 16px;font-size:12px;color:var(--ink-muted);flex:none}
+.lights{display:flex;gap:7px}.lights i{width:11px;height:11px;border-radius:50%;box-shadow:var(--inset-sm)}
+.wbody{flex:1;display:flex;min-height:0}
+.dsb{width:200px;flex:none;padding:8px 12px 16px;display:flex;flex-direction:column;gap:4px}
+.brand{font-size:20px;line-height:28px;font-weight:600;padding:4px 12px 16px;letter-spacing:-.01em;color:var(--ink-muted);text-shadow:-0.9px -0.9px 0 color-mix(in srgb,var(--shade) 60%,transparent),0.9px 0.9px 0 color-mix(in srgb,var(--highlight) 92%,transparent)}
+.navb{display:flex;align-items:center;gap:12px;min-height:44px;padding:0 12px;border:0;border-radius:16px;background:none;color:var(--ink-muted);font-size:14px;cursor:pointer;text-align:left;transition:box-shadow var(--dur-state)}
+.navb .ico{width:20px;height:20px}
+.navb[aria-current=page]{box-shadow:var(--inset-sm);color:var(--accent);font-weight:600}
+.dhost{margin-top:auto;display:flex;align-items:center;gap:10px;padding:12px;border-radius:16px;box-shadow:var(--raised-sm);font-size:13px;line-height:20px}
+.dhost .ico{width:20px;height:20px;color:var(--ink-muted)}
+.dhost span{display:flex;flex-direction:column}
+.dhost b{font-weight:600}
+.dhost small{font-size:12px;line-height:18px}
+.dmain{flex:1;min-width:0;overflow:auto;padding:4px 24px 24px;scrollbar-width:thin}
+.dhead{display:flex;align-items:center;gap:10px;min-height:56px;margin-bottom:8px}
+.dhead h1{margin:0;flex:1;font-size:28px;line-height:34px;font-weight:600}
+.btn{min-height:40px;padding:0 14px;border:0;border-radius:12px;background:var(--surface-base);box-shadow:var(--raised-sm);font-size:13px;line-height:20px;color:var(--ink);cursor:pointer;white-space:nowrap;transition:box-shadow var(--dur-press) var(--ease-emphasized)}
+.btn:active{box-shadow:var(--inset-sm)}
+.card .btn{background:var(--surface-lift);box-shadow:none}
+.card .btn:active{background:var(--surface-base);box-shadow:var(--inset-sm)}
+.btn.pri{color:var(--accent);font-weight:600}
+.btn.danger{color:var(--danger);font-weight:600}
+.ogrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:20px;align-items:start}
+.ocard{padding:20px;display:grid;gap:14px}
+.ocard h3{margin:0;font-size:15px;line-height:24px;font-weight:600}
+.ohead{display:flex;align-items:center;gap:8px}.ohead h3{flex:1}
+.onodes{display:flex;align-items:center;gap:12px;color:var(--ink-muted)}
+.onodes .nd{width:44px;height:44px;border-radius:50%;box-shadow:var(--inset-sm);display:grid;place-items:center}
+.onodes .ln2{flex:1;height:2px;border-radius:1px;background:var(--hairline)}
+.ocard p{margin:0;font-size:13px;line-height:20px;color:var(--ink-muted)}
+.obody{display:flex;gap:20px;align-items:center}
+.olist{list-style:none;margin:0;padding:0;flex:1;min-width:0;display:grid;gap:2px}
+.olist li{display:flex;align-items:center;gap:10px;min-height:40px;font-size:13px;line-height:20px}
+.olist li b{font-weight:600;flex:1;min-width:0}
+.olist .om{width:28px;height:28px;border-radius:50%;box-shadow:var(--inset-sm);display:grid;place-items:center;color:var(--tone);flex:none}
+.olist .om svg{width:15px;height:15px}.olist .om .glyph{font-size:12px}
+.dother{display:grid;place-items:center;height:100%;color:var(--ink-faint);font-size:14px}
+.legacy-cover{position:absolute;inset:38px 0 0;z-index:70;display:grid;place-items:center;background:color-mix(in srgb,var(--surface-base) 86%,transparent);backdrop-filter:blur(2px)}
+.legacy-cover div{padding:20px 24px;max-width:360px;font-size:14px;line-height:22px;color:var(--ink-muted)}
+.legacy-cover b{display:block;color:var(--ink);font-size:15px;margin-bottom:4px}
+
+/* ---------- intent switch, inspector, ladder, list ---------- */
+.isw{flex:none;display:grid;place-items:center;width:60px;height:48px;padding:0;border:0;background:none;cursor:pointer}
+.isw-t{position:relative;display:block;width:52px;height:28px;border-radius:999px;box-shadow:var(--inset-sm)}
+.isw-k{position:absolute;left:2px;top:2px;width:24px;height:24px;border-radius:50%;background:var(--surface-base);box-shadow:var(--raised-sm);display:grid;place-items:center;transition:transform var(--dur-state) var(--ease-emphasized),background-color var(--dur-state),box-shadow var(--dur-state)}
+.isw-k::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--ink-faint);transition:background-color var(--dur-state)}
+.isw.on .isw-k{transform:translateX(24px)}
+.isw.on .isw-k::after,.isw.pend .isw-k::after{background:var(--accent)}
+.isw.pend .isw-k{background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)}
+.isw.q .isw-k{box-shadow:none;outline:1.5px dashed var(--accent);outline-offset:-1.5px}
+.isw-arc{position:absolute;left:-4px;top:-4px;width:32px;height:32px;fill:none;stroke:var(--accent);stroke-width:2;stroke-linecap:round;stroke-dasharray:22 100;opacity:0}
+.isw.pend:not(.q) .isw-arc{opacity:1;animation:spin var(--dur-loop) linear infinite}
+.isw.locked{cursor:not-allowed}
+.isw.locked .isw-t{box-shadow:none;outline:1px solid var(--hairline);outline-offset:-1px}
+.isw.locked .isw-k{box-shadow:none;outline:1px solid var(--hairline);outline-offset:-1px}
+.isw.locked .isw-k::after{background:var(--ink-faint)}
+.isw:focus-visible{outline:none}.isw:focus-visible .isw-t{outline:2px solid var(--focus-ring);outline-offset:2px}
+.insp{padding:16px;display:flex;flex-direction:column;gap:14px;touch-action:pan-y}
+.ih{display:flex;align-items:center;gap:12px}
+.im{width:44px;height:44px;border-radius:50%;box-shadow:var(--inset-sm);display:grid;place-items:center;flex:none;color:var(--tone);padding:11px;transition:opacity var(--dur-state)}
+.im.off{opacity:.5}
+.im .glyph{font-size:18px}
+.it{flex:1;min-width:0;display:flex;flex-direction:column}
+.iname{font-size:15px;line-height:24px;font-weight:600;color:var(--tone)}
+.istate{font-size:13px;line-height:20px;display:flex;align-items:center;gap:2px;min-height:20px}
+.iinfo{width:28px;height:28px;margin:-4px 0;border:0;background:none;border-radius:50%;display:grid;place-items:center;color:var(--ink-muted);cursor:pointer}
+.iinfo .ico{width:16px;height:16px}
+.ladder{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(4,1fr)}
+.step{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;font-size:12px;line-height:18px;color:var(--ink-faint)}
+.step::before{content:"";position:absolute;top:8px;right:calc(50% + 12px);width:calc(100% - 24px);height:2px;border-radius:1px;background:var(--hairline)}
+.step:first-child::before{display:none}
+.step[data-s=done]::before,.step[data-s=warn]::before,.step[data-s=error]::before,.step[data-s=hold]::before{background:var(--ink-faint)}
+.node{position:relative;width:18px;height:18px;border-radius:50%;box-shadow:var(--inset-sm);display:grid;place-items:center}
+.node::after{content:"";width:8px;height:8px;border-radius:50%;background:transparent;transition:background-color var(--dur-state)}
+.node .arc2{position:absolute;left:-3px;top:-3px;width:24px;height:24px;fill:none;stroke:var(--accent);stroke-width:2;stroke-linecap:round;stroke-dasharray:16 100;opacity:0}
+.step[data-s=done]{color:var(--ink-muted)}
+.step[data-s=done] .node::after{background:var(--success)}
+.step[data-s=warn]{color:var(--warning);font-weight:600}.step[data-s=warn] .node::after{background:var(--warning)}
+.step[data-s=error]{color:var(--danger);font-weight:600}.step[data-s=error] .node::after{background:var(--danger)}
+.step[data-s=hold]{color:var(--ink-muted);font-weight:600}.step[data-s=hold] .node::after{background:var(--ink-faint)}
+.step[data-s=active]{color:var(--accent);font-weight:600}.step[data-s=active] .node .arc2{opacity:1;animation:spin var(--dur-loop) linear infinite}
+.ifacts{display:flex;flex-direction:column;gap:12px}
+.ifacts:empty{display:none}
+.sess{display:grid;gap:2px;padding:8px 12px;border-radius:12px;box-shadow:var(--inset-sm)}
+.sess div{display:flex;align-items:center;gap:10px;min-height:28px;font-size:13px;line-height:20px}
+.adot{width:8px;height:8px;border-radius:50%;background:var(--success);flex:none}
+.twin{display:flex;align-items:center;gap:10px;font-size:12px;line-height:18px;color:var(--ink-muted);flex-wrap:wrap}
+.tchip{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 12px 0 6px;border:0;border-radius:999px;background:var(--surface-lift);font-size:13px;line-height:20px;color:var(--ink);cursor:pointer}
+.tchip .tm{width:20px;height:20px;display:grid;place-items:center;color:var(--tone)}
+.tchip .tm svg{width:16px;height:16px}
+.tchip em{font-style:normal;font-size:12px}
+.ferr{margin:0;font-size:13px;line-height:20px;color:var(--danger)}
+.dset{display:flex;flex-direction:column}
+.kv{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;font-size:13px;line-height:20px;border-top:1px solid var(--hairline)}
+.kv>span:first-child{color:var(--ink-muted)}
+.kv .isw{height:40px}
+.fix{display:flex;align-items:center;gap:12px;padding:6px 6px 6px 14px;border-radius:12px;box-shadow:var(--inset-sm);font-size:13px;line-height:20px;margin-bottom:8px}
+.fix>span{flex:1;color:var(--warning);font-weight:600}
+.fix.err>span{color:var(--danger)}.fix.hold>span{color:var(--ink-muted)}
+.fld{display:grid;gap:4px;padding:6px 0;font-size:12px;line-height:18px;color:var(--ink-muted)}
+.fld input{height:44px;border:0;border-radius:12px;background:var(--surface-base);box-shadow:var(--inset-md);padding:0 12px;color:var(--ink);font:13px var(--mono);outline:none;min-width:0}
+.fld input:focus{box-shadow:var(--inset-md),var(--focus-halo)}
+.acts{display:flex;flex-wrap:wrap;gap:8px;padding-top:10px}
+
+/* ---------- switchboard ---------- */
+.board{position:relative;border-radius:24px;background:var(--surface-base);box-shadow:var(--raised-md);user-select:none;-webkit-user-select:none}
+.board[data-axis=x]{display:flex;flex-direction:column;padding:6px 6px 6px 8px}
+.board[data-axis=y]{display:grid;grid-template-columns:repeat(var(--cols,10),minmax(0,1fr));padding:12px 8px 14px}
+.lane{position:relative;isolation:isolate;--lane-bg:var(--surface-base)}
+.lane.tw{--lane-bg:var(--surface-lift);background:var(--lane-bg)}
+.board[data-axis=x] .lane{display:grid;grid-template-columns:var(--plate-w,172px) minmax(0,1fr) 16px;column-gap:6px;align-items:center;height:56px;padding-right:2px}
+.board[data-axis=x] .lane.tw-a{border-radius:16px 16px 0 0}
+.board[data-axis=x] .lane.tw-b{border-radius:0 0 16px 16px}
+.board[data-axis=y] .lane{display:grid;grid-template-rows:16px minmax(0,1fr) auto;row-gap:8px;justify-items:center;height:var(--lane-h,316px);padding:8px 0 4px}
+.board[data-axis=y] .lane.tw-a{border-radius:16px 0 0 16px}
+.board[data-axis=y] .lane.tw-b{border-radius:0 16px 16px 0}
+.board[data-axis=y] .lamp{grid-row:1}
+.board[data-axis=y] .groove{grid-row:2}
+.board[data-axis=y] .plate{grid-row:3}
+
+.plate{position:relative;z-index:3;display:flex;align-items:center;gap:8px;min-width:0;width:100%;border:0;background:none;padding:4px 2px 4px 2px;border-radius:16px;color:var(--ink);text-align:left;cursor:pointer;transition:box-shadow var(--dur-press) var(--ease-emphasized),background-color var(--dur-state) var(--ease-out)}
+.board[data-axis=y] .plate{flex-direction:column;gap:6px;padding:6px 2px 4px;text-align:center;border-radius:12px}
+.plate:active{box-shadow:var(--inset-sm)}
+@media (hover:hover){.plate:hover{background:var(--surface-lift)}.lane.tw .plate:hover{background:var(--surface-top)}}
+.lane.sel .plate{box-shadow:var(--inset-sm)}
+.pm{position:relative;width:36px;height:36px;flex:none;border-radius:50%;box-shadow:var(--inset-sm);display:grid;place-items:center;color:var(--tone);padding:9px}
+.pm>svg{width:18px;height:18px;transition:opacity var(--dur-state)}
+.pm .glyph{font-size:15px;line-height:1;font-weight:600;transition:opacity var(--dur-state)}
+.lane.off .pm>svg,.lane.off .pm .glyph{opacity:.5}
+.pb{position:absolute;right:-5px;bottom:-5px;width:18px;height:18px;border-radius:50%;background:var(--lane-bg);box-shadow:var(--raised-sm);display:grid;place-items:center;color:var(--ink-muted)}
+.pb .ico{width:11px;height:11px;stroke-width:2.2}
+.ptx{display:flex;flex-direction:column;min-width:0}
+.pn{font-size:13px;line-height:20px;font-weight:600;color:var(--tone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pw{font-size:12px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color var(--dur-state)}
+.board[data-axis=y] .pn{font-size:12px;line-height:16px;white-space:normal;min-height:32px;display:flex;align-items:center;justify-content:center}
+
+.groove{position:relative;border-radius:999px;box-shadow:var(--inset-sm);display:flex;align-items:center;justify-content:flex-end;padding:2px}
+.board[data-axis=x] .groove{height:32px}
+.board[data-axis=y] .groove{width:32px;height:100%;flex-direction:column;justify-content:flex-start}
+.jack{position:relative;z-index:3;width:28px;height:28px;flex:none;border-radius:50%;background:var(--lane-bg);box-shadow:var(--inset-md);display:grid;place-items:center;transition:box-shadow var(--dur-state) var(--ease-out)}
+.jack i{width:10px;height:10px;border-radius:50%;box-shadow:var(--inset-sm)}
+.jack.magnet{box-shadow:var(--inset-md),var(--focus-halo)}
+.lane.seat .jack{animation:seat 440ms var(--ease-out)}
+@keyframes seat{35%{box-shadow:var(--inset-md),0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent),0 0 0 9px color-mix(in srgb,var(--accent) 12%,transparent)}}
+
+.lamp{position:relative;width:16px;height:16px;display:grid;place-items:center;justify-self:center}
+.lamp::before{content:"";width:8px;height:8px;border-radius:50%;box-sizing:border-box;transition:background-color var(--dur-state) var(--ease-out),border-color var(--dur-state) var(--ease-out),width var(--dur-state),height var(--dur-state)}
+.lamp[data-l=live]::before{background:var(--success)}
+.lamp[data-l=warn]::before{background:var(--warning)}
+.lamp[data-l=err]::before{background:var(--danger)}
+.lamp[data-l=ready]::before{border:1.5px solid var(--ink-muted)}
+.lamp[data-l=idle]::before{border:1.5px solid var(--ink-faint)}
+.lamp[data-l=work]::before{width:6px;height:6px;background:var(--ink-faint)}
+.lamp[data-l=work]::after{content:"";position:absolute;inset:1px;border-radius:50%;border:1.5px solid transparent;border-top-color:var(--ink-faint);animation:spin var(--dur-loop) linear infinite}
+.board.stagger .lamp::before{transition-delay:calc(var(--i)*70ms)}
+
+.cord{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:1}
+.cord path{fill:none;stroke-linecap:round;stroke-linejoin:round}
+.cw{stroke:var(--ink-faint);stroke-width:2;transition:stroke var(--dur-state) var(--ease-out),opacity var(--dur-state)}
+.cord[data-s=off] .cw{opacity:.8}
+.cord[data-s=ready] .cw,.cord[data-s=attn] .cw,.cord[data-s=err] .cw,.cord[data-s=prep] .cw{stroke:var(--ink-muted)}
+.cord[data-s=live] .cw{stroke:var(--tone)}
+.cord[data-s=pend] .cw{stroke:var(--accent);stroke-dasharray:3 5}
+.cf{stroke-width:2;opacity:0}
+.cord[data-s=live] .cf{opacity:1;stroke:var(--highlight);stroke-dasharray:2 18;animation:flow var(--dur-loop) linear infinite}
+.cord[data-s=prep] .cf{opacity:1;stroke:var(--accent);stroke-dasharray:14 86;animation:scan calc(var(--dur-loop)*1.6) linear infinite}
+.beads circle{fill:var(--tone);stroke:var(--lane-bg);stroke-width:1.5}
+.board.frozen .cw{stroke:var(--ink-faint)!important}
+.board.frozen .cf{opacity:0!important}
+.board.frozen .beads circle{fill:var(--ink-faint)}
+.board.frozen .lamp::before{opacity:.55}
+@keyframes flow{to{stroke-dashoffset:-20}}
+@keyframes scan{to{stroke-dashoffset:-100}}
+
+.plug{position:absolute;left:0;top:0;z-index:2;width:var(--pw);height:var(--ph);border:0;padding:0;background:none;cursor:grab;touch-action:none;will-change:transform}
+.board[data-axis=x] .plug{--pw:26px;--ph:22px}
+.board[data-axis=y] .plug{--pw:22px;--ph:26px}
+.ph{position:absolute;inset:0;border-radius:8px;background:var(--lane-bg);box-shadow:var(--raised-sm);display:grid;place-items:center;transition:box-shadow var(--dur-press) var(--ease-emphasized)}
+.prong{position:absolute;border-radius:2px;background:var(--ink-faint)}
+.board[data-axis=x] .prong{right:-10px;top:8px;width:12px;height:6px}
+.board[data-axis=y] .prong{top:-10px;left:8px;width:6px;height:12px}
+.pd{position:relative;width:8px;height:8px;border-radius:50%;background:var(--tone);transition:background-color var(--dur-state),width var(--dur-state),height var(--dur-state)}
+.pd::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1.5px solid transparent;border-top-color:var(--accent);opacity:0}
+.plug[data-p=off] .pd{background:transparent;box-shadow:inset 0 0 0 1.5px var(--ink-faint)}
+.plug[data-p=send] .pd{width:6px;height:6px;background:var(--accent)}
+.plug[data-p=send] .pd::after{opacity:1;animation:spin var(--dur-loop) linear infinite}
+.plug[data-p=queue] .pd{background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)}
+.plug[data-p=arm] .pd{background:var(--danger)}
+.plug[data-p=locked]{cursor:not-allowed}
+.plug[data-p=locked] .ph{box-shadow:none;outline:1px solid var(--hairline);outline-offset:-1px}
+.plug[data-p=locked] .pd{background:var(--ink-faint);box-shadow:none}
+.plug.drag{cursor:grabbing}
+.plug.drag .ph{box-shadow:var(--raised-md)}
+.plug:focus-visible{outline:none}
+.plug:focus-visible .ph{outline:2px solid var(--focus-ring);outline-offset:2px}
+.lane.seat .pd{animation:popd 380ms var(--ease-pop)}
+@keyframes popd{40%{transform:scale(1.5)}}
+
+.knot{position:absolute;left:0;top:0;z-index:4;width:24px;height:24px;margin:-12px 0 0 -12px;border:0;padding:0;border-radius:50%;background:var(--lane-bg);box-shadow:var(--raised-sm);display:grid;place-items:center;color:var(--ink-muted);cursor:pointer;transition:box-shadow var(--dur-press) var(--ease-emphasized)}
+.knot::before{content:"";position:absolute;inset:-10px;border-radius:50%}
+.knot:active{box-shadow:var(--inset-sm)}
+.knot .ico{width:14px;height:14px;stroke-width:2.1}
+.knot .kspin{animation:spin var(--dur-loop) linear infinite}
+.knot[data-t=warning]{color:var(--warning)}
+.knot[data-t=danger]{color:var(--danger)}
+.knot:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+
+.tag{position:absolute;left:0;top:0;z-index:5;display:inline-flex;align-items:center;min-height:24px;padding:0 10px;border-radius:999px;background:var(--surface-base);box-shadow:var(--raised-sm);font-size:12px;line-height:18px;white-space:nowrap;color:var(--accent);pointer-events:none;animation:fade var(--dur-panel) var(--ease-out)}
+.tag[data-t=warning]{color:var(--warning)}
+
+.hveil{position:absolute;inset:-8px;z-index:7}
+.hcard{position:absolute;z-index:8;width:min(272px,calc(100% - 16px));padding:16px 12px 12px;border-radius:24px;background:var(--surface-base);box-shadow:var(--raised-lg);display:grid;gap:10px;animation:rise var(--dur-panel) var(--ease-out)}
+.hcard.arm{pointer-events:none}
+.hcard h4{margin:0 4px;font-size:15px;line-height:24px;font-weight:600}
+.hcard p{margin:0 4px;font-size:13px;line-height:20px;color:var(--ink-muted)}
+.hcard .dbtns{margin-top:2px}
+.hcard .dbtns .btn{min-height:44px;border-radius:12px}
+
+/* lamp strip: the glanceable summary used by the settings row and the Host overview */
+.lamps{display:inline-flex;align-items:center;justify-content:center;height:24px;padding:0 9px;border-radius:999px;box-shadow:var(--inset-sm);flex:none}
+.lamps svg{display:block}
+
+/* phone detail sheet */
+.sheetwrap{position:absolute;inset:0;z-index:40}
+.sheet{position:absolute;left:8px;right:8px;bottom:8px;max-height:76%;overflow:auto;border-radius:32px;background:var(--surface-base);box-shadow:var(--raised-lg);padding:4px 4px 20px;animation:rise var(--dur-page) var(--ease-page);scrollbar-width:none}
+.grab{display:block;width:48px;height:20px;margin:0 auto;border:0;padding:0;background:none;cursor:pointer;position:relative}
+.grab::after{content:"";position:absolute;left:6px;right:6px;top:8px;height:5px;border-radius:3px;background:var(--hairline)}
+.sheet .insp{background:none;box-shadow:none}
+
+/* desktop agent page */
+.dagents{display:grid;gap:20px}
+.dinsp{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:16px 32px;align-items:start;padding:20px}
+.dinsp .ih{grid-column:1;grid-row:1}
+.dinsp .ladder{grid-column:1;grid-row:2}
+.dinsp .ifacts{grid-column:2;grid-row:1/span 3}
+.dinsp .ifacts:empty{display:flex}
+/* ---------- Host overview: Agent card ---------- */
+.ovw{display:grid;gap:20px}
+.oagents{padding:20px 20px 12px;display:flex;flex-direction:column;gap:6px}
+.oagents .ohead{display:flex;align-items:center;gap:10px;min-height:32px;margin-bottom:4px;flex-wrap:wrap}
+.oagents .ohead h3{flex:none;margin:0;font-size:15px;line-height:24px;font-weight:600}
+.ocount{font-size:13px;line-height:20px;color:var(--ink-muted)}
+.osync{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+.dchip{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:0 10px 0 8px;border-radius:999px;box-shadow:var(--raised-sm);font-size:12px;line-height:18px;color:var(--ink)}
+.dchip .ico{width:14px;height:14px;color:var(--ink-muted)}
+.dchip .dd{position:relative;width:8px;height:8px;border-radius:50%;box-sizing:border-box;flex:none;transition:background-color var(--dur-state) var(--ease-out)}
+.dchip[data-s=ok] .dd{background:var(--success)}
+.dchip[data-s=sync] .dd{width:6px;height:6px;margin:1px;background:var(--accent)}
+.dchip[data-s=sync] .dd::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1.5px solid transparent;border-top-color:var(--accent);animation:spin var(--dur-loop) linear infinite}
+.dchip[data-s=wait] .dd,.dchip[data-s=off] .dd{border:1.5px solid var(--ink-faint)}
+.dchip em{font-style:normal;color:var(--ink-muted)}
+.dchip[data-s=wait] em{color:var(--warning)}
+.dchip.got .dd{animation:popd 380ms var(--ease-pop)}
+
+.orows{display:flex;flex-direction:column}
+.orow{display:grid;grid-template-rows:1fr;transition:grid-template-rows var(--dur-collapse,260ms) var(--ease-standard)}
+.orow.enter,.orow.out{grid-template-rows:0fr}
+.orin{min-height:0;overflow:hidden;display:grid;grid-template-columns:32px minmax(120px,184px) minmax(0,1fr) 56px 104px;align-items:center;column-gap:12px;padding:0 10px;transition:opacity 210ms var(--ease-out) 120ms}
+.orow.enter .orin{opacity:0}
+.orow.out .orin{opacity:0;transition-delay:0s;transition-duration:90ms}
+.orow.leaving .orin{opacity:.55;transition-delay:0s}
+.orow.tw{background:var(--surface-lift)}
+.orow.tw-a{border-radius:16px 16px 0 0}
+.orow.tw-b{border-radius:0 0 16px 16px}
+.orin>*{min-height:52px}
+.orin .om{width:32px;height:32px;min-height:0;border-radius:50%;box-shadow:var(--inset-sm);display:grid;place-items:center;color:var(--tone);padding:8px}
+.orin .om svg{width:16px;height:16px}.orin .om .glyph{font-size:13px;line-height:1;font-weight:600}
+.onm{display:flex;align-items:center;font-size:14px;line-height:20px;font-weight:600;color:var(--tone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ost{display:flex;align-items:center;gap:8px;min-width:0;font-size:13px;line-height:20px}
+.ost .lamp{flex:none}
+.ow{white-space:nowrap;transition:color var(--dur-state)}
+.otag{display:inline-flex;align-items:center;min-height:24px;padding:0 10px;border-radius:999px;box-shadow:var(--raised-sm);font-size:12px;line-height:18px;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;animation:fade var(--dur-panel) var(--ease-out)}
+.otag[data-t=muted]{color:var(--ink-muted)}
+.osess{display:flex;align-items:center;justify-content:flex-end;gap:4px;color:var(--success);font-size:13px;font-weight:600}
+.osess .ico{width:14px;height:14px}
+.osess.none{visibility:hidden}
+.oacts{display:flex;align-items:center;justify-content:flex-end}
+.oacts .btn{min-width:88px;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.oacts .btn[aria-busy=true]{cursor:default;color:var(--ink-muted)}
+.bspin{width:14px;height:14px;animation:spin var(--dur-loop) linear infinite}
+.oempty{display:flex;align-items:center;gap:16px;min-height:56px;padding:0 10px;font-size:14px;color:var(--ink-muted)}
+.ofoot{display:flex;align-items:center;gap:12px;min-height:52px;margin-top:6px;padding-top:6px;box-shadow:inset 0 1px 0 var(--hairline)}
+.olast{flex:1;min-width:0;display:flex;align-items:center;gap:8px;min-height:40px;border:0;background:none;padding:0 10px;border-radius:12px;font-size:13px;line-height:20px;color:var(--ink);text-align:left;cursor:pointer;transition:box-shadow var(--dur-press) var(--ease-emphasized)}
+.olast:active{box-shadow:var(--inset-sm)}
+@media (hover:hover){.olast:hover{background:var(--surface-lift)}}
+.olast .ico{width:16px;height:16px;color:var(--ink-muted)}
+.olt{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.olast time{flex:none;color:var(--ink-faint)}
+.olink{margin-left:auto}
+.olast:focus-visible,.dchip:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px}
+.ovtbl td:nth-child(2){min-width:280px}
+/* ---------- overview variants B–E ---------- */
+.seg-ovw{flex-wrap:wrap}
+.notes .vn{margin:0;font-size:13px;line-height:20px;color:var(--ink-muted)}
+.notes .vn b{display:block;color:var(--accent);font-weight:600}
+.away-cover{position:absolute;inset:38px 0 0;z-index:65;display:grid;place-items:center;background:color-mix(in srgb,var(--surface-base) 72%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);animation:fade var(--dur-panel) var(--ease-out)}
+.away-cover div{display:grid;justify-items:center;gap:4px;color:var(--ink-muted);font-size:13px}
+.away-cover .ico{width:28px;height:28px;margin-bottom:6px}
+.away-cover b{font-size:28px;line-height:34px;font-weight:600;color:var(--ink)}
+.om{position:relative}
+.ostamp{position:absolute;right:-5px;bottom:-5px;width:16px;height:16px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:var(--on-accent);box-shadow:0 0 0 2px var(--surface-base);animation:popd 380ms var(--ease-pop)}
+.ostamp .ico{width:10px;height:10px;stroke-width:2.2}
+.ostamp[data-d=off]{background:var(--surface-base);color:var(--ink-muted);box-shadow:0 0 0 1.5px var(--ink-faint) inset,0 0 0 2px var(--surface-base)}
+
+/* B */
+.ovb .orin{border-radius:14px;transition:opacity 210ms var(--ease-out) 120ms,box-shadow 600ms var(--ease-standard),background-color 600ms var(--ease-standard)}
+.ovb .orow.fresh .orin{background:var(--surface-top);box-shadow:var(--raised-sm)}
+.ovb .orow.imprint .orin{opacity:1;box-shadow:var(--inset-sm);transition-delay:0s}
+.ovb .orow.imprint .orin>:not(.ost){opacity:.45}
+.ovb .orow.imprint .ost .lamp{display:none}
+.osx{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:0 10px 0 8px;border-radius:999px;box-shadow:var(--inset-sm);font-size:12px;line-height:18px;color:var(--ink);animation:fade var(--dur-panel) var(--ease-out)}
+.osx .ico{width:14px;height:14px;color:var(--ink-muted)}
+.osx em{font-style:normal;color:var(--warning)}
+
+/* C */
+.ovc .orin{grid-template-columns:32px minmax(96px,128px) max-content minmax(0,1fr) 32px 104px}
+.orc{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;font-size:12px;line-height:18px;white-space:nowrap;transition:opacity 400ms var(--ease-out)}
+.orc:empty{visibility:hidden}
+.orc.done{opacity:.6}
+.rsrc{display:inline-flex;align-items:center;gap:4px;min-height:24px;padding:0 8px 0 6px;border-radius:999px;box-shadow:var(--raised-sm);color:var(--accent);animation:fade var(--dur-panel) var(--ease-out)}
+.rsrc .ico{width:13px;height:13px}
+.rarr{width:14px;height:14px;color:var(--ink-faint)}
+.rdv{display:inline-flex;align-items:center;gap:5px;color:var(--ink-muted)}
+.rdv .dd{position:relative;width:8px;height:8px;border-radius:50%;box-sizing:border-box;flex:none;transition:background-color var(--dur-state) var(--ease-out)}
+.rdv[data-s=ok] .dd{background:var(--success);animation:popd 380ms var(--ease-pop)}
+.rdv[data-s=sync] .dd{width:6px;height:6px;margin:1px;background:var(--accent)}
+.rdv[data-s=sync] .dd::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1.5px solid transparent;border-top-color:var(--accent);animation:spin var(--dur-loop) linear infinite}
+.rdv[data-s=wait] .dd{border:1.5px solid var(--warning)}
+.rdv em{font-style:normal;color:var(--warning)}
+
+/* D */
+.oruler{display:grid;grid-template-columns:56px minmax(0,1fr);column-gap:12px;padding:4px 10px 0}
+.rlabs{position:relative;height:78px}
+.rlabs span{position:absolute;left:0;transform:translateY(-50%);font-size:12px;line-height:18px;color:var(--ink-muted);white-space:nowrap}
+.rbox{position:relative;height:78px;margin-right:6px}
+.rbase,.rlane{position:absolute;left:0;right:0;height:2px;margin-top:-1px;border-radius:1px;background:var(--hairline)}
+.rbase{background:var(--ink-faint);opacity:.5}
+.rfill{position:absolute;left:0;height:4px;margin-top:-1px;border-radius:2px;background:var(--success);transition:width 560ms var(--ease-page),background-color var(--dur-state)}
+.rfill[data-s=sync]{background:var(--accent)}
+.rfill[data-s=wait],.rfill[data-s=off]{background:var(--ink-faint)}
+.rgap{position:absolute;right:0;height:0;margin-top:-1px;border-top:2px dashed var(--accent);transition:left 560ms var(--ease-page)}
+.rgap[data-s=wait]{border-top-color:var(--warning)}
+.rgap[data-s=off]{border-top-color:var(--ink-faint)}
+.rlag{position:absolute;right:-6px;padding:0 0 0 8px;background:var(--surface-base);font-size:12px;line-height:20px;color:var(--warning)}
+.rlag[data-s=off]{color:var(--ink-muted)}
+.rt{position:absolute;top:0;width:24px;height:76px;margin-left:-12px;padding:0;border:0;background:none;cursor:pointer;transition:left 320ms var(--ease-standard),opacity 200ms}
+.rt .rdot{position:absolute;left:5px;top:3px;width:14px;height:14px;border-radius:50%;box-sizing:border-box;background:var(--tone);box-shadow:0 0 0 3px var(--surface-base);transition:transform 160ms var(--ease-out)}
+.rt .rdot[data-on=false]{background:var(--surface-base);border:2px solid var(--tone)}
+.rt .rstub{position:absolute;left:11px;top:10px;width:2px;background:var(--tone);opacity:.4}
+.rt .rodot{position:absolute;left:8px;width:8px;height:8px;margin-top:-4px;border-radius:50%;background:var(--tone);box-shadow:0 0 0 2px var(--surface-base)}
+.rt.new{opacity:0}.rt.new .rdot{transform:scale(.2)}
+.rt.gone{opacity:0}
+.rt.hl .rdot,.rt:hover .rdot,.rt:focus-visible .rdot{transform:scale(1.3)}
+.rt:focus-visible{outline:none}.rt:focus-visible .rdot{outline:2px solid var(--focus-ring);outline-offset:2px}
+.rcap{grid-column:2;margin:0;min-height:20px;font-size:12px;line-height:20px;color:var(--ink-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ovd .orow.hl .orin{background:var(--surface-lift);border-radius:14px}
+.ovd .orin{transition:opacity 210ms var(--ease-out) 120ms,background-color var(--dur-state)}
+
+/* E */
+.ove .ohead{margin-bottom:8px}
+.owall{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 12px;padding:2px 2px 6px}
+.tile{position:relative;min-width:0;min-height:100px;padding:12px;border-radius:16px;display:grid;grid-template-columns:32px minmax(0,1fr);grid-template-rows:32px auto auto;column-gap:8px;row-gap:6px;align-content:start;background:var(--surface-base);box-shadow:var(--raised-sm)}
+.tile[data-on=false]{box-shadow:var(--inset-sm)}
+.tile.tw-a{border-top-right-radius:6px;border-bottom-right-radius:6px}
+.tile.tw-b{border-top-left-radius:6px;border-bottom-left-radius:6px}
+.tile .om{width:32px;height:32px;border-radius:50%;box-shadow:var(--inset-sm);display:grid;place-items:center;color:var(--tone);padding:8px;transition:opacity var(--dur-state)}
+.tile .om svg{width:16px;height:16px}.tile .om .glyph{font-size:13px;line-height:1;font-weight:600}
+.tile .oacts{justify-self:end;align-self:center}
+.tile .oacts .btn{min-height:32px;min-width:64px;padding:0 12px;font-size:12px;display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.tile .onm{grid-column:1/-1;font-size:13px;line-height:20px;font-weight:600;color:var(--tone);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color var(--dur-state)}
+.tile .tst{grid-column:1/-1;display:flex;align-items:center;gap:6px;min-height:18px;font-size:12px;line-height:18px}
+.tile .tst .lamp{width:12px;height:12px}
+.tile .osess{margin-left:auto;font-size:12px}
+.tile[data-on=false] .om{opacity:.4;filter:grayscale(1)}
+.tile[data-on=false] .onm{color:var(--ink-faint)}
+.tile[data-on=false] .lamp{display:none}
+.tgo{position:absolute;inset:0;border:0;border-radius:inherit;background:none;padding:0 12px;display:flex;align-items:flex-start;justify-content:flex-end;padding-top:16px;color:transparent;cursor:pointer;transition:color var(--dur-state),background-color var(--dur-state)}
+.tgo .ico{width:18px;height:18px}
+@media (hover:hover){.tgo:hover{color:var(--ink-faint);background:color-mix(in srgb,var(--surface-lift) 60%,transparent)}}
+.tgo:focus-visible{outline:2px solid var(--focus-ring);outline-offset:2px;color:var(--ink-faint)}
+.tile.rise{animation:trise 420ms var(--ease-pop)}
+.tile.sink{animation:tsink 320ms var(--ease-standard)}
+@keyframes trise{0%{box-shadow:var(--inset-sm);transform:scale(.97)}45%{box-shadow:none}100%{box-shadow:var(--raised-sm);transform:none}}
+@keyframes tsink{0%{box-shadow:var(--raised-sm)}50%{box-shadow:none;transform:scale(.985)}100%{box-shadow:var(--inset-sm);transform:none}}
+@media (max-width:760px){.owall{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:480px){.dscroll{padding:16px;margin:-16px;max-width:calc(100% + 32px)}}
+.alts{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}
+.alt dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 12px;font-size:13px;line-height:20px}
+.alt dt{color:var(--ink-faint);white-space:nowrap}
+.alt dd{margin:0;color:var(--ink-muted)}
+.cmptbl{min-width:860px}
+.cmptbl td{font-size:13px;line-height:20px}
+.il-groove{fill:none;stroke:var(--hairline);stroke-width:1.2}
+.il-cord{fill:none;stroke-width:2;stroke-linecap:round}
+.il-plug{fill:var(--surface-lift);stroke:var(--ink-faint);stroke-width:1.2}
+.il-jack{fill:var(--surface-base);stroke:var(--ink-faint);stroke-width:1.2}
+.il-hole{fill:var(--ink-faint);opacity:.45}
+.board.static .plate,.board.static .plug,.board.static .knot{pointer-events:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.lab{grid-template-columns:minmax(0,1fr)}
+.mock{grid-template-columns:minmax(0,1fr)}
+@media (max-width:480px){.ctl{padding:14px 12px;gap:12px}.ctl-g{gap:6px 8px}.ctl-l{flex-basis:100%}}
+
+/* ---------- overlays ---------- */
+.toasts{position:absolute;left:16px;right:16px;bottom:30px;display:flex;justify-content:center;pointer-events:none;z-index:45}
+.toast{pointer-events:auto;display:flex;align-items:center;gap:8px;min-height:48px;max-width:100%;padding:4px 4px 4px 16px;border-radius:16px;background:var(--surface-base);box-shadow:var(--raised-lg);font-size:13px;line-height:20px;animation:rise var(--dur-panel) var(--ease-out)}
+.toast span{padding:10px 8px 10px 0}
+.toast button{min-height:40px;padding:0 12px;border:0;border-radius:12px;background:none;color:var(--accent);font-weight:600;cursor:pointer}
+.toast button:active{box-shadow:var(--inset-sm)}
+.toast.out{animation:sink var(--dur-exit) var(--ease-in) forwards}
+.scrim{position:absolute;inset:0;background:color-mix(in srgb,var(--scrim) 34%,transparent);animation:fade var(--dur-panel) var(--ease-out)}
+.dbtns{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px}
+.dbtns .btn{min-height:48px;border-radius:16px;font-size:15px;background:var(--surface-lift);box-shadow:none}
+.dbtns .btn:active{background:var(--surface-base);box-shadow:var(--inset-sm)}
+.pop{position:absolute;z-index:55;max-width:248px;padding:12px 14px;border-radius:16px;background:var(--surface-base);box-shadow:var(--raised-lg);font-size:13px;line-height:20px;color:var(--ink);animation:pop var(--dur-panel) var(--ease-out)}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}}
+@keyframes sink{to{opacity:0;transform:translateY(8px)}}
+@keyframes fade{from{opacity:0}}
+@keyframes pop{from{opacity:0;transform:scale(.96)}}
+
+html.reduce *,html.reduce *::before,html.reduce *::after{transition-duration:0s!important;animation:none!important}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:0s!important;animation:none!important}}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false" id="markdefs"></svg>
+
+<div class="page">
+  <header class="head">
+    <div class="eyebrow"><b>Orbis 交互稿</b><span>Agent 启用与停用</span><span>提案，2026-11-21</span></div>
+    <h1>Agent 接线台</h1>
+    <p>把 10 个 Agent 的启停做成一块接线台。每个 Agent 一根线，把插头插进电脑的插孔就是启用，拔出来就是停用。插头只表示你的决定；线有没有绷直、灯亮不亮、线上有没有打结，都按电脑回报的真实情况显示。</p>
+    <div class="chips"><span class="chip-s">电脑与 iOS / Android 同一套语法</span><span class="chip-s">沿用 ADR-0094 启用协议</span><span class="chip-s">沿用 r58 材质、动效与文案规范</span></div>
+  </header>
+
+  <section class="lab" aria-label="可交互原型">
+    <div class="ctl card">
+      <div class="ctl-g"><span class="ctl-l">端</span><div class="seg" data-seg="platform"><button type="button" data-v="phone" aria-pressed="false">手机</button><button type="button" data-v="desk" aria-pressed="false">电脑</button><button type="button" data-v="dual" aria-pressed="true">双端</button></div></div>
+      <div class="ctl-g"><span class="ctl-l">场景</span><div class="seg" data-seg="scenario"><button type="button" data-v="daily" aria-pressed="true">日常</button><button type="button" data-v="first" aria-pressed="false">首次使用</button><button type="button" data-v="legacy" aria-pressed="false">旧版电脑</button></div></div>
+      <div class="ctl-g"><span class="ctl-l">模拟</span>
+        <button type="button" class="tbtn" data-act="deskHermes">电脑上切换 Hermes</button>
+        <button type="button" class="tbtn" data-act="pixelClaude">Pixel 9 切换 Claude</button>
+        <button type="button" class="tbtn" data-act="fail">所选接入失败</button>
+        <button type="button" class="tbtn" data-sim="conflict" aria-pressed="false">下次写入冲突</button>
+        <button type="button" class="tbtn" data-sim="slow" aria-pressed="false">慢网络</button>
+        <button type="button" class="tbtn" data-sim="paused" aria-pressed="false">电脑暂停</button>
+        <button type="button" class="tbtn" data-sim="offline" aria-pressed="false">手机断网</button>
+        <button type="button" class="tbtn" data-sim="away" aria-pressed="false">离开电脑</button>
+      </div>
+      <div class="ctl-g"><span class="ctl-l">概览</span><div class="seg seg-ovw" data-seg="ovw"><button type="button" data-v="a" aria-pressed="true">A 来处标签</button><button type="button" data-v="b" aria-pressed="false">B 看过才褪</button><button type="button" data-v="c" aria-pressed="false">C 送达回执</button><button type="button" data-v="d" aria-pressed="false">D 修订标尺</button><button type="button" data-v="e" aria-pressed="false">E 浮雕墙</button></div></div>
+      <div class="ctl-g"><span class="ctl-l">外观</span>
+        <div class="seg" data-seg="material"><button type="button" data-v="mist" aria-pressed="true">雾蓝</button><button type="button" data-v="sage" aria-pressed="false">灰绿</button></div>
+        <div class="seg" data-seg="theme"><button type="button" data-v="auto" aria-pressed="true">跟随</button><button type="button" data-v="light" aria-pressed="false">浅色</button><button type="button" data-v="dark" aria-pressed="false">深色</button></div>
+        <button type="button" class="tbtn" data-sim="reduce" aria-pressed="false">减少动画</button>
+      </div>
+    </div>
+    <div class="stagearea">
+      <div class="mocks" id="mocks" data-platform="dual">
+        <div class="mock mock-desk"><div class="mcap"><b>电脑</b><span>Orbis Host</span></div><div class="dscroll"><div class="win" id="desk"></div></div></div>
+        <div class="mock mock-phone"><div class="mcap"><b>手机</b><span>设置 › Agent</span></div><div class="device"><div class="screen" id="phone" data-screen="agents"></div></div></div>
+      </div>
+      <aside class="side">
+        <div class="notes card" id="notes"></div>
+        <div class="logc card"><div class="logh"><h3>协议轨迹</h3><small>最新在上</small><button type="button" class="tbtn" id="logclear">清空</button></div><ol class="log" id="log"></ol></div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>三条原则</h2>
+    <div class="principles">
+      <article class="pr card">
+        <svg class="ill" viewBox="0 0 72 72" aria-hidden="true"><rect x="3" y="25" width="56" height="22" rx="11" class="il-groove"/><path d="M9 36H27" class="il-cord" style="stroke:var(--agent-codex)"/><rect x="27" y="29" width="14" height="14" rx="4" class="il-plug"/><circle cx="34" cy="36" r="2.6" style="fill:var(--agent-codex)"/><circle cx="48" cy="36" r="8" class="il-jack"/><circle cx="48" cy="36" r="3" class="il-hole"/><circle cx="66" cy="36" r="3.2" style="fill:var(--success)"/></svg>
+        <h3>插头是决定，灯和线是事实</h3>
+        <p>启用是你的决定，安装、就绪、连接是电脑上的事实。插头只回答要不要接入；灯、线和线上的结回答现在能不能用。没插上的线不通电，电脑也不去探测它。</p>
+      </article>
+      <article class="pr card">
+        <svg class="ill" viewBox="0 0 72 72" aria-hidden="true"><rect x="3" y="25" width="56" height="22" rx="11" class="il-groove"/><path d="M9 36H23" class="il-cord" style="stroke:var(--accent);stroke-dasharray:3 4"/><rect x="23" y="29" width="14" height="14" rx="4" class="il-plug"/><circle cx="30" cy="36" r="2.2" style="fill:var(--accent)"/><path d="M30 31.5a4.5 4.5 0 0 1 4.5 4.5" fill="none" stroke-width="1.5" stroke-linecap="round" style="stroke:var(--accent)"/><circle cx="48" cy="36" r="8" class="il-jack"/><circle cx="48" cy="36" r="3" class="il-hole"/><path d="M40 20l3 4M48 17v5M56 20l-3 4" fill="none" stroke-width="1.6" stroke-linecap="round" style="stroke:var(--ink-faint)"/></svg>
+        <h3>咔哒一声由电脑给出</h3>
+        <p>松手只把插头送到插孔口，带着转圈等待；电脑回执到达才咔哒插到底，触感也在这一刻给出。每根线各自等待，不锁住整块板；冲突时插头退回电脑给出的位置。</p>
+      </article>
+      <article class="pr card">
+        <svg class="ill" viewBox="0 0 72 72" aria-hidden="true"><rect x="3" y="25" width="56" height="22" rx="11" class="il-groove"/><path d="M9 36C14 40 20 40 26 36" class="il-cord" style="stroke:var(--agent-claude)"/><circle cx="14" cy="38.2" r="2.6" style="fill:var(--agent-claude)"/><circle cx="21" cy="38.4" r="2.6" style="fill:var(--agent-claude)"/><rect x="26" y="29" width="14" height="14" rx="4" class="il-plug"/><circle cx="33" cy="36" r="2.6" style="fill:var(--danger)"/><circle cx="50" cy="36" r="8" class="il-jack"/><circle cx="50" cy="36" r="3" class="il-hole"/></svg>
+        <h3>拔掉的只是 Orbis 的线</h3>
+        <p>拔出只撤销 Orbis 的接入，原生应用、终端和会话照常运行。线上有光点说明有运行中的会话：这时往外拔会有阻力，越过卡位就列出会受影响的会话，松手才停用。没有光点就直接拔下，短反馈里可以撤销。</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>一根线读懂状态</h2>
+    <div class="zone">
+      <div class="zonefig" id="statefig"></div>
+      <div class="tblwrap"><table class="tbl">
+        <thead><tr><th>状态词</th><th>插头</th><th>线</th><th>灯</th><th>何时</th></tr></thead>
+        <tbody>
+          <tr><td data-tone="faint">未启用</td><td>停在名牌旁，空心点</td><td>盘成弹簧</td><td>不亮</td><td>默认<small>电脑不探测，也不显示安装情况</small></td></tr>
+          <tr><td data-tone="accent">待确认、已排队</td><td>停在插孔口；转圈表示已发出，空心点表示排队</td><td>虚线</td><td>不变</td><td>已发出或等待发出，还没收到电脑回执</td></tr>
+          <tr><td data-tone="muted">准备中、安装中</td><td>插到底</td><td>微松，一道流光扫过</td><td>转圈</td><td>电脑正在准备接入</td></tr>
+          <tr><td data-tone="warning">未安装、待配置</td><td>插到底</td><td>松着，中间打一个结</td><td>警告点</td><td>启用了，但电脑上还缺东西<small>点结查看下一步</small></td></tr>
+          <tr><td data-tone="danger">接入失败</td><td>插到底</td><td>松着，红色的结</td><td>危险点</td><td>开关保持已启用，错误单独显示</td></tr>
+          <tr><td data-tone="muted">可启动</td><td>插到底</td><td>绷直</td><td>空心圈</td><td>已安装或已配置，按需启动</td></tr>
+          <tr><td data-tone="success">已连接</td><td>插到底</td><td>绷直，Agent 色，有电流；每个运行中会话是一个光点</td><td>实心绿点</td><td>Orbis 接入已建立</td></tr>
+          <tr><td data-tone="muted">已暂停、恢复后生效</td><td>插到底</td><td>下垂；恢复后生效挂一个时钟结</td><td>空心圈</td><td>电脑暂停中</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <h2>手势与操作</h2>
+    <div class="tblwrap"><table class="tbl">
+      <thead><tr><th>操作</th><th>手机</th><th>电脑</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>启用</td><td>把插头向右拖进插孔，或点插头</td><td>向上拖进插孔，或点击、空格</td><td>拖近孔口时插头被吸住、孔沿亮起，状态词换成「松手启用」，并有一次轻触觉。还没到孔口就松手，线会把插头收回去</td></tr>
+        <tr><td>停用</td><td>把插头拖出插孔，或点插头</td><td>向下拖出</td><td>没有会话时过半松手即停用，短反馈可撤销。有会话时拖动有阻力，光点挤向插头；越过卡位状态词换成「松手停用」，旁边列出会话，松手才生效，退回卡位内则取消</td></tr>
+        <tr><td>不拖动时的确认</td><td>点插头、详情里的开关、读屏操作</td><td>同左</td><td>有会话时，插头停在卡位，原处弹出确认：列出会话，「保留」或「停用」</td></tr>
+        <tr><td>查看</td><td>点名牌，底部卡片显示状态梯、会话和同族来源</td><td>点名牌，下方检查器显示从属设置</td><td>查看不改变任何状态</td></tr>
+        <tr><td>处理</td><td>点线上的结；结的 info 说明去电脑上处理</td><td>点结，检查器只给一个下一步：安装、应用或重试</td><td>App 不改安装、凭据和配置，与 ADR-0094 §01 一致</td></tr>
+        <tr><td>键盘与读屏</td><td>每个插头是一个开关，读出名称、状态词和会话数</td><td>方向键在插头间移动，空格或回车切换</td><td>结和名牌是普通按钮</td></tr>
+        <tr><td>触觉</td><td colspan="2">只在三处：吸入孔口、越过卡位、电脑确认插到底</td><td>与设计规范第 8 节「有分量的确认」一致；冲突退回不震动</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="sec">
+    <h2>反馈与边界</h2>
+    <div class="tblwrap"><table class="tbl">
+      <thead><tr><th>情况</th><th>表现</th><th>依据</th></tr></thead>
+      <tbody>
+        <tr><td>等待回执</td><td>每根线各自停在孔口等待；后续操作排队，收到回执后按新修订号逐个提交</td><td>ADR-0094 §04<small>现行实现锁住整组，改为逐项等待需同步修订</small></td></tr>
+        <tr><td>修订冲突</td><td>插头退回电脑给出的位置，插头旁显示「电脑上刚有改动」</td><td>§04 不静默覆盖</td></tr>
+        <tr><td>其他设备修改</td><td>插头自己移动，来源标签跟着插头停留 4 秒：「电脑上启用」「Pixel 9 上停用」</td><td>快照需要可选的 <code>origin</code> 字段，按 ADR-0064 协商<small>未协商时显示「其他设备已更改」</small></td></tr>
+        <tr><td>电脑复核</td><td>手机还不知道的新会话由电脑要求确认：插头退回卡位，原处列出会话</td><td>§03 由 Host 在应用时复核</td></tr>
+        <tr><td>回执丢失、重连</td><td>先读快照，不重放；未确认的插头回到电脑结果，并标「未提交，已按电脑同步」</td><td>§04</td></tr>
+        <tr><td>电脑暂停</td><td>灯从左到右依次熄成空心圈，线一根根垂下来。电脑上仍可插拔，新插上的线挂时钟结，状态为恢复后生效；手机显示已暂停，不能修改</td><td>§03 运行时切换</td></tr>
+        <tr><td>手机离线</td><td>整块板冻结、去色，电流和光点停住，显示上次同步时间；插头锁住</td><td>§04 不接受离线编辑</td></tr>
+        <tr><td>接入失败</td><td>插头保持插入，红色结；点结看原因，电脑端给出重试</td><td>§04 启用与接入错误分开</td></tr>
+        <tr><td>旧版电脑</td><td>只显示电脑公告的 Agent，线直接接在插孔上，没有插头；顶栏 info 说明需要更新电脑端</td><td>§04 兼容</td></tr>
+        <tr><td>全部未启用</td><td>插头都停在名牌旁；第一根线的插头朝插孔探两次作为提示；电脑概览的 Agent 卡直接给「启用 Agent」</td><td>§03 无启用项时的入口</td></tr>
+        <tr><td>减少动画</td><td>去掉弹簧、电流、光点移动和探头提示，直接到终态；转圈停住</td><td>设计规范第 9 节</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="sec">
+    <h2>概览方案 A：来处标签</h2>
+    <div class="principles">
+      <article class="pr card"><h3>状态常显</h3><p>每行直接显示灯和状态词，不再藏在悬停提示里；会话数和唯一的下一步跟在后面。强调色仍只给当前一步。</p></article>
+      <article class="pr card"><h3>变化有来处</h3><p>别的设备启停时，行从卡片里升起或按回，并带着「iPhone 上启用」「Pixel 9 上停用」停留 4 秒。底部常留最近一次变化，行消失以后也找得到原因。</p></article>
+      <article class="pr card"><h3>同步看得见</h3><p>标题右侧每台已配对手机一个胶囊：已同步是实心点，推送中转圈，离线时空心点加「待同步」，上线读完快照后点亮一次。</p></article>
+    </div>
+    <div class="tblwrap"><table class="tbl ovtbl">
+      <thead><tr><th>情况</th><th>概览显示</th><th>规则与依据</th></tr></thead>
+      <tbody>
+        <tr><td>哪些行</td><td>只列已启用的 Agent，按目录固定顺序；同族两行垫在同一块浅底上</td><td>ADR-0094 §03 概览只列已启用来源；HOST-GUIDE-01 固定顺序</td></tr>
+        <tr><td>每行内容</td><td>标识、名称、灯与状态词、会话数、唯一操作：打开、安装、重试或配置。准备中和安装中，按钮保持宽度换成转圈</td><td>HOST-GUIDE-01 单一操作；设计规范第 8 节加载态<small>状态词与 Agent 页、手机端同一套</small></td></tr>
+        <tr><td>其他设备启用</td><td>先开槽，内容晚 120ms 淡入；来源标签停留 4 秒，状态随电脑的准备进度变化</td><td>设计规范第 8 节：新出现的东西从材料里升起</td></tr>
+        <tr><td>其他设备停用</td><td>不立刻消失：灯熄、内容变淡，标「Pixel 9 上停用」4 秒，再按回材料、合槽</td><td>设计规范第 9 节：动效回答刚才那个东西去哪了</td></tr>
+        <tr><td>本机改动</td><td>在电脑 Agent 页改完回到概览，直接是新结果，不补放动画；最近变化记为「电脑上…」</td><td>只为没看见的变化做过渡</td></tr>
+        <tr><td>多项同时到达</td><td>按目录顺序依次进出，间隔 70ms；最近变化合并为「iPhone 上启用 3 个 Agent」</td><td>3 秒内同一设备、同一方向算一批</td></tr>
+        <tr><td>最近变化</td><td>卡片底部一行：哪台设备做了什么、多久前；点开跳到 Agent 页并选中该项</td><td>只留一条，不做历史列表</td></tr>
+        <tr><td>设备同步</td><td>每台已配对手机一个胶囊：已同步、正在同步、离线待同步、未连接</td><td>Host 记录每台设备最后收到的修订号<small>概览所需信息都在 Host 本地，不新增协议</small></td></tr>
+        <tr><td>未启用数量</td><td>底部右侧「6 个未启用」直达 Agent 页；全部启用时为「管理」；一个都没有时只给「启用 Agent」</td><td>§03 无启用项时的入口；有启用项以后也找得到其余 Agent</td></tr>
+        <tr><td>电脑暂停</td><td>标题旁「已暂停」，灯熄成空心圈，电脑上新启用的行显示恢复后生效；手机胶囊都为未连接</td><td>§03 运行时切换</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="sec">
+    <h2>概览：另外四种呈现</h2>
+    <div class="alts">
+      <article class="pr card alt"><svg class="ill" viewBox="0 0 72 72" aria-hidden="true"><rect x="6" y="15" width="60" height="18" rx="9" style="fill:var(--surface-top);stroke:var(--ink-faint);stroke-width:1.2"/><circle cx="17" cy="24" r="5" style="fill:var(--agent-codex)"/><circle cx="21.5" cy="28.5" r="3.2" style="fill:var(--accent);stroke:var(--surface-base);stroke-width:1.2"/><path d="M29 24h22" style="stroke:var(--ink-faint);stroke-width:2;stroke-linecap:round"/><rect x="6" y="41" width="60" height="18" rx="9" style="fill:none;stroke:var(--ink-faint);stroke-width:1.2;stroke-dasharray:3 3"/><circle cx="17" cy="50" r="5" style="fill:none;stroke:var(--ink-faint);stroke-width:1.2"/><path d="M29 50h28" style="stroke:var(--hairline);stroke-width:2;stroke-linecap:round"/></svg><h3>B 看过才褪</h3>
+        <p>在手机上启停时，人多半不在电脑前，4 秒的标签没人看见。B 把别处来的变化当作未读：概览在屏幕上满 4 秒，或指针扫过那一行，才算看过。</p>
+        <dl><dt>别处启用</dt><dd>行浮起一层，标识角上盖设备章，写「iPhone 上启用 · 12 分钟前」，看过后压平</dd>
+        <dt>别处停用</dt><dd>行不消失，压成一道印痕，看过才合上</dd>
+        <dt>同步</dt><dd>正常时不显示；手机离线又落后时，标题右侧出现「iPhone 待同步」</dd>
+        <dt>代价</dt><dd>Host 要记每条变化有没有在概览上被看过；锁屏、最小化不算</dd></dl></article>
+      <article class="pr card alt"><svg class="ill" viewBox="0 0 72 72" aria-hidden="true"><rect x="3" y="27" width="24" height="18" rx="9" style="fill:none;stroke:var(--accent);stroke-width:1.4"/><rect x="9.5" y="31.5" width="6" height="9" rx="1.6" style="fill:none;stroke:var(--accent);stroke-width:1.2"/><path d="M18.5 36h4" style="stroke:var(--accent);stroke-width:1.4;stroke-linecap:round"/><path d="M31 36h9M37 33l3 3-3 3" style="fill:none;stroke:var(--ink-faint);stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round"/><circle cx="50" cy="36" r="4.2" style="fill:var(--success)"/><circle cx="63" cy="36" r="3.6" style="fill:none;stroke:var(--warning);stroke-width:1.6"/></svg><h3>C 送达回执</h3>
+        <p>同步挂在每次改动上，而不是挂在设备上。每张回执写明从哪台设备发出，另外每台设备收到没有。</p>
+        <dl><dt>别处启停</dt><dd>回执以来源开头：「iPhone 启用 → Pixel 9 ●」</dd>
+        <dt>本机改动</dt><dd>同样有回执，看得出手机有没有收到电脑上的修改</dd>
+        <dt>收起</dt><dd>全部送达 3 秒后收起；有设备离线就一直留着「待送达」</dd>
+        <dt>代价</dt><dd>行内多一列，名称列变窄；没有改动时看不出手机在不在线</dd></dl></article>
+      <article class="pr card alt"><svg class="ill" viewBox="0 0 72 72" aria-hidden="true"><path d="M6 18H66" style="stroke:var(--ink-faint);stroke-width:1.2;opacity:.6"/><path d="M44 18V36" style="stroke:var(--agent-claude);stroke-width:1.4;opacity:.5"/><path d="M6 36H66" style="stroke:var(--success);stroke-width:3;stroke-linecap:round"/><path d="M6 54H32" style="stroke:var(--ink-faint);stroke-width:3;stroke-linecap:round"/><path d="M36 54H66" style="stroke:var(--warning);stroke-width:2;stroke-dasharray:3 3"/><circle cx="30" cy="18" r="4" style="fill:var(--agent-codex)"/><circle cx="44" cy="18" r="4" style="fill:var(--agent-claude)"/><circle cx="58" cy="18" r="3.4" style="fill:var(--surface-base);stroke:var(--agent-pi);stroke-width:1.6"/><circle cx="44" cy="36" r="2.6" style="fill:var(--agent-claude)"/></svg><h3>D 修订标尺</h3>
+        <p>把 Host 的修订号画成一把尺。最上一条是最近 8 次改动，每台手机一条轨道，填到它已收到的位置。</p>
+        <dl><dt>别处启停</dt><dd>新刻度从右端出现；手机上发起的改动有一根线落到那台手机的轨道上</dd>
+        <dt>同步</dt><dd>落后部分是虚线，写「差 2 项」；重新连上后填满</dd>
+        <dt>查看</dt><dd>指针移到刻度上，对应的行高亮，尺下写明这次改动；点刻度去 Agent 页</dd>
+        <dt>代价</dt><dd>信息最多，偏工程；卡片高出约 100 像素</dd></dl></article>
+      <article class="pr card alt"><svg class="ill" viewBox="0 0 72 72" aria-hidden="true"><rect x="6" y="8" width="17" height="14" rx="4" style="fill:var(--surface-top);stroke:var(--ink-faint);stroke-width:1.2"/><rect x="29" y="8" width="17" height="14" rx="4" style="fill:var(--surface-top);stroke:var(--ink-faint);stroke-width:1.2"/><rect x="52" y="8" width="17" height="14" rx="4" style="fill:none;stroke:var(--ink-faint);stroke-width:1.2;opacity:.55;stroke-dasharray:2.5 2.5"/><rect x="6" y="30" width="17" height="14" rx="4" style="fill:none;stroke:var(--ink-faint);stroke-width:1.2;opacity:.55;stroke-dasharray:2.5 2.5"/><rect x="29" y="30" width="17" height="14" rx="4" style="fill:var(--surface-top);stroke:var(--ink-faint);stroke-width:1.2"/><rect x="52" y="30" width="17" height="14" rx="4" style="fill:none;stroke:var(--ink-faint);stroke-width:1.2;opacity:.55;stroke-dasharray:2.5 2.5"/><rect x="6" y="52" width="17" height="14" rx="4" style="fill:none;stroke:var(--ink-faint);stroke-width:1.2;opacity:.55;stroke-dasharray:2.5 2.5"/><rect x="29" y="52" width="17" height="14" rx="4" style="fill:none;stroke:var(--ink-faint);stroke-width:1.2;opacity:.55;stroke-dasharray:2.5 2.5"/><rect x="52" y="52" width="17" height="14" rx="4" style="fill:none;stroke:var(--ink-faint);stroke-width:1.2;opacity:.55;stroke-dasharray:2.5 2.5"/><circle cx="44" cy="40" r="3" style="fill:var(--accent);stroke:var(--surface-base);stroke-width:1.2"/></svg><h3>E 浮雕墙</h3>
+        <p>10 个 Agent 各占一块固定位置。启用的凸起，未启用的压平在卡片里，不显示状态，也不探测。</p>
+        <dl><dt>别处启停</dt><dd>那一块原地升起或压下，旁边不挪、不重排</dd>
+        <dt>来处</dt><dd>角上盖设备章，看过才褪，规则同 B</dd>
+        <dt>入口</dt><dd>压平的块点一下去 Agent 页启用</dd>
+        <dt>代价</dt><dd>未启用项也上概览，需修订 ADR-0094 §03「概览只列已启用来源」；卡片最高</dd></dl></article>
+    </div>
+    <div class="tblwrap"><table class="tbl cmptbl">
+      <thead><tr><th></th><th>A 来处标签</th><th>B 看过才褪</th><th>C 送达回执</th><th>D 修订标尺</th><th>E 浮雕墙</th></tr></thead>
+      <tbody>
+        <tr><td>回答什么</td><td>刚才谁改了什么</td><td>我不在时改了什么</td><td>这次改动别的设备收到没有</td><td>每台手机落后多少</td><td>全部 Agent 现在怎样</td></tr>
+        <tr><td>人不在电脑前</td><td>标签 4 秒后消失，只剩底部一条最近变化</td><td>留到回来看过</td><td>留到全部送达</td><td>最近 8 次一直在尺上</td><td>印章留到看过</td></tr>
+        <tr><td>设备同步</td><td>标题右侧每台手机一个胶囊</td><td>只在离线待同步时出现</td><td>挂在每次改动上</td><td>每台手机一条轨道</td><td>同 A</td></tr>
+        <tr><td>布局变化</td><td>行升起、按回</td><td>同 A，停用的行看过才合上</td><td>同 A</td><td>同 A，上方多一把尺</td><td>不重排</td></tr>
+        <tr><td>Host 本地记录</td><td>来源、各设备已收到的修订号</td><td>再加是否看过</td><td>同 A</td><td>同 A</td><td>同 B</td></tr>
+        <tr><td>与 ADR 的差异</td><td>无</td><td>无</td><td>无</td><td>无</td><td>需修订 §03</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="sec">
+    <h2>与现状对比</h2>
+    <div class="tblwrap"><table class="tbl">
+      <thead><tr><th></th><th>现在</th><th>提案</th></tr></thead>
+      <tbody>
+        <tr><td>入口</td><td>电脑：Agent 页下方的「启用 Agent」开关组；手机：设置里 10 个平铺开关</td><td>一块接线台同时表达决定和事实；设置里一行入口，带 10 盏灯的灯排</td></tr>
+        <tr><td>状态</td><td>开关只表达启用，安装和接入在别处</td><td>插头、线、灯、结各管一件事，一行看全</td></tr>
+        <tr><td>提交中</td><td>整组开关禁用，下方一个转圈</td><td>每根线各自等待，可以连续操作</td></tr>
+        <tr><td>停用确认</td><td>手机每次都确认，不说影响</td><td>线上有光点才有阻力和确认，并列出会话</td></tr>
+        <tr><td>多端</td><td>开关静默跳变</td><td>插头自己移动并标出来源</td></tr>
+        <tr><td>电脑概览</td><td>状态只在悬停时出现；别的设备启停时，行静默出现或消失；有启用项后没有启用更多的入口</td><td>状态常显；行升起或按回并标来源；底部留最近变化和未启用数量；标题右侧显示各手机是否已同步</td></tr>
+        <tr><td>同族来源</td><td>Codex、DeepSeek 的终端版与桌面版各占一行，看不出关系</td><td>相邻两行垫在同一块浅一级的底上，终端与桌面角标，详情里互相跳转</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="sec">
+    <h2>落地</h2>
+    <div class="land">
+      <div class="card"><h3>共用组件</h3><ul>
+        <li><b>接线道</b>：名牌、线槽与插孔、灯三段；手机横排，电脑竖排，几何共用</li>
+        <li><b>插头开关</b>：沿用 NeuToggle / SoftSwitch 的开关语义和读屏角色，增加孔口等待、已排队、卡位、锁定</li>
+        <li><b>线</b>：Compose Canvas、SwiftUI Canvas、QML Shape 各一份。盘绕 6 圈，松弛 0 到 9 pt；回位用 spring-drag，插到底用 spring-pop，松弛用 spring-page</li>
+        <li><b>灯排</b>：设置入口与电脑概览共用</li>
+        <li><b>来源标签</b>：复用 ADR-0083 F2 对象原位反馈</li>
+      </ul></div>
+      <div class="card"><h3>数据与协议</h3><ul>
+        <li>只读现有 <code>agent.enablement.snapshot / result</code> 与接入投影（就绪、运行数、错误）</li>
+        <li>线的顺序取 Host 目录顺序；未知来源追加一行，用通用符号</li>
+        <li>核心交互不新增帧；来源标签需要快照的可选 <code>origin</code>；逐项等待需要修订 ADR-0094 §04 的 App 行为</li>
+        <li>概览：Host 本地记录每次写入来自哪台已配对设备、每台设备已收到的修订号，不新增协议</li>
+        <li>不变：Host 唯一事实来源、修订号与冲突、停用由 Host 复核、旧端兼容、关闭项不探测</li>
+      </ul></div>
+      <div class="card"><h3>改动位置</h3><ul>
+        <li><code>packages/windows-host/src/qml/Main.qml</code>「你的 Agent」与概览 Agent 卡（<code>overviewAgents</code> 及其行）</li>
+        <li><code>ios/Orbis/Orbis/StatusViews.swift</code> Agent 分组改为一行入口与整页</li>
+        <li><code>android/…/DesignSettings.kt</code> <code>SettingsGroup("Agent")</code> 同上</li>
+        <li>采纳后使用新编号；实现、自动验证与用户安装验收分别记录</li>
+      </ul></div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function(){
+'use strict';
+const MARKS={"pi":"<svg viewBox=\"0 0 470 470\" aria-hidden=\"true\"><g transform=\"translate(-165.29 -165.29)\"><path fill=\"#F09082\" d=\"M165.29,165.29H517.36V400H400V282.65H165.29Z\"/><path fill=\"#4D9ABF\" d=\"M165.29,282.65H282.65V400H400V517.36H282.65V634.72H165.29Z\"/><path fill=\"#F1BE58\" d=\"M517.36,400H634.72V634.72H517.36Z\"/></g></svg>","codex":"<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M 8.086 .457 a 6.105 6.105 0 0 1 3.046 -.415 c 1.333 .153 2.521 .72 3.564 1.7 a .117 .117 0 0 0 .107 .029 c 1.408 -.346 2.762 -.224 4.061 .366 l .063 .03 l .154 .076 c 1.357 .703 2.33 1.77 2.918 3.198 c .278 .679 .418 1.388 .421 2.126 a 5.655 5.655 0 0 1 -.18 1.631 a .167 .167 0 0 0 .04 .155 a 5.982 5.982 0 0 1 1.578 2.891 c .385 1.901 -.01 3.615 -1.183 5.14 l -.182 .22 a 6.063 6.063 0 0 1 -2.934 1.851 a .162 .162 0 0 0 -.108 .102 c -.255 .736 -.511 1.364 -.987 1.992 c -1.199 1.582 -2.962 2.462 -4.948 2.451 c -1.583 -.008 -2.986 -.587 -4.21 -1.736 a .145 .145 0 0 0 -.14 -.032 c -.518 .167 -1.04 .191 -1.604 .185 a 5.924 5.924 0 0 1 -2.595 -.622 a 6.058 6.058 0 0 1 -2.146 -1.781 c -.203 -.269 -.404 -.522 -.551 -.821 a 7.74 7.74 0 0 1 -.495 -1.283 a 6.11 6.11 0 0 1 -.017 -3.064 a .166 .166 0 0 0 .008 -.074 a .115 .115 0 0 0 -.037 -.064 a 5.958 5.958 0 0 1 -1.38 -2.202 a 5.196 5.196 0 0 1 -.333 -1.589 a 6.915 6.915 0 0 1 .188 -2.132 c .45 -1.484 1.309 -2.648 2.577 -3.493 c .282 -.188 .55 -.334 .802 -.438 c .286 -.12 .573 -.22 .861 -.304 a .129 .129 0 0 0 .087 -.087 A 6.016 6.016 0 0 1 5.635 2.31 C 6.315 1.464 7.132 .846 8.086 .457 z m -.804 7.85 a .848 .848 0 0 0 -1.473 .842 l 1.694 2.965 l -1.688 2.848 a .849 .849 0 0 0 1.46 .864 l 1.94 -3.272 a .849 .849 0 0 0 .007 -.854 l -1.94 -3.393 z m 5.446 6.24 a .849 .849 0 0 0 0 1.695 h 4.848 a .849 .849 0 0 0 0 -1.696 h -4.848 z\"/></svg>","claude":"<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path fill=\"#D97757\" d=\"M 4.709 15.955 l 4.72 -2.647 .08 -.23 -.08 -.128 H 9.2 l -.79 -.048 -2.698 -.073 -2.339 -.097 -2.266 -.122 -.571 -.121 L 0 11.784 l .055 -.352 .48 -.321 .686 .06 1.52 .103 2.278 .158 1.652 .097 2.449 .255 h .389 l .055 -.157 -.134 -.098 -.103 -.097 -2.358 -1.596 -2.552 -1.688 -1.336 -.972 -.724 -.491 -.364 -.462 -.158 -1.008 .656 -.722 .881 .06 .225 .061 .893 .686 1.908 1.476 2.491 1.833 .365 .304 .145 -.103 .019 -.073 -.164 -.274 -1.355 -2.446 -1.446 -2.49 -.644 -1.032 -.17 -.619 a 2.97 2.97 0 0 1 -.104 -.729 L 6.283 .134 6.696 0 l .996 .134 .42 .364 .62 1.414 1.002 2.229 1.555 3.03 .456 .898 .243 .832 .091 .255 h .158 V 9.01 l .128 -1.706 .237 -2.095 .23 -2.695 .08 -.76 .376 -.91 .747 -.492 .584 .28 .48 .685 -.067 .444 -.286 1.851 -.559 2.903 -.364 1.942 h .212 l .243 -.242 .985 -1.306 1.652 -2.064 .73 -.82 .85 -.904 .547 -.431 h 1.033 l .76 1.129 -.34 1.166 -1.064 1.347 -.881 1.142 -1.264 1.7 -.79 1.36 .073 .11 .188 -.02 2.856 -.606 1.543 -.28 1.841 -.315 .833 .388 .091 .395 -.328 .807 -1.969 .486 -2.309 .462 -3.439 .813 -.042 .03 .049 .061 1.549 .146 .662 .036 h 1.622 l 3.02 .225 .79 .522 .474 .638 -.079 .485 -1.215 .62 -1.64 -.389 -3.829 -.91 -1.312 -.329 h -.182 v .11 l 1.093 1.068 2.006 1.81 2.509 2.33 .127 .578 -.322 .455 -.34 -.049 -2.205 -1.657 -.851 -.747 -1.926 -1.62 h -.128 v .17 l .444 .649 2.345 3.521 .122 1.08 -.17 .353 -.608 .213 -.668 -.122 -1.374 -1.925 -1.415 -2.167 -1.143 -1.943 -.14 .08 -.674 7.254 -.316 .37 -.729 .28 -.607 -.461 -.322 -.747 .322 -1.476 .389 -1.924 .315 -1.53 .286 -1.9 .17 -.632 -.012 -.042 -.14 .018 -1.434 1.967 -2.18 2.945 -1.726 1.845 -.414 .164 -.717 -.37 .067 -.662 .401 -.589 2.388 -3.036 1.44 -1.882 .93 -1.086 -.006 -.158 h -.055 L 4.132 18.56 l -1.13 .146 -.487 -.456 .061 -.746 .231 -.243 1.908 -1.312 -.006 .006 z\"/></svg>","dsh":"<svg viewBox=\"0 0 48.34 48.34\" aria-hidden=\"true\"><g transform=\"translate(-1 -0.99)\"><path fill=\"currentColor\" d=\"M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z\"/></g></svg>","openclaw":"<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path fill=\"url(#claw-0)\" d=\"M12 2.568c-6.33 0-9.495 5.275-9.495 9.495 0 4.22 3.165 8.44 6.33 9.494v2.11h2.11v-2.11s1.055.422 2.11 0v2.11h2.11v-2.11c3.165-1.055 6.33-5.274 6.33-9.494S18.33 2.568 12 2.568z\"/><path fill=\"url(#claw-1)\" d=\"M3.56 9.953C.396 8.898-.66 11.008.396 13.118c1.055 2.11 3.164 1.055 4.22-1.055.632-1.477 0-2.11-1.056-2.11z\"/><path fill=\"url(#claw-2)\" d=\"M20.44 9.953c3.164-1.055 4.22 1.055 3.164 3.165-1.055 2.11-3.164 1.055-4.22-1.055-.632-1.477 0-2.11 1.056-2.11z\"/><path fill=\"#FF4D4D\" d=\"M5.507 1.875c.476-.285 1.036-.233 1.615.037.577.27 1.223.774 1.937 1.488a.316.316 0 01-.447.447c-.693-.693-1.279-1.138-1.757-1.361-.475-.222-.795-.205-1.022-.069a.317.317 0 01-.326-.542zM16.877 1.913c.58-.27 1.14-.323 1.616-.038a.317.317 0 01-.326.542c-.227-.136-.547-.153-1.022.069-.478.223-1.064.668-1.756 1.361a.316.316 0 11-.448-.447c.714-.714 1.36-1.218 1.936-1.487z\"/><path fill=\"#050810\" d=\"M8.835 9.109a1.266 1.266 0 100-2.532 1.266 1.266 0 000 2.532zM15.165 9.109a1.266 1.266 0 100-2.532 1.266 1.266 0 000 2.532z\"/><path fill=\"#00E5CC\" d=\"M9.046 8.16a.527.527 0 100-1.056.527.527 0 000 1.055zM15.376 8.16a.527.527 0 100-1.055.527.527 0 000 1.054z\"/></svg>"};
+const MARK_DEFS="<defs><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"claw-0\" x1=\"-.659\" x2=\"27.023\" y1=\".458\" y2=\"22.855\"><stop stop-color=\"#FF4D4D\"></stop><stop offset=\"1\" stop-color=\"#991B1B\"></stop></linearGradient><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"claw-1\" x1=\"0\" x2=\"4.311\" y1=\"9.672\" y2=\"14.949\"><stop stop-color=\"#FF4D4D\"></stop><stop offset=\"1\" stop-color=\"#991B1B\"></stop></linearGradient><linearGradient gradientUnits=\"userSpaceOnUse\" id=\"claw-2\" x1=\"19.385\" x2=\"24.399\" y1=\"9.953\" y2=\"14.462\"><stop stop-color=\"#FF4D4D\"></stop><stop offset=\"1\" stop-color=\"#991B1B\"></stop></linearGradient></defs>";
+
+const KINDS=['pi','codex','codexDesktop','claude','dsh','dshDesktop','kimiCode','opencode','hermes','openclaw'];
+const CAT={
+  pi:{label:'Pi',mark:'pi',tone:'--agent-pi',prep:'安装'},
+  codex:{label:'Codex CLI',mark:'codex',tone:'--agent-codex',twin:'codexDesktop',variant:'term',prep:'安装'},
+  codexDesktop:{label:'Codex Desktop',mark:'codex',tone:'--agent-codex',twin:'codex',variant:'desk',prep:'安装'},
+  claude:{label:'Claude Code',mark:'claude',tone:'--agent-claude',prep:'安装'},
+  dsh:{label:'DeepSeek CLI',mark:'dsh',tone:'--agent-deepseek',twin:'dshDesktop',variant:'term',prep:'安装'},
+  dshDesktop:{label:'DeepSeek Desktop',mark:'dsh',tone:'--agent-deepseek',twin:'dsh',variant:'desk',prep:'安装'},
+  kimiCode:{label:'Kimi Code',glyph:'K',tone:'--ink',prep:'配置'},
+  opencode:{label:'OpenCode',glyph:'O',tone:'--ink',prep:'配置'},
+  hermes:{label:'Hermes Agent',glyph:'H',tone:'--ink',prep:'配置'},
+  openclaw:{label:'OpenClaw',mark:'openclaw',tone:'--ink',prep:'配置'}
+};
+const BASE_FATE={pi:{stage:'ready',sessions:0},codex:{stage:'live',sessions:2},codexDesktop:{stage:'ready',sessions:0},claude:{stage:'live',sessions:1},dsh:{stage:'missing',sessions:0},dshDesktop:{stage:'ready',sessions:0},kimiCode:{stage:'config',sessions:0},opencode:{stage:'ready',sessions:0},hermes:{stage:'live',sessions:0},openclaw:{stage:'config',sessions:0}};
+const ERRORS={pi:'Orbis 扩展未连接',codex:'app-server 未响应',codexDesktop:'桌面版未附着',claude:'插件未登记',dsh:'Web 后端启动失败',dshDesktop:'桌面版未响应',kimiCode:'原生 Web 服务不可达',opencode:'共享服务未运行',hermes:'Gateway 未就绪',openclaw:'Gateway 拒绝连接'};
+const SESSIONS={codex:['重构 Relay 握手','补齐 QUIC 回退测试','整理发布说明'],claude:['ADR-0094 交接整理','检查 Android 构建租约'],pi:['修复下载断点续传'],hermes:['日报汇总']};
+const DETAIL={
+  pi:{ver:'0.38.2',latest:'0.38.2',rows:[['Orbis 扩展','已加载']],acts:['供应商配置','打开 Pi']},
+  codex:{ver:'0.98.0',latest:'0.99.1',toggles:[['终端接入',true],['预启动',false]],acts:['更新到最新版本','供应商配置']},
+  codexDesktop:{rows:[['桌面接入','已附着']],acts:['打开 Codex Desktop']},
+  claude:{ver:'2.4.1',latest:'2.4.1',toggles:[['终端接入',true]],rows:[['插件接入','已登记']],acts:['供应商配置','打开 Claude Code']},
+  dsh:{ver:'1.6.0',latest:'1.6.0',rows:[['Web 后端','已就绪']],acts:['供应商配置','重启 DSH Server']},
+  dshDesktop:{rows:[['桌面接入','等待打开']],acts:['由 Orbis 打开']},
+  kimiCode:{seg:['Web','Desktop'],field:['原生 Web 地址','http://127.0.0.1:5494'],acts:[]},
+  opencode:{rows:[['共享服务','127.0.0.1:4096']],acts:[]},
+  hermes:{rows:[['Gateway profile','default']],acts:[]},
+  openclaw:{field:['Gateway 地址','ws://127.0.0.1:18789'],token:true,acts:['移除连接配置']}
+};
+const WORD={live:'已连接',ready:'可启动',prep:'准备中',install:'安装中',missing:'未安装',config:'待配置',error:'接入失败',held:'恢复后生效',paused:'已暂停'};
+const ICON={
+  back:'<path d="M15 5l-7 7 7 7"/>',chev:'<path d="M9 5l7 7-7 7"/>',
+  list:'<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke-width="2.6"/>',
+  orbit:'<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="3.5" r="1.9" fill="currentColor" stroke="none"/>',
+  laptop:'<rect x="4" y="5" width="16" height="10.5" rx="2"/><path d="M2.5 18.5h19"/>',
+  pause:'<path d="M9 6.5v11M15 6.5v11"/>',
+  wifioff:'<path d="M3 3l18 18"/><path d="M8.6 15.4a5 5 0 0 1 6.2-.6"/><path d="M5.2 12a10 10 0 0 1 4.3-2.3M14.6 9.8A10 10 0 0 1 18.8 12"/><path d="M12 19h.01" stroke-width="2.6"/>',
+  info:'<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5"/><path d="M12 7.8h.01" stroke-width="2.6"/>',
+  term:'<path d="M5 7l5 5-5 5M12 18h7"/>',desk:'<rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/>',
+  grid:'<rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/>',
+  phone:'<rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 18h2"/>',
+  gear:'<circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4L18 18M6 18l1.6-1.6M16.4 7.6L18 6"/>',
+  pulse:'<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>',
+  chat:'<path d="M5 5h14a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 19 17h-8l-5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 5 5z"/>',
+  dial:'<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4"/><path d="M12 3.5v4.5"/>'
+};
+const ico=(n,c='')=>`<svg class="ico ${c}" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
+const markHTML=k=>CAT[k].mark?MARKS[CAT[k].mark]:`<span class="glyph">${CAT[k].glyph}</span>`;
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const hhmm=d=>String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+const rid=()=>Math.random().toString(16).slice(2,6);
+const toneVar=k=>CAT[k].tone==='--ink'?'--ink':CAT[k].tone;
+const haptic=()=>{try{navigator.vibrate&&navigator.vibrate(8)}catch(e){}};
+document.getElementById('markdefs').innerHTML=MARK_DEFS;
+
+/* ---------- simulation ---------- */
+const sim={slow:false,paused:false,offline:false,legacy:false,conflict:false,scenario:'daily',platform:'dual'};
+let EPOCH=0;
+const later=(ms,fn)=>{const e=EPOCH;return setTimeout(()=>{if(e===EPOCH)fn()},ms)};
+const HOST={revision:0,agents:{},lease:{},fate:{}};
+const mkClient=(id,name)=>({id,name,gen:0,revision:0,snap:{},pending:{},queue:[],inflight:null,chips:{},selected:'codex',lastSync:new Date()});
+const CLIENTS={phone:mkClient('phone','iPhone'),desk:mkClient('desk','电脑')};
+const VIEWS={};
+const ORIGIN={desk:'电脑上',phone:'iPhone 上',pixel:'Pixel 9 上'};
+const laneOf=c=>c.id==='phone'?'App':'桌面界面';
+
+function reachable(c){return c.id==='desk'||(!sim.offline&&!sim.paused)}
+function canWrite(c){return c.id==='desk'?!sim.legacy:(reachable(c)&&!sim.legacy)}
+function latency(c){return c.id==='desk'?70:(sim.slow?1800:420)}
+function snapshot(){return{revision:HOST.revision,agents:Object.fromEntries(KINDS.map(k=>[k,{...HOST.agents[k]}]))}}
+function loadClient(c){const s=snapshot();c.revision=s.revision;KINDS.forEach(k=>c.snap[k]={...s.agents[k]});c.pending={};c.queue=[];c.inflight=null;c.lastSync=new Date()}
+function send(c,fn){const e=EPOCH,g=c.gen;setTimeout(()=>{if(e!==EPOCH||g!==c.gen)return;if(!reachable(c)){log(laneOf(c),'未送达：连接已断开','phone');renderAll();return}fn();renderAll()},latency(c))}
+function deliver(c,fn){const e=EPOCH,g=c.gen;setTimeout(()=>{if(e!==EPOCH||g!==c.gen||!reachable(c))return;fn();renderAll()},latency(c))}
+
+function eff(c,k){
+  const s=c.snap[k],p=c.pending[k];
+  if(p)return{mode:'pending',target:p.target,queued:p.state==='queued',s};
+  if(!s.enabled)return{mode:'off',s};
+  if(sim.paused&&c.id!=='fig'&&s.stage!=='held')return{mode:'on',stage:'paused',sessions:0,s};
+  return{mode:'on',stage:s.stage||'prep',sessions:s.sessions||0,s};
+}
+function stateOf(c,k){
+  const e=eff(c,k);
+  if(e.mode==='pending')return{word:e.queued?'已排队':'待确认',tone:'accent',ring:e.target?'attn':'belt'};
+  if(e.mode==='off')return{word:'未启用',tone:'faint',ring:'belt'};
+  const st=e.stage;
+  const ring=st==='live'?'live':st==='ready'?'ready':'attn';
+  const tone=st==='live'?'success':st==='ready'?'muted':(st==='missing'||st==='config')?'warning':st==='error'?'danger':'muted';
+  return{word:WORD[st]||'准备中',tone,ring};
+}
+function ladderOf(c,k){
+  const e=eff(c,k);
+  if(e.mode==='off')return['idle','idle','idle','idle'];
+  if(e.mode==='pending')return['active','idle','idle','idle'];
+  switch(e.stage){
+    case'missing':case'config':return['done','warn','idle','idle'];
+    case'held':return['done','hold','idle','idle'];
+    case'paused':return['done','done','hold','idle'];
+    case'error':return['done','done','error','idle'];
+    case'ready':return['done','done','done','idle'];
+    case'live':return['done','done','done','done'];
+    default:return['done','active','idle','idle'];
+  }
+}
+function legacyHidden(c,k){if(!(sim.legacy&&c.id==='phone'))return false;const e=eff(c,k);return!(e.mode==='on'&&(e.stage==='ready'||e.stage==='live'))}
+function visibleKinds(c){return KINDS.filter(k=>!legacyHidden(c,k))}
+
+function setChip(c,k,text,shake){c.chips[k]={text,until:Date.now()+4000,shake:!!shake,shook:false};setTimeout(renderAll,4060)}
+
+function intent(c,k,enabled,opt={}){
+  const v=VIEWS[c.id];
+  if(sim.legacy&&c.id==='phone')return;
+  if(!reachable(c)){v.toast(sim.paused?'电脑已暂停，无法更改':'电脑离线，无法更改');return}
+  const e=eff(c,k);
+  const cur=e.mode==='pending'?e.target:e.s.enabled;
+  if(cur===enabled)return;
+  if(e.mode==='pending'){
+    if(e.queued){delete c.pending[k];c.queue=c.queue.filter(x=>x!==k);log(laneOf(c),`撤回排队 ${k}`,c.id==='phone'?'phone':'sys');renderAll()}
+    return;
+  }
+  if(!enabled&&!opt.confirmed&&(e.s.sessions||0)>0){v.confirm(k,e.s.sessions,()=>intent(c,k,false,{confirmed:true}));return}
+  c.pending[k]={target:enabled,state:'queued',confirmed:!!opt.confirmed};
+  c.queue.push(k);
+  if(c.inflight)log(laneOf(c),`排队 ${k} ${enabled?'启用':'停用'}`,c.id==='phone'?'phone':'sys');
+  pump(c);renderAll();
+}
+function toggle(c,k){const e=eff(c,k);intent(c,k,!(e.mode==='pending'?e.target:e.s.enabled))}
+function pump(c){
+  if(c.inflight)return;
+  while(c.queue.length){
+    const k=c.queue.shift(),p=c.pending[k];
+    if(!p)continue;
+    if(p.target===c.snap[k].enabled){delete c.pending[k];continue}
+    const req=rid();p.state='sending';c.inflight={k,req};
+    const w={kind:k,enabled:p.target,expectedRevision:c.revision,requestId:req,confirmDisable:p.confirmed||undefined};
+    log(`${laneOf(c)} → Host`,`write ${k} ${p.target?'启用':'停用'} rev ${c.revision}${p.confirmed?' confirmDisable':''} #${req}`,c.id==='phone'?'phone':'sys');
+    send(c,()=>hostWrite(c,w));
+    return;
+  }
+}
+function hostWrite(from,w){
+  if(sim.conflict&&from.id==='phone'){
+    sim.conflict=false;syncSimButtons();
+    const other=w.kind==='hermes'?'opencode':'hermes';
+    log('桌面界面 → Host',`write ${other} ${HOST.agents[other].enabled?'停用':'启用'}（并发）`,'sys');
+    hostApply(other,!HOST.agents[other].enabled,'desk',null);
+  }
+  const a=HOST.agents[w.kind];let status;
+  if(a.enabled===w.enabled)status='unchanged';
+  else if(w.expectedRevision!==HOST.revision)status='conflict';
+  else if(!w.enabled&&a.sessions>0&&!w.confirmDisable)status='confirm';
+  else status='applied';
+  if(status==='applied'){HOST.revision++;a.enabled=w.enabled;recordChange(w.kind,w.enabled,from.id)}
+  const snap=snapshot(),n=a.sessions;
+  log(`Host → ${laneOf(from)}`,status==='confirm'?`需要确认停用（${n} 个运行中）`:`result ${status} rev ${snap.revision}`,'host');
+  deliver(from,()=>onResult(from,w,status,snap,n));
+  if(status==='applied'){broadcast(snap,from.id,from);lifecycle(w.kind)}
+}
+function hostApply(k,enabled,originId,except){HOST.revision++;HOST.agents[k].enabled=enabled;recordChange(k,enabled,originId);broadcast(snapshot(),originId,except);lifecycle(k)}
+function broadcast(snap,originId,except){
+  syncPixel(snap.revision,originId);
+  for(const c of Object.values(CLIENTS)){if(c===except)continue;log(`Host → ${laneOf(c)}`,`snapshot rev ${snap.revision}（${ORIGIN[originId]||''}改动）`,'host');deliver(c,()=>applySnap(c,snap,originId))}
+}
+function onResult(c,w,status,snap,n){
+  if(!c.inflight||c.inflight.req!==w.requestId)return;
+  c.inflight=null;const k=w.kind;
+  delete c.pending[k];
+  if(status==='applied'||status==='unchanged'){
+    applySnap(c,snap,null);
+    if(status==='applied'){
+      if(!w.enabled)VIEWS[c.id].toast(`已停用 ${CAT[k].label}`,'撤销',()=>intent(c,k,true));
+      else VIEWS[c.id].land(k);
+    }
+  }else if(status==='conflict'){applySnap(c,snap,null);setChip(c,k,'电脑上刚有改动',true)}
+  else if(status==='confirm'){applySnap(c,snap,null);VIEWS[c.id].confirm(k,n,()=>intent(c,k,false,{confirmed:true}))}
+  pump(c);
+}
+function applySnap(c,snap,originId){
+  if(snap.revision<c.revision)return;
+  for(const k of KINDS){
+    const was=c.snap[k].enabled,now=snap.agents[k].enabled;
+    c.snap[k].enabled=now;
+    if(was!==now&&originId&&originId!==c.id&&!c.pending[k])setChip(c,k,originId==='offline'?`离线期间已${now?'启用':'停用'}`:`${ORIGIN[originId]}${now?'启用':'停用'}`);
+  }
+  c.revision=snap.revision;c.lastSync=new Date();
+}
+function publish(k){const a={...HOST.agents[k]};for(const c of Object.values(CLIENTS))deliver(c,()=>{Object.assign(c.snap[k],{stage:a.stage,sessions:a.sessions,error:a.error})})}
+function lifecycle(k){
+  const a=HOST.agents[k],lease=++HOST.lease[k];
+  if(!a.enabled){a.stage=null;a.sessions=0;a.error='';log('Host',`${k} stop() 释放 Orbis 接入，原生进程不动`,'host');publish(k);return}
+  if(sim.paused){a.stage='held';log('Host',`${k} 已保存，恢复后启动`,'host');publish(k);return}
+  a.stage='prep';a.error='';log('Host',`${k} start(lease ${lease})`,'host');publish(k);
+  later(1300,()=>{
+    if(HOST.lease[k]!==lease||!a.enabled)return;
+    const f=HOST.fate[k];a.stage=f.stage;a.sessions=f.stage==='live'?f.sessions:0;
+    log('Host',`${k} → ${WORD[a.stage]}${a.sessions?`，${a.sessions} 个运行中`:''}`,'host');publish(k);
+  });
+}
+function hostAction(k,act){
+  const a=HOST.agents[k];if(!a.enabled)return;
+  const lease=++HOST.lease[k];
+  if(act==='install'){a.stage='install';log('Host',`${k} 安装最新版本`,'host');publish(k);later(1600,()=>{if(HOST.lease[k]!==lease)return;HOST.fate[k]={stage:'ready',sessions:0};a.stage='ready';log('Host',`${k} → 可启动`,'host');publish(k)});return}
+  if(act==='apply'){a.stage='prep';log('Host',`${k} 应用连接配置`,'host');publish(k);later(1300,()=>{if(HOST.lease[k]!==lease)return;HOST.fate[k]={stage:'live',sessions:0};a.stage='live';log('Host',`${k} → 已连接`,'host');publish(k)});return}
+  if(act==='retry'){HOST.lease[k]--;lifecycle(k)}
+}
+function reconnect(c){
+  c.gen++;const lost={...c.pending};
+  c.pending={};c.queue=[];c.inflight=null;
+  log(`${laneOf(c)} → Host`,'read（重连：先读快照，不重放）','phone');
+  send(c,()=>{const snap=snapshot();log(`Host → ${laneOf(c)}`,`snapshot rev ${snap.revision}`,'host');deliver(c,()=>{
+    applySnap(c,snap,'offline');
+    KINDS.forEach(k=>Object.assign(c.snap[k],{stage:snap.agents[k].stage,sessions:snap.agents[k].sessions,error:snap.agents[k].error}));
+    Object.entries(lost).forEach(([k,p])=>{if(c.snap[k].enabled!==p.target)setChip(c,k,'未提交，已按电脑同步')});
+  })});
+}
+function setPaused(v){
+  sim.paused=v;
+  if(v){log('Host','Host 已暂停：Orbis 接入全部挂起','host');KINDS.forEach(k=>{const a=HOST.agents[k];if(!a.enabled)return;HOST.lease[k]++;a.stage='paused';a.sessions=0;publish(k)})}
+  else{log('Host','Host 已恢复','host');KINDS.forEach(k=>{if(HOST.agents[k].enabled)lifecycle(k)});if(!sim.offline)reconnect(CLIENTS.phone)}
+  renderAll();
+}
+function setOffline(v){sim.offline=v;log('App',v?'手机断网':'网络恢复','phone');if(!v&&!sim.paused)reconnect(CLIENTS.phone);renderAll()}
+
+/* ---------- log ---------- */
+const LOG=[];const T0=performance.now();const logEl=document.getElementById('log');
+function log(lane,text,kind){const t=(performance.now()-T0)/1000;LOG.unshift({t,lane,text,kind:kind||'sys'});if(LOG.length>80)LOG.pop();drawLog()}
+function drawLog(){logEl.innerHTML=LOG.slice(0,60).map(e=>{const m=Math.floor(e.t/60),s=(e.t%60).toFixed(1).padStart(4,'0');return`<li data-k="${e.kind}"><time>${m}:${s}</time><span class="ln">${esc(e.lane)}</span><span class="lx">${esc(e.text)}</span></li>`}).join('')}
+document.getElementById('logclear').onclick=()=>{LOG.length=0;drawLog()};
+
+/* ---------- shared UI pieces ---------- */
+const switchInner=()=>`<span class="isw-t"><span class="isw-k"><svg class="isw-arc" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14"/></svg></span></span>`;
+function setSwitch(sw,c,k){
+  const e=eff(c,k),on=e.mode==='pending'?e.target:e.s.enabled;
+  sw.classList.toggle('on',on);sw.classList.toggle('pend',e.mode==='pending');sw.classList.toggle('q',e.mode==='pending'&&e.queued);
+  const locked=!canWrite(c);sw.classList.toggle('locked',locked);
+  sw.setAttribute('aria-checked',String(on));sw.setAttribute('aria-disabled',String(locked));
+  sw.hidden=c.id==='phone'&&sim.legacy;
+}
+
+class Inspector{
+  constructor(el,c,platform,view){
+    this.el=el;this.c=c;this.platform=platform;this.view=view;this.sig='';this.kind='';
+    el.innerHTML=`<div class="ih"><span class="im"></span><div class="it"><span class="iname"></span><span class="istate"><span class="iword"></span><button type="button" class="iinfo" hidden aria-label="说明">${ico('info')}</button></span></div><button type="button" class="isw" role="switch">${switchInner()}</button></div>
+      <ol class="ladder">${[0,1,2,3].map(()=>`<li class="step"><span class="node"><svg class="arc2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5"/></svg></span><span class="cap"></span></li>`).join('')}</ol><div class="ifacts"></div>`;
+    this.q=s=>el.querySelector(s);
+    this.sw=this.q('.isw');this.facts=this.q('.ifacts');
+    this.sw.addEventListener('click',()=>{if(!canWrite(c)){if(c.id==='phone'&&!sim.legacy)view.toast(sim.paused?'电脑已暂停，无法更改':'电脑离线，无法更改');return}toggle(c,c.selected)});
+    this.q('.iinfo').addEventListener('click',ev=>{const st=eff(c,c.selected).stage;view.pop(ev.currentTarget,st==='missing'?'在电脑上的 Orbis 里安装，完成后自动接入。':'在电脑上的 Orbis 里填写连接配置。')});
+    this.facts.addEventListener('click',ev=>{const t=ev.target.closest('[data-sel]');if(t){view.select(t.dataset.sel);return}const a=ev.target.closest('[data-act]');if(a)this.act(a)});
+  }
+  act(a){
+    const k=this.c.selected,act=a.dataset.act;
+    if(act==='install'||act==='apply'||act==='retry'){hostAction(k,act);renderAll();return}
+    if(act==='tog'){const d=DETAIL[k].toggles[+a.dataset.i];d[1]=!d[1];a.classList.toggle('on',d[1]);a.setAttribute('aria-checked',String(d[1]));return}
+    if(act==='seg'){DETAIL[k].segv=+a.dataset.i;this.sig='';this.update();return}
+    this.view.toast('原型未接入此操作');
+  }
+  update(){
+    const c=this.c,k=c.selected,e=eff(c,k),st=stateOf(c,k);
+    this.el.style.setProperty('--tone',`var(${toneVar(k)})`);
+    if(this.kind!==k){this.kind=k;this.q('.im').innerHTML=markHTML(k);this.q('.iname').textContent=CAT[k].label}
+    this.q('.im').classList.toggle('off',e.mode==='off');
+    const w=this.q('.iword');w.textContent=st.word+(e.mode==='on'&&e.sessions?`，${e.sessions} 个运行中`:'');w.dataset.tone=st.tone;
+    this.q('.iinfo').hidden=!(this.platform==='phone'&&e.mode==='on'&&(e.stage==='missing'||e.stage==='config'));
+    setSwitch(this.sw,c,k);this.sw.setAttribute('aria-label',`启用 ${CAT[k].label}`);
+    const lad=ladderOf(c,k),caps=['启用',CAT[k].prep,'就绪','连接'];
+    this.el.querySelectorAll('.step').forEach((li,i)=>{li.dataset.s=lad[i];li.querySelector('.cap').textContent=caps[i]});
+    const twin=CAT[k].twin,te=twin?eff(c,twin):null;
+    const sig=[k,e.mode,e.stage,e.sessions,e.s.error,twin?stateOf(c,twin).word:'',sim.paused,sim.legacy,DETAIL[k].segv].join('|');
+    if(sig!==this.sig){this.sig=sig;this.facts.innerHTML=this.platform==='phone'?this.phoneFacts(k,e,twin,te):this.deskFacts(k,e,twin,te)}
+  }
+  sessHTML(k,n){if(!n)return'';const t=(SESSIONS[k]||[]).slice(0,n);while(t.length<n)t.push('未命名会话');return`<div class="sess">${t.map(x=>`<div><span class="adot"></span><span>${esc(x)}</span></div>`).join('')}</div>`}
+  twinHTML(twin){if(!twin)return'';const st=stateOf(this.c,twin);return`<div class="twin"><span>${CAT[twin].twinNote||''}</span><button type="button" class="tchip" data-sel="${twin}" style="--tone:var(${toneVar(twin)})"><span class="tm">${markHTML(twin)}</span>${CAT[twin].label}<em data-tone="${st.tone}">${st.word}</em></button></div>`}
+  phoneFacts(k,e,twin){
+    let h='';
+    if(e.mode==='on'){if(e.stage==='live')h+=this.sessHTML(k,e.sessions);if(e.stage==='error')h+=`<p class="ferr">${esc(e.s.error||ERRORS[k])}</p>`}
+    return h+this.twinHTML(twin);
+  }
+  deskFacts(k,e,twin){
+    if(e.mode!=='on')return this.twinHTML(twin);
+    const d=DETAIL[k];let h='';
+    if(e.stage==='missing')h+=`<div class="fix"><span>尚未安装</span><button type="button" class="btn pri" data-act="install">安装最新版本</button></div>`;
+    if(e.stage==='error')h+=`<div class="fix err"><span>${esc(e.s.error||ERRORS[k])}</span><button type="button" class="btn" data-act="retry">重试</button></div>`;
+    if(e.stage==='held'||e.stage==='paused')h+=`<div class="fix hold"><span>${e.stage==='held'?'Host 恢复后生效':'Host 已暂停'}</span></div>`;
+    if(e.stage==='install'||e.stage==='prep')h+=`<div class="fix hold"><span>${e.stage==='install'?'正在安装':'正在准备接入'}</span></div>`;
+    if(e.stage==='live')h+=this.sessHTML(k,e.sessions);
+    h+='<div class="dset">';
+    if(d.ver&&e.stage!=='missing')h+=`<div class="kv"><span>当前版本</span><span>${d.ver}</span></div><div class="kv"><span>最新版本</span><span${d.ver!==d.latest?' data-tone="warning"':''}>${d.latest}${d.ver!==d.latest?'，有可用更新':''}</span></div>`;
+    (d.toggles||[]).forEach((t,i)=>{h+=`<div class="kv"><span>${t[0]}</span><button type="button" class="isw${t[1]?' on':''}" role="switch" aria-checked="${t[1]}" aria-label="${t[0]}" data-act="tog" data-i="${i}">${switchInner()}</button></div>`});
+    (d.rows||[]).forEach(r=>{h+=`<div class="kv"><span>${r[0]}</span><span>${esc(r[1])}</span></div>`});
+    if(d.seg){const sv=d.segv||0;h+=`<div class="kv"><span>来源</span><div class="seg">${d.seg.map((s,i)=>`<button type="button" aria-pressed="${i===sv}" data-act="seg" data-i="${i}">${s}</button>`).join('')}</div></div>`}
+    if(d.field)h+=`<label class="fld">${d.field[0]}<input id="fld-${k}" value="${e.stage==='config'&&k==='openclaw'?'':esc(d.field[1])}" placeholder="${esc(d.field[1])}"></label>`;
+    if(d.token)h+=`<label class="fld">Gateway 令牌（可选）<input id="tok-${k}" type="password" placeholder="已保存令牌"></label>`;
+    h+='</div>';
+    const acts=(d.field?[`<button type="button" class="btn${e.stage==='config'?' pri':''}" data-act="apply">应用</button>`]:[]).concat((d.acts||[]).filter(a=>!(e.stage==='missing'&&a.startsWith('更新'))).map(a=>`<button type="button" class="btn" data-act="noop">${a}</button>`));
+    if(acts.length)h+=`<div class="acts">${acts.join('')}</div>`;
+    return h+this.twinHTML(twin);
+  }
+}
+
+/* ---------- switchboard ---------- */
+CAT.codex.twinNote=CAT.codexDesktop.twinNote='共用供应商配置';
+CAT.dsh.twinNote=CAT.dshDesktop.twinNote='同族来源';
+Object.assign(ICON,{
+  plug:'<path d="M9 3.5v4.5M15 3.5v4.5"/><path d="M6.5 8h11v3.2a5.5 5.5 0 0 1-11 0z"/><path d="M12 16.7v3.8"/>',
+  down:'<path d="M12 4.5v10M7.5 10.5L12 15l4.5-4.5M6 19.5h12"/>',
+  sliders:'<path d="M5 8h8M17 8h2M5 16h2M11 16h8"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/>',
+  alert:'<path d="M12 6.5v7"/><path d="M12 17.5h.01" stroke-width="3"/>',
+  clock:'<circle cx="12" cy="12" r="7.5"/><path d="M12 8v4.2l2.8 1.8"/>'
+});
+const SPR={drag:[1200,80],page:[260,24],pop:[380,18]};
+const PLUG_LEN=26;
+const BOARDS=[];let rafOn=false,rafT=0;
+const reduced=()=>document.documentElement.classList.contains('reduce')||matchMedia('(prefers-reduced-motion: reduce)').matches;
+function kick(){if(rafOn)return;rafOn=true;rafT=performance.now();requestAnimationFrame(tick)}
+function tick(now){const dt=Math.min(.032,Math.max(0,(now-rafT)/1000));rafT=now;let busy=false;for(const b of BOARDS)if(b.frame(dt,now))busy=true;if(busy)requestAnimationFrame(tick);else rafOn=false}
+function springStep(o,x,v,target,kc,dt){const n=Math.max(1,Math.ceil(dt/.006)),h=dt/n;for(let i=0;i<n;i++){const a=-kc[0]*(o[x]-target)-kc[1]*o[v];o[v]+=a*h;o[x]+=o[v]*h}}
+const rubber=r=>r<0?r*.2:r>1?1+(r-1)*.2:r;
+function sessTitles(k,n){const t=(SESSIONS[k]||[]).slice(0,n);while(t.length<n)t.push('未命名会话');return t}
+function lampOf(c,k){const e=eff(c,k);if(e.mode!=='on')return'none';switch(e.stage){case'live':return'live';case'ready':return'ready';case'missing':case'config':return'warn';case'error':return'err';case'held':case'paused':return'idle';default:return'work'}}
+function lampStrip(c,r=2.6,gap=4){
+  const ks=visibleKinds(c),d=2*r,w=ks.length*d+(ks.length-1)*gap+2,h=d+2;
+  const st={live:'fill:var(--success)',warn:'fill:var(--warning)',err:'fill:var(--danger)',work:'fill:var(--ink-faint)',ready:'fill:none;stroke:var(--ink-muted);stroke-width:1.2',idle:'fill:none;stroke:var(--ink-faint);stroke-width:1.2',none:'fill:var(--hairline)'};
+  let s=`<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" aria-hidden="true">`;
+  ks.forEach((k,i)=>{const l=lampOf(c,k),rr=(l==='ready'||l==='idle')?r-.6:l==='none'?r*.55:r;s+=`<circle cx="${(1+r+i*(d+gap)).toFixed(1)}" cy="${(h/2).toFixed(1)}" r="${rr.toFixed(2)}" style="${st[l]}"/>`});
+  return s+'</svg>';
+}
+
+class Board{
+  constructor(el,c,view,axis,opt={}){
+    this.el=el;this.c=c;this.view=view;this.axis=axis;this.kinds=opt.kinds||KINDS;this.static=!!opt.static;
+    this.L={};this.holdK=null;this.o={dark:false,frozen:false,locked:false};this.dark=false;
+    el.classList.add('board');if(this.static)el.classList.add('static');el.dataset.axis=axis;
+    el.innerHTML=this.kinds.map((k,i)=>this.laneHTML(k,i)).join('')+(this.static?'':'<div class="hveil" hidden></div><div class="hcard" hidden></div>');
+    this.kinds.forEach((k,i)=>{
+      const lane=el.children[i],q=s=>lane.querySelector(s);
+      this.L[k]={k,i,el:lane,plate:q('.plate'),word:q('.pw'),groove:q('.groove'),jack:q('.jack'),lamp:q('.lamp'),svg:q('.cord'),cw:q('.cw'),cf:q('.cf'),bg:q('.beads'),plug:q('.plug'),knot:q('.knot'),tag:q('.tag'),
+        pos:0,vp:0,sag:0,vs:0,posT:0,sagT:0,sagNext:0,sagAt:0,spr:SPR.drag,phase:Math.random(),beadN:0,drag:null,hold:false,magnet:false,nudge:0,crowd:0,legacy:false,g:null,fresh:true};
+      if(this.static){const L=this.L[k];L.plug.tabIndex=-1;L.plug.setAttribute('aria-hidden','true');L.plate.tabIndex=-1;L.knot.tabIndex=-1}
+      else this.bind(this.L[k]);
+    });
+    if(!this.static){this.hold=el.querySelector('.hcard');this.veil=el.querySelector('.hveil');this.veil.addEventListener('click',()=>this.closeHold())}
+    new ResizeObserver(()=>this.layout()).observe(el);
+    BOARDS.push(this);
+  }
+  laneHTML(k,i){
+    const t=CAT[k],pair=t.twin&&this.kinds.includes(t.twin);
+    const tw=pair?(this.kinds.indexOf(k)<this.kinds.indexOf(t.twin)?' tw tw-a':' tw tw-b'):'';
+    return `<div class="lane${tw}" data-kind="${k}" style="--tone:var(${toneVar(k)});--i:${i}">`
+      +`<button type="button" class="plate"><span class="pm">${markHTML(k)}${t.variant?`<span class="pb">${ico(t.variant)}</span>`:''}</span><span class="ptx"><b class="pn">${t.label}</b><span class="pw"></span></span></button>`
+      +`<span class="groove"><span class="jack"><i></i></span></span><span class="lamp" aria-hidden="true"></span>`
+      +`<svg class="cord" aria-hidden="true"><path class="cw"/><path class="cf"/><g class="beads"></g></svg>`
+      +`<button type="button" class="plug" role="switch"><span class="prong"></span><span class="ph"><span class="pd"></span></span></button>`
+      +`<button type="button" class="knot" hidden></button><span class="tag" hidden></span></div>`;
+  }
+  layout(){
+    for(const k of this.kinds){
+      const L=this.L[k],lr=L.el.getBoundingClientRect();if(!lr.width)continue;
+      const s=lr.width/L.el.offsetWidth||1;
+      const rel=n=>{const r=n.getBoundingClientRect();return{x:(r.left-lr.left)/s,y:(r.top-lr.top)/s,w:r.width/s,h:r.height/s}};
+      const gr=rel(L.groove),jr=rel(L.jack),jc=[jr.x+jr.w/2,jr.y+jr.h/2];
+      let O,D,N;
+      if(this.axis==='x'){O=[gr.x+8,gr.y+gr.h/2];D=[1,0];N=[0,1]}
+      else{O=[gr.x+gr.w/2,gr.y+gr.h-8];D=[0,-1];N=[1,0]}
+      const uJ=(jc[0]-O[0])*D[0]+(jc[1]-O[1])*D[1];
+      const uSeat=uJ-jr.w/2+3,uPark=Math.min(16+PLUG_LEN,uSeat-24);
+      L.g={O,D,N,uJ,uSeat,uPark};
+      if(L.fresh){L.fresh=false;L.pos=L.posT;L.sag=L.sagT}
+    }
+    for(const k of this.kinds)if(this.L[k].g)this.drawLane(this.L[k]);
+    if(this.holdK)this.placeHold(this.L[this.holdK]);
+    kick();
+  }
+  frame(dt,now){
+    if(!this.el.offsetParent)return false;
+    const red=reduced();let busy=false;
+    for(const k of this.kinds){
+      const L=this.L[k];if(!L.g||L.el.hidden)continue;
+      if(L.sagAt&&now>=L.sagAt){L.sagT=L.sagNext;L.sagAt=0}
+      let moving=!!L.sagAt;
+      if(red){if(!L.drag){L.pos=L.posT;L.vp=0}L.sag=L.sagT;L.vs=0;L.nudge=0}
+      else{
+        if(L.nudge){const t=(now-L.nudge)/1700;if(t>=1)L.nudge=0;else{L.pos=.34*Math.pow(Math.abs(Math.sin(t*Math.PI*2)),1.2)*(1-.35*t);L.vp=0;moving=true}}
+        if(!L.drag&&!L.nudge){springStep(L,'pos','vp',L.posT,L.spr,dt);if(Math.abs(L.pos-L.posT)>.0015||Math.abs(L.vp)>.01)moving=true;else{L.pos=L.posT;L.vp=0}}
+        if(L.drag)moving=true;
+        springStep(L,'sag','vs',L.sagT,SPR.page,dt);if(Math.abs(L.sag-L.sagT)>.04||Math.abs(L.vs)>.05)moving=true;else{L.sag=L.sagT;L.vs=0}
+        if(L.beadN&&!this.o.frozen){L.phase=(L.phase+dt/2.6)%1;moving=true}
+      }
+      this.drawLane(L);
+      if(moving)busy=true;
+    }
+    return busy;
+  }
+  drawLane(L){
+    const g=L.g;if(!g)return;
+    const front=L.legacy?g.uJ:g.uPark+(g.uSeat-g.uPark)*L.pos;
+    const len=Math.max(1,L.legacy?g.uJ-4:front-PLUG_LEN);
+    const stretch=L.legacy?1:Math.min(1,Math.max(0,L.pos));
+    const r=5*Math.pow(1-stretch,1.3),N=96,P=(u,v)=>[g.O[0]+g.D[0]*u+g.N[0]*v,g.O[1]+g.D[1]*u+g.N[1]*v];
+    const pts=new Array(N+1);let d='';
+    for(let i=0;i<=N;i++){
+      const t=i/N,th=12*Math.PI*t,env=Math.pow(Math.sin(Math.PI*t),.6);
+      const p=P(len*t+.8*r*env*Math.cos(th)-.8*r*env,r*env*Math.sin(th)+L.sag*Math.sin(Math.PI*t));
+      pts[i]=p;d+=(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1);
+    }
+    L.cw.setAttribute('d',d);L.cf.setAttribute('d',d);
+    const c=P(front-PLUG_LEN/2,0),pw=this.axis==='x'?26:22,ph=this.axis==='x'?22:26;
+    L.plug.style.transform=`translate(${(c[0]-pw/2).toFixed(1)}px,${(c[1]-ph/2).toFixed(1)}px)`;
+    if(!L.knot.hidden){const m=pts[N/2];L.knot.style.transform=`translate(${m[0].toFixed(1)}px,${m[1].toFixed(1)}px)`}
+    if(L.beadN){
+      const cs=L.bg.children;
+      for(let i=0;i<cs.length;i++){
+        let t=.08+.84*((L.phase+i/cs.length)%1);
+        if(reduced())t=.2+.6*(i+.5)/cs.length;
+        if(L.crowd)t+=((.9-i*.07)-t)*L.crowd;
+        const p=pts[Math.round(t*N)];cs[i].setAttribute('cx',p[0].toFixed(1));cs[i].setAttribute('cy',p[1].toFixed(1));
+      }
+    }
+    if(!L.tag.hidden){L.tag.style.transform=this.axis==='x'?`translate(${c[0].toFixed(1)}px,${(c[1]-15).toFixed(1)}px) translate(-50%,-100%)`:`translate(${c[0].toFixed(1)}px,${(c[1]+17).toFixed(1)}px) translateX(-50%)`}
+  }
+  update(){
+    const c=this.c,stat=this.static;
+    const dark=!stat&&sim.paused,frozen=!stat&&c.id==='phone'&&sim.offline&&!sim.paused,locked=!stat&&!canWrite(c);
+    const stag=dark!==this.dark;this.dark=dark;
+    if(stag){this.el.classList.add('stagger');clearTimeout(this.stT);this.stT=setTimeout(()=>this.el.classList.remove('stagger'),1500)}
+    this.o={dark,frozen,locked,stag};
+    this.el.classList.toggle('dark',dark);this.el.classList.toggle('frozen',frozen);
+    for(const k of this.kinds)this.updateLane(this.L[k]);
+    this.o.stag=false;
+    kick();
+  }
+  updateLane(L){
+    const c=this.c,k=L.k,o=this.o,e=eff(c,k),st=stateOf(c,k),t=CAT[k];
+    L.el.hidden=legacyHidden(c,k);
+    L.legacy=!this.static&&sim.legacy&&c.id==='phone';
+    const on=e.mode==='on',pend=e.mode==='pending';
+    let posT=pend?(e.target?.9:.5):(e.s.enabled?1:0);
+    if(L.hold)posT=.6;
+    if(L.legacy)posT=1;
+    if(posT!==L.posT){L.spr=(posT===1&&L.pos>=.8)?SPR.pop:SPR.drag;L.posT=posT}
+    let s='off',lamp='none',knot=null,sag=0;
+    if(pend){s='pend';sag=2}
+    else if(on){
+      switch(e.stage){
+        case'live':s='live';lamp='live';break;
+        case'ready':s='ready';lamp='ready';break;
+        case'missing':s='attn';lamp='warn';sag=6;knot=['warning','down'];break;
+        case'config':s='attn';lamp='warn';sag=6;knot=['warning','sliders'];break;
+        case'error':s='err';lamp='err';sag=6;knot=['danger','alert'];break;
+        case'held':s='slack';lamp='idle';sag=9;knot=['muted','clock'];break;
+        case'paused':s='slack';lamp='idle';sag=9;break;
+        case'install':s='prep';lamp='work';sag=3;knot=['muted','spin'];break;
+        default:s='prep';lamp='work';sag=3;
+      }
+    }
+    if(L.legacy)knot=null;
+    if(sag!==L.sagNext||L.sagAt){
+      L.sagNext=sag;
+      if(o.stag&&!reduced())L.sagAt=performance.now()+L.i*70;
+      else if(!L.sagAt)L.sagT=sag;
+    }
+    L.svg.dataset.s=s;L.lamp.dataset.l=lamp;
+    const bn=on&&e.stage==='live'?Math.min(3,e.sessions||0):0;
+    if(bn!==L.beadN){L.beadN=bn;L.bg.innerHTML='<circle r="3"/>'.repeat(bn)}
+    if(knot){
+      L.knot.hidden=false;
+      if(L.knot.dataset.ic!==knot[1]){L.knot.dataset.ic=knot[1];L.knot.innerHTML=knot[1]==='spin'?'<svg class="ico kspin" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5a7.5 7.5 0 0 1 7.5 7.5"/></svg>':ico(knot[1])}
+      L.knot.dataset.t=knot[0];L.knot.setAttribute('aria-label',`${t.label}，${st.word}`);
+    }else{L.knot.hidden=true;delete L.knot.dataset.ic}
+    const armed=!!(L.drag&&L.drag.armed);
+    L.plug.dataset.p=(o.locked||L.legacy)?'locked':(armed||L.hold)?'arm':pend?(e.queued?'queue':'send'):on?'on':'off';
+    L.plug.hidden=L.legacy;
+    L.plug.setAttribute('aria-checked',String(!!(pend?e.target:e.s.enabled)));
+    L.plug.setAttribute('aria-label',`${t.label}，${st.word}${on&&e.sessions?`，${e.sessions} 个运行中会话`:''}`);
+    L.plug.setAttribute('aria-disabled',String(!!o.locked));
+    let word=st.word,tone=st.tone;
+    if(armed){word='松手停用';tone='danger'}
+    else if(L.drag&&L.magnet){word='松手启用';tone='accent'}
+    if(L.word.textContent!==word)L.word.textContent=word;
+    L.word.dataset.tone=tone;
+    L.el.classList.toggle('off',e.mode==='off');
+    L.el.classList.toggle('sel',!this.static&&this.view.isSel(k));
+    L.jack.classList.toggle('magnet',!!(L.drag&&L.magnet));
+    const ch=c.chips&&c.chips[k];
+    if(ch&&ch.until>Date.now()){
+      const was=L.tag.hidden;L.tag.hidden=false;
+      if(L.tag.textContent!==ch.text)L.tag.textContent=ch.text;
+      L.tag.dataset.t=ch.shake?'warning':'';
+      if(was&&L.g)this.drawLane(L);
+    }else L.tag.hidden=true;
+  }
+  uOf(L,ev){const r=L.el.getBoundingClientRect(),s=r.width/L.el.offsetWidth||1;const x=(ev.clientX-r.left)/s,y=(ev.clientY-r.top)/s;return(x-L.g.O[0])*L.g.D[0]+(y-L.g.O[1])*L.g.D[1]}
+  bind(L){
+    const c=this.c,k=L.k,plug=L.plug;
+    plug.addEventListener('pointerdown',ev=>{
+      if(ev.button>0||!L.g)return;
+      c.selected=k;
+      if(!canWrite(c)){this.locked();renderAll();return}
+      ev.preventDefault();try{plug.setPointerCapture(ev.pointerId)}catch(_){}
+      const e=eff(c,k);
+      L.drag={id:ev.pointerId,u0:this.uOf(L,ev),p0:L.pos,moved:false,mode:e.mode,sess:e.mode==='on'?(e.sessions||0):0,raw:L.pos,armed:false};
+      L.magnet=false;L.nudge=0;plug.classList.add('drag');renderAll();
+    });
+    plug.addEventListener('pointermove',ev=>{
+      const d=L.drag;if(!d||ev.pointerId!==d.id)return;
+      const du=this.uOf(L,ev)-d.u0;
+      if(!d.moved&&Math.abs(du)<6)return;
+      d.moved=true;if(d.mode==='pending')return;
+      const raw=d.p0+du/(L.g.uSeat-L.g.uPark);d.raw=raw;let p;
+      if(d.mode==='off'){
+        const mag=raw>.72;
+        if(mag!==L.magnet){L.magnet=mag;if(mag)haptic();this.updateLane(L)}
+        p=mag?.93+Math.min(.05,(raw-.72)*.12):rubber(raw);
+      }else if(d.sess>0){
+        const pull=Math.max(0,1-raw);
+        p=raw>1?rubber(raw):1-(pull<.6?pull*.55:.33+.12*(1-Math.exp(-(pull-.6)*5)));
+        L.crowd=Math.min(1,pull/.6);
+        const arm=pull>.6;
+        if(arm!==d.armed){d.armed=arm;if(arm){haptic();this.showArm(k,d.sess)}else this.hideArm();this.updateLane(L)}
+      }else p=rubber(raw);
+      L.pos=p;L.vp=0;kick();
+    });
+    const end=ev=>{
+      const d=L.drag;if(!d||ev.pointerId!==d.id)return;
+      L.drag=null;plug.classList.remove('drag');L.crowd=0;const mag=L.magnet;L.magnet=false;
+      if(d.armed)this.hideArm();
+      if(ev.type==='pointerup'&&(!d.moved||d.mode==='pending')){this.tap(k);return}
+      if(d.mode==='off'&&mag)intent(c,k,true);
+      else if(d.mode==='on'&&d.sess>0&&d.armed)intent(c,k,false,{confirmed:true});
+      else if(d.mode==='on'&&!d.sess&&d.raw<.5)intent(c,k,false);
+      renderAll();
+    };
+    plug.addEventListener('pointerup',end);plug.addEventListener('pointercancel',end);
+    plug.addEventListener('click',ev=>{if(ev.detail===0){c.selected=k;this.tap(k)}});
+    plug.addEventListener('keydown',ev=>{
+      const step=(this.axis==='x'?{ArrowDown:1,ArrowUp:-1}:{ArrowRight:1,ArrowLeft:-1})[ev.key];if(!step)return;
+      ev.preventDefault();const vis=this.kinds.filter(x=>!this.L[x].el.hidden&&!this.L[x].plug.hidden),n=vis[vis.indexOf(k)+step];
+      if(n){this.L[n].plug.focus();c.selected=n;renderAll()}
+    });
+    L.plate.addEventListener('click',()=>this.view.openDetail(k));
+    L.knot.addEventListener('click',()=>this.view.openDetail(k,true));
+  }
+  tap(k){const c=this.c;if(!canWrite(c)){this.locked();renderAll();return}c.selected=k;toggle(c,k);renderAll()}
+  locked(){if(this.c.id==='phone'&&!sim.legacy)this.view.toast(sim.paused?'电脑已暂停，无法更改':'电脑离线，无法更改')}
+  flash(k,cls,ms){const el=this.L[k]&&this.L[k].el;if(!el)return;el.classList.remove(cls);void el.offsetWidth;el.classList.add(cls);setTimeout(()=>el.classList.remove(cls),ms)}
+  land(k){this.flash(k,'seat',460);haptic()}
+  nudge(k){const L=this.L[k];if(L&&eff(this.c,k).mode==='off'&&!reduced()){L.nudge=performance.now();kick()}}
+  holdBody(k,n,arm){
+    return `<h4${arm?' data-tone="danger"':''}>${arm?'松手停用':'停用'} ${esc(CAT[k].label)}${arm?'':'？'}</h4><p>${n} 个运行中的会话将不再同步到${this.c.id==='phone'?'手机':'配对设备'}，电脑上继续运行。</p><div class="sess">${sessTitles(k,n).map(t=>`<div><span class="adot"></span><span>${esc(t)}</span></div>`).join('')}</div>`;
+  }
+  placeHold(L){
+    const h=this.hold,bw=this.el.clientWidth,bh=this.el.clientHeight;h.hidden=false;
+    const hw=h.offsetWidth,hh=h.offsetHeight;let x,y;
+    if(this.axis==='x'){x=bw-hw-6;const below=L.el.offsetTop+L.el.offsetHeight-4;y=below+hh+6>bh?Math.max(6,L.el.offsetTop-hh+4):below}
+    else{x=Math.max(6,Math.min(bw-hw-6,L.el.offsetLeft+L.el.offsetWidth/2-hw/2));y=L.el.offsetTop+72}
+    h.style.left=x+'px';h.style.top=y+'px';
+  }
+  showArm(k,n){if(this.holdK)return;const h=this.hold;h.className='hcard arm';h.setAttribute('role','status');h.removeAttribute('aria-label');h.innerHTML=this.holdBody(k,n,true);this.placeHold(this.L[k])}
+  hideArm(){if(this.holdK)return;this.hold.hidden=true;this.hold.innerHTML=''}
+  openHold(k,n,onOk){
+    if(this.static)return;this.closeHold(true);
+    const L=this.L[k],h=this.hold;this.holdK=k;L.hold=true;
+    h.className='hcard';h.setAttribute('role','alertdialog');h.setAttribute('aria-label',`停用 ${CAT[k].label}`);
+    h.innerHTML=this.holdBody(k,n,false)+'<div class="dbtns"><button type="button" class="btn" data-x>保留</button><button type="button" class="btn danger" data-ok>停用</button></div>';
+    this.veil.hidden=false;this.placeHold(L);
+    h.querySelector('[data-x]').onclick=()=>this.closeHold();
+    h.querySelector('[data-ok]').onclick=()=>{this.closeHold(true);onOk()};
+    h.onkeydown=e=>{if(e.key==='Escape')this.closeHold()};
+    h.querySelector('[data-x]').focus({preventScroll:true});
+    renderAll();
+  }
+  closeHold(silent){
+    const k=this.holdK;if(!k)return;this.holdK=null;this.L[k].hold=false;
+    this.hold.hidden=true;this.hold.innerHTML='';this.veil.hidden=true;
+    if(silent)this.updateLane(this.L[k]);else{renderAll();this.L[k].plug.focus({preventScroll:true})}
+  }
+}
+
+/* ---------- Host overview: synced enable / disable ---------- */
+// Everything here is Host-local bookkeeping: which paired device sent a write, and the last
+// revision each device has received. No new protocol is needed for the overview itself.
+HOST.changes=[];
+const PIXEL={rev:0};
+const DEVNAME={desk:'电脑上',phone:'iPhone 上',pixel:'Pixel 9 上'};
+let CH_SEQ=0;
+// Every write the Host applies is one change: which kind, direction, origin device, revision, and whether
+// the overview has actually been on screen long enough since it arrived (used by variants B and E).
+function recordChange(k,enabled,origin){HOST.changes.unshift({id:++CH_SEQ,k,enabled,origin,at:Date.now(),rev:HOST.revision,seen:origin==='desk',dwell:0,doneAt:0});if(HOST.changes.length>20)HOST.changes.pop()}
+function seedChange(k,enabled,origin,ago,rev){const at=Date.now()-ago;return{id:++CH_SEQ,k,enabled,origin,at,rev,seen:true,dwell:0,doneAt:at}}
+const lastOf=k=>HOST.changes.find(x=>x.k===k);
+const SEEN_MS=4000;
+sim.away=false;
+function watching(){const d=VIEWS.desk;return!!d&&d.page==='overview'&&sim.platform!=='phone'&&!sim.away&&!sim.legacy&&!document.hidden}
+// Delivery is tracked whether or not the overview is on screen: a change is done once every other paired device has its revision.
+function delivered(x){return pairedDevices().every(d=>d.id===x.origin||d.rev>=x.rev)}
+setInterval(()=>{
+  let ch=false;const now=Date.now();
+  for(const x of HOST.changes){const ok=delivered(x);if(ok&&!x.doneAt){x.doneAt=now;ch=true}else if(!ok&&x.doneAt){x.doneAt=0;ch=true}else if(x.doneAt&&now-x.doneAt>=3000&&now-x.doneAt<3250)ch=true}
+  if(watching())for(const x of HOST.changes){if(x.seen)continue;x.dwell+=250;if(x.dwell>=SEEN_MS){x.seen=true;ch=true}}
+  if(ch&&VIEWS.desk)VIEWS.desk.update();
+},250);
+function markSeen(k){let ch=false;for(const x of HOST.changes)if(x.k===k&&!x.seen){x.seen=true;ch=true}if(ch)VIEWS.desk.update()}
+function syncPixel(rev,originId){
+  if(originId==='pixel'){PIXEL.rev=rev;return}
+  const e=EPOCH;setTimeout(()=>{if(e!==EPOCH||sim.paused)return;PIXEL.rev=Math.max(PIXEL.rev,rev);renderAll()},sim.slow?1800:420);
+}
+function relTime(t){const s=(Date.now()-t)/1000;if(s<45)return'刚刚';if(s<3600)return`${Math.max(1,Math.round(s/60))} 分钟前`;if(s<86400)return`${Math.round(s/3600)} 小时前`;return`${Math.round(s/86400)} 天前`}
+function lastChange(){
+  const ch=HOST.changes;if(!ch.length)return null;
+  const h=ch[0];let n=1;
+  while(n<ch.length&&ch[n].origin===h.origin&&ch[n].enabled===h.enabled&&ch[n-1].at-ch[n].at<3000)n++;
+  const verb=h.enabled?'启用':'停用';
+  return{k:h.k,text:n>1?`${DEVNAME[h.origin]}${verb} ${n} 个 Agent`:`${DEVNAME[h.origin]}${verb} ${CAT[h.k].label}`,at:h.at};
+}
+function pairedDevices(){
+  return[{id:'phone',name:'iPhone',online:reachable(CLIENTS.phone),rev:CLIENTS.phone.revision},{id:'pixel',name:'Pixel 9',online:!sim.paused,rev:PIXEL.rev}];
+}
+const OACT={missing:['install','安装'],error:['retry','重试'],config:['config','配置'],ready:['open','打开'],live:['open','打开'],prep:['open','打开',1],install:['open','打开',1]};
+
+class OverviewCard{
+  constructor(el,c,view){
+    this.el=el;this.c=c;this.view=view;this.rows={};this.chips={};this.ready=false;
+    el.innerHTML=`<div class="ohead"><h3>Agent</h3><span class="ocount" data-ocount></span><span class="pill" data-opause data-tone="warning" hidden>已暂停</span><span class="osync" data-osync></span></div>
+      <div class="orows" data-orows role="list"></div>
+      <div class="oempty" data-oempty hidden><span>还没有启用的 Agent</span><button type="button" class="btn pri" data-enable>启用 Agent</button></div>
+      <div class="ofoot"><button type="button" class="olast" data-olast hidden></button><button type="button" class="btn olink" data-more></button></div>`;
+    this.q=s=>el.querySelector(s);this.list=this.q('[data-orows]');
+    this.q('[data-enable]').onclick=()=>view.goAgents();
+    this.q('[data-more]').onclick=()=>view.goAgents();
+    this.q('[data-olast]').onclick=()=>{const l=lastChange();if(l)view.goAgents(l.k)};
+    this.list.addEventListener('click',ev=>{const b=ev.target.closest('[data-oact]');if(!b||b.disabled)return;this.act(b.closest('.orow').dataset.kind,b.dataset.oact)});
+  }
+  visible(){return this.view.page==='overview'&&!!this.el.offsetParent}
+  members(){
+    const c=this.c,now=Date.now();
+    return KINDS.filter(k=>{const e=eff(c,k);if(e.mode==='pending'?e.target:e.s.enabled)return true;const ch=c.chips[k];return!!(ch&&ch.until>now&&ch.text.endsWith('停用'))});
+  }
+  makeRow(k){
+    const r=document.createElement('div');r.className='orow';r.dataset.kind=k;r.setAttribute('role','listitem');r.style.setProperty('--tone',`var(${toneVar(k)})`);
+    r.innerHTML=`<div class="orin"><span class="om">${markHTML(k)}</span><b class="onm">${CAT[k].label}</b><span class="ost"><span class="lamp" aria-hidden="true"></span><span class="ow"></span><span class="otag" hidden></span></span><span class="osess none">${ico('chat')}<span></span></span><span class="oacts"></span></div>`;
+    return r;
+  }
+  update(){
+    const c=this.c,list=this.members(),anim=this.ready&&this.visible()&&!reduced();
+    const en=KINDS.filter(k=>c.snap[k].enabled);
+    for(const k of Object.keys(this.rows))if(!list.includes(k)){
+      const r=this.rows[k];delete this.rows[k];
+      if(anim){r.classList.add('out');setTimeout(()=>r.remove(),320)}else r.remove();
+    }
+    let cursor=this.list.firstChild,stagger=0;
+    for(const k of list){
+      let r=this.rows[k];
+      if(!r){
+        r=this.rows[k]=this.makeRow(k);
+        if(anim){r.classList.add('enter');const d=stagger;stagger+=70;setTimeout(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>r.classList.remove('enter'))),d)}
+      }
+      while(cursor&&cursor!==r&&cursor.classList.contains('out')&&KINDS.indexOf(cursor.dataset.kind)<KINDS.indexOf(k))cursor=cursor.nextSibling;
+      if(cursor===r)cursor=cursor.nextSibling;else this.list.insertBefore(r,cursor);
+    }
+    const usable=en.some(k=>['ready','live'].includes(eff(c,k).stage));
+    const firstFix=en.find(k=>['missing','error','config'].includes(eff(c,k).stage));
+    list.forEach(k=>{
+      const r=this.rows[k],t=CAT[k].twin,pair=t&&list.includes(t);
+      r.classList.toggle('tw',!!pair);r.classList.toggle('tw-a',!!pair&&KINDS.indexOf(k)<KINDS.indexOf(t));r.classList.toggle('tw-b',!!pair&&KINDS.indexOf(k)>KINDS.indexOf(t));
+      this.fill(r,k,usable,firstFix);
+    });
+    this.q('[data-ocount]').textContent=en.length?`${en.length} 个已启用`:'';
+    this.q('[data-opause]').hidden=!sim.paused;
+    this.q('[data-oempty]').hidden=list.length>0;
+    this.drawFoot(en);
+    this.drawSync();
+    if(this.after)this.after(list,anim);
+    this.ready=true;
+  }
+  drawFoot(en){
+    const l=lastChange(),ol=this.q('[data-olast]');ol.hidden=!l;
+    if(l){ol.innerHTML=`${ico('clock')}<span class="olt">${esc(l.text)}</span><time>${relTime(l.at)}</time>`;ol.setAttribute('aria-label',`最近变化：${l.text}，${relTime(l.at)}，在 Agent 页查看`)}
+    const more=this.q('[data-more]'),off=KINDS.length-en.length;more.hidden=!en.length;more.textContent=off?`${off} 个未启用`:'管理';
+  }
+  drawSync(){this.drawChips()
+  }
+  fill(r,k,usable,firstFix){
+    const c=this.c,e=eff(c,k),st=stateOf(c,k),ch=c.chips[k],tag=ch&&ch.until>Date.now()?ch.text:'';
+    const leaving=!(e.mode==='pending'?e.target:e.s.enabled);
+    r.classList.toggle('leaving',leaving);
+    r.querySelector('.lamp').dataset.l=leaving?'none':e.mode==='pending'?'work':lampOf(c,k);
+    const w=r.querySelector('.ow');const word=leaving?'':st.word;if(w.textContent!==word)w.textContent=word;w.dataset.tone=st.tone;
+    const tg=r.querySelector('.otag');tg.hidden=!tag;if(tag&&tg.textContent!==tag)tg.textContent=tag;tg.dataset.t=leaving?'muted':'';
+    const sess=r.querySelector('.osess'),n=!leaving&&e.mode==='on'&&e.stage==='live'?e.sessions:0;sess.classList.toggle('none',!n);if(n)sess.querySelector('span').textContent=String(n);
+    const a=leaving||e.mode!=='on'?null:OACT[e.stage];
+    const box=r.querySelector('.oacts'),sig=a?a.join('|')+(a[0]==='open'?usable:k===firstFix):'';
+    if(box.dataset.sig!==sig){
+      box.dataset.sig=sig;
+      const pri=a&&(a[0]==='open'?usable:k===firstFix);
+      box.innerHTML=a?`<button type="button" class="btn${pri?' pri':''}" data-oact="${a[0]}"${a[2]?' disabled aria-busy="true"':''} aria-label="${a[1]} ${esc(CAT[k].label)}">${a[2]?'<svg class="ico bspin" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5a7.5 7.5 0 0 1 7.5 7.5"/></svg>':''}${a[1]}</button>`:'';
+    }
+    r.setAttribute('aria-label',`${CAT[k].label}，${leaving?tag:st.word}${n?`，${n} 个会话`:''}${tag&&!leaving?`，${tag}`:''}`);
+  }
+  drawChips(){
+    const box=this.q('[data-osync]');
+    for(const d of pairedDevices()){
+      const synced=d.rev>=HOST.revision;
+      const s=sim.paused?'off':d.online?(synced?'ok':'sync'):(synced?'off':'wait');
+      let el=this.chips[d.id];
+      if(!el){el=this.chips[d.id]=document.createElement('span');el.className='dchip';el.setAttribute('role','img');el.innerHTML=`${ico('phone')}<span>${d.name}</span><i class="dd"></i><em></em>`;box.appendChild(el)}
+      const prev=el.dataset.s;
+      if(prev!==s){
+        el.dataset.s=s;
+        const em={wait:'待同步',off:'未连接'}[s]||'';el.querySelector('em').textContent=em;el.querySelector('em').hidden=!em;
+        const label=`${d.name}，${{ok:'已同步',sync:'正在同步',wait:'离线，上线后同步',off:'未连接'}[s]}`;el.setAttribute('aria-label',label);el.title=label;
+        if(prev&&prev!=='ok'&&s==='ok'&&this.visible()){el.classList.remove('got');void el.offsetWidth;el.classList.add('got');setTimeout(()=>el.classList.remove('got'),420)}
+      }
+    }
+  }
+  act(k,a){
+    if(a==='install'||a==='retry'){hostAction(k,a);renderAll();return}
+    if(a==='config'){this.view.goAgents(k);return}
+    this.view.toast('原型未接入此操作');
+  }
+}
+setInterval(()=>{if(VIEWS.desk)VIEWS.desk.ovs[OVW_V].update()},30000);
+
+/* ---------- overview variants B–E (same Host bookkeeping, different presentation) ---------- */
+let OVW_V='a';
+const SHORT={desk:'电脑',phone:'iPhone',pixel:'Pixel 9'};
+const OVW_NAMES={a:'A 来处标签',b:'B 看过才褪',c:'C 送达回执',d:'D 修订标尺',e:'E 浮雕墙'};
+const devIco=o=>ico(o==='desk'?'laptop':'phone');
+const srcVerb=x=>`${SHORT[x.origin]}${x.origin==='desk'?'':' '}${x.enabled?'启用':'停用'}`;
+const changeText=x=>`${DEVNAME[x.origin]}${x.enabled?'启用':'停用'} ${CAT[x.k].label}`;
+function setStamp(host,x){
+  let s=host.querySelector('.ostamp');
+  if(!x){if(s)s.remove();return}
+  if(!s){s=document.createElement('span');s.className='ostamp';s.setAttribute('aria-hidden','true');s.innerHTML=ico('phone');host.appendChild(s)}
+  s.dataset.d=x.enabled?'on':'off';
+}
+
+/* B: a change from another device stays until the overview has been on screen for 4s (or the pointer passes over it).
+   Enabled rows float one layer above the card; rows disabled elsewhere stay as a pressed imprint, then close. */
+class SeenCard extends OverviewCard{
+  constructor(el,c,view){
+    super(el,c,view);el.classList.add('ovb');
+    const seen=ev=>{const r=ev.target.closest('.orow');if(r&&(r.classList.contains('fresh')||r.classList.contains('imprint')))markSeen(r.dataset.kind)};
+    this.list.addEventListener('pointerover',seen);this.list.addEventListener('focusin',seen);
+  }
+  unseen(k){const x=lastOf(k);return x&&!x.seen&&x.origin!=='desk'?x:null}
+  members(){
+    const c=this.c;
+    return KINDS.filter(k=>{const e=eff(c,k);if(e.mode==='pending'?e.target:e.s.enabled)return true;const x=this.unseen(k);return!!(x&&!x.enabled)});
+  }
+  fill(r,k,usable,firstFix){
+    super.fill(r,k,usable,firstFix);
+    const x=this.unseen(k),imprint=r.classList.contains('leaving');
+    r.classList.toggle('fresh',!!x&&!imprint);r.classList.toggle('imprint',imprint);
+    const tg=r.querySelector('.otag'),txt=x?`${DEVNAME[x.origin]}${x.enabled?'启用':'停用'} · ${relTime(x.at)}`:'';
+    tg.hidden=!x;if(x&&tg.textContent!==txt)tg.textContent=txt;tg.dataset.t=imprint?'muted':'';
+    setStamp(r.querySelector('.om'),x);
+    if(x)r.setAttribute('aria-label',`${CAT[k].label}，${imprint?'':stateOf(this.c,k).word+'，'}${txt}`);
+  }
+  drawFoot(en){super.drawFoot(en);this.q('[data-olast]').hidden=true}
+  // Sync is silent while healthy; only a phone that is offline and behind shows up.
+  drawSync(){
+    const box=this.q('[data-osync]');
+    const lag=sim.paused?[]:pairedDevices().filter(d=>!d.online&&d.rev<HOST.revision);
+    const html=lag.map(d=>`<span class="osx">${ico('phone')}${d.name}<em>待同步</em></span>`).join('');
+    if(box.dataset.h!==html){box.dataset.h=html;box.innerHTML=html}
+  }
+}
+
+/* C: every change carries a delivery receipt — where it came from and whether each other paired device has it.
+   The receipt stays while anything is undelivered, then folds away 3s after the last device catches up. */
+class ReceiptCard extends OverviewCard{
+  constructor(el,c,view){super(el,c,view);el.classList.add('ovc')}
+  receipt(k){
+    const x=lastOf(k);if(!x)return null;
+    const devs=pairedDevices().filter(d=>d.id!==x.origin).map(d=>({id:d.id,name:d.name,s:d.rev>=x.rev?'ok':(!sim.paused&&d.online)?'sync':'wait'}));
+    const done=devs.every(d=>d.s==='ok');
+    return{x,devs,done,show:!done||!x.doneAt||Date.now()-x.doneAt<3000};
+  }
+  members(){
+    const c=this.c;
+    return KINDS.filter(k=>{const e=eff(c,k);if(e.mode==='pending'?e.target:e.s.enabled)return true;const r=this.receipt(k);return!!(r&&!r.x.enabled&&r.show)});
+  }
+  makeRow(k){const r=super.makeRow(k);const rc=document.createElement('span');rc.className='orc';r.querySelector('.osess').before(rc);return r}
+  fill(r,k,usable,firstFix){
+    super.fill(r,k,usable,firstFix);
+    const leaving=r.classList.contains('leaving');
+    r.querySelector('.otag').hidden=true;
+    const w=r.querySelector('.ow');if(leaving&&w.textContent!=='已停用')w.textContent='已停用';
+    const rc=r.querySelector('.orc'),rec=this.receipt(k),show=!!rec&&rec.show;
+    rc.classList.toggle('done',show&&rec.done);
+    const html=show?`<span class="rsrc">${devIco(rec.x.origin)}${srcVerb(rec.x)}</span><svg class="ico rarr" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 7l5 5-5 5"/></svg>${rec.devs.map(d=>`<span class="rdv" data-s="${d.s}">${d.name}<i class="dd"></i>${d.s==='wait'?'<em>待送达</em>':''}</span>`).join('')}`:'';
+    if(rc.dataset.h!==html){rc.dataset.h=html;rc.innerHTML=html}
+    if(show){const said={ok:'已送达',sync:'送达中',wait:'待送达'};r.setAttribute('aria-label',`${CAT[k].label}，${leaving?'已停用':stateOf(this.c,k).word}，${srcVerb(rec.x)}，${rec.devs.map(d=>d.name+said[d.s]).join('，')}`)}
+  }
+  drawFoot(en){super.drawFoot(en);this.q('[data-olast]').hidden=true}
+  drawSync(){const box=this.q('[data-osync]');if(box.innerHTML)box.innerHTML=''}
+}
+
+/* D: the Host revision drawn as a ruler. The top lane holds the last 8 changes; each paired phone has a lane
+   filled up to the revision it has received. A change made on a phone drops a stub to that phone's lane. */
+const RL_SLOTS=8,RL_Y={desk:10,phone:38,pixel:66};
+class RulerCard extends OverviewCard{
+  constructor(el,c,view){
+    super(el,c,view);el.classList.add('ovd');this.ticks={};this.hl=null;
+    const rl=document.createElement('div');rl.className='oruler';
+    rl.innerHTML=`<div class="rlabs"><span style="top:${RL_Y.desk}px">电脑</span><span style="top:${RL_Y.phone}px">iPhone</span><span style="top:${RL_Y.pixel}px">Pixel 9</span></div>
+      <div class="rbox" role="list" aria-label="最近 8 次改动"><i class="rbase" style="top:${RL_Y.desk}px"></i>
+        ${['phone','pixel'].map(id=>`<i class="rlane" style="top:${RL_Y[id]}px"></i><i class="rfill" data-dev="${id}" style="top:${RL_Y[id]-1}px"></i><i class="rgap" data-dev="${id}" style="top:${RL_Y[id]}px"></i><span class="rlag" data-dev="${id}" style="top:${RL_Y[id]-10}px"></span>`).join('')}
+      </div><p class="rcap" data-rcap></p>`;
+    this.q('.ohead').after(rl);this.rl=rl;this.box=rl.querySelector('.rbox');
+    const hover=k=>{if(this.hl===k)return;this.hl=k;this.highlight()};
+    this.box.addEventListener('pointerover',ev=>{const t=ev.target.closest('.rt');hover(t?t.dataset.kind:null);if(t)this.caption(HOST.changes.find(x=>String(x.id)===t.dataset.id))});
+    this.box.addEventListener('pointerleave',()=>{hover(null);this.caption()});
+    this.box.addEventListener('focusin',ev=>{const t=ev.target.closest('.rt');if(t){hover(t.dataset.kind);this.caption(HOST.changes.find(x=>String(x.id)===t.dataset.id))}});
+    this.box.addEventListener('focusout',()=>{hover(null);this.caption()});
+    this.box.addEventListener('click',ev=>{const t=ev.target.closest('.rt');if(t)view.goAgents(t.dataset.kind)});
+    this.list.addEventListener('pointerover',ev=>{const r=ev.target.closest('.orow');hover(r?r.dataset.kind:null)});
+    this.list.addEventListener('pointerleave',()=>hover(null));
+  }
+  fill(r,k,usable,firstFix){super.fill(r,k,usable,firstFix);r.querySelector('.otag').hidden=true;const w=r.querySelector('.ow');if(r.classList.contains('leaving')&&w.textContent!=='已停用')w.textContent='已停用'}
+  drawFoot(en){super.drawFoot(en);this.q('[data-olast]').hidden=true}
+  drawSync(){const box=this.q('[data-osync]');if(box.innerHTML)box.innerHTML=''}
+  caption(x){
+    const cap=this.q('[data-rcap]');x=x||HOST.changes[0];
+    const t=x?`${changeText(x)} · ${relTime(x.at)}`:'';if(cap.textContent!==t)cap.textContent=t;
+  }
+  highlight(){
+    for(const r of this.list.querySelectorAll('.orow'))r.classList.toggle('hl',r.dataset.kind===this.hl);
+    for(const t of Object.values(this.ticks))t.classList.toggle('hl',t.dataset.kind===this.hl);
+  }
+  after(list,anim){
+    const ch=HOST.changes.slice(0,RL_SLOTS).reverse(),n=ch.length,ids=new Set(ch.map(x=>String(x.id)));
+    const xOf=i=>(RL_SLOTS-n+i+.5)/RL_SLOTS*100;
+    for(const id of Object.keys(this.ticks))if(!ids.has(id)){const t=this.ticks[id];delete this.ticks[id];if(anim){t.classList.add('gone');setTimeout(()=>t.remove(),320)}else t.remove()}
+    ch.forEach((x,i)=>{
+      let t=this.ticks[x.id];
+      if(!t){
+        t=this.ticks[x.id]=document.createElement('button');t.type='button';t.className='rt';t.dataset.id=x.id;t.dataset.kind=x.k;t.setAttribute('role','listitem');
+        t.style.setProperty('--tone',`var(${toneVar(x.k)})`);
+        const stub=x.origin==='desk'?'':`<i class="rstub" style="height:${RL_Y[x.origin]-RL_Y.desk}px"></i><i class="rodot" style="top:${RL_Y[x.origin]}px"></i>`;
+        t.innerHTML=`${stub}<i class="rdot" data-on="${x.enabled}"></i>`;
+        t.setAttribute('aria-label',`${changeText(x)}，${relTime(x.at)}`);
+        if(anim)t.classList.add('new');
+        this.box.appendChild(t);
+        if(anim)requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.remove('new')));
+      }
+      t.style.left=xOf(i)+'%';t.title=`${changeText(x)} · ${relTime(x.at)}`;
+    });
+    for(const d of pairedDevices()){
+      // filled up to the newest change this device already has; everything after it is the gap
+      let j=-1;ch.forEach((x,i)=>{if(x.rev<=d.rev)j=i});
+      const behind=HOST.changes.filter(x=>x.rev>d.rev).length,full=d.rev>=HOST.revision;
+      const w=full?100:j<0?0:xOf(j);
+      const st=sim.paused?'off':full?'ok':d.online?'sync':'wait';
+      const f=this.box.querySelector(`.rfill[data-dev="${d.id}"]`),g=this.box.querySelector(`.rgap[data-dev="${d.id}"]`),lag=this.box.querySelector(`.rlag[data-dev="${d.id}"]`);
+      f.style.width=w+'%';f.dataset.s=st;g.style.left=w+'%';g.hidden=full;g.dataset.s=st;
+      const lt=st==='off'?'未连接':st==='wait'?`差 ${behind} 项`:'';if(lag.textContent!==lt)lag.textContent=lt;lag.hidden=!lt;lag.dataset.s=st;
+    }
+    this.box.setAttribute('aria-label',`最近 ${n} 次改动；${pairedDevices().map(d=>`${d.name}${sim.paused?'未连接':d.rev>=HOST.revision?'已同步':d.online?'同步中':`差 ${HOST.changes.filter(x=>x.rev>d.rev).length} 项`}`).join('，')}`);
+    this.caption();this.highlight();
+  }
+}
+
+/* E: all ten agents as a fixed wall of tiles. Enabled tiles stand raised; the rest are pressed flush into the card
+   and are not probed. A change elsewhere makes a tile rise or sink in place, so nothing reflows. */
+class WallCard extends OverviewCard{
+  constructor(el,c,view){
+    super(el,c,view);el.classList.add('ove');this.tiles={};
+    const wall=document.createElement('div');wall.className='owall';wall.setAttribute('role','list');this.list.replaceWith(wall);this.wall=wall;
+    this.q('[data-oempty]').remove();
+    wall.addEventListener('click',ev=>{
+      const go=ev.target.closest('.tgo');if(go){view.goAgents(go.closest('.tile').dataset.kind);return}
+      const b=ev.target.closest('[data-oact]');if(b&&!b.disabled)this.act(b.closest('.tile').dataset.kind,b.dataset.oact);
+    });
+    const seen=ev=>{const t=ev.target.closest('.tile');if(t&&t.querySelector('.ostamp'))markSeen(t.dataset.kind)};
+    wall.addEventListener('pointerover',seen);wall.addEventListener('focusin',seen);
+  }
+  makeTile(k){
+    const t=document.createElement('div');t.className='tile';t.dataset.kind=k;t.setAttribute('role','listitem');t.style.setProperty('--tone',`var(${toneVar(k)})`);
+    const tw=CAT[k].twin;if(tw)t.classList.add(KINDS.indexOf(k)<KINDS.indexOf(tw)?'tw-a':'tw-b');
+    t.innerHTML=`<span class="om">${markHTML(k)}</span><span class="oacts"></span><b class="onm">${CAT[k].label}</b><span class="tst"><span class="lamp" aria-hidden="true"></span><span class="ow"></span><span class="osess none">${ico('chat')}<span></span></span></span><button type="button" class="tgo" aria-label="在 Agent 页启用 ${esc(CAT[k].label)}">${ico('plug')}</button>`;
+    this.wall.appendChild(t);return t;
+  }
+  update(){
+    const c=this.c,anim=this.ready&&this.visible()&&!reduced();
+    const en=KINDS.filter(k=>c.snap[k].enabled);
+    const usable=en.some(k=>['ready','live'].includes(eff(c,k).stage)),firstFix=en.find(k=>['missing','error','config'].includes(eff(c,k).stage));
+    for(const k of KINDS){
+      const t=this.tiles[k]||(this.tiles[k]=this.makeTile(k)),e=eff(c,k),st=stateOf(c,k);
+      const on=e.mode==='pending'?e.target:e.s.enabled,prev=t.dataset.on;
+      t.dataset.on=String(on);
+      if(anim&&prev!==undefined&&prev!==String(on)){t.classList.remove('rise','sink');void t.offsetWidth;t.classList.add(on?'rise':'sink')}
+      t.querySelector('.lamp').dataset.l=!on?'none':e.mode==='pending'?'work':lampOf(c,k);
+      const w=t.querySelector('.ow'),word=on?st.word:'';if(w.textContent!==word)w.textContent=word;w.dataset.tone=st.tone;
+      const n=on&&e.mode==='on'&&e.stage==='live'?e.sessions:0,sess=t.querySelector('.osess');sess.classList.toggle('none',!n);if(n)sess.querySelector('span').textContent=String(n);
+      const a=on&&e.mode==='on'?OACT[e.stage]:null,box=t.querySelector('.oacts'),pri=a&&(a[0]==='open'?usable:k===firstFix),sig=a?a.join('|')+pri:'';
+      if(box.dataset.sig!==sig){box.dataset.sig=sig;box.innerHTML=a?`<button type="button" class="btn${pri?' pri':''}" data-oact="${a[0]}"${a[2]?' disabled aria-busy="true"':''} aria-label="${a[1]} ${esc(CAT[k].label)}">${a[2]?'<svg class="ico bspin" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5a7.5 7.5 0 0 1 7.5 7.5"/></svg>':''}${a[1]}</button>`:''}
+      t.querySelector('.tgo').hidden=on;
+      const x=lastOf(k),fresh=x&&!x.seen&&x.origin!=='desk'?x:null;
+      setStamp(t.querySelector('.om'),fresh);t.title=fresh?`${DEVNAME[fresh.origin]}${fresh.enabled?'启用':'停用'} · ${relTime(fresh.at)}`:'';
+      t.setAttribute('aria-label',`${CAT[k].label}，${on?st.word:'未启用'}${n?`，${n} 个会话`:''}${fresh?`，${t.title}`:''}`);
+    }
+    this.q('[data-ocount]').textContent=`${en.length} / ${KINDS.length} 已启用`;
+    this.q('[data-opause]').hidden=!sim.paused;
+    this.drawFoot(en);this.q('[data-more]').hidden=true;
+    this.drawChips();
+    this.ready=true;
+  }
+}
+
+class Overlay{
+  constructor(root){this.root=root;this.toastsEl=root.querySelector('.toasts')}
+  toast(text,action,fn){
+    const t=document.createElement('div');t.className='toast';t.setAttribute('role','status');
+    t.innerHTML=`<span>${esc(text)}</span>${action?`<button type="button">${action}</button>`:''}`;
+    const close=()=>{if(!t.isConnected)return;t.classList.add('out');setTimeout(()=>t.remove(),170)};
+    if(action)t.querySelector('button').onclick=()=>{fn();close()};
+    this.toastsEl.replaceChildren(t);setTimeout(close,4000);
+  }
+  pop(anchor,text){
+    this.root.querySelectorAll('.pop').forEach(p=>p.remove());
+    const p=document.createElement('div');p.className='pop';p.setAttribute('role','tooltip');p.textContent=text;this.root.appendChild(p);
+    const ra=anchor.getBoundingClientRect(),rr=this.root.getBoundingClientRect(),sc=rr.width/this.root.offsetWidth||1;
+    const left=Math.max(12,Math.min((ra.left-rr.left)/sc-120,this.root.offsetWidth-p.offsetWidth-12));
+    p.style.left=left+'px';p.style.top=((ra.bottom-rr.top)/sc+8)+'px';
+    const off=ev=>{if(!p.contains(ev.target)&&ev.target!==anchor){p.remove();document.removeEventListener('pointerdown',off,true)}};
+    setTimeout(()=>document.addEventListener('pointerdown',off,true),0);
+  }
+}
+
+/* ---------- phone ---------- */
+class PhoneView{
+  constructor(root){
+    this.root=root;const c=this.c=CLIENTS.phone;VIEWS.phone=this;this.sheetOpen=false;
+    root.innerHTML=`<div class="sbar"><span>9:41</span><span class="island"></span><span class="sbar-r"><i style="width:17px;height:10px;border-radius:2px;opacity:.9"></i><i style="width:24px;height:11px;border-radius:3px"></i></span></div>
+      <div class="scr scr-root">
+        <header class="abar"><h2>设置</h2></header>
+        <div class="scroll">
+          <p class="gtitle">连接</p>
+          <div class="group"><div class="grow">${ico('laptop')}<span class="gt"><b>studio</b><small data-path>局域网</small></span><span class="pill" data-conn></span></div><div class="grow"><span class="gt"><b>连接协议</b></span><small>自动</small>${ico('chev','chv')}</div></div>
+          <p class="gtitle">Agent</p>
+          <div class="group"><button type="button" class="grow" data-open><span class="gt"><b>Agent</b><small data-count></small></span><span class="lamps" data-lamps></span>${ico('chev','chv')}</button></div>
+          <p class="gtitle">外观</p>
+          <div class="group"><div class="grow"><span class="gt"><b>材质</b></span><small data-mat>雾蓝</small></div><div class="grow"><span class="gt"><b>语言</b></span><small>跟随系统</small></div></div>
+        </div>
+        <nav class="tabbar" aria-hidden="true"><span>${ico('chat')}聊天</span><span>${ico('dial')}供应商</span><span class="on">${ico('gear')}设置</span></nav>
+      </div>
+      <div class="scr scr-agents">
+        <header class="abar"><button type="button" class="disc" data-back aria-label="返回">${ico('back')}</button><h2>Agent</h2><button type="button" class="disc" data-info hidden aria-label="说明">${ico('info')}</button></header>
+        <div class="hstrip">${ico('laptop')}<b>studio</b><span class="pill" data-conn></span><small data-sync></small></div>
+        <div class="pane"><div data-board></div></div>
+      </div>
+      <div class="sheetwrap" hidden><div class="scrim" data-close></div><div class="sheet" role="dialog" aria-modal="true" aria-label="Agent 详情"><button type="button" class="grab" data-close aria-label="关闭"></button><div class="insp" data-insp></div></div></div>
+      <div class="toasts"></div><div class="homebar"></div>`;
+    this.q=s=>root.querySelector(s);
+    this.ov=new Overlay(root);
+    this.board=new Board(this.q('[data-board]'),c,this,'x');
+    this.insp=new Inspector(this.q('[data-insp]'),c,'phone',this);
+    this.q('[data-back]').onclick=()=>{root.dataset.screen='root'};
+    this.q('[data-open]').onclick=()=>{root.dataset.screen='agents'};
+    this.q('[data-info]').onclick=e=>this.pop(e.currentTarget,'电脑上的 Orbis 版本较旧，更新后可以在手机上启用或停用 Agent。');
+    root.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>this.closeDetail());
+    this.q('.sheetwrap').addEventListener('keydown',e=>{if(e.key==='Escape')this.closeDetail()});
+  }
+  isSel(k){return this.sheetOpen&&this.c.selected===k}
+  openDetail(k){if(legacyHidden(this.c,k))return;this.c.selected=k;this.sheetOpen=true;this.q('.sheetwrap').hidden=false;renderAll();this.q('.sheet .grab').focus({preventScroll:true})}
+  closeDetail(){if(!this.sheetOpen)return;const k=this.c.selected;this.sheetOpen=false;this.q('.sheetwrap').hidden=true;renderAll();const L=this.board.L[k];if(L&&!L.plug.hidden)L.plate.focus({preventScroll:true})}
+  select(k){this.c.selected=k;renderAll()}
+  confirm(k,n,ok){if(this.sheetOpen){this.sheetOpen=false;this.q('.sheetwrap').hidden=true}this.board.openHold(k,n,ok)}
+  toast(...a){this.ov.toast(...a)}pop(...a){this.ov.pop(...a)}
+  land(k){this.board.land(k)}
+  nudge(){this.board.nudge(this.c.selected)}
+  reset(){this.board.closeHold(true);this.sheetOpen=false;this.q('.sheetwrap').hidden=true;this.root.dataset.screen='agents'}
+  update(){
+    const c=this.c,live=reachable(c);
+    const conn=sim.legacy?['局域网','success']:sim.paused?['已暂停','warning']:!live?['已断开','danger']:sim.slow?['中继','success']:['局域网','success'];
+    this.root.querySelectorAll('[data-conn]').forEach(p=>{p.textContent=conn[0];p.dataset.tone=conn[1]});
+    this.q('[data-path]').textContent=live?(sim.slow?'中继':'局域网'):'未连接';
+    this.q('[data-sync]').textContent=live?'':`上次同步 ${hhmm(c.lastSync)}`;
+    const n=KINDS.filter(k=>c.snap[k].enabled).length;
+    this.q('[data-count]').textContent=sim.legacy?`${visibleKinds(c).length} 个可用`:n?`${n} 个已启用`:'未启用';
+    this.q('[data-lamps]').innerHTML=lampStrip(c,2.4,3.6);
+    this.q('[data-mat]').textContent=document.documentElement.dataset.material==='sage'?'灰绿':'雾蓝';
+    this.q('[data-info]').hidden=!sim.legacy;
+    if(this.sheetOpen&&legacyHidden(c,c.selected))this.closeDetail();
+    this.board.update();this.insp.update();
+  }
+}
+
+/* ---------- desktop ---------- */
+class DeskView{
+  constructor(root){
+    this.root=root;const c=this.c=CLIENTS.desk;VIEWS.desk=this;this.page='overview';
+    const nav=[['overview','grid','概览'],['devices','phone','设备'],['agents','plug','Agent'],['settings','gear','设置'],['diag','pulse','诊断']];
+    root.innerHTML=`<div class="wbar"><span class="lights"><i></i><i></i><i></i></span><span>Orbis</span></div>
+      <div class="wbody">
+        <aside class="dsb"><div class="brand">Orbis</div>${nav.map(n=>`<button type="button" class="navb" data-page="${n[0]}">${ico(n[1])}${n[2]}</button>`).join('')}
+          <div class="dhost">${ico('laptop')}<span><b>studio</b><small data-dstate></small></span></div></aside>
+        <main class="dmain">
+          <section data-dpage="overview" hidden><div class="dhead"><h1>概览</h1></div>
+            <div class="ovw">
+              <div class="card ocard"><h3>连接</h3><div class="onodes"><span class="nd">${ico('laptop')}</span><span class="ln2"></span><span class="nd">${ico('phone')}</span></div><p data-oconn></p></div>
+              <div class="card oagents" data-ovw></div>${["b","c","d","e"].map(v=>`<div class="card oagents" data-ovw-${v} hidden></div>`).join("")}
+            </div></section>
+          <section data-dpage="agents"><div class="dhead"><h1>Agent</h1><button type="button" class="btn" data-noop>检查更新</button><button type="button" class="btn" data-noop>全部更新（1）</button></div>
+            <div class="dagents"><div data-board></div><div class="insp card dinsp" data-insp></div></div></section>
+          <section data-dpage="other" hidden><div class="dother">原型只包含概览与 Agent 两页</div></section>
+        </main>
+      </div>
+      <div class="toasts"></div>
+      <div class="away-cover" hidden><div>${ico('laptop')}<b data-awayt></b><span>已锁定</span></div></div>
+      <div class="legacy-cover" hidden><div><b>旧版电脑端保持原界面</b>这一场景演示新 App 连接 v0.1.24 Host：电脑上没有启用管理，App 只读。请看手机端。</div></div>`;
+    this.q=s=>root.querySelector(s);
+    this.ov=new Overlay(root);
+    this.board=new Board(this.q('[data-board]'),c,this,'y');
+    this.insp=new Inspector(this.q('[data-insp]'),c,'desk',this);
+    root.querySelectorAll('.navb').forEach(b=>b.onclick=()=>{this.page=b.dataset.page;this.update()});
+    this.ovw=new OverviewCard(this.q('[data-ovw]'),c,this);
+    this.ovs={a:this.ovw,b:new SeenCard(this.q('[data-ovw-b]'),c,this),c:new ReceiptCard(this.q('[data-ovw-c]'),c,this),d:new RulerCard(this.q('[data-ovw-d]'),c,this),e:new WallCard(this.q('[data-ovw-e]'),c,this)};
+    root.querySelectorAll('[data-noop]').forEach(b=>b.onclick=()=>this.toast('原型未接入此操作'));
+  }
+  isSel(k){return this.c.selected===k}
+  goAgents(k){if(k)this.c.selected=k;this.page='agents';renderAll()}
+  openDetail(k,fix){this.c.selected=k;renderAll();if(fix){const b=this.q('.dinsp .fix .btn');if(b)b.focus()}}
+  select(k){this.c.selected=k;renderAll()}
+  confirm(k,n,ok){this.board.openHold(k,n,ok)}
+  toast(...a){this.ov.toast(...a)}pop(...a){this.ov.pop(...a)}
+  land(k){this.board.land(k)}
+  nudge(){this.board.nudge(this.c.selected)}
+  reset(){this.board.closeHold(true);this.page='overview';Object.values(this.ovs).forEach(o=>o.ready=false)}
+  update(){
+    const c=this.c;
+    this.root.querySelectorAll('.navb').forEach(b=>{if(b.dataset.page===this.page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
+    const pg=['overview','agents'].includes(this.page)?this.page:'other';
+    this.root.querySelectorAll('[data-dpage]').forEach(s=>s.hidden=s.dataset.dpage!==pg);
+    const ds=this.q('[data-dstate]');ds.textContent=sim.paused?'已暂停':'运行中';ds.dataset.tone=sim.paused?'warning':'success';
+    this.q('.legacy-cover').hidden=!sim.legacy;
+    this.q('[data-oconn]').textContent=sim.paused?'Host 已暂停，手机暂时无法连接':sim.offline?'Host 运行中，iPhone 离线，Pixel 9 已连接':'Host 运行中，2 台手机已连接';
+    const aw=this.q('.away-cover');if(aw.hidden===sim.away){aw.hidden=!sim.away;if(sim.away)this.q('[data-awayt]').textContent=hhmm(new Date())}
+    for(const[v,o]of Object.entries(this.ovs))o.el.hidden=v!==OVW_V;
+    this.board.update();this.insp.update();this.ovs[OVW_V].update();
+  }
+}
+
+/* ---------- page wiring ---------- */
+function renderAll(){Object.values(VIEWS).forEach(v=>v.update())}
+const FIG={id:'fig',chips:{},selected:null,pending:{claude:{target:true,state:'sending'}},snap:{
+  pi:{enabled:false},claude:{enabled:false},dsh:{enabled:true,stage:'missing',sessions:0},
+  opencode:{enabled:true,stage:'prep',sessions:0},hermes:{enabled:true,stage:'ready',sessions:0},codex:{enabled:true,stage:'live',sessions:2}}};
+const NOTES={
+  daily:{title:'日常：4 个已启用',items:[
+    '左边电脑停在概览。在手机上插拔，或点「Pixel 9 切换 Claude」：概览里对应的行会升起或按回，带着来源标签；标题右侧每台手机一个胶囊，显示是否已同步；底部留着最近一次变化和未启用数量。控制区的「概览」可以换成另外四种呈现对比。',
+    '把 DeepSeek CLI 的插头向右拖进插孔。拖近孔口会被吸住，松手后插头带着转圈停在孔口，电脑确认后才咔哒插到底。它还没装，线上会打一个结；切到「电脑」，点结或检查器里的「安装最新版本」，结解开、线绷直。',
+    'Codex CLI 的线上有两个光点，表示 2 个运行中会话。往外拔有阻力，越过卡位会列出会话，松手才停用，退回卡位内就取消。Pi 没有光点，拖出过半即停用，短反馈里可以撤销。',
+    '点名牌看详情：状态梯、会话和同族来源。Codex 与 DeepSeek 的终端版和桌面版垫在同一块浅底上。',
+    '开「慢网络」后连续插几根：每根线各自在孔口等待或排队，不锁住整块板。']},
+  first:{title:'首次使用：全部未启用',items:[
+    '插头都停在名牌旁，线盘着，灯都不亮：没启用的 Agent 电脑不探测。',
+    'Pi 的插头会朝插孔探两次，提示可以拖进去。也可以直接点插头，连续点几个会逐个排队提交。',
+    '切到「电脑」看概览：没有启用项时，Agent 卡直接给出「启用 Agent」。']},
+  legacy:{title:'旧版电脑：只读',items:[
+    '新 App 连到没有启用管理能力的旧 Host：只显示电脑公告的 Agent，线直接接在插孔上，没有插头。',
+    '顶栏的 info 说明需要更新电脑端；设置入口显示「N 个可用」。']}
+};
+const TOGGLE_NOTES={away:'离开电脑：电脑锁屏，概览不算被看见。这时在手机上改几项、点「Pixel 9 切换 Claude」，再点一次回来。A 的来源标签 4 秒后就没了；B 和 E 等你回来看满 4 秒才褪；C 的回执、D 的标尺一直在。',conflict:'下次手机写入到达前，电脑会先改动另一项。手机收到冲突后，插头退回电脑给出的位置，并在插头旁说明。',slow:'慢网络：手机单程约 1.8 秒，便于观察孔口等待与排队。',paused:'电脑暂停：灯依次熄成空心圈，线一根根垂下来。电脑上仍可插拔，新插上的线挂时钟结，恢复后生效；手机显示已暂停。',offline:'手机断网：整块板冻结、去色，显示上次同步时间。这时在电脑上改动，概览里 iPhone 显示待同步；恢复后手机先读快照，不重放未确认的修改，胶囊点亮一次。'};
+function drawNotes(){
+  const n=NOTES[sim.scenario];
+  const tn=Object.keys(TOGGLE_NOTES).filter(k=>sim[k]).map(k=>`<p class="tn">${TOGGLE_NOTES[k]}</p>`).join('');
+  const vn=OVW_V==='a'?'':`<p class="vn"><b>概览 ${OVW_NAMES[OVW_V]}</b>${OVW_NOTES[OVW_V]}</p>`;
+  document.getElementById('notes').innerHTML=`<h3>${n.title}</h3>${vn}<ul>${n.items.map(i=>`<li>${i}</li>`).join('')}</ul>${tn}`;
+}
+function syncSimButtons(){document.querySelectorAll('[data-sim]').forEach(b=>{const k=b.dataset.sim;const v=k==='reduce'?document.documentElement.classList.contains('reduce'):!!sim[k];b.setAttribute('aria-pressed',String(v))});drawNotes()}
+function setScenario(name){
+  EPOCH++;sim.scenario=name;sim.legacy=name==='legacy';sim.paused=false;sim.offline=false;sim.conflict=false;sim.away=false;
+  HOST.fate=JSON.parse(JSON.stringify(BASE_FATE));
+  const on=name==='first'?[]:['pi','codex','codexDesktop','claude'];
+  HOST.revision=name==='first'?0:12;
+  KINDS.forEach(k=>{const en=on.includes(k),f=HOST.fate[k];HOST.agents[k]={enabled:en,stage:en?f.stage:null,sessions:en&&f.stage==='live'?f.sessions:0,error:''};HOST.lease[k]=0});
+  Object.values(CLIENTS).forEach(c=>{c.gen++;loadClient(c);c.chips={};c.selected=name==='first'?'pi':'codex'});
+  HOST.changes=name==='daily'?[seedChange('claude',true,'phone',26*60000,12),seedChange('codexDesktop',true,'desk',5*3600000,11),seedChange('codex',true,'desk',26*3600000,10),seedChange('pi',true,'desk',50*3600000,9)]:[];PIXEL.rev=HOST.revision;
+  KINDS.forEach(k=>{if(DETAIL[k].segv)DETAIL[k].segv=0});
+  LOG.length=0;log('场景',{daily:'日常：Pi、Codex CLI、Codex Desktop、Claude Code 已启用，rev 12',first:'首次使用：全部未启用，rev 0',legacy:'旧版电脑：Host 未公告 agent.enablement.v1'}[name],'sys');
+  Object.values(VIEWS).forEach(v=>v.reset());
+  syncSimButtons();renderAll();
+  if(name==='first')later(900,()=>{VIEWS.phone.nudge();VIEWS.desk.nudge()});
+}
+function setPlatform(p){sim.platform=p;document.getElementById('mocks').dataset.platform=p;renderAll()}
+const OVW_NOTES={
+  b:'在手机上停用一项：概览里这一行不消失，压成一道印痕并写明谁、多久前；概览在屏幕上满 4 秒或指针扫过，印痕才合上。启用的行浮起一层，同样看过才压平。手机都在线时右上角什么都不显示。',
+  c:'改动挂一张回执：从哪台设备发出，另外每台设备收到没有。开「手机断网」后在电脑 Agent 页改一项再回概览，iPhone 一格停在待送达；恢复网络后点亮，3 秒后整张回执收起。',
+  d:'卡片上方是修订标尺：最上一条是最近 8 次改动，手机上发起的改动有一根线落到那台手机的轨道上。每台手机的轨道填到它已收到的位置；断网后落后部分变成虚线并写「差 N 项」，恢复后滑到头。指针移到刻度上，下方的行跟着高亮。',
+  e:'10 块位置固定：启用的凸起，未启用的压平、不显示状态。别的设备改动时，那一块原地升起或压下，旁边的行不挪；角上的印章看过才褪。压平的块点一下去 Agent 页启用。'
+};
+function setOvw(v){
+  OVW_V=v;const d=VIEWS.desk;d.ovs[v].ready=false;d.page='overview';
+  if(sim.platform==='phone'){setPlatform('dual');document.querySelectorAll('[data-seg="platform"] button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.v==='dual')))}
+  drawNotes();renderAll();
+}
+const initialTheme=document.documentElement.getAttribute('data-theme');
+document.querySelectorAll('[data-seg]').forEach(seg=>seg.addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  seg.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+  const v=b.dataset.v,kind=seg.dataset.seg,root=document.documentElement;
+  if(kind==='platform')setPlatform(v);
+  else if(kind==='scenario')setScenario(v);
+  else if(kind==='ovw')setOvw(v);
+  else if(kind==='material'){if(v==='sage')root.dataset.material='sage';else delete root.dataset.material;renderAll()}
+  else if(kind==='theme'){if(v==='auto'){if(initialTheme)root.setAttribute('data-theme',initialTheme);else root.removeAttribute('data-theme')}else root.setAttribute('data-theme',v)}
+}));
+document.querySelectorAll('[data-sim]').forEach(b=>b.addEventListener('click',()=>{
+  const k=b.dataset.sim;
+  if(k==='reduce'){document.documentElement.classList.toggle('reduce');kick()}
+  else if(k==='paused'){if(sim.legacy)return;setPaused(!sim.paused)}
+  else if(k==='offline'){if(sim.legacy)return;setOffline(!sim.offline)}
+  else if(k==='conflict'){sim.conflict=!sim.conflict;if(sim.conflict)log('模拟','下一次手机写入前，电脑会先改动另一项','sys')}
+  else sim[k]=!sim[k];
+  syncSimButtons();renderAll();
+}));
+document.querySelectorAll('[data-act]').forEach(b=>{if(!b.closest('.ctl'))return;b.addEventListener('click',()=>{
+  const a=b.dataset.act;
+  if(sim.legacy){VIEWS.phone.toast('旧版电脑场景不支持这项模拟');return}
+  if(a==='deskHermes'){toggle(CLIENTS.desk,'hermes')}
+  else if(a==='pixelClaude'){const h=HOST.agents.claude,t=!h.enabled;log('Pixel 9 → Host',`write claude ${t?'启用':'停用'}${!t&&h.sessions?' confirmDisable':''}`,'other');hostApply('claude',t,'pixel',null)}
+  else if(a==='fail'){
+    const c=sim.platform==='desk'?CLIENTS.desk:CLIENTS.phone,k=c.selected,h=HOST.agents[k];
+    if(!h.enabled){VIEWS[c.id].toast(`先启用 ${CAT[k].label}`);return}
+    HOST.lease[k]++;h.stage='error';h.sessions=0;h.error=ERRORS[k];log('Host',`${k} 接入失败：${ERRORS[k]}`,'host');publish(k);
+  }
+  renderAll();
+})});
+
+const figBoard=new Board(document.getElementById('statefig'),FIG,null,'x',{static:true,kinds:['pi','claude','dsh','opencode','hermes','codex']});
+new PhoneView(document.getElementById('phone'));
+new DeskView(document.getElementById('desk'));
+setScenario('daily');
+figBoard.update();
+})();
+</script>
