@@ -90,6 +90,7 @@ ApplicationWindow {
         if (window.preparing(agent.kind)) return false
         var backend = window.backendFor(agent.kind)
         if (agent.kind === "openclaw") return window.openClawReady
+        if (agent.kind === "codexDesktop" && window.codexDesktopState() !== "attached") return false
         return backend === undefined || backend.launchable === true || backend.ready === true
     }
     function agentCliDetecting(kind) {
@@ -110,6 +111,7 @@ ApplicationWindow {
         agentEntryDialog.open()
     }
     function agentPhoneState(agent, sessions) {
+        if (agent.kind === "codexDesktop" && window.codexDesktopNeedsAttention) return window.codexDesktopLabel()
         if (agent.kind === "openclaw" && !window.agentReachable(agent)) return window.openClawStateText
         if (agent.passive && !window.agentReachable(agent)) return "未接入"
         // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。Claude 有自己的检测。
@@ -164,7 +166,8 @@ ApplicationWindow {
     // Codex 桌面版接入卡只是把 Host 下发的分档换成人话；文案本身全部来自 Host，
     // 两个客户端不各自拼，免得同一件事在电脑和手机上说法不一。
     function codexDesktopState() { return (host.codexDesktop && host.codexDesktop.state) ? host.codexDesktop.state : "" }
-    function codexDesktopLabel() { return ({attached:"已接入", closed:"未接入", notInstalled:"未安装", unsupported:"不可用", error:"接入失败"})[window.codexDesktopState()] || (!host.bridgeReady ? "未知" : host.codexEnabled ? "正在检测" : "未启用") }
+    readonly property bool codexDesktopNeedsAttention: host.bridgeReady && ["error", "closed"].indexOf(window.codexDesktopState()) !== -1
+    function codexDesktopLabel() { return ({attached:"已接入", closed:"未接入", notInstalled:"未安装", unsupported:"不可用", error:"接入失败"})[window.codexDesktopState()] || (!host.bridgeReady ? "未知" : window.hostOnline ? "正在检测" : "未连接") }
     function codexDesktopColor() { return ({attached:Theme.success, closed:Theme.warning, error:Theme.danger, notInstalled:Theme.inkMuted, unsupported:Theme.inkMuted})[window.codexDesktopState()] || Theme.inkMuted }
     function piAgent() { return host.agents.find(a => a.kind === "pi") || {} }
     function codexDesktopReason() { return (host.codexDesktop && host.codexDesktop.reason) ? host.codexDesktop.reason : "" }
@@ -966,6 +969,8 @@ ApplicationWindow {
                                         readonly property int sessions: window.hostOnline && backend ? backend.runtimeCount : 0
                                         readonly property bool reachable: window.agentReachable(modelData)
                                         readonly property string cliHint: window.agentCliHint(modelData)
+                                        // CODEX-DESKTOP-MAC-RECOVERY-01: local opening remains available even without phone attachment.
+                                        readonly property bool desktopNotice: modelData.kind === "codexDesktop" && window.codexDesktopNeedsAttention
                                         readonly property bool pathAction: !!cliHint || !!host.agentEntryOverrides[modelData.kind]
                                         readonly property bool installable: modelData.data !== undefined
                                         Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight + 8; spacing: 14
@@ -983,10 +988,17 @@ ApplicationWindow {
                                         }
                                         Label { text: agentRow.modelData.name; color: agentRow.modelData.installed ? Theme.ink : Theme.inkFaint; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
                                         Item {
-                                            Layout.preferredWidth: 72; Layout.preferredHeight: Theme.touchTarget
-                                            visible: agentRow.modelData.installed || !!agentRow.cliHint
+                                            Layout.preferredWidth: Math.max(72, agentStatusRow.implicitWidth); Layout.preferredHeight: Theme.touchTarget
+                                            visible: agentRow.modelData.installed || !!agentRow.cliHint || agentRow.desktopNotice
                                             RowLayout {
+                                                id: agentStatusRow
                                                 anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 4
+                                                Label {
+                                                    objectName: agentRow.modelData.kind === "codexDesktop" ? "overviewCodexDesktopNotice" : ""
+                                                    visible: agentRow.desktopNotice
+                                                    text: visible ? window.codexDesktopLabel() : ""
+                                                    color: window.codexDesktopColor(); font.pixelSize: Theme.label
+                                                }
                                                 SymbolIcon { visible: agentRow.sessions > 0; name: "chat_bubble"; color: Theme.success; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs }
                                                 MotionText { objectName: "overviewAgentSessions-" + agentRow.modelData.kind; visible: agentRow.sessions > 0; roll: true; text: String(agentRow.sessions); color: Theme.success; font.pixelSize: Theme.label; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
                                                 Item {
@@ -995,30 +1007,36 @@ ApplicationWindow {
                                                     readonly property bool hintVisible: agentHint.visible
                                                     readonly property bool preparing: window.preparing(agentRow.modelData.kind)
                                                     readonly property bool canEdit: agentRow.pathAction && !host.busy && !window.agentCliDetecting(agentRow.modelData.kind)
-                                                    readonly property string detail: agentRow.cliHint || window.agentPhoneState(agentRow.modelData, agentRow.sessions)
-                                                        + (agentRow.pathAction && canEdit ? "。点击圆点管理 CLI 路径。" : "")
+                                                    readonly property bool canAct: canEdit || agentRow.desktopNotice
+                                                    readonly property string detail: agentRow.desktopNotice ? window.codexDesktopReason()
+                                                        : agentRow.cliHint || window.agentPhoneState(agentRow.modelData, agentRow.sessions)
+                                                            + (agentRow.pathAction && canEdit ? "。点击圆点管理 CLI 路径。" : "")
+                                                    function activate() {
+                                                        if (agentRow.desktopNotice) window.selectPage(4)
+                                                        else if (canEdit) window.showAgentEntry(agentRow.modelData)
+                                                    }
                                                     Layout.preferredWidth: Theme.touchTarget; Layout.preferredHeight: Theme.touchTarget
-                                                    activeFocusOnTab: canEdit
-                                                    Accessible.role: canEdit ? Accessible.Button : Accessible.StaticText
+                                                    activeFocusOnTab: canAct
+                                                    Accessible.role: canAct ? Accessible.Button : Accessible.StaticText
                                                     Accessible.name: agentRow.modelData.name + "，" + detail
-                                                    Accessible.description: canEdit && !agentRow.cliHint ? "管理手动指定的 CLI 路径" : ""
-                                                    Accessible.onPressAction: if (canEdit) window.showAgentEntry(agentRow.modelData)
+                                                    Accessible.description: agentRow.desktopNotice ? "查看接入诊断" : canEdit && !agentRow.cliHint ? "管理手动指定的 CLI 路径" : ""
+                                                    Accessible.onPressAction: agentState.activate()
                                                     ToolTip {
                                                         id: agentHint
                                                         objectName: "overviewAgentHint-" + agentRow.modelData.kind
-                                                        visible: dotHover.hovered || (agentState.canEdit && agentState.activeFocus)
+                                                        visible: dotHover.hovered || (agentState.canAct && agentState.activeFocus)
                                                         delay: 300; width: Math.min(implicitWidth, 320); text: agentState.detail
                                                     }
-                                                    HoverHandler { id: dotHover; cursorShape: agentState.canEdit ? Qt.PointingHandCursor : Qt.ArrowCursor }
-                                                    TapHandler { enabled: agentState.canEdit; onTapped: window.showAgentEntry(agentRow.modelData) }
-                                                    Keys.onReturnPressed: if (canEdit) window.showAgentEntry(agentRow.modelData)
-                                                    Keys.onSpacePressed: if (canEdit) window.showAgentEntry(agentRow.modelData)
-                                                    Rectangle { anchors.fill: parent; radius: Theme.radiusSm; color: "transparent"; border.color: Theme.accent; visible: agentState.activeFocus && agentState.canEdit }
+                                                    HoverHandler { id: dotHover; cursorShape: agentState.canAct ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                                                    TapHandler { enabled: agentState.canAct; onTapped: agentState.activate() }
+                                                    Keys.onReturnPressed: agentState.activate()
+                                                    Keys.onSpacePressed: agentState.activate()
+                                                    Rectangle { anchors.fill: parent; radius: Theme.radiusSm; color: "transparent"; border.color: Theme.accent; visible: agentState.activeFocus && agentState.canAct }
                                                     StatusDot {
                                                         anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                                        color: agentRow.cliHint || agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking || agentState.preparing ? Theme.warning : Theme.inkFaint
-                                                        idle: !agentRow.modelData.broken && !agentRow.reachable && (!agentRow.modelData.installed || !window.hostLinking && !agentState.preparing)
-                                                        syncing: !agentRow.cliHint && !agentRow.modelData.broken && (window.hostLinking || agentState.preparing)
+                                                        color: agentRow.desktopNotice ? window.codexDesktopColor() : agentRow.cliHint || agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking || agentState.preparing ? Theme.warning : Theme.inkFaint
+                                                        idle: !agentRow.desktopNotice && !agentRow.modelData.broken && !agentRow.reachable && (!agentRow.modelData.installed || !window.hostLinking && !agentState.preparing)
+                                                        syncing: !agentRow.desktopNotice && !agentRow.cliHint && !agentRow.modelData.broken && (window.hostLinking || agentState.preparing)
                                                     }
                                                 }
                                             }
@@ -1462,6 +1480,7 @@ ApplicationWindow {
                             }
                         }
                         Card {
+                            objectName: "codexDesktopAttach"
                             visible: window.agentEnabled("codexDesktop")
                             Layout.fillWidth: true
                             ColumnLayout {
@@ -1474,9 +1493,9 @@ ApplicationWindow {
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 10
                                     StatusDot { color: window.codexDesktopColor(); idle: window.codexDesktopState() === "closed" }
-                                    Label { text: window.codexDesktopLabel(); color: window.codexDesktopColor(); font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+                                    Label { objectName: "codexDesktopAttachLabel"; text: window.codexDesktopLabel(); color: window.codexDesktopColor(); font.pixelSize: Theme.body; font.weight: Font.DemiBold }
                                 }
-                                Hint { text: window.codexDesktopReason(); Layout.fillWidth: true }
+                                Hint { objectName: "codexDesktopAttachReason"; visible: text.length > 0; text: window.codexDesktopReason(); Layout.fillWidth: true }
                             }
                         }
                         Card {
