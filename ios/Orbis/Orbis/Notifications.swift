@@ -215,18 +215,22 @@ final class ReplyCompletionTracker {
         let epoch: String
         let turn: String
         let startedAt: Int64
+        var localTurn: ReplyNotificationCleanup.LocalTurn { .init(session: session, epoch: epoch, id: turn) }
     }
     private var active: [String: Identity] = [:]
     private var positions: [String: (epoch: String, seq: Int64)] = [:]
     private var receipts: [Identity]
     private var seen: Set<Identity>
+    private(set) var completedTurnStarts: [ReplyNotificationCleanup.LocalTurn: Int64]
     private let preferences: UserDefaults?
     private let key: String
     init(preferences: UserDefaults? = nil, owner: String = "") {
         self.preferences = preferences
         key = "orbis.replyCompletionReceipts." + owner
         let stored = preferences?.data(forKey: key).flatMap { try? JSONDecoder().decode([Identity].self, from: $0) } ?? []
-        receipts = Array(stored.suffix(512)); seen = Set(receipts)
+        let recent = Array(stored.suffix(512))
+        receipts = recent; seen = Set(recent)
+        completedTurnStarts = Dictionary(recent.map { ($0.localTurn, $0.startedAt) }, uniquingKeysWith: { _, newest in newest })
     }
     func resetActive() { active = [:]; positions = [:] }
     func consume(_ event: [String: Any], sessionId: String) -> Bool {
@@ -253,8 +257,286 @@ final class ReplyCompletionTracker {
     private func remember(_ identity: Identity) {
         guard seen.insert(identity).inserted else { return }
         receipts.append(identity)
-        if receipts.count > 512 { seen.remove(receipts.removeFirst()) }
+        if receipts.count > 512 {
+            let old = receipts.removeFirst(); seen.remove(old)
+            if completedTurnStarts[old.localTurn] == old.startedAt { completedTurnStarts[old.localTurn] = nil }
+        }
+        completedTurnStarts[identity.localTurn] = identity.startedAt
         if let data = try? JSONEncoder().encode(receipts) { preferences?.set(data, forKey: key) }
+    }
+}
+
+/// SC121 / APNS-L21: the Host's ready projection can contain a partial native
+/// inventory (including after an explicit removal). Absence is authoritative
+/// only after a full baseline from that same source. Keep it across a fresh
+/// read, but do not use it until that read actually confirms the interactions.
+struct NotificationApprovalInventory {
+    var confirmedAt: Date?
+    var pending: Set<String>
+    var removed: Set<String>
+
+    static func reconcile(_ domain: HostDomain, previous: HostDomain?, inventory: Self?, readAt: Date) -> Self? {
+        guard domain.availability == "ready",
+              let ids = domain.value.object.map({ Set($0.keys) }) ?? (domain.value == .null && domain.completeness == "complete" ? [] : nil) else { return nil }
+        let sameSource = previous.map {
+            $0.modelEpoch == domain.modelEpoch && $0.source.producer == domain.source.producer &&
+            $0.source.sourceId == domain.source.sourceId && $0.source.sourceEpoch == domain.source.sourceEpoch
+        } == true
+        let baseline = sameSource ? inventory : nil
+        guard domain.completeness == "complete" || (domain.completeness == "partial" && domain.projectionComplete == true && baseline != nil) else { return nil }
+        var removed = (baseline?.removed ?? []).union((baseline?.pending ?? []).subtracting(ids)).subtracting(ids)
+        if removed.count > 256 { removed = (baseline?.pending ?? []).subtracting(ids) }
+        return Self(confirmedAt: readAt, pending: ids, removed: removed)
+    }
+}
+
+enum ReplyNotificationCleanup {
+    struct LocalTurn: Hashable, Sendable {
+        let session: String
+        let epoch: String
+        let id: String
+    }
+
+    struct Alert: Sendable {
+        let id: String
+        let date: Date
+        let thread: String
+        let host: String?
+        let category: String?
+        let event: String?
+        let pairing: String?
+        let session: String?
+        let localTurn: LocalTurn?
+
+        init(id: String, date: Date, thread: String, remote: Bool, userInfo: [AnyHashable: Any]) {
+            self.id = id; self.date = date; self.thread = thread
+            let envelope = userInfo["orbis"] as? [String: Any]
+            let target = remote && envelope == nil ? nil : PushNotificationOpenTarget(userInfo)
+            // SC114 also recognizes the released flat local completion payload.
+            let legacyLocal = !remote && userInfo["orbis"] == nil && target?.sessionId != nil
+            let known = envelope != nil || legacyLocal
+            host = known ? target?.hostId : nil
+            category = known && target != nil ? (envelope?["category"] as? String ?? "task-completed") : nil
+            event = remote ? envelope?["eventId"] as? String : nil
+            pairing = remote ? nil : target?.pairingKey
+            session = remote ? nil : target?.sessionId
+            // The locally generated request identifier has carried the turn since
+            // before APNs. Neither the APNs event digest nor the OS identifier is a session ID.
+            if !remote, let host, let session, let data = Data(base64Encoded: id),
+               let value = String(data: data, encoding: .utf8) {
+                let fields = value.components(separatedBy: "\u{0}")
+                localTurn = fields.count == 4 && fields[0] == host && fields[1] == session && !fields[2].isEmpty && !fields[3].isEmpty ?
+                    .init(session: session, epoch: fields[2], id: fields[3]) : nil
+            } else { localTurn = nil }
+        }
+    }
+
+    struct Turn: Equatable, Hashable, Sendable {
+        let runtime: String
+        let session: String
+        let id: String
+        let startedAt: Int64
+
+        init(runtime: String, session: String, id: String, startedAt: Int64) {
+            self.runtime = runtime; self.session = session; self.id = id; self.startedAt = startedAt
+        }
+        init?(runtime: String, session: String, value: HostJSON) {
+            guard let id = value["turnId"].string, !id.isEmpty, id.utf16.count <= 256,
+                  let startedAt = value["startedAt"].integer else { return nil }
+            self.init(runtime: runtime, session: session, id: id, startedAt: startedAt)
+        }
+    }
+    struct HostFacts: Equatable, Sendable {
+        let generation: UUID
+        var approvals: [String: Set<String>]?
+        var settledApprovals: [String: Set<String>] = [:]
+        var approvalsConfirmedThrough: Date?
+        var viewedSessions: Set<String> = []
+        var latestTurns: [Turn] = []
+        var knownCompletions: Set<Turn> = []
+        var localTurnStarts: [LocalTurn: Int64] = [:]
+    }
+    struct State: Equatable, Sendable {
+        var pairings: [String: String]
+        var pairingsConfirmed: Bool
+        var retiredThrough: [String: Date]
+        var hosts: [String: HostFacts]
+    }
+    struct Plan: Sendable {
+        var remove: [String] = []
+        var recheck: [String: Date] = [:]
+    }
+
+    static func approvalEvent(runtime: String, request: String) -> String {
+        NotificationSource.digest("approval:\(runtime):\(request)")
+    }
+
+    static func completionEvent(_ turn: Turn) -> String {
+        NotificationSource.digest("completed:\(turn.runtime):\(turn.session):\(turn.id)")
+    }
+
+    /// Only return actual system request identifiers. Pairing retirement is
+    /// independent of connectivity; the remaining rules need current Host facts.
+    static func plan(_ delivered: [Alert], state: State) -> Plan {
+        var result = Plan()
+        let threads = Dictionary(Set(state.pairings.keys).union(state.retiredThrough.keys)
+            .map { (NotificationSource.threadIdentifier($0), $0) }, uniquingKeysWith: { first, _ in first })
+        func hashes(_ requests: [String: Set<String>]) -> Set<String> {
+            Set(requests.flatMap { runtime, ids in ids.map { approvalEvent(runtime: runtime, request: $0) } })
+        }
+        var pending: [String: Set<String>] = [:], settled: [String: Set<String>] = [:]
+        var completions: [String: Set<String>] = [:]
+        func removal(_ alert: Alert) -> String? {
+            if let payloadHost = alert.host, let threadHost = threads[alert.thread], payloadHost != threadHost { return nil }
+            guard let host = alert.host ?? threads[alert.thread] else { return nil }
+            guard let pairing = state.pairings[host] else {
+                return state.pairingsConfirmed || state.retiredThrough[host] != nil ? alert.id : nil
+            }
+            if let key = alert.pairing, key != pairing { return alert.id }
+            if let retired = state.retiredThrough[host], alert.date <= retired { return alert.id }
+            guard let facts = state.hosts[host], alert.host == host else { return nil }
+            switch alert.category {
+            case "approval-requested":
+                guard let inventory = facts.approvals, let through = facts.approvalsConfirmedThrough else { return nil }
+                if pending[host] == nil { pending[host] = hashes(inventory); settled[host] = hashes(facts.settledApprovals) }
+                if let event = alert.event, pending[host]?.contains(event) == true { return nil }
+                // An APNs alert can precede the matching E2E state update. Do not
+                // apply an older negative inventory to a newly delivered request.
+                let resolved = alert.event.map { settled[host]?.contains($0) == true } == true
+                guard pending[host]?.isEmpty == true || resolved || isDigest(alert.event) else { return nil }
+                guard resolved || alert.date <= through else {
+                    if !inventory.isEmpty { result.recheck[host] = max(result.recheck[host] ?? alert.date, alert.date) }
+                    return nil
+                }
+                // A nonempty inventory can only retire events in the Host's
+                // released SHA-256 format. An empty one can retire legacy IDs too.
+                return alert.id
+            case "task-completed":
+                if let session = alert.session {
+                    if facts.viewedSessions.contains(session) { return alert.id }
+                    let latest = facts.latestTurns.filter { $0.session == session }
+                    if let turn = alert.localTurn, latest.count == 1, let current = latest.first, current.id != turn.id,
+                       let knownStart = facts.localTurnStarts[turn], knownStart < current.startedAt { return alert.id }
+                } else if let event = alert.event {
+                    if completions[host] == nil {
+                        let latest = Dictionary(uniqueKeysWithValues: facts.latestTurns.map { ($0.runtime, $0) })
+                        completions[host] = Set(facts.knownCompletions.union(facts.latestTurns).filter { turn in
+                            if facts.viewedSessions.contains(turn.session) { return true }
+                            guard let current = latest[turn.runtime] else { return false }
+                            return current.session == turn.session && current.id != turn.id && current.startedAt > turn.startedAt
+                        }.map(completionEvent))
+                    }
+                    if completions[host]?.contains(event) == true { return alert.id }
+                }
+            default: break
+            }
+            return nil
+        }
+        for alert in delivered { if let id = removal(alert) { result.remove.append(id) } }
+        return result
+    }
+
+    private static func isDigest(_ value: String?) -> Bool {
+        guard let value, value.utf8.count == 64 else { return false }
+        return value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+}
+
+/// Coalesce notifications separately from screen publications, which can be
+/// held during navigation. Match off the main actor, then revalidate before
+/// giving any identifiers to the OS.
+@MainActor
+final class ForegroundReplyNotificationCleanup {
+    private weak var store: OrbisStore?
+    private var pairingObservation: AnyCancellable?
+    private var observations: [String: (ObjectIdentifier, AnyCancellable)] = [:]
+    private var pairingKeys: [String: String] = [:]
+    private var retiredThrough: [String: Date] = [:]
+    private var foreground = false
+    private var dirty = false
+    private var force = false
+    private var lastState: ReplyNotificationCleanup.State?
+    private var lastRecheck: [String: Date] = [:]
+    private var work: Task<Void, Never>?
+    private let delay: Duration
+    private let isActive: () -> Bool
+    private let delivered: () async -> [ReplyNotificationCleanup.Alert]
+    private let remove: ([String]) -> Void
+
+    init(delay: Duration = .milliseconds(250), isActive: @escaping () -> Bool, delivered: @escaping () async -> [ReplyNotificationCleanup.Alert],
+         remove: @escaping ([String]) -> Void) {
+        self.delay = delay; self.isActive = isActive; self.delivered = delivered; self.remove = remove
+    }
+
+    func bind(_ store: OrbisStore) {
+        guard self.store !== store else { return }
+        work?.cancel()
+        self.store = store; observations = [:]; pairingKeys = [:]; retiredThrough = [:]; lastState = nil; lastRecheck = [:]
+        pairingObservation = store.$pairings.sink { [weak self] pairings in
+            guard let self else { return }
+            let keys = Dictionary(uniqueKeysWithValues: pairings.map { ($0.hostId, PushNotificationIdentity.pairingKey($0)) })
+            let now = Date()
+            for (host, key) in self.pairingKeys where keys[host] != key {
+                self.retiredThrough[host] = now; self.lastRecheck[host] = nil
+            }
+            self.pairingKeys = keys
+            self.schedule()
+        }
+    }
+
+    func setForeground(_ active: Bool) {
+        guard foreground != active else { return }
+        foreground = active
+        if active { lastRecheck = [:]; schedule(force: true) } else { work?.cancel() }
+    }
+
+    func schedule(force: Bool = false) {
+        dirty = true; self.force = self.force || force
+        guard foreground, work == nil else { return }
+        work = Task { [weak self] in
+            guard let self else { return }
+            defer { self.work = nil; if self.foreground && self.dirty { self.schedule() } }
+            while self.foreground && self.dirty && !Task.isCancelled {
+                // A short bounded coalescer also lets willPresent finish putting the alert in the list.
+                do { try await Task.sleep(for: self.delay) } catch { return }
+                self.dirty = false
+                self.observeHosts()
+                let forced = self.force; self.force = false
+                guard self.isActive(), let state = self.state(), forced || state != self.lastState else { continue }
+                let alerts = await self.delivered()
+                guard self.foreground, self.isActive(), !Task.isCancelled, let current = self.state() else { continue }
+                let plan = await Task.detached(priority: .utility) { ReplyNotificationCleanup.plan(alerts, state: current) }.value
+                guard self.foreground, self.isActive(), !Task.isCancelled else { continue }
+                guard current == self.state() else { self.schedule(force: true); continue }
+                self.lastState = current
+                if !plan.remove.isEmpty { self.remove(plan.remove) }
+                for (host, delivery) in plan.recheck where delivery > (self.lastRecheck[host] ?? .distantPast) {
+                    self.lastRecheck[host] = delivery
+                    self.store?.connection(for: host)?.recheckReplyNotificationApprovals()
+                }
+            }
+        }
+    }
+
+    func waitForPending() async {
+        while let work { await work.value }
+    }
+
+    private func observeHosts() {
+        guard let store else { return }
+        observations = observations.filter { pairingKeys[$0.key] != nil }
+        for host in store.hosts {
+            let id = ObjectIdentifier(host.connection)
+            guard observations[host.hostId]?.0 != id else { continue }
+            observations[host.hostId] = (id, host.connection.notificationCleanupChanged.sink { [weak self] in self?.schedule() })
+        }
+    }
+
+    private func state() -> ReplyNotificationCleanup.State? {
+        guard let store else { return nil }
+        let hosts = store.hosts.compactMap { host in host.connection.replyNotificationFacts().map { (host.hostId, $0) } }
+        return .init(pairings: pairingKeys, pairingsConfirmed: store.pairingInventoryConfirmed,
+            retiredThrough: retiredThrough, hosts: Dictionary(uniqueKeysWithValues: hosts))
     }
 }
 
@@ -321,6 +603,20 @@ final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDele
     private let sourceQueue = DispatchQueue(label: "orbis.notification.sources", qos: .utility)
     private var sources = NotificationSourceDirectory(language: "zh-Hans", hosts: [:])
     private var sourceRevision = 0
+    private let cleanup = ForegroundReplyNotificationCleanup(isActive: { UIApplication.shared.applicationState == .active },
+        delivered: {
+            await withCheckedContinuation { continuation in
+                UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
+                    continuation.resume(returning: notifications.map {
+                        ReplyNotificationCleanup.Alert(id: $0.request.identifier, date: $0.date, thread: $0.request.content.threadIdentifier,
+                            remote: $0.request.trigger is UNPushNotificationTrigger, userInfo: $0.request.content.userInfo)
+                    })
+                }
+            }
+        }, remove: { UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: $0) })
+
+    func bind(_ store: OrbisStore, foreground: Bool) { cleanup.bind(store); cleanup.setForeground(foreground) }
+    func setForeground(_ active: Bool) { cleanup.setForeground(active) }
 
     func updateSources(_ pairings: [HostPairing]) {
         sourceRevision += 1
@@ -372,12 +668,14 @@ final class ReplyCompletionNotifications: NSObject, UNUserNotificationCenterDele
         let info = response.notification.request.content.userInfo
         Task { @MainActor in
             Self.remoteOpens.receive(info)
+            self.cleanup.schedule(force: true)
             completionHandler()
         }
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
         willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .list, .sound])
+        Task { @MainActor in self.cleanup.schedule(force: true) }
     }
 }
 #endif

@@ -106,6 +106,85 @@ private final class MultiHostFixture {
 
 @Suite("Independent always-on Hosts") @MainActor
 struct MultiHostTests {
+    // SC121: model projection completeness alone is not native inventory completeness.
+    // A released partial removal is safe against the full baseline of the same source.
+    @Test func notificationApprovalInventoryWaitsForConfirmedSourceAndRead() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        let host = try #require(fixture.store.connection(for: "host-1"))
+        let transport = try #require(fixture.transports["host-1"])
+        let runtime = "shared-runtime"
+        func request() throws -> [String: Any] { try #require(transport.sent.last { $0["type"] as? String == "agent.state.request" }) }
+        func interactions(_ revision: Int, _ completeness: String, _ ids: [String], source: String = "adapter-epoch",
+                          availability: String = "ready", request: [String: Any]) async {
+            let requests = Dictionary(uniqueKeysWithValues: ids.map { id in
+                (id, ["requestId": id, "runtimeId": runtime, "title": "Approval", "kind": "confirm",
+                      "extensionId": "fixture", "expiresAt": 2_000_000_000_000] as [String: Any])
+            })
+            let domain: [String: Any] = ["domain": "interactions", "modelEpoch": "model", "revision": revision, "availability": availability,
+                "completeness": completeness, "projectionComplete": true, "value": requests, "checkedAt": revision,
+                "source": ["producer": "adapter", "sourceId": "fixture", "sourceEpoch": source, "sourceRevision": revision]]
+            await transport.emit(["type": "agent.state.snapshot", "scope": "agent", "runtimeId": runtime, "sessionId": "shared-session",
+                "requestId": request["requestId"]!, "stateFormat": request["stateFormat"]!, "modelEpoch": "model",
+                "domains": [domain], "missing": [], "truncated": false])
+        }
+        transport.state?(.secured, nil)
+        #expect(host.replyNotificationFacts() == nil)
+        await transport.ready()
+        let firstRead = try request()
+        #expect(host.replyNotificationFacts()?.approvals == nil)
+        await interactions(1, "partial", [], request: firstRead)
+        #expect(host.replyNotificationFacts()?.approvals == nil)
+        await interactions(2, "complete", ["keep", "resolved"], request: firstRead)
+        #expect(host.replyNotificationFacts()?.approvals == [runtime: ["keep", "resolved"]])
+        await interactions(3, "partial", ["keep"], request: firstRead)
+        #expect(host.replyNotificationFacts()?.approvals == [runtime: ["keep"]])
+        #expect(host.replyNotificationFacts()?.settledApprovals[runtime] == ["resolved"])
+        host.recheckReplyNotificationApprovals()
+        #expect(host.replyNotificationFacts()?.approvals == nil)
+        await interactions(4, "complete", [], request: firstRead)
+        #expect(host.replyNotificationFacts()?.approvals == nil, "Retired reads must not authorize deletion")
+        let recheck = try request()
+        #expect((recheck["known"] as? [[String: Any]])?.contains(where: { $0["domain"] as? String == "interactions" }) == true)
+        await interactions(4, "partial", [], source: "replacement", request: recheck)
+        #expect(host.replyNotificationFacts()?.approvals == nil)
+        await interactions(5, "complete", [], source: "replacement", request: recheck)
+        #expect(host.replyNotificationFacts()?.approvals == [runtime: []])
+        await transport.emit(["type": "runtime.offline", "runtimeId": runtime, "reason": "disconnected"])
+        #expect(host.replyNotificationFacts()?.approvals == nil, "An adapter disappearing is not a confirmed empty inventory")
+        transport.state?(.offline, nil); transport.state?(.secured, nil)
+        #expect(host.replyNotificationFacts() == nil)
+        await transport.emit(["type": "device.ready", "runtimes": []])
+        #expect(host.replyNotificationFacts()?.approvals == [:])
+    }
+
+    // SC121: OS delivery lookup can return after the Host disconnected or the app left the foreground.
+    @Test func notificationCleanupRechecksConnectionAndForegroundAfterDeliveryRead() async throws {
+        let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
+        let transport = try #require(fixture.transports["host-1"])
+        let alert = ReplyNotificationCleanup.Alert(id: "os-id", date: .distantPast, thread: "", remote: true,
+            userInfo: ["orbis": ["v": 1, "category": "approval-requested", "hostId": "host-1", "eventId": "legacy"]])
+        await transport.emit(["type": "device.ready", "runtimes": []])
+        var interrupt: () -> Void = { transport.state?(.offline, nil) }
+        var reads = 0, removed: [String] = []
+        let cleanup = ForegroundReplyNotificationCleanup(delay: .zero, isActive: { true }, delivered: {
+            reads += 1; interrupt(); return [alert]
+        }, remove: { removed += $0 })
+        cleanup.bind(fixture.store); cleanup.setForeground(true)
+        await cleanup.waitForPending()
+        #expect(reads > 0)
+        #expect(removed.isEmpty)
+
+        interrupt = { cleanup.setForeground(false) }
+        await transport.emit(["type": "device.ready", "runtimes": []])
+        await cleanup.waitForPending()
+        #expect(removed.isEmpty)
+
+        interrupt = {}
+        cleanup.setForeground(true)
+        await cleanup.waitForPending()
+        #expect(removed == ["os-id"])
+    }
+
     // IMPORT-06: target selection stays scoped to authenticated pairing / session / project.
     // Opening the picker or revalidating a row must not send anything to either Host.
     @Test func externalImportDestinationIsNotRetargetedBySelectionOrReconnect() async throws {

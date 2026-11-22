@@ -37,6 +37,15 @@ Status: proposed
 
 2026-11-18 本机实施与自动验证完成：Node 定向验证 92 项通过；Swift 定向验证与独立发布版互通共 32 项通过；TypeScript 检查及 iOS App／Widget／通知扩展的 arm64、x86_64 编译通过。覆盖 2 Host × 2 手机、仅一台手机断开／切换、事件与离线反馈竞态、旧 App 无 interest、相同 Host 名及相同事件 ID、点击冷启动和完整配对替换。最近发布 v0.1.21 的真实 Relay 与 Swift 点击解析器通过注册、重连、回退和新通知包对照；E2E schema 与设备协议源码哈希保持一致。原缺陷证据保留于 `.artifacts/push-multihost-audit-20261117/`，本轮结果、首次失败及清理证据见 `.artifacts/push-multihost-fix-20261118/verification.json`。未部署、未安装到设备；App Group／扩展签名、真实 APNs 投递和灵动岛观感待用户验证。共享 QA MCP 当前连接被拒绝，登记请求条件与本轮完整验收要求保留在同目录 `qa-registration.json`；尚未建立可领取轮次。
 
+## SC121：iOS 前台清理已送达提醒（APNS-L21）
+
+- App 在前台按系统请求 ID 清理通知中心。当前连接已确认电脑目录和待处理清单后，移除不再待处理的审批；已确认无待处理时也清理旧事件 ID。较清单更新的通知先核对，未完成的待处理请求保留。
+- 阅读对应会话，或确认该会话已开始较新一轮后，清理可归属的完成提醒。旧远程提醒只有事件哈希，需有已知的运行时、会话和轮次才能匹配；无法归属的提醒保留。
+- 已提交的解除或替换配对按电脑清理旧提醒，以分组或旧载荷的 Host ID 识别。不要把 Keychain 读取失败、后端暂断或待完成的重连当成空清单。点击落点仍按 SC114 校验。
+- 仅修改 App 本机；未增加后台模式、静默推送或 Host／Relay 字段。
+
+实现见 `ReplyCompletionNotifications`、`HostConnection.replyNotificationFacts`；回归见 [ReplyNotificationCleanupTests.swift](../../ios/Orbis/Tests/ReplyNotificationCleanupTests.swift) 和 [MultiHostTests.swift](../../ios/Orbis/Tests/MultiHostTests.swift) 的 SC121 用例。未部署，真机验收待用户验证。
+
 ## iOS 实时活动（2026-11-17，S61／SC109）
 
 - 每个 Host 聚合一个实时活动：单会话显示静态 Agent 图标与上次确认的约分钟耗时，多会话显示数量；待处理请求优先，展开显示焦点会话及其余运行数量。静止状态无旋转、闪烁或秒计时，过期显示待更新，结束后退出灵动岛并在锁屏短留。
