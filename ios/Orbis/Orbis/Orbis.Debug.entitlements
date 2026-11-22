@@ -6,6 +6,7 @@
 	<array>
 		<string>group.$(ORBIS_APP_BUNDLE_IDENTIFIER).notifications</string>
 		<string>group.$(ORBIS_APP_BUNDLE_IDENTIFIER).imports</string>
+		<string>group.$(ORBIS_APP_BUNDLE_IDENTIFIER).liveactivity</string>
 	</array>
 	<key>aps-environment</key>
 	<string>development</string>

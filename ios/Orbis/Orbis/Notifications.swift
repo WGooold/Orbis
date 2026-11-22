@@ -558,9 +558,15 @@ final class OrbisAppDelegate: NSObject, UIApplicationDelegate {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-screen=") || $0.hasPrefix("--push-lifecycle-probe=") }) { return true }
         #endif
+        LiveActivityCoordinator.shared.startMonitoring()
         let network = NWPathMonitor()
         network.pathUpdateHandler = { path in
-            if path.status == .satisfied { Task { @MainActor in Self.registerForPushIfAllowed() } }
+            if path.status == .satisfied {
+                Task { @MainActor in
+                    Self.registerForPushIfAllowed()
+                    LiveActivityCoordinator.shared.registrationNetworkAvailable()
+                }
+            }
         }
         network.start(queue: DispatchQueue(label: "orbis.push.reachability"))
         pushNetwork = network

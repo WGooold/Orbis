@@ -1,6 +1,6 @@
 import { createPrivateKey, createSign, createHash } from "node:crypto";
 import { connect, type ClientHttp2Session } from "node:http2";
-import type { LiveActivityPush } from "./live-activities.js";
+import { LIVE_ACTIVITY_START_WINDOW_SECONDS, type LiveActivityPush } from "./live-activities.js";
 
 export type APNsConfig = {
   keyId: string;
@@ -43,19 +43,27 @@ export class APNsSender {
     });
   }
 
-  /** LA-R02: updates use ActivityKit's dedicated token/topic; no alert body,
-   * session title, tool arguments or credentials are sent through this route. */
+  /** LA-R02: ActivityKit uses its own topic and tokens. Start requires an
+   * alert; keep it generic and silent, with no session text or actions. */
   async sendActivity(activityToken: string, push: LiveActivityPush): Promise<"sent" | "invalid-token"> {
     if (!/^[a-fA-F0-9]{64,1024}$/u.test(activityToken)) throw new Error("Invalid APNs activity token");
+    const start = push.event === "start" ? {
+      "attributes-type": "OrbisLiveActivityAttributes",
+      attributes: { hostId: push.attributes.hostId, pairingRef: push.attributes.pairingRef, launchId: push.attributes.launchId },
+      alert: { title: "Orbis", body: { "loc-key": "live-activity.started" } },
+      ...(push.inputPushToken ? { "input-push-token": 1 } : {}),
+    } : undefined;
     return this.#post(activityToken, {
       "apns-topic": `${this.#config.bundleId}.push-type.liveactivity`,
       "apns-push-type": "liveactivity", "apns-priority": String(push.priority),
-      "apns-expiration": String(push.timestamp + 300),
-      "apns-collapse-id": createHash("sha256").update(activityToken).digest("hex").slice(0, 32),
+      "apns-expiration": String(push.timestamp + (start ? LIVE_ACTIVITY_START_WINDOW_SECONDS : 300)),
+      "apns-collapse-id": createHash("sha256").update(push.event === "start" ?
+        JSON.stringify([activityToken, push.attributes.pairingRef, "start"]) : activityToken).digest("hex").slice(0, 32),
     }, { aps: {
       timestamp: push.timestamp, event: push.event, "content-state": push.contentState,
       "relevance-score": push.contentState.phase === "attention" ? 100 : push.contentState.phase === "running" ? 50 : 0,
-      ...(push.event === "end" ? { "dismissal-date": push.timestamp + 300 } : { "stale-date": push.timestamp + 600 }),
+      ...start,
+      ...(push.event === "end" ? { "dismissal-date": push.dismissalTimestamp ?? push.timestamp + 300 } : { "stale-date": push.timestamp + 600 }),
     } });
   }
 
@@ -91,7 +99,8 @@ export class APNsSender {
     });
     if (response.status === 200) return "sent";
     if (response.status === 410 || response.status === 400 && ["BadDeviceToken", "DeviceTokenNotForTopic"].includes(response.reason ?? "")) return "invalid-token";
-    throw new Error(`APNs request failed with HTTP ${response.status}${response.reason ? ` (${response.reason})` : ""}`);
+    throw Object.assign(new Error(`APNs request failed with HTTP ${response.status}${response.reason ? ` (${response.reason})` : ""}`),
+      { apnsRejected: response.status >= 400 && response.status <= 599 });
   }
 
   close(): void { this.#session?.close(); this.#session = undefined; }

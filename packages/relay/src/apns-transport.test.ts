@@ -39,7 +39,7 @@ describe("APNs transport lifecycle", () => {
   it("sends ActivityKit updates with stale dates and ends with a bounded dismissal", async () => {
     const f = fixture();
     const contentState = { version: 1 as const, phase: "running" as const, runningCount: 3, pendingCount: 0,
-      focusKey: "a".repeat(64), agentKind: "codex", startedAt: 1_000, updatedAt: 2_000, outcome: null };
+      focusKey: "a".repeat(64), agentKind: "codex" as const, startedAt: 1_000, updatedAt: 2_000, outcome: null };
     await f.sender.sendActivity("a".repeat(64), { event: "update", timestamp: 123, priority: 5, contentState });
     expect(f.sent[0]!.headers).toMatchObject({ "apns-topic": `${config.bundleId}.push-type.liveactivity`,
       "apns-push-type": "liveactivity", "apns-priority": "5", "apns-expiration": "423" });
@@ -61,6 +61,25 @@ describe("APNs transport lifecycle", () => {
     await expect(f.sender.sendActivity("a".repeat(1025), { event: "update", timestamp: 123, priority: 5, contentState })).rejects.toThrow("activity token");
     await expect(f.sender.send("a".repeat(201), hint)).rejects.toThrow("device token");
     expect(f.sent).toHaveLength(1);
+    f.sender.close();
+  });
+  // LIVE-ACTIVITY-02: a startup push requires an alert, but no pairing name,
+  // title, raw device ID, or credentials. iOS 17.2 must not see iOS 18 keys.
+  it("uses a silent localized start alert, version-gated token and per-pairing collapse ID", async () => {
+    const f = fixture();
+    const state = { version: 1 as const, phase: "running" as const, runningCount: 1, pendingCount: 0,
+      focusKey: null, agentKind: null, startedAt: null, updatedAt: 2_000, outcome: null, sessionCount: 1 };
+    const attributes = { hostId: "host", pairingRef: "b".repeat(64), launchId: "00000000-0000-4000-8000-000000000001" };
+    await f.sender.sendActivity("a".repeat(64), { event: "start", timestamp: 123, priority: 10, contentState: state, attributes, inputPushToken: false });
+    expect(f.sent[0]!.headers).toMatchObject({ "apns-topic": `${config.bundleId}.push-type.liveactivity`,
+      "apns-push-type": "liveactivity", "apns-priority": "10", "apns-expiration": "183" });
+    expect(f.sent[0]!.payload).toEqual({ aps: { timestamp: 123, event: "start", "content-state": state,
+      "attributes-type": "OrbisLiveActivityAttributes", attributes, "relevance-score": 50, "stale-date": 723,
+      alert: { title: "Orbis", body: { "loc-key": "live-activity.started" } } } });
+    await f.sender.sendActivity("a".repeat(64), { event: "start", timestamp: 123, priority: 10, contentState: state,
+      attributes: { ...attributes, hostId: "other", pairingRef: "c".repeat(64) }, inputPushToken: true });
+    expect(f.sent[1]!.payload.aps).toHaveProperty("input-push-token", 1);
+    expect(f.sent[1]!.headers["apns-collapse-id"]).not.toBe(f.sent[0]!.headers["apns-collapse-id"]);
     f.sender.close();
   });
   it("signs a valid ES256 provider token and sends only short-lived wake metadata", async () => {

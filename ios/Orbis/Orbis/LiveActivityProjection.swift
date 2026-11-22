@@ -1,8 +1,8 @@
 import Foundation
 import CryptoKit
 
-/// LA-I02: only committed, complete Host facts may clear an activity. A transport
-/// disconnect or partial directory means unknown, never successful completion.
+/// Facts used for the local routing/title index, dismissal tracking, and the
+/// initial state only when a released Relay has no Host-summary claim route.
 struct LiveActivityRuntimeFact: Sendable {
     let sessionId: String
     let agentKind: String
@@ -10,9 +10,10 @@ struct LiveActivityRuntimeFact: Sendable {
     let pendingCount: Int
     let startedAt: Int64?
     let backgroundAgents: Bool
-    let title: String
+    let title: String?
     var turnId: String? = nil
     var runtimeId: String? = nil
+    var isActive: Bool { pendingCount > 0 || phase != "idle" || backgroundAgents }
 }
 
 enum LiveActivityProjection {
@@ -28,41 +29,34 @@ enum LiveActivityProjection {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    static func make(hostId: String, facts: [LiveActivityRuntimeFact], complete: Bool,
-                     previous: OrbisLiveActivityState?, now: Int64) -> OrbisLiveActivityState? {
-        guard complete, facts.allSatisfy({ ["idle", "running", "waiting_local_interaction"].contains($0.phase) }) else {
-            guard var value = previous, value.phase != "ended" else { return nil }
-            value.phase = "stale"; value.updatedAt = now; value.outcome = nil
-            return value
-        }
+    static func supports(_ kind: String) -> Bool { OrbisLiveActivityState.agentKinds.contains(kind) }
+
+    /// LIVE-ACTIVITY-02: the compatibility path may seed an activity, but can
+    /// never turn reconnect/idle facts into a write on an existing activity.
+    static func seed(hostId: String, facts: [LiveActivityRuntimeFact], complete: Bool, now: Int64) -> OrbisLiveActivityState? {
+        let facts = facts.filter { supports($0.agentKind) }
+        guard complete, facts.allSatisfy({ ["idle", "running", "waiting_local_interaction"].contains($0.phase) }) else { return nil }
         let pending = facts.filter { $0.pendingCount > 0 || $0.phase == "waiting_local_interaction" }
         let running = facts.filter { $0.pendingCount == 0 && $0.phase != "waiting_local_interaction" && ($0.phase == "running" || $0.backgroundAgents) }
-        let ordered = (pending.isEmpty ? running : pending).sorted {
+        guard let focus = (pending.isEmpty ? running : pending).min(by: {
             if $0.agentKind != $1.agentKind { return $0.agentKind < $1.agentKind }
             return $0.sessionId < $1.sessionId
-        }
-        let sticky = ordered.first { focusKey(hostId: hostId, agentKind: $0.agentKind, sessionId: $0.sessionId) == previous?.focusKey }
-        guard let focus = sticky ?? ordered.first else {
-            guard let previous, previous.phase != "ended" else { return nil }
-            return OrbisLiveActivityState(phase: "ended", runningCount: 0, pendingCount: 0,
-                focusKey: previous.focusKey, agentKind: previous.agentKind, startedAt: previous.startedAt,
-                updatedAt: now, outcome: "unknown")
-        }
+        }) else { return nil }
+        let runningCount = min(running.count, 2048)
+        let requests = min(pending.reduce(0) { $0 + max(1, $1.pendingCount) }, 131_072)
         return OrbisLiveActivityState(phase: pending.isEmpty ? "running" : "attention",
-            runningCount: min(running.count, 2048), pendingCount: min(pending.reduce(0) { $0 + max(1, $1.pendingCount) }, 131072),
+            runningCount: runningCount, pendingCount: requests,
             focusKey: focusKey(hostId: hostId, agentKind: focus.agentKind, sessionId: focus.sessionId),
-            agentKind: focus.agentKind, startedAt: focus.startedAt.flatMap { $0 <= now ? $0 : nil }, updatedAt: now, outcome: nil)
+            agentKind: focus.agentKind, startedAt: focus.startedAt.flatMap { $0 >= 0 && $0 <= now ? $0 : nil }, updatedAt: now,
+            sessionCount: running.count + pending.count <= 2048 ? running.count + pending.count : nil)
     }
 
-    static func sameMeaning(_ lhs: OrbisLiveActivityState, _ rhs: OrbisLiveActivityState) -> Bool {
-        var copy = lhs; copy.updatedAt = rhs.updatedAt
-        return copy == rhs
-    }
 }
 
 struct LiveActivityOpenTarget: Equatable {
     let hostId: String
-    let pairingKey: String
+    let pairingKey: String?
+    let pairingRef: String?
     let focusKey: String?
 
     /// LA-I03: URLs are navigation only. They cannot approve a request or submit
@@ -71,13 +65,14 @@ struct LiveActivityOpenTarget: Equatable {
         guard let c = URLComponents(url: url, resolvingAgainstBaseURL: false), c.scheme == "orbis", c.host == "activity",
               c.user == nil, c.password == nil, c.port == nil, c.path.isEmpty, c.fragment == nil else { return nil }
         let items = c.queryItems ?? []
-        guard Set(items.map(\.name)).count == items.count, items.allSatisfy({ ["hostId", "pairingKey", "focusKey"].contains($0.name) }),
-              let host = items.first(where: { $0.name == "hostId" })?.value, !host.isEmpty, host.utf8.count <= 128,
-              let pairing = items.first(where: { $0.name == "pairingKey" })?.value,
-              pairing.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { return nil }
+        guard Set(items.map(\.name)).count == items.count, items.allSatisfy({ ["hostId", "pairingKey", "pairingRef", "focusKey"].contains($0.name) && $0.value != nil }),
+              let host = items.first(where: { $0.name == "hostId" })?.value, !host.isEmpty, host.utf8.count <= 128 else { return nil }
+        let key = items.first(where: { $0.name == "pairingKey" })?.value
+        let reference = items.first(where: { $0.name == "pairingRef" })?.value
+        guard (key == nil) != (reference == nil), let pairing = key ?? reference, OrbisLiveActivityState.isDigest(pairing) else { return nil }
         let focus = items.first(where: { $0.name == "focusKey" })?.value
-        guard focus == nil || focus?.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { return nil }
-        hostId = host; pairingKey = pairing; focusKey = focus
+        guard focus.map(OrbisLiveActivityState.isDigest) != false else { return nil }
+        hostId = host; pairingKey = key; pairingRef = reference; focusKey = focus
     }
 }
 

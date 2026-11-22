@@ -1,7 +1,8 @@
 import Foundation
+import CryptoKit
 
 /// LA-01: the only content carried through ActivityKit/APNs is a bounded,
-/// generic summary. Session titles remain in attributes created on this device.
+/// generic summary. Session titles are never part of a push.
 struct OrbisLiveActivityState: Codable, Hashable, Sendable {
     var version: Int = 1
     var phase: String
@@ -12,24 +13,37 @@ struct OrbisLiveActivityState: Codable, Hashable, Sendable {
     var startedAt: Int64?
     var updatedAt: Int64
     var outcome: String?
+    var sessionCount: Int?
+
+    // Mirror of @orbis/protocol LIVE_ACTIVITY_AGENT_KINDS. A cross-target
+    // conformance test checks the same wire allowlist for older Apps and new producers.
+    static let agentKinds: Set<String> = ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "opencode"]
+    static let freshness: TimeInterval = 600
+
+    static func isDigest(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    var isActive: Bool { phase == "running" || phase == "attention" }
 
     init(version: Int = 1, phase: String, runningCount: Int, pendingCount: Int,
          focusKey: String? = nil, agentKind: String? = nil, startedAt: Int64? = nil,
-         updatedAt: Int64, outcome: String? = nil) {
+         updatedAt: Int64, outcome: String? = nil, sessionCount: Int? = nil) {
         self.version = version; self.phase = phase
         self.runningCount = runningCount; self.pendingCount = pendingCount
         self.focusKey = focusKey; self.agentKind = agentKind
-        self.startedAt = startedAt; self.updatedAt = updatedAt; self.outcome = outcome
+        self.startedAt = startedAt; self.updatedAt = updatedAt; self.outcome = outcome; self.sessionCount = sessionCount
     }
 
     var isValid: Bool {
         guard version == 1, ["running", "attention", "ended", "stale"].contains(phase),
               (0...2048).contains(runningCount), (0...131_072).contains(pendingCount),
-              (0...9_007_199_254_740_991).contains(updatedAt),
+              (0...8_640_000_000_000_000).contains(updatedAt),
               startedAt.map({ $0 >= 0 && $0 <= updatedAt }) != false,
-              focusKey.map({ $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } }) != false,
-              agentKind.map({ ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "opencode"].contains($0) }) != false,
+              focusKey.map(Self.isDigest) != false,
+              agentKind.map({ Self.agentKinds.contains($0) }) != false,
               outcome.map({ ["completed", "failed", "cancelled", "unknown"].contains($0) }) != false,
+              sessionCount.map({ $0 >= runningCount + (phase == "attention" ? 1 : 0) && $0 <= min(2048, runningCount + pendingCount) }) != false,
               phase == "ended" || outcome == nil else { return false }
         switch phase {
         case "running": return runningCount > 0 && pendingCount == 0
@@ -43,151 +57,126 @@ struct OrbisLiveActivityState: Codable, Hashable, Sendable {
     var relevanceScore: Double { !isValid ? 0 : phase == "attention" ? 100 : phase == "running" ? 50 : 0 }
 }
 
-/// LA-02: display values use the last confirmed timestamp, with approximate
-/// minutes. No timer, spinner, looping animation, or second counter is needed.
-struct OrbisLiveActivityPresentation {
-    let state: OrbisLiveActivityState
-    let isStale: Bool
-    let language: String
-    let title: String
-    let source: NotificationSource
-
-    init(state: OrbisLiveActivityState, isStale: Bool, language: String,
-         initialFocusKey: String? = nil, initialTitle: String? = nil,
-         hostId: String = "", source: NotificationSource? = nil) {
-        self.state = state
-        self.isStale = !state.isValid || state.phase == "stale" || (isStale && state.phase != "ended")
-        self.language = language
-        self.source = source ?? .fallback(hostId: hostId, language: language)
-        let localTitle = initialTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let focus = state.focusKey, focus == initialFocusKey,
-           let localTitle, !localTitle.isEmpty {
-            title = String(localTitle.prefix(160))
-        } else { title = language.hasPrefix("zh") ? "当前任务" : "Current task" }
-    }
-
-    private var chinese: Bool { language.hasPrefix("zh") }
-    var isAttention: Bool { !isStale && state.phase == "attention" }
-    var isEnded: Bool { !isStale && state.phase == "ended" }
-    var isAggregate: Bool {
-        state.runningCount > 1 || state.pendingCount > 1 || (state.runningCount == 1 && state.pendingCount == 1)
-    }
-
-    private var showsAgentMark: Bool { !isAggregate && !isStale && !isEnded }
-
-    var assetName: String {
-        guard showsAgentMark else { return "OrbisMark" }
-        return AgentIdentity(kind: state.agentKind)?.assetName(dark: true) ?? "OrbisMark"
-    }
-
-    /// The widget's dark background already matches OpenCode's light-ink artwork.
-    var markUsesOriginalColors: Bool { showsAgentMark && state.agentKind == "opencode" }
-
-    var agentName: String {
-        switch state.agentKind {
-        case "codex", "codexDesktop": return "Codex"
-        case "claude": return "Claude"
-        case "dsh", "dshDesktop": return "DeepSeek"
-        case "pi": return "Pi"
-        case "opencode": return "OpenCode"
-        default: return "Orbis"
-        }
-    }
-
-    var elapsedMinutes: Int? {
-        guard !isStale, let startedAt = state.startedAt,
-              startedAt >= 0, state.updatedAt >= startedAt else { return nil }
-        return Int(min(9999, (state.updatedAt - startedAt) / 60_000))
-    }
-
-    var elapsedText: String? {
-        guard let minutes = elapsedMinutes else { return nil }
-        if minutes == 0 { return chinese ? "不到 1 分钟" : "<1 min" }
-        return chinese ? "约 \(minutes) 分钟" : "~\(minutes) min"
-    }
-
-    private func compactCount(_ count: Int) -> String { count > 99 ? "99+" : String(count) }
-
-    var compactText: String {
-        if isStale { return "—" }
-        if isAttention { return compactCount(state.pendingCount) }
-        if isEnded { return "✓" }
-        if state.runningCount > 1 {
-            let value = compactCount(state.runningCount)
-            return chinese ? "\(value) 个" : value
-        }
-        return elapsedText ?? (chinese ? "运行中" : "Running")
-    }
-
-    var headline: String {
-        if isStale { return chinese ? "待更新" : "Update needed" }
-        if isAttention { return chinese ? "\(state.pendingCount) 项待处理" : "\(state.pendingCount) pending" }
-        if isEnded { return statusText }
-        if state.runningCount > 1 { return chinese ? "\(state.runningCount) 个运行中" : "\(state.runningCount) running" }
-        return elapsedText ?? statusText
-    }
-
-    var statusText: String {
-        if isStale { return chinese ? "状态待更新" : "Status out of date" }
-        if isAttention { return chinese ? "等待你处理" : "Waiting for you" }
-        if isEnded {
-            switch state.outcome {
-            case "completed": return chinese ? "已完成" : "Completed"
-            case "failed": return chinese ? "执行失败" : "Failed"
-            case "cancelled": return chinese ? "已取消" : "Cancelled"
-            default: return chinese ? "已结束" : "Ended"
-            }
-        }
-        return chinese ? "运行中" : "Running"
-    }
-
-    var detail: String {
-        if isStale { return chinese ? "打开 Orbis 更新状态" : "Open Orbis to refresh" }
-        if isAttention { return "\(agentName) · " + (chinese ? "需要你处理" : "Needs your attention") }
-        if isEnded { return elapsedText ?? agentName }
-        return "\(agentName) · " + (chinese ? "正在执行任务" : "Working on your task")
-    }
-
-    var otherRunningCount: Int {
-        guard !isStale, !isEnded else { return 0 }
-        return isAttention ? state.runningCount : max(0, state.runningCount - 1)
-    }
-
-    var otherRunningText: String? {
-        let count = otherRunningCount
-        guard count > 0 else { return nil }
-        if chinese { return "另有 \(count) 个会话运行中" }
-        return count == 1 ? "1 other session running" : "\(count) other sessions running"
-    }
-
-    var actionText: String {
-        isAttention ? (chinese ? "查看请求" : "View request") : (chinese ? "打开会话" : "Open session")
-    }
-    var sourceAccessibilityLabel: String { source.name + ", " + headline }
-}
-
-#if os(iOS) && canImport(ActivityKit)
-import ActivityKit
-
-struct OrbisLiveActivityAttributes: ActivityAttributes {
-    typealias ContentState = OrbisLiveActivityState
-
+/// LIVE-ACTIVITY-02: only app-derived, opaque pairing identifiers may cross
+/// the ActivityKit boundary. Host/device references cannot select a new pairing.
+struct OrbisLiveActivityAttributes: Codable, Hashable, Sendable {
     let hostId: String
-    let language: String
-    var pairingKey: String = ""
-    /// These optional local values never travel through the push service. A
-    /// changed focus cannot reuse the title of the previous session.
+    var language: String? = nil
+    var pairingKey: String? = nil
+    var pairingRef: String? = nil
+    var launchId: String? = nil
+    // Decode released activities; never write titles or names on new ones.
     var initialFocusKey: String? = nil
     var initialTitle: String? = nil
     var source: NotificationSource? = nil
+
+    static func remotePairingRef(hostId: String, deviceId: String, credential: String) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: ["orbis.live-activity-pairing-v1", hostId, deviceId,
+            NotificationSource.digest(credential)], options: [.withoutEscapingSlashes])) ?? Data()
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
 
     func url(focusKey: String?) -> URL? {
         var components = URLComponents()
         components.scheme = "orbis"; components.host = "activity"
         components.queryItems = [URLQueryItem(name: "hostId", value: hostId)]
-        if !pairingKey.isEmpty { components.queryItems?.append(URLQueryItem(name: "pairingKey", value: pairingKey)) }
-        if let focusKey { components.queryItems?.append(URLQueryItem(name: "focusKey", value: focusKey)) }
+        if let pairingRef, OrbisLiveActivityState.isDigest(pairingRef) {
+            components.queryItems?.append(URLQueryItem(name: "pairingRef", value: pairingRef))
+        } else if let pairingKey, OrbisLiveActivityState.isDigest(pairingKey) {
+            components.queryItems?.append(URLQueryItem(name: "pairingKey", value: pairingKey))
+        } else { return nil }
+        if let focusKey, OrbisLiveActivityState.isDigest(focusKey) { components.queryItems?.append(URLQueryItem(name: "focusKey", value: focusKey)) }
         return components.url
     }
 }
+
+#if os(iOS) && canImport(ActivityKit)
+import ActivityKit
+extension OrbisLiveActivityAttributes: ActivityAttributes {
+    typealias ContentState = OrbisLiveActivityState
+}
 #endif
+
+/// Static copy and data for the system's compact, minimal and two-row views.
+/// No approximate elapsed counters, placeholder task titles or faux actions.
+struct OrbisLiveActivityPresentation {
+    enum Status { case running, attention, stale, completed, failed, cancelled, ended }
+    let state: OrbisLiveActivityState
+    let language: String
+    let title: String?
+    let source: NotificationSource
+    let badge: String?
+    let status: Status
+
+    init(state: OrbisLiveActivityState, isStale: Bool, language: String, title: String? = nil,
+         hostId: String = "", source: NotificationSource? = nil, badge: String? = nil) {
+        self.state = state; self.language = language; self.badge = badge
+        self.source = source ?? .fallback(hostId: hostId, language: language)
+        self.title = state.isValid ? title : nil
+        if !state.isValid || state.phase == "stale" || isStale && state.phase != "ended" { status = .stale }
+        else if state.phase == "ended" {
+            switch state.outcome {
+            case "completed": status = .completed
+            case "failed": status = .failed
+            case "cancelled": status = .cancelled
+            default: status = .ended
+            }
+        } else { status = state.phase == "attention" ? .attention : .running }
+    }
+
+    private var chinese: Bool { language.hasPrefix("zh") }
+    var isAggregate: Bool {
+        state.sessionCount.map { $0 > 1 } ?? (state.runningCount > 1 || state.runningCount > 0 && state.pendingCount > 0)
+    }
+    var agent: AgentIdentity? { state.isValid ? AgentIdentity(kind: state.agentKind) : nil }
+    var compactAgent: AgentIdentity? { !isAggregate && (status == .running || status == .attention) ? agent : nil }
+    var details: String? { title ?? agent?.title ?? startedText }
+
+    var startedAt: Date? {
+        guard status == .running, state.runningCount == 1, let startedAt = state.startedAt else { return nil }
+        return Date(timeIntervalSince1970: Double(startedAt) / 1000)
+    }
+    private var locale: Locale { Locale(identifier: language) }
+    var clockText: String? { startedAt?.formatted(.dateTime.hour().minute().locale(locale)) }
+    var startedText: String? { clockText.map { chinese ? "\($0) 开始" : "Started \($0)" } }
+
+    var headline: String {
+        switch status {
+        case .running:
+            return state.runningCount == 1 ? (chinese ? "运行中" : "Running") :
+                (chinese ? "\(state.runningCount) 个运行中" : "\(state.runningCount) running")
+        case .attention:
+            let count = state.pendingCount
+            let pending = chinese ? "\(count) 项待处理" : "\(count) pending"
+            let running = chinese ? "\(state.runningCount) 个运行中" : "\(state.runningCount) running"
+            return state.runningCount == 0 ? pending : pending + " · " + running
+        case .stale: return chinese ? "待更新" : "Not current"
+        case .completed: return chinese ? "已完成" : "Completed"
+        case .failed: return chinese ? "执行失败" : "Failed"
+        case .cancelled: return chinese ? "已取消" : "Cancelled"
+        case .ended: return chinese ? "已结束" : "Ended"
+        }
+    }
+
+    var statusSymbol: String {
+        switch status {
+        case .running: return "circle.fill"
+        case .attention: return "exclamationmark.circle.fill"
+        case .stale: return "clock.badge.questionmark"
+        case .completed: return "checkmark.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        case .cancelled: return "slash.circle"
+        case .ended: return "minus.circle"
+        }
+    }
+
+    private static let compactClock = Date.FormatStyle().hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).locale(Locale(identifier: "en_GB"))
+
+    var compactText: String? {
+        let count = status == .attention ? state.pendingCount : state.runningCount
+        if status == .attention || status == .running && count > 1 { return count > 99 ? "99+" : String(count) }
+        return startedAt?.formatted(Self.compactClock)
+    }
+    var sourceAccessibilityLabel: String { [source.name, headline].joined(separator: ", ") }
+    var compactStatusAccessibilityLabel: String { [headline, startedText].compactMap { $0 }.joined(separator: ", ") }
+}

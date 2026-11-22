@@ -540,6 +540,10 @@ final class HostConnection: ObservableObject {
     var homeRuntimesUpdating: Bool {
         connection != .secured || !homeDirectoryReceived || !runtimes.allSatisfy(homeFactsComplete)
     }
+    func liveActivityInventoryComplete(_ eligibleRuntimes: [RuntimeSummary]) -> Bool {
+        connection == .secured && homeDirectoryReceived && eligibleRuntimes.allSatisfy(homeFactsComplete)
+    }
+
     func replyNotificationFacts() -> ReplyNotificationCleanup.HostFacts? {
         guard connection == .secured, homeDirectoryReceived, filteredReady == nil, notificationDirectoryUpdates == 0,
               let directoryConfirmedAt = notificationDirectoryConfirmedAt else { return nil }

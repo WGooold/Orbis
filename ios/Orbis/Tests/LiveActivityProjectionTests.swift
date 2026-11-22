@@ -9,68 +9,68 @@ final class LiveActivityProjectionTests: XCTestCase {
             startedAt: startedAt, backgroundAgents: backgroundAgents, title: "Private title")
     }
 
-    // LA-I02: an empty disconnected or partial directory does not mean tasks
-    // completed. Only an authoritative complete idle directory can end an activity,
-    // and that fallback cannot claim a successful outcome.
-    func testIncompleteOrDisconnectedFactsNeverInventCompletion() throws {
-        let active = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: [fact()], complete: true, previous: nil, now: 5_000))
-        for facts in [[], [fact(phase: "idle")]] as [[LiveActivityRuntimeFact]] {
-            let stale = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: facts, complete: false, previous: active, now: 8_000))
-            XCTAssertEqual(stale.phase, "stale")
-            XCTAssertEqual(stale.runningCount, active.runningCount)
-            XCTAssertNil(stale.outcome)
+    // LIVE-ACTIVITY-02: the released Relay fallback can seed a live state
+    // only. Unknown, disconnected and idle inputs cannot write stale or end.
+    func testLegacySeedNeverMakesAnEndOrStaleState() {
+        for (facts, complete) in [([fact()], false), ([fact(phase: "unknown")], true),
+                                  ([fact(phase: "idle")], true), ([], true)] {
+            XCTAssertNil(LiveActivityProjection.seed(hostId: "host", facts: facts, complete: complete, now: 5_000))
         }
-        let unknown = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: [fact(phase: "unknown")], complete: true, previous: active, now: 8_000))
-        XCTAssertEqual(unknown.phase, "stale")
-        let ended = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: [], complete: true, previous: active, now: 9_000))
-        XCTAssertEqual(ended.phase, "ended")
-        XCTAssertEqual(ended.outcome, "unknown")
-        XCTAssertNil(LiveActivityProjection.make(hostId: "host", facts: [], complete: false, previous: ended, now: 10_000))
-        XCTAssertNil(LiveActivityProjection.make(hostId: "host", facts: [], complete: false, previous: nil, now: 10_000))
     }
 
-    // LA-I03: pending requests take focus priority and waiting sessions are not
-    // double counted among the sessions still doing autonomous work. Preserve
-    // an existing pending focus, matching the Host's sticky focus selection.
+    // LIVE-ACTIVITY-02: Kimi/Pi, Hermes/OpenCode and Claude/Hermes are the
+    // original confirmed mixed-session reproductions. Unsupported phases and
+    // pending counts from an excluded Agent must not block or skew the seed.
+    func testUnsupportedAgentsCannotWinFocusOrContributeToCounts() throws {
+        for (excluded, supported) in [("kimiCode", "pi"), ("hermes", "opencode"), ("hermes", "claude"), ("openclaw", "pi")] {
+            let focus = LiveActivityProjection.focusKey(hostId: "host", agentKind: supported, sessionId: "supported")
+            for phase in ["running", "waiting_local_interaction", "unknown"] {
+                let active = try XCTUnwrap(LiveActivityProjection.seed(hostId: "host", facts: [
+                    fact("excluded", kind: excluded, phase: phase, pending: phase == "waiting_local_interaction" ? 2 : 0),
+                    fact("supported", kind: supported)
+                ], complete: true, now: 5_000))
+                XCTAssertTrue(active.isValid)
+                XCTAssertEqual(active.phase, "running")
+                XCTAssertEqual(active.runningCount, 1)
+                XCTAssertEqual(active.agentKind, supported)
+                XCTAssertEqual(active.focusKey, focus)
+            }
+            XCTAssertNil(LiveActivityProjection.seed(hostId: "host", facts: [fact(kind: excluded)], complete: true, now: 5_000))
+        }
+    }
+
+    // Waiting sessions are not counted twice; requests and sessions are
+    // separate counts even when all requests belong to one focus.
     func testPendingFocusHasPriorityAndWaitingDoesNotCountAsRunning() throws {
         let facts = [fact("running", startedAt: 500),
                      fact("waiting", phase: "waiting_local_interaction", pending: 2),
                      fact("pending-running", pending: 1, startedAt: 2_000)]
-        let previous = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: [facts[1]], complete: true, previous: nil, now: 4_000))
-        let value = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: facts, complete: true, previous: previous, now: 5_000))
+        let value = try XCTUnwrap(LiveActivityProjection.seed(hostId: "host", facts: facts, complete: true, now: 5_000))
         XCTAssertEqual(value.phase, "attention")
         XCTAssertEqual(value.runningCount, 1)
         XCTAssertEqual(value.pendingCount, 3)
-        XCTAssertEqual(value.focusKey, LiveActivityProjection.focusKey(hostId: "host", agentKind: "codex", sessionId: "waiting"))
-        let cold = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: facts, complete: true, previous: nil, now: 5_000))
-        XCTAssertEqual(cold.focusKey, LiveActivityProjection.focusKey(hostId: "host", agentKind: "codex", sessionId: "pending-running"))
-        let phaseOnly = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: [fact(phase: "waiting_local_interaction")], complete: true, previous: nil, now: 5_000))
+        XCTAssertEqual(value.sessionCount, 3)
+        XCTAssertEqual(value.focusKey, LiveActivityProjection.focusKey(hostId: "host", agentKind: "codex", sessionId: "pending-running"))
+        let phaseOnly = try XCTUnwrap(LiveActivityProjection.seed(hostId: "host", facts: [fact(phase: "waiting_local_interaction")], complete: true, now: 5_000))
         XCTAssertEqual(phaseOnly.pendingCount, 1)
         XCTAssertEqual(phaseOnly.runningCount, 0)
     }
 
-    // LA-I08: an ahead-of-phone Host clock removes an unavailable elapsed value,
-    // instead of hiding a valid running activity or fabricating a start time.
-    func testFutureHostClockKeepsRunningWithoutInventingElapsedTime() throws {
-        let state = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: [fact(startedAt: 20_000)],
-            complete: true, previous: nil, now: 10_000))
+    func testFutureHostClockKeepsRunningWithoutInventingStartTime() throws {
+        let state = try XCTUnwrap(LiveActivityProjection.seed(hostId: "host", facts: [fact(startedAt: 20_000)],
+            complete: true, now: 10_000))
         XCTAssertTrue(state.isValid)
         XCTAssertEqual(state.phase, "running")
         XCTAssertNil(state.startedAt)
     }
 
-    // LA-I04: idle parents with active child agents remain work in progress.
-    // Idle command-only facts deliberately carry backgroundAgents=false and do
-    // not keep the Live Activity running after an otherwise idle inventory.
     func testBackgroundAgentWorkKeepsActivityButCommandOnlyDoesNot() throws {
-        let withAgent = try XCTUnwrap(LiveActivityProjection.make(hostId: "host",
-            facts: [fact(kind: "claude", phase: "idle", backgroundAgents: true)], complete: true, previous: nil, now: 5_000))
+        let withAgent = try XCTUnwrap(LiveActivityProjection.seed(hostId: "host",
+            facts: [fact(kind: "claude", phase: "idle", backgroundAgents: true)], complete: true, now: 5_000))
         XCTAssertEqual(withAgent.phase, "running")
         XCTAssertEqual(withAgent.runningCount, 1)
-        let commandOnly = try XCTUnwrap(LiveActivityProjection.make(hostId: "host",
-            facts: [fact(kind: "claude", phase: "idle", backgroundAgents: false)], complete: true, previous: withAgent, now: 6_000))
-        XCTAssertEqual(commandOnly.phase, "ended")
-        XCTAssertEqual(commandOnly.outcome, "unknown")
+        XCTAssertNil(LiveActivityProjection.seed(hostId: "host",
+            facts: [fact(kind: "claude", phase: "idle", backgroundAgents: false)], complete: true, now: 6_000))
     }
 
     // LA-I04: classify the committed inventory through existing kind/status facts;
@@ -98,16 +98,30 @@ final class LiveActivityProjectionTests: XCTestCase {
         XCTAssertNotEqual(initial, LiveActivityProjection.focusKey(hostId: "host", agentKind: "claude", sessionId: "session"))
     }
 
-    // LA-I06: catalog ordering does not rotate focus, and the freshness timestamp
-    // is not a business state change that would trigger per-frame updates.
-    func testFocusAndSemanticEqualityAreStableAcrossDirectoryOrderAndRenewal() throws {
+    // The legacy seed is independent of incoming directory order.
+    func testLegacySeedFocusDoesNotRotateWithDirectoryOrder() throws {
         let facts = [fact("b", startedAt: 1_000), fact("a", startedAt: 1_000), fact("c", startedAt: nil)]
-        let initial = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: facts, complete: true, previous: nil, now: 5_000))
-        let later = try XCTUnwrap(LiveActivityProjection.make(hostId: "host", facts: Array(facts.reversed()), complete: true, previous: initial, now: 7_000))
+        let initial = try XCTUnwrap(LiveActivityProjection.seed(hostId: "host", facts: facts, complete: true, now: 5_000))
+        let later = try XCTUnwrap(LiveActivityProjection.seed(hostId: "host", facts: Array(facts.reversed()), complete: true, now: 7_000))
         XCTAssertEqual(initial.focusKey, LiveActivityProjection.focusKey(hostId: "host", agentKind: "codex", sessionId: "a"))
-        XCTAssertTrue(LiveActivityProjection.sameMeaning(initial, later))
-        var pending = later; pending.phase = "attention"; pending.pendingCount = 1
-        XCTAssertFalse(LiveActivityProjection.sameMeaning(initial, pending))
+        XCTAssertEqual(later.focusKey, initial.focusKey)
+    }
+
+    // Checked against the Relay's Node digest fixture, and changing the
+    // device or credential invalidates old push-start navigation.
+    func testRemotePairingReferenceMatchesRelayAndCannotMixLinkFormats() throws {
+        func reference(_ device: String, _ credential: String) -> String {
+            OrbisLiveActivityAttributes.remotePairingRef(hostId: "host", deviceId: device, credential: credential)
+        }
+        let ref = reference("phone", "phone-secret")
+        XCTAssertEqual(ref, "7938e25e8e6d1181e60968a0172e5dff1415163664f4d96c8826a084c84788a6")
+        XCTAssertNotEqual(reference("another", "phone-secret"), ref)
+        XCTAssertNotEqual(reference("phone", "another-secret"), ref)
+        let attrs = OrbisLiveActivityAttributes(hostId: "host", pairingRef: ref)
+        let url = try XCTUnwrap(attrs.url(focusKey: nil))
+        XCTAssertEqual(LiveActivityOpenTarget(url: url)?.pairingRef, ref)
+        XCTAssertNil(LiveActivityOpenTarget(url: try XCTUnwrap(URL(string: url.absoluteString + "&pairingKey=" + ref))))
+        XCTAssertNil(LiveActivityOpenTarget(url: try XCTUnwrap(URL(string: url.absoluteString + "&focusKey"))))
     }
 
     // LA-I07: activity URLs carry only navigation identity. Duplicate fields or
