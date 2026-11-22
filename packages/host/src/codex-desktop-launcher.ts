@@ -321,7 +321,7 @@ async function launchWindowsCodexDesktop(wrapper: CodexDesktopWrapper | undefine
   }
   signal?.throwIfAborted();
   const openNatively = async (reason: unknown): Promise<void> => {
-    await launchCodexDesktopApp(process.env, signal);
+    await launchCodexDesktopApp(nativeDesktopEnvironment(process.env), signal);
     try { recordDesktopUnattached(endpointPath, unattachedReason(reason), reason); } catch { /* Diagnostic only. */ }
   };
   if (wrapper === undefined) {

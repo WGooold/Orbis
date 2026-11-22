@@ -118,6 +118,8 @@ describe("staged Codex wrapper runtime on Windows", () => {
     activation.ensureEntry.mockResolvedValue({ state: "foreign", detail: "CODEX_CLI_PATH 已被其他程序占用（C:\\custom\\codex.exe）" });
     activation.launch.mockResolvedValue(undefined);
     vi.stubEnv("CODEX_CLI_PATH", "C:\\custom\\codex.exe");
+    // A Host launched from a managed Codex session can inherit this wrapper setting.
+    vi.stubEnv("ORBIS_CODEX_DESKTOP_ENDPOINT", join(root, "inherited-endpoint.json"));
     await asPlatform("win32", () => launchCodexDesktop(wrapper, endpoint, { root }));
     expect(activation.launch).toHaveBeenCalledOnce();
     expect(activation.launch.mock.calls[0]?.[0].CODEX_CLI_PATH).toBe("C:\\custom\\codex.exe");
