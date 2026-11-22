@@ -195,6 +195,8 @@ Host / backend 将 App id 声明为 clientMessageId 或等价持久映射，客�
 
 操作期限与因果结算由账本统一处理，当前异步结果核对期限为 15 秒。
 
+SESSION-CLOSE-01：关闭前按当前活动、待处理交互和未确认发送决定是否二次确认。确认绑定当前 Host、连接、会话及可用的原生代次；切换目标或重连需要重新确认。Codex Desktop 的关闭仅退出手机视图。协商 `runtime.close.v1` 后使用 `session.close`，旧 Host 沿用 `/quit`。实现见两端 `RuntimeClosePlan` 和 Host `#dispatchRuntimeInput` 的关闭校验；回归见 `MultiHostTests`、`claude-mods-bridge.test.ts`。未部署，设备验收待用户验证。
+
 依赖关系：`send` 可以依赖 `config`、`launch` 或附件上传（§6.2 的 `waiting`）；前置被拒绝时，
 依赖它的 `send` 一起转 `rejected`。
 

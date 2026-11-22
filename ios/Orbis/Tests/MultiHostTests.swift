@@ -382,6 +382,8 @@ struct MultiHostTests {
         #expect(fixture.store.relayTransportKind == .ws)
     }
 
+    // SESSION-CLOSE-01: a background Host's running session must be confirmed on that Host;
+    // the legacy wire shape, the original batch, and the active chat must all remain intact.
     @Test func closingSelectedRuntimesUsesTheirHostWithoutChangingTheActiveChat() async throws {
         let fixture = try MultiHostFixture(); defer { fixture.cleanup() }
         await fixture.ready()
@@ -397,7 +399,14 @@ struct MultiHostTests {
         }
         fixture.store.selectRuntime(hostId: "host-2", runtimeId: "shared-runtime")
         let ids: Set<String> = ["shared-runtime", "other-runtime"]
-        #expect(fixture.store.closeRuntimes(hostId: "host-1", runtimeIds: ids) == ids)
+        let host = try #require(fixture.store.connection(for: "host-1"))
+        let plan = host.closePlan(ids)
+        #expect(plan.requiresConfirmation)
+        #expect(Set(plan.entries.filter { $0.impact.needsConfirmation }.map(\.target.runtimeId)) == ["other-runtime"])
+        #expect(fixture.store.closeRuntimes(hostId: "host-2", runtimeIds: ids, plan: plan, confirmed: true).isEmpty)
+        #expect(fixture.store.closeRuntimes(hostId: "host-1", runtimeIds: ["other-runtime"], plan: plan).isEmpty)
+        #expect(first.sent.allSatisfy { ($0["command"] as? [String: Any])?["name"] as? String != "quit" })
+        #expect(fixture.store.closeRuntimes(hostId: "host-1", runtimeIds: ids, plan: plan, confirmed: true) == ids)
         let requests = first.sent.filter { ($0["command"] as? [String: Any])?["name"] as? String == "quit" }
         #expect(Set(requests.compactMap { $0["runtimeId"] as? String }) == ids)
         #expect(requests.allSatisfy { ($0["command"] as? [String: Any])?["type"] as? String == "slash.execute" })
