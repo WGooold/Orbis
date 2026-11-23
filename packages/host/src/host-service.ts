@@ -27,6 +27,7 @@ import { HermesHostConnection, type HermesHostOptions } from "./hermes-host-conn
 import type { HermesAgentBackend } from "./hermes-agent-backend.js";
 import { AgentDisableConfirmationRequired, AgentLifecycleRegistry, type AgentEnablementController, type AgentEnablementSnapshot, type AgentLifecycleLease, type AgentLifecycleRegistration } from "./agent-enablement.js";
 import { LiveActivityPublisher } from "./live-activity.js";
+import { sharedViewBackend } from "./shared-session-view.js";
 
 import {
   E2eError,
@@ -54,6 +55,8 @@ import {
   DEVICE_FEATURE_CLAUDE_SEND_NOW,
   RUNTIME_CLOSE_FEATURE,
   RUNTIME_CLOSE_CAPABILITY,
+  RUNTIME_VIEW_CLOSE_FEATURE,
+  RUNTIME_VIEW_CLOSE_CAPABILITY,
   agentTasksAllowQuit,
   type AgentExecutionState,
   type AgentDeliveryItem,
@@ -433,6 +436,8 @@ export class HostService {
   #kimi: KimiRuntime | undefined;
   #hermesMutation: Promise<void> = Promise.resolve();
   readonly #hermesLaunches = new Map<string, Promise<void>>();
+  /** Keep the per-backend announcement ledger aligned when a viewer detaches. */
+  readonly #hermesAnnouncements = new Map<HermesAgentBackend, Set<string>>();
   /** DSH Web and Desktop each own their connection, start and recovery state (ADR-0076 DSH-DESKTOP-03). */
   readonly #dsh: Record<DshKind, DshSlot> = { dsh: { startingExistingOnly: false }, dshDesktop: { startingExistingOnly: false } };
   /** Features each device declared on its current handshake (ADR-0064); absent = released App behaviour. */
@@ -1151,7 +1156,16 @@ export class HostService {
   }
 
   #makeHermesConnection(options: HermesHostOptions, current = (): boolean => true): HermesHostConnection {
-    return new HermesHostConnection(options, this.hostId, (backend, retired) => {
+    const scopedOptions: HermesHostOptions = { ...options, onRuntimeOffline: (runtimeId, reason) => {
+      if (!current() || this.#providerFactsClosing) return;
+      options.onRuntimeOffline?.(runtimeId, reason);
+      const backend = this.#hermes?.backend;
+      this.#hermesAnnouncements.get(backend as HermesAgentBackend)?.delete(runtimeId);
+      this.#markRuntimeOffline(runtimeId, reason);
+      this.#notifications.end(runtimeId);
+      this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
+    } };
+    return new HermesHostConnection(scopedOptions, this.hostId, (backend, retired) => {
       if (current()) this.#updateHermesBackend(backend, retired);
     });
   }
@@ -1160,6 +1174,7 @@ export class HostService {
   #updateHermesBackend(backend?: HermesAgentBackend, retired?: HermesAgentBackend): void {
     if (this.#providerFactsClosing) return;
     if (retired) {
+      this.#hermesAnnouncements.delete(retired);
       this.#backends = this.#backends.filter(item => item !== retired);
       for (const { runtimeId } of retired.directoryEntries()) {
         this.#markRuntimeOffline(runtimeId, "hermes_gateway_disconnected");
@@ -1170,6 +1185,7 @@ export class HostService {
     if (backend && !this.#backends.includes(backend)) {
       this.#backends.push(backend);
       const announced = new Set<string>();
+      this.#hermesAnnouncements.set(backend, announced);
       backend.setEventSink((event, runtimeId) => {
         if (this.#providerFactsClosing || this.#hermes?.backend !== backend) return;
         if (event.type === "runtime.metadata" && !announced.has(runtimeId)) {
@@ -1717,11 +1733,10 @@ export class HostService {
   }
 
   #projectHostDomain(deviceId: string, scope: StateScope, domain: string, value: unknown): unknown {
-    if (scope.kind === "agent" && domain === "capabilities" && value && typeof value === "object"
-        && Object.hasOwn(value, RUNTIME_CLOSE_CAPABILITY) && !this.#deviceFeatures.get(deviceId)?.has(RUNTIME_CLOSE_FEATURE)) {
-      const legacy = { ...value as Record<string, unknown> };
-      delete legacy[RUNTIME_CLOSE_CAPABILITY];
-      return legacy;
+    if (scope.kind === "agent" && domain === "capabilities" && value && typeof value === "object") {
+      const entries = Object.entries(value);
+      const visible = entries.filter(([name]) => this.#allowsCloseCapability(deviceId, name));
+      if (entries.length !== visible.length) return Object.fromEntries(visible);
     }
     if (scope.kind === "agent" && domain === "identity") {
       const identity = !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ? omitRuntimeSendNow(value) : value;
@@ -1987,6 +2002,7 @@ export class HostService {
         DEVICE_FEATURE_COMPACT_BOOTSTRAP,
         DEVICE_FEATURE_CLAUDE_SEND_NOW,
         RUNTIME_CLOSE_FEATURE,
+        RUNTIME_VIEW_CLOSE_FEATURE,
         ...(this.#kimi || this.#options.createKimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : []),
         ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : []),
       ],
@@ -2744,7 +2760,8 @@ export class HostService {
       const before = this.#agentView(deviceId);
       const previous = this.#deviceFeatures.get(deviceId);
       const hadRender = previous?.has(DEVICE_FEATURE_MESSAGE_RENDER) ?? false;
-      const closeChanged = !!previous?.has(RUNTIME_CLOSE_FEATURE) !== message.features.includes(RUNTIME_CLOSE_FEATURE);
+      const closeChanged = [RUNTIME_CLOSE_FEATURE, RUNTIME_VIEW_CLOSE_FEATURE].some(feature =>
+        !!previous?.has(feature) !== message.features.includes(feature));
       const codexViewChanged = this.#unifiedCodex(deviceId) !== message.features.includes(CODEX_UNIFIED_HISTORY);
       const managementChanged = !!this.#managedPolicy && (!!previous?.has(AGENT_ENABLEMENT_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_FEATURE) ||
         !!previous?.has(AGENT_ENABLEMENT_REVIEW_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_REVIEW_FEATURE) ||
@@ -3241,6 +3258,7 @@ export class HostService {
     this.refreshHostFacts();
     try {
       let closeKind: AgentKind | undefined;
+      let viewOnly = false;
       if (command.type === "session.close") {
         const reject = (error: string) => this.#publishRuntimeEvent(runtimeId, { type: "command.result", commandId, ok: false, status: "failure", error });
         if (!this.#deviceFeatures.get(deviceId)?.has(RUNTIME_CLOSE_FEATURE)) { reject("unsupported_command"); return; }
@@ -3251,9 +3269,12 @@ export class HostService {
           reject("会话已变化，请重新确认关闭。"); return;
         }
         closeKind = scope.key.agentKind;
+        viewOnly = sharedViewBackend(closeKind);
+        if (viewOnly && !this.#deviceFeatures.get(deviceId)?.has(RUNTIME_VIEW_CLOSE_FEATURE)) { reject("unsupported_command"); return; }
         const menu = this.#agentStateRegistry.read<Record<string, AgentCapabilityItem>>(scope, "capabilities");
-        const capability = menu?.value?.[closeKind === "claude" ? RUNTIME_CLOSE_CAPABILITY : "quit"];
+        const capability = menu?.value?.[viewOnly ? RUNTIME_VIEW_CLOSE_CAPABILITY : closeKind === "claude" ? RUNTIME_CLOSE_CAPABILITY : "quit"];
         if (menu?.availability !== "ready" || capability?.source !== "builtin" || capability.argumentRequired === true
+            || viewOnly && !command.closeGeneration
             || capability.closeGeneration !== command.closeGeneration) {
           reject("会话已变化，请重新确认关闭。"); return;
         }
@@ -3274,8 +3295,8 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady() || !backend.ownsRuntime(runtimeId)) continue;
         if (closeKind !== undefined && closeKind !== backend.kind) continue;
-        // Old Pi/runtime bridges see only their existing command shape. Claude owns its generation-aware process close.
-        const result = backend.dispatchCommand(runtimeId, commandId, command.type === "session.close" && closeKind !== "claude"
+        // Only legacy backends use a slash command. Shared viewers validate the exact attachment again.
+        const result = backend.dispatchCommand(runtimeId, commandId, command.type === "session.close" && closeKind !== "claude" && !viewOnly
           ? { type: "slash.execute", name: "quit", args: "" } : command);
         if (result === "handled") return;
         const error = result === "offline" ? "runtime_offline" : "unsupported_command";
@@ -4081,10 +4102,9 @@ export class HostService {
   #encodeForDevice(deviceId: string, message: object): Buffer {
     const outgoing = message as Partial<Extract<RelayToDeviceMessage, { type: "runtime.event" }>>;
     const { runtimeId } = outgoing;
-    if (outgoing.type === "runtime.event" && outgoing.event?.type === "runtime.capabilities"
-        && !this.#deviceFeatures.get(deviceId)?.has(RUNTIME_CLOSE_FEATURE)) {
+    if (outgoing.type === "runtime.event" && outgoing.event?.type === "runtime.capabilities") {
       const { event } = outgoing;
-      message = { ...message, event: { ...event, capabilities: { commands: event.capabilities.commands.filter(command => command.name !== RUNTIME_CLOSE_CAPABILITY) } } };
+      message = { ...message, event: { ...event, capabilities: { commands: event.capabilities.commands.filter(command => this.#allowsCloseCapability(deviceId, command.name)) } } };
     }
     const scope = runtimeId === undefined ? undefined : this.#agentFacts.scopeOf(runtimeId);
     const codex = runtimeId !== undefined && this.#isCodexRuntime(runtimeId);
@@ -4099,6 +4119,13 @@ export class HostService {
     return this.#encodeMeasured(this.#compactStateSubscriptions.supportsSharedContent(deviceId)
       ? (rich ? this.#richSessionWireContent : this.#sessionWireContent).project(projectCompactDeviceMessage(rendered), rich ? deviceId : undefined)
       : rendered, { claudeSendNow });
+  }
+
+  #allowsCloseCapability(deviceId: string, name: string): boolean {
+    const features = this.#deviceFeatures.get(deviceId);
+    if (name === RUNTIME_VIEW_CLOSE_CAPABILITY) return features?.has(RUNTIME_CLOSE_FEATURE) === true && features.has(RUNTIME_VIEW_CLOSE_FEATURE);
+    if (name === RUNTIME_CLOSE_CAPABILITY) return features?.has(RUNTIME_CLOSE_FEATURE) === true;
+    return true;
   }
 
   readTransportFields(): ReturnType<FieldTrafficMeter["snapshot"]> { return this.#fieldTraffic.snapshot(); }

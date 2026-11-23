@@ -27,6 +27,7 @@ import { HermesInteractions } from "./hermes-interactions.js";
 import { hermesModelCatalog, hermesModelValue, requireHermesModel, type HermesModelSelection } from "./hermes-session-configuration.js";
 import { hermesToolIdentity, hermesToolSummary } from "./hermes-tool-projection.js";
 import { SessionConfigurationError } from "./session-configuration-store.js";
+import { exitViewCapability, matchesViewExit } from "./shared-session-view.js";
 
 type HermesGatewayClient = Pick<HermesGatewayRpcClient, "request" | "closed" | "readyState">;
 const HERMES_KIND = "hermes" as const;
@@ -77,6 +78,8 @@ type HermesSession = {
   canSwitchModel: boolean;
   running: boolean;
   executionGeneration: number;
+  viewGeneration: string;
+  closing?: Promise<void>;
   lastSequence: number;
   replayEpoch: string;
   turn?: HermesLiveTurn;
@@ -92,6 +95,7 @@ export type HermesGatewayBackendOptions = {
   modelFences?: Map<string, UnconfirmedHermesModel>;
   onEvent?: (runtimeId: string, event: RuntimeEvent) => void;
   onCommandResult?: (runtimeId: string, event: Extract<RuntimeEvent, { type: "command.result" }>) => void;
+  onRuntimeOffline?: (runtimeId: string, reason: string) => void;
   log?: (message: string) => void;
 };
 
@@ -113,6 +117,8 @@ export class HermesAgentBackend implements AgentBackend {
   readonly #byRuntime = new Map<string, HermesSession>();
   readonly #byGatewayId = new Map<string, HermesSession>();
   readonly #bySessionId = new Map<string, HermesSession>();
+  readonly #suppressed = new Map<string, { sessionId: string; gatewaySessionId: string; executionGeneration: number; running: boolean }>();
+  readonly #autoAttaching = new Set<string>();
   #sink: (event: RuntimeEvent, runtimeId: string) => void = () => undefined;
   #catalogComplete = true;
 
@@ -138,12 +144,18 @@ export class HermesAgentBackend implements AgentBackend {
     this.#assertReady();
     if (result.scope !== "live" || !Array.isArray(result.sessions) || result.sessions.length > 200)
       throw new Error("Hermes live session list unavailable");
-    return result.sessions.flatMap(value => {
+    const rows = result.sessions.flatMap(value => {
       const row = asRecord(value);
       const sessionId = hermesToolIdentity(row.session_id);
       const name = boundedString(row.title, 256);
-      return sessionId && row.running === true ? [{ sessionId, ...(name ? { name } : {}) }] : [];
+      if (!sessionId || row.running !== true) return [];
+      const suppressed = [...this.#suppressed.values()].find(item => item.sessionId === sessionId || item.gatewaySessionId === sessionId);
+      // A live-list row only carries a boolean. It can prove new work after an idle
+      // viewer detach, but cannot prove that an already-running turn changed.
+      if (suppressed?.running === false) void this.#autoResume(suppressed);
+      return [{ sessionId, ...(name ? { name } : {}) }];
     });
+    return rows;
   }
 
   async currentProvider(): Promise<string | undefined> {
@@ -298,6 +310,14 @@ export class HermesAgentBackend implements AgentBackend {
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
     const session = this.#byRuntime.get(runtimeId);
     if (!session || !this.isReady()) return "offline";
+    if (command.type === "session.close") {
+      if (session.closing || !matchesViewExit(command, session.sessionId, session.viewGeneration)) return "unsupported";
+      const pending = this.#closeView(session, commandId);
+      session.closing = pending;
+      void pending.finally(() => { if (session.closing === pending) delete session.closing; });
+      return "handled";
+    }
+    if (session.closing) return "offline";
     if (command.type === "slash.execute" && (command.name !== "model" || !session.canSwitchModel)) return "unsupported";
     if (command.type === "user_message" && !this.#hasCapability("durable-admission-v1")) return "unsupported";
     if (command.type === "user_message" && ((command.attachments?.length ?? 0) > 0 || command.delivery === "steer")) return "unsupported";
@@ -319,7 +339,14 @@ export class HermesAgentBackend implements AgentBackend {
   handleGatewayEvent(event: HermesGatewayEvent): Promise<void> {
     const gatewaySessionId = typeof event.session_id === "string" ? event.session_id : undefined;
     const session = gatewaySessionId ? this.#byGatewayId.get(gatewaySessionId) : undefined;
-    if (!session) return Promise.resolve();
+    if (!session) {
+      const suppressed = gatewaySessionId ? [...this.#suppressed.values()].find(item => item.gatewaySessionId === gatewaySessionId) : undefined;
+      if (suppressed && event.type === "message.start") {
+        const generation = finiteInteger(event.execution_generation);
+        if (generation !== undefined && generation > suppressed.executionGeneration) void this.#autoResume(suppressed);
+      }
+      return Promise.resolve();
+    }
     const work = session.eventChain.then(async () => {
       if (!this.isReady() || session.gatewaySessionId !== gatewaySessionId) return;
       await this.#acceptEvent(session, event);
@@ -523,7 +550,7 @@ export class HermesAgentBackend implements AgentBackend {
   async #announceModelOptions(session: HermesSession): Promise<void> {
     if (!session.canSwitchModel || session.modelOptionsLoading || session.modelUnconfirmed) return;
     if (session.modelOptions && Date.now() - session.modelOptions.at < 30_000) {
-      this.#emit({ type: "runtime.capabilities", capabilities: { commands: session.modelOptions.commands } }, session.runtimeId);
+      this.#emit({ type: "runtime.capabilities", capabilities: { commands: this.#viewCommands(session, session.modelOptions.commands) } }, session.runtimeId);
       return;
     }
     session.modelOptionsLoading = true;
@@ -537,10 +564,10 @@ export class HermesAgentBackend implements AgentBackend {
       const commands: RuntimeCapabilities["commands"] = models.length ? [{ name: "model", source: "builtin",
         argument: { kind: "select", required: true, options: models.map(({ value, label }) => ({ value, label })) } }] : [];
       session.modelOptions = { at: Date.now(), commands };
-      this.#emit({ type: "runtime.capabilities", capabilities: { commands } }, session.runtimeId);
+      this.#emit({ type: "runtime.capabilities", capabilities: { commands: this.#viewCommands(session, commands) } }, session.runtimeId);
     } catch {
       delete session.modelOptions;
-      this.#emit({ type: "runtime.capabilities", capabilities: { commands: [] } }, session.runtimeId);
+      this.#emit({ type: "runtime.capabilities", capabilities: { commands: this.#viewCommands(session, []) } }, session.runtimeId);
     } finally { delete session.modelOptionsLoading; }
   }
 
@@ -606,7 +633,7 @@ export class HermesAgentBackend implements AgentBackend {
         this.#options.modelFences?.delete(session.sessionId);
         if (error.code === -32601) {
           session.canSwitchModel = false;
-          this.#emit({ type: "runtime.capabilities", capabilities: { commands: [] } }, session.runtimeId);
+          this.#emit({ type: "runtime.capabilities", capabilities: { commands: this.#viewCommands(session, []) } }, session.runtimeId);
         }
         return "failure";
       }
@@ -614,7 +641,7 @@ export class HermesAgentBackend implements AgentBackend {
     session.modelUnconfirmed = fence;
     delete session.modelOptions;
     this.#publishMetadata(session);
-    this.#emit({ type: "runtime.capabilities", capabilities: { commands: [] } }, session.runtimeId);
+    this.#emit({ type: "runtime.capabilities", capabilities: { commands: this.#viewCommands(session, []) } }, session.runtimeId);
     return "unconfirmed";
   }
 
@@ -951,6 +978,7 @@ export class HermesAgentBackend implements AgentBackend {
       ...(boundedString(info.model, 256) ? { model: boundedString(info.model, 256) } : {}),
       running: snapshot.running === true,
       executionGeneration: finiteInteger(snapshot.execution_generation) ?? 0,
+      viewGeneration: randomUUID(),
       lastSequence: finiteInteger(snapshot.last_sequence) ?? 0,
       replayEpoch: firstString(snapshot.replay_epoch) ?? "",
       eventChain: Promise.resolve(),
@@ -965,9 +993,11 @@ export class HermesAgentBackend implements AgentBackend {
     this.#bySessionId.set(sessionId, session);
     if (fallbackSessionId) this.#bySessionId.set(fallbackSessionId, session);
     if (gatewaySessionId !== sessionId) this.#bySessionId.set(gatewaySessionId, session);
+    this.#suppressed.delete(sessionId);
     this.#applyInfo(session, info);
     this.#recoverModelFence(session, snapshot, info);
     this.#publishMetadata(session);
+    this.#emit({ type: "runtime.capabilities", capabilities: { commands: this.#viewCommands(session, []) } }, session.runtimeId);
     session.interactions.adopt(snapshot.prompts, session.running ? session.executionGeneration : 0);
     session.source.flushPending();
     // Catch notifications that arrived after the snapshot's native sequence but before map registration.
@@ -981,6 +1011,54 @@ export class HermesAgentBackend implements AgentBackend {
       });
     }
     return session;
+  }
+
+  async #autoResume(suppressed: { sessionId: string; gatewaySessionId: string; executionGeneration: number; running: boolean }): Promise<void> {
+    if (this.#autoAttaching.has(suppressed.sessionId) || this.#bySessionId.has(suppressed.sessionId) || !this.isReady()) return;
+    this.#autoAttaching.add(suppressed.sessionId);
+    try {
+      const raw = await this.#request<unknown>("session.resume", { session_id: suppressed.sessionId, source: "tui" });
+      if (!this.#suppressed.has(suppressed.sessionId)) return;
+      const snapshot = asRecord(raw);
+      const generation = finiteInteger(snapshot.execution_generation);
+      if (snapshot.running !== true || generation === undefined || generation <= suppressed.executionGeneration) return;
+      this.#attachSnapshot(raw, suppressed.sessionId);
+    } catch {
+      // A failed or stale probe is not proof that the native session is idle.
+    } finally { this.#autoAttaching.delete(suppressed.sessionId); }
+  }
+
+  async #closeView(session: HermesSession, commandId: string): Promise<void> {
+    const viewGeneration = session.viewGeneration;
+    const gatewaySessionId = session.gatewaySessionId;
+    const subscriptionId = session.subscriptionId;
+    try {
+      const result = asRecord(await this.#request<unknown>("session.detach", {
+        session_id: gatewaySessionId, subscription_id: subscriptionId,
+      }));
+      if (result.detached !== true || result.session_id !== gatewaySessionId || result.subscription_id !== subscriptionId)
+        throw new Error("Hermes Gateway did not confirm the view detach");
+    } catch (error) {
+      if (this.#byRuntime.get(session.runtimeId) === session) this.#reportCommand(session, commandId, false, isUncertainRpcFailure(error) ? "unconfirmed" : "failure", "Hermes 未确认退订");
+      return;
+    }
+    if (this.#byRuntime.get(session.runtimeId) !== session || session.viewGeneration !== viewGeneration || session.subscriptionId !== subscriptionId) {
+      this.#reportCommand(session, commandId, false, "failure", "attachment_changed");
+      return;
+    }
+    this.#suppressed.set(session.sessionId, { sessionId: session.sessionId, gatewaySessionId: session.gatewaySessionId,
+      executionGeneration: session.executionGeneration, running: session.running });
+    this.#removeSession(session);
+    this.#reportCommand(session, commandId, true, "success");
+    this.#options.onRuntimeOffline?.(session.runtimeId, "view_closed");
+  }
+
+  #removeSession(session: HermesSession): void {
+    if (this.#byRuntime.get(session.runtimeId) === session) this.#byRuntime.delete(session.runtimeId);
+    if (this.#byGatewayId.get(session.gatewaySessionId) === session) this.#byGatewayId.delete(session.gatewaySessionId);
+    for (const [key, value] of this.#bySessionId) if (value === session) this.#bySessionId.delete(key);
+    session.interactions.clear("owner_closed");
+    session.source.setAvailability(false, false);
   }
 
   async #refreshSnapshot(session: HermesSession): Promise<void> {
@@ -1017,6 +1095,7 @@ export class HermesAgentBackend implements AgentBackend {
     session.lastSequence = finiteInteger(snapshot.last_sequence) ?? 0;
     session.replayEpoch = firstString(snapshot.replay_epoch) ?? "";
     session.subscriptionId = firstString(snapshot.subscription_id) ?? session.subscriptionId;
+    if (oldSubscription !== session.subscriptionId) session.viewGeneration = randomUUID();
     if (oldGatewaySessionId !== gatewaySessionId) this.#byGatewayId.delete(oldGatewaySessionId);
     this.#byGatewayId.set(gatewaySessionId, session);
     if (oldSubscription && session.subscriptionId && oldSubscription !== session.subscriptionId) {
@@ -1024,6 +1103,7 @@ export class HermesAgentBackend implements AgentBackend {
     }
     session.interactions.adopt(snapshot.prompts ?? [], session.running ? session.executionGeneration : 0);
     this.#publishMetadata(session);
+    this.#emit({ type: "runtime.capabilities", capabilities: { commands: this.#viewCommands(session, []) } }, session.runtimeId);
     await this.#restoreActiveTools(session);
   }
 
@@ -1089,6 +1169,10 @@ export class HermesAgentBackend implements AgentBackend {
     session.interactions.invalidate();
     session.source.setAvailability(false, false);
     this.#emit({ type: "runtime.error", message: reason, recoverable: true }, session.runtimeId);
+  }
+
+  #viewCommands(session: HermesSession, commands: RuntimeCapabilities["commands"]): RuntimeCapabilities["commands"] {
+    return [exitViewCapability(session.viewGeneration), ...commands.filter(command => command.name !== exitViewCapability(session.viewGeneration).name)];
   }
 
   #reportCommand(session: HermesSession, commandId: string, ok: boolean,

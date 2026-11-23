@@ -7,6 +7,7 @@ type Slot = { backend: HermesAgentBackend; close: () => Promise<void> };
 export type HermesHostOptions = Pick<HermesGatewayBootstrapOptions, "env" | "command" | "platform"> & {
   getRemoteGateway?: () => Promise<HermesRemoteGatewayConfig | undefined>;
   connect?: typeof connectHermesGateway;
+  onRuntimeOffline?: (runtimeId: string, reason: string) => void;
 };
 
 /** A Host owns its socket, not the native Gateway or its sessions. */
@@ -91,7 +92,8 @@ export class HermesHostConnection {
       throw new Error("Hermes Gateway 已断开或 profile 已变化");
     }
     const backend = new HermesAgentBackend({ client: attachment.client, endpoint: attachment.endpoint, runtime: attachment.runtime,
-      hostId: this.hostId, modelFences: this.#modelFences });
+      hostId: this.hostId, modelFences: this.#modelFences,
+      ...(this.options.onRuntimeOffline ? { onRuntimeOffline: this.options.onRuntimeOffline } : {}) });
     this.#profileId = attachment.endpoint.profile_id;
     this.#installed = true;
     this.#slot = slot = { backend, close };

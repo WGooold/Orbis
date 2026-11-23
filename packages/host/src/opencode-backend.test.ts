@@ -424,8 +424,23 @@ describe("OpenCode catalog and Agent state", () => {
     h.client.model.list.mockResolvedValue({ data: [] });
     h.client.agent.list.mockResolvedValue({ data: [] });
     await h.backend.activate({ type: "resume", sessionId: "s1" });
-    expect(h.events).toContainEqual({ type: "runtime.capabilities", capabilities: { commands: [] } });
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "runtime.capabilities", capabilities: { commands: [expect.objectContaining({ name: "orbis-exit-view" })] } }));
     expect(h.backend.dispatchCommand("opencode:s1", "unsupported", { type: "slash.execute", name: "compact", args: "" })).toBe("unsupported");
+  });
+
+  it("detaches only the OpenCode view and allows an explicit re-open", async () => {
+    const h = await harness();
+    await h.backend.activate({ type: "resume", sessionId: "s1" });
+    const capability = [...h.events].reverse().find(event => event.type === "runtime.capabilities") as Extract<RuntimeEvent, { type: "runtime.capabilities" }>;
+    const close = capability.capabilities.commands.find(command => command.name === "orbis-exit-view");
+    expect(close?.closeGeneration).toBeTruthy();
+    await expect(h.dispatch("close", { type: "session.close", sessionId: "s1", confirmed: true, closeGeneration: close!.closeGeneration })).resolves
+      .toMatchObject({ ok: true, status: "success" });
+    expect(h.onRuntimeOffline).toHaveBeenCalledWith("opencode:s1", "view_closed");
+    expect(h.backend.directoryEntries()).toEqual([]);
+    await expect(h.backend.activate({ type: "resume", sessionId: "s1" })).resolves.toEqual({ sessionId: "s1", spawnMode: "headless" });
+    expect(h.onRuntimeOnline).toHaveBeenCalledTimes(2);
+    expect(h.backend.directoryEntries()).toHaveLength(1);
   });
 
 });

@@ -59,7 +59,7 @@ class GatewayFixture {
     const handler = this.handlers.get(method);
     if (handler) return await handler(params) as T;
     if (method === "session.events.since") return { events: [], latest_seq: params.last_sequence, last_sequence: params.last_sequence, epoch: "replay-1", replay_epoch: "replay-1", truncated: false, snapshot_required: false } as T;
-    if (method === "session.detach") return { detached: true } as T;
+    if (method === "session.detach") return { detached: true, session_id: params.session_id, subscription_id: params.subscription_id } as T;
     throw new Error(`unhandled fixture RPC: ${method}`);
   }
 }
@@ -505,9 +505,10 @@ describe("HermesAgentBackend", () => {
     await backend.activate({ type: "resume", sessionId });
     const runtimeId = backend.directoryEntries()[0]!.runtimeId;
     preview(backend, runtimeId, "model-options");
-    await vi.waitFor(() => expect(events).toContainEqual({ type: "runtime.capabilities", capabilities: { commands: [
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: "runtime.capabilities", capabilities: { commands: expect.arrayContaining([
+      expect.objectContaining({ name: "orbis-exit-view", source: "builtin" }),
       { name: "model", source: "builtin", argument: { kind: "select", required: true, options: [{ value: hermesModelValue(selection), label: "target · custom:fixture" }] } },
-    ] } }));
+    ]) } })));
     expect(switchModel(backend, runtimeId)).toBe("handled");
     const notification = backend.handleGatewayEvent(frame(1, "session.info", selection, { execution_generation: 3 }));
     await vi.waitFor(() => expect(confirm).toBeTypeOf("function"));
@@ -537,6 +538,43 @@ describe("HermesAgentBackend", () => {
     expect(gateway.calls.filter(call => call.method === "session.info")).toHaveLength(0);
     expect(backend.directoryEntries()[0]?.model?.id).toBe("gpt-fixture");
     expect(JSON.stringify(events)).not.toContain("private-confirm-token");
+  });
+
+  it("detaches the Hermes viewer without ending the native session and reopens it explicitly", async () => {
+    const gateway = new GatewayFixture();
+    gateway.handlers.set("session.resume", () => snapshot(sessionId, nativeId));
+    const offline = vi.fn();
+    const { backend, events } = makeBackend(gateway, { onRuntimeOffline: offline });
+    await backend.activate({ type: "resume", sessionId });
+    const runtimeId = backend.directoryEntries()[0]!.runtimeId;
+    const capability = [...events].reverse().find(event => event.type === "runtime.capabilities") as Extract<RuntimeEvent, { type: "runtime.capabilities" }>;
+    const close = capability.capabilities.commands.find(command => command.name === "orbis-exit-view");
+    expect(close?.closeGeneration).toBeTruthy();
+    expect(backend.dispatchCommand(runtimeId, "close", { type: "session.close", sessionId, confirmed: true, closeGeneration: close!.closeGeneration })).toBe("handled");
+    await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "close", ok: true })));
+    expect(gateway.calls).toContainEqual({ method: "session.detach", params: { session_id: nativeId, subscription_id: "sub-gateway-resumed" } });
+    expect(gateway.calls.find(call => call.method === "session.detach")?.params).not.toHaveProperty("end_reason");
+    expect(offline).toHaveBeenCalledWith(runtimeId, "view_closed");
+    expect(backend.directoryEntries()).toEqual([]);
+    await expect(backend.activate({ type: "resume", sessionId })).resolves.toEqual({ sessionId, spawnMode: "headless" });
+    expect(backend.directoryEntries()).toHaveLength(1);
+  });
+
+  it("auto-resumes an idle hidden Hermes viewer only after a positive live observation", async () => {
+    const gateway = new GatewayFixture();
+    let resumes = 0;
+    gateway.handlers.set("session.resume", () => ++resumes === 1 ? snapshot(sessionId, nativeId) : { ...snapshot(sessionId, nativeId), running: true, execution_generation: 1 });
+    const { backend, events } = makeBackend(gateway);
+    await backend.activate({ type: "resume", sessionId });
+    const runtimeId = backend.directoryEntries()[0]!.runtimeId;
+    const capability = [...events].reverse().find(event => event.type === "runtime.capabilities") as Extract<RuntimeEvent, { type: "runtime.capabilities" }>;
+    const close = capability.capabilities.commands.find(command => command.name === "orbis-exit-view");
+    backend.dispatchCommand(runtimeId, "close", { type: "session.close", sessionId, confirmed: true, closeGeneration: close!.closeGeneration });
+    await vi.waitFor(() => expect(backend.directoryEntries()).toEqual([]));
+    gateway.handlers.set("session.list", () => ({ scope: "live", sessions: [{ session_id: sessionId, running: true, title: "new turn" }] }));
+    await backend.readRunningSessions();
+    await vi.waitFor(() => expect(backend.directoryEntries()).toHaveLength(1));
+    expect(backend.directoryEntries()[0]?.sessionId).toBe(sessionId);
   });
 
   // Deferred writes and lost replies can commit later. Old or merely matching values with an old revision are not proof.

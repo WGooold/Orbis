@@ -306,6 +306,9 @@ export const DEVICE_FEATURE_CLAUDE_SEND_NOW = "claude.send-now.v1";
 /** SESSION-CLOSE-01: opt in to Activity-aware close requests and the Host-owned close capability. */
 export const RUNTIME_CLOSE_FEATURE = "runtime.close.v1";
 export const RUNTIME_CLOSE_CAPABILITY = "orbis-close";
+/** SHARED-VIEW-01: Host-scoped viewer detach, with no native execution mutation. */
+export const RUNTIME_VIEW_CLOSE_FEATURE = "runtime.view-close.v1";
+export const RUNTIME_VIEW_CLOSE_CAPABILITY = "orbis-exit-view";
 export const HOST_FEATURE_IMPORT_TARGET = "external-import.target-v1";
 export const DEVICE_FEATURE_OPENCODE = "agent.opencode";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);

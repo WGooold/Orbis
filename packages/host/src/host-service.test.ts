@@ -43,7 +43,7 @@ import {
   DEVICE_FEATURE_COMPACT_BOOTSTRAP,
   DEVICE_FEATURE_CLAUDE_SEND_NOW,
   DEVICE_FEATURE_EXPLICIT_TUI,
-  RUNTIME_CLOSE_FEATURE,
+  RUNTIME_CLOSE_FEATURE, RUNTIME_VIEW_CLOSE_FEATURE,
   CODEX_UNIFIED_HISTORY,
   PROTOCOL_VERSION,
   HOST_FEATURE_IMPORT_TARGET,
@@ -4277,6 +4277,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       "state.compact-bootstrap.v1",
       "claude.send-now.v1",
       RUNTIME_CLOSE_FEATURE,
+      RUNTIME_VIEW_CLOSE_FEATURE,
       "agent.kimiCode",
     ]);
     expect(initial.agents).not.toContain("kimiCode");

@@ -1,4 +1,5 @@
 import { isMessageNotFoundError, isSessionNotFoundError, type OpenCodeEvent } from "@opencode/client";
+import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, isAbsolute } from "node:path";
@@ -11,6 +12,7 @@ import type { AgentBackend, AgentActivateContext, AgentActivateTarget, BackendAc
 import { ActivationError } from "./spawner.js";
 import { OPENCODE_RUNTIME_PREFIX } from "./device-agent-visibility.js";
 import { type OpenCodeClient, OpenCodeServiceConnection } from "./opencode-service-connection.js";
+import { exitViewCapability, matchesViewExit } from "./shared-session-view.js";
 import { formRequest, permissionRequest, projectAssistant, projectHistory, projectLive, time, wireId,
   type NativeForm, type NativeMessage, type NativeSession } from "./opencode-projection.js";
 
@@ -46,6 +48,7 @@ const queueIdOf = (item: InboxUser): string => clientIdOf(item) ?? wireId(item.i
 const selectionNames = new Set(["model", "thinking", "agent"]);
 type RecordState = {
   nativeId: string;
+  viewGeneration: string;
   runtime?: RuntimeMetadata;
   info?: NativeSession;
   capabilities?: RuntimeCapabilities;
@@ -69,6 +72,7 @@ type RecordState = {
   timer?: ReturnType<typeof setTimeout> | undefined;
   full: boolean;
   liveMessageId?: string | undefined;
+  closing?: Promise<void>;
 };
 
 type OpenCodeBackendOptions = {
@@ -103,6 +107,7 @@ async function readPages<T extends { id: string }>(read: (cursor: string | undef
 export class OpenCodeBackend implements AgentBackend {
   readonly kind = "opencode" as const;
   readonly #records = new Map<string, RecordState>();
+  readonly #hidden = new Map<string, { idle: boolean; busySince: number | undefined }>();
   #unsubscribe: (() => void) | undefined;
   #monitor: AbortController | undefined;
   #attempt: Attempt | undefined;
@@ -183,6 +188,8 @@ export class OpenCodeBackend implements AgentBackend {
       } else sessionId = target.sessionId;
       attempt.controller.signal.throwIfAborted();
       if (!sessionId || runtimeIdFor(sessionId).length > 128) throw new ActivationError("session_not_found", "OpenCode session not found");
+      const pendingClose = this.#records.get(sessionId)?.closing;
+      if (pendingClose) await pendingClose;
       const record = this.#record(sessionId);
       try {
         await this.#enqueue(record, attempt, async () => {
@@ -195,7 +202,7 @@ export class OpenCodeBackend implements AgentBackend {
             context.requireCurrent?.();
             if (model && !sameModel(info.model, model)) await this.#switchModel(record, attempt, model);
           }
-          await this.#refresh(record, attempt);
+          await this.#refresh(record, attempt, true);
           if (selected && !sameModel(record.info?.model, selected)) throw new OpenCodeCommandError("configuration_unconfirmed", "unconfirmed");
         });
       } catch (error) {
@@ -233,6 +240,20 @@ export class OpenCodeBackend implements AgentBackend {
     const record = this.#records.get(runtimeId.slice(OPENCODE_RUNTIME_PREFIX.length));
     if (!record?.runtime) return "offline";
     if (command.type !== "session.sync") {
+      if (command.type === "session.close") {
+        if (!matchesViewExit(command, record.nativeId, record.viewGeneration)) return "unsupported";
+        const pending = this.#enqueue(record, this.#attempt, async () => {
+          if (!matchesViewExit(command, record.nativeId, record.viewGeneration)) throw new Error("attachment_changed");
+          this.#hidden.set(record.nativeId, { idle: record.runtime?.status === "idle", busySince: record.info?.time.busy });
+          this.options.onEvent(runtimeId, { type: "command.result", commandId, ok: true, status: "success" });
+          this.#records.delete(record.nativeId);
+          this.#retire(record, "view_closed");
+        });
+        record.closing = pending;
+        void pending.catch(() => this.options.onEvent(runtimeId, { type: "command.result", commandId, ok: false, status: "failure", error: "attachment_changed" }))
+          .finally(() => { if (record.closing === pending) delete record.closing; });
+        return "handled";
+      }
       if (command.type !== "user_message" && command.type !== "user_message.cancel" && command.type !== "stop" && command.type !== "interaction.respond" &&
           !(command.type === "slash.execute" && selectionNames.has(command.name))) return "unsupported";
       void this.#dispatch(record, this.#attempt, commandId, command);
@@ -255,6 +276,7 @@ export class OpenCodeBackend implements AgentBackend {
     this.#monitor?.abort();
     this.#offline("host_shutdown");
     this.#records.clear();
+    this.#hidden.clear();
   }
 
   #requireReady(): Attempt {
@@ -290,6 +312,7 @@ export class OpenCodeBackend implements AgentBackend {
         if (first.done || first.value.type !== "server.connected") throw new Error("OpenCode event stream not connected");
         const active = await client.session.active(this.#request(attempt));
         controller.signal.throwIfAborted();
+        for (const [id, hidden] of this.#hidden) if (!Object.hasOwn(active, id)) hidden.idle = true;
         for (const id of Object.keys(active)) this.#recordIfValid(id);
         for (const record of this.#records.values()) {
           try { await this.#enqueue(record, attempt, () => this.#refresh(record, attempt)); }
@@ -337,6 +360,7 @@ export class OpenCodeBackend implements AgentBackend {
     record.queue = Promise.resolve();
     const runtime = record.runtime;
     delete record.runtime;
+    record.viewGeneration = randomUUID();
     delete record.info;
     delete record.capabilities;
     delete record.capabilitiesUntil;
@@ -370,7 +394,7 @@ export class OpenCodeBackend implements AgentBackend {
       this.#retire(old, "runtime_limit");
       this.#records.delete(old.nativeId);
     }
-    const record: RecordState = { nativeId: id, source: this.#source(id), preparer: new SessionSyncPreparer(),
+    const record: RecordState = { nativeId: id, viewGeneration: randomUUID(), source: this.#source(id), preparer: new SessionSyncPreparer(),
       entries: [], turn: null, interactions: new Map(), inbox: new Map(), inboxTerminal: new Map(), inboxKnown: false, responding: new Set(), queue: Promise.resolve(), full: false };
     this.#records.set(id, record);
     return record;
@@ -394,12 +418,16 @@ export class OpenCodeBackend implements AgentBackend {
     if (event.type === "session.deleted") {
       const record = this.#records.get(id);
       if (record) { this.#records.delete(id); this.#retire(record, "session_deleted"); }
+      this.#hidden.delete(id);
       this.options.onCatalogChange();
       return;
     }
     if (["session.created", "session.renamed", "session.archived", "session.unarchived", "session.moved", "session.inbox.delivered",
       "session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"].includes(event.type)) this.options.onCatalogChange();
-    const record = this.#records.get(id) ?? (["session.execution.started", "permission.asked", "form.created"].includes(event.type)
+    const hidden = this.#hidden.get(id);
+    if (hidden && !this.#records.has(id) && !["session.execution.started", "session.idle", "session.execution.succeeded",
+      "session.execution.failed", "session.execution.interrupted"].includes(event.type)) return;
+    const record = this.#records.get(id) ?? ((hidden || ["session.execution.started", "permission.asked", "form.created"].includes(event.type))
       ? this.#recordIfValid(id) : undefined);
     if (!record) return;
     if (event.type === "permission.replied" || event.type === "form.replied") {
@@ -442,9 +470,21 @@ export class OpenCodeBackend implements AgentBackend {
     record.timer.unref();
   }
 
-  async #refresh(record: RecordState, attempt: Attempt): Promise<void> {
+  async #refresh(record: RecordState, attempt: Attempt, explicit = false): Promise<void> {
     const { client } = attempt;
     const sessionID = record.nativeId;
+    const hidden = this.#hidden.get(sessionID);
+    if (hidden && !explicit) {
+      const [info, active] = await Promise.all([client.session.get({ sessionID }, this.#request(attempt)), client.session.active(this.#request(attempt))]);
+      this.#check(record, attempt);
+      if (info.id !== sessionID) throw new Error("OpenCode returned mismatched session identity");
+      if (!Object.hasOwn(active, sessionID)) hidden.idle = true;
+      if (info.time.archived !== undefined || !Object.hasOwn(active, sessionID) || !(hidden.idle ||
+        hidden.busySince !== undefined && info.time.busy !== undefined && info.time.busy > hidden.busySince)) {
+        if (!record.runtime) this.#records.delete(sessionID);
+        return;
+      }
+    }
     const [info, active, messages, interactions, inbox] = await Promise.all([
       client.session.get({ sessionID }, this.#request(attempt)), client.session.active(this.#request(attempt)),
       readPages(cursor => client.message.list({ sessionID, limit: PAGE_SIZE,
@@ -455,6 +495,11 @@ export class OpenCodeBackend implements AgentBackend {
     this.#check(record, attempt);
     if (info.id !== sessionID) throw new Error("OpenCode returned mismatched session identity");
     const running = Object.hasOwn(active, sessionID);
+    if (!record.runtime && !explicit && (info.time.archived !== undefined || info.parentID !== undefined && info.fork === undefined)) {
+      this.#records.delete(sessionID); return;
+    }
+    if (hidden && !explicit && !running) { hidden.idle = true; this.#records.delete(sessionID); return; }
+    if (hidden) this.#hidden.delete(sessionID);
     this.#publishHistory(record, info, messages, running);
     if (interactions) this.#publishInteractions(record, interactions);
     if (inbox) this.#publishInbox(record, inbox, new Set(messages.map(message => message.id)));
@@ -740,6 +785,7 @@ export class OpenCodeBackend implements AgentBackend {
     if (record.info !== info) return;
     record.capabilitiesUntil = Date.now() + 30_000;
     const capabilities = selectionCommands(info, models, agents);
+    capabilities.commands.unshift(exitViewCapability(record.viewGeneration));
     if (!isDeepStrictEqual(record.capabilities, capabilities)) {
       record.capabilities = capabilities;
       this.options.onEvent(runtimeIdFor(record.nativeId), { type: "runtime.capabilities", capabilities });

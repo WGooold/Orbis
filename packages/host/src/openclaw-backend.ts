@@ -11,6 +11,7 @@ import type { AgentActivateContext, AgentActivateTarget, AgentBackend, BackendAc
 import { OpenClawGateway, openClawRecord, openClawUrl, type OpenClawConfig, type OpenClawGatewayEvents, type OpenClawMethod } from "./openclaw-gateway.js";
 import { clawHash, clawInt, clawMessage, clawText, clawTime, OPENCLAW_PREFIX, readClawHistory, type ClawHistoryPage } from "./openclaw-history.js";
 import { ActivationError } from "./spawner.js";
+import { exitViewCapability, matchesViewExit } from "./shared-session-view.js";
 
 const CATALOG_LIMIT = 2_000;
 const HISTORY_LIMIT = 800;
@@ -30,7 +31,10 @@ type Session = {
   historyLine: Promise<unknown>; turn: Turn | undefined; streamId: string | undefined; streamText: string;
   settled: Set<string>; timer: ReturnType<typeof setTimeout> | undefined; subscribed: boolean; announced: boolean;
   eventVersion: number; lastHistoryAt: number; inputPending: string | undefined; busy: boolean;
+  activeRunIds?: string[]; inFlightRunId?: string; viewGeneration: string; closing?: Promise<void>;
 };
+
+type HiddenView = { ref: SessionRef; idle: boolean; activeRunIds?: string[]; inFlightRunId?: string };
 type OpenClawBackendCallbacks = {
   ready: () => void; catalog: () => void; online: (runtime: RuntimeMetadata) => void;
   offline: (runtimeId: string, reason: string) => void; event: (runtimeId: string, event: RuntimeEvent) => void;
@@ -45,6 +49,7 @@ export class OpenClawBackend implements AgentBackend {
   readonly #sessions = new Map<string, Session>();
   readonly #byKey = new Map<string, Session>();
   readonly #resume = new Map<string, SessionRef>();
+  readonly #hidden = new Map<string, HiddenView>();
   readonly #coverage = new Map<boolean, boolean>();
   #ready = false;
   #stopped = false;
@@ -69,7 +74,7 @@ export class OpenClawBackend implements AgentBackend {
 
   start(): void { if (!this.#stopped) this.#transport.start(); }
   async stop(): Promise<void> {
-    this.#stopped = true; this.#disconnect(); this.#resume.clear(); this.#refs.clear();
+    this.#stopped = true; this.#disconnect(); this.#resume.clear(); this.#refs.clear(); this.#hidden.clear();
     await this.#transport.stop();
   }
   isReady(): boolean { return this.#ready && this.#transport.ready && !this.#stopped; }
@@ -275,6 +280,10 @@ export class OpenClawBackend implements AgentBackend {
 
   async #attach(ref: SessionRef): Promise<void> {
     const previous = this.#byKey.get(ref.key);
+    if (previous?.closing) {
+      await previous.closing;
+      return this.#attach(ref);
+    }
     if (previous?.ref.id === ref.id && previous.announced) {
       this.#resume.delete(ref.id); this.callbacks.online(this.#metadata(previous)); return;
     }
@@ -285,7 +294,8 @@ export class OpenClawBackend implements AgentBackend {
       if (session.announced && this.#current(session)) this.callbacks.event(id, event);
     }, { coalesceMs: 60 }), preparer: new SessionSyncPreparer(), rows: [], entries: [], earlier: undefined,
     historyLine: Promise.resolve(), turn: undefined, streamId: undefined, streamText: "", settled: new Set(), timer: undefined,
-    subscribed: false, announced: false, eventVersion: 0, lastHistoryAt: 0, inputPending: undefined, busy: false };
+    subscribed: false, announced: false, eventVersion: 0, lastHistoryAt: 0, inputPending: undefined, busy: false,
+    viewGeneration: randomUUID() };
     this.#sessions.set(id, session); this.#byKey.set(ref.key, session);
     try {
       const subscription = openClawRecord(await this.#rpc("sessions.messages.subscribe", { key: ref.key, subscriptionId: session.subscriptionId, ...(ref.agentId ? { agentId: ref.agentId } : {}) }));
@@ -296,8 +306,63 @@ export class OpenClawBackend implements AgentBackend {
       session.source.flushPending();
       session.announced = true; this.#resume.delete(ref.id);
       this.callbacks.online(this.#metadata(session));
-      this.callbacks.event(id, { type: "runtime.capabilities", capabilities: { commands: [] } });
+      this.callbacks.event(id, { type: "runtime.capabilities", capabilities: { commands: [exitViewCapability(session.viewGeneration)] } });
+      this.#hidden.delete(ref.nativeId);
     } catch (error) { this.#detach(session, "OpenClaw session could not be confirmed"); throw error; }
+  }
+
+  async #closeView(session: Session, commandId: string): Promise<void> {
+    const viewGeneration = session.viewGeneration;
+    const subscriptionId = session.subscriptionId;
+    try {
+      const response = openClawRecord(await this.#transport.request("sessions.messages.unsubscribe", {
+        key: session.ref.key, subscriptionId, ...(session.ref.agentId ? { agentId: session.ref.agentId } : {}),
+      }));
+      if (response?.unsubscribed !== true || response.key !== session.ref.key) throw new Error("OpenClaw Gateway did not confirm the view detach");
+    } catch (error) {
+      if (this.#sessions.get(session.id) === session) this.callbacks.event(session.id, { type: "command.result", commandId, ok: false,
+        status: error instanceof Error && error.message.includes("confirm") ? "failure" : "unconfirmed", error: "OpenClaw 未确认退订" });
+      return;
+    }
+    if (this.#sessions.get(session.id) !== session || session.viewGeneration !== viewGeneration || session.subscriptionId !== subscriptionId || !this.isReady()) {
+      if (this.#sessions.get(session.id) === session) this.callbacks.event(session.id, { type: "command.result", commandId, ok: false, status: "failure", error: "attachment_changed" });
+      return;
+    }
+    const activeRunIds = session.activeRunIds;
+    this.#hidden.set(session.ref.nativeId, { ref: session.ref, idle: !session.busy && !session.turn,
+      ...(activeRunIds ? { activeRunIds: [...activeRunIds] } : {}), ...(session.inFlightRunId ? { inFlightRunId: session.inFlightRunId } : {}) });
+    clearTimeout(session.timer);
+    session.source.flushPending();
+    this.#resume.delete(session.ref.id);
+    this.#sessions.delete(session.id);
+    if (this.#byKey.get(session.ref.key) === session) this.#byKey.delete(session.ref.key);
+    this.callbacks.event(session.id, { type: "command.result", commandId, ok: true, status: "success" });
+    if (session.announced) this.callbacks.offline(session.id, "view_closed");
+  }
+
+  #hiddenRunIds(row: Record<string, unknown>): string[] | undefined {
+    if (Array.isArray(row.activeRunIds)) return row.activeRunIds.flatMap(value => clawText(value, 256) ? [clawText(value, 256)!] : []);
+    const inFlight = openClawRecord(row.inFlightRun);
+    const runId = clawText(inFlight?.runId, 256);
+    return runId ? [runId] : undefined;
+  }
+
+  #considerHidden(row: Record<string, unknown>, key: string | undefined, agentId: string | undefined): void {
+    if (!key) return;
+    const nativeId = clawText(row.sessionId, 256);
+    if (!nativeId) return;
+    const hidden = this.#hidden.get(nativeId);
+    if (!hidden || hidden.ref.key !== key || hidden.ref.agentId !== undefined && agentId !== undefined && hidden.ref.agentId !== agentId) return;
+    const activeRunIds = this.#hiddenRunIds(row);
+    if (activeRunIds === undefined) return; // hasActiveRun without exact identity is not a new-work proof.
+    const wasIdle = hidden.idle;
+    hidden.idle = activeRunIds.length === 0;
+    if (activeRunIds.length === 0) { hidden.activeRunIds = []; delete hidden.inFlightRunId; return; }
+    const prior = new Set([...(hidden.activeRunIds ?? []), ...(hidden.inFlightRunId ? [hidden.inFlightRunId] : [])]);
+    const isNew = wasIdle || activeRunIds.some(id => !prior.has(id));
+    hidden.activeRunIds = activeRunIds;
+    if (activeRunIds[0]) hidden.inFlightRunId = activeRunIds[0]; else delete hidden.inFlightRunId;
+    if (isNew) void this.#attach(hidden.ref).catch(() => undefined);
   }
 
   #sessionRunPrefix(ref: SessionRef): string { return `${this.#runPrefix}${clawHash(ref.id).slice(0, 16)}:`; }
@@ -361,12 +426,17 @@ export class OpenClawBackend implements AgentBackend {
       const runId = clawText(observedRun?.runId, 256);
       if (!older && version === session.eventVersion) {
         session.lastHistoryAt = Date.now();
-        const info = page.info;
-        if (session.turn && (info?.hasActiveRun === false || Array.isArray(info?.activeRunIds) && !info.activeRunIds.includes(session.turn.id)) && runId !== session.turn.id) {
+          const info = page.info;
+        const activeRunIds = Array.isArray(info?.activeRunIds)
+          ? info.activeRunIds.flatMap(value => clawText(value, 256) ? [clawText(value, 256)!] : []) : undefined;
+        if (activeRunIds) session.activeRunIds = activeRunIds; else delete session.activeRunIds;
+        if (runId) session.inFlightRunId = runId; else delete session.inFlightRunId;
+        if (session.turn && (info?.hasActiveRun === false || activeRunIds !== undefined && !activeRunIds.includes(session.turn.id)) && runId !== session.turn.id) {
           this.#finish(session, session.turn, "unknown");
         }
-        const busy = info?.hasActiveRun === true;
-        if (busy !== session.busy) {
+        const busyKnown = info?.hasActiveRun !== undefined || activeRunIds !== undefined || runId !== undefined;
+        const busy = activeRunIds !== undefined ? activeRunIds.length > 0 : runId !== undefined || info?.hasActiveRun === true;
+        if (busyKnown && busy !== session.busy) {
           session.busy = busy;
           if (session.announced && !session.turn) this.callbacks.event(session.id, { type: "runtime.status", status: busy ? "running" : "idle" });
         }
@@ -447,10 +517,16 @@ export class OpenClawBackend implements AgentBackend {
     const session = key ? this.#byKey.get(key) : undefined;
     if (event.event === "sessions.changed") {
       this.callbacks.catalog();
+      const row = openClawRecord(data.session) ?? data;
+      const changedKey = key ?? clawText(row.key, 512);
+      const changedAgent = clawText(data.agentId, 128) ?? clawText(row?.agentId, 128);
+      if (row) {
+        for (const [hiddenId, hidden] of this.#hidden) if (changedKey === hidden.ref.key && hiddenId !== clawText(row.sessionId, 256)) this.#hidden.delete(hiddenId);
+        this.#considerHidden(row, changedKey, changedAgent);
+      }
       if (session) {
-        const row = openClawRecord(data.session);
         if ((row?.sessionId === session.ref.nativeId && row.archived === true) || (data.sessionId === session.ref.nativeId && data.archived === true)) {
-          session.ref.archived = true; this.#detach(session, "OpenClaw session archived");
+          session.ref.archived = true; this.#hidden.delete(session.ref.nativeId); this.#detach(session, "OpenClaw session archived");
         } else { ++session.eventVersion; this.#scheduleRead(session); }
       }
       return;
@@ -510,6 +586,14 @@ export class OpenClawBackend implements AgentBackend {
   dispatchCommand(runtimeId: string, commandId: string, command: RuntimeCommand): CommandDispatch {
     const session = this.#sessions.get(runtimeId);
     if (!session?.announced || !this.#current(session)) return "offline";
+    if (command.type === "session.close") {
+      if (session.closing || !matchesViewExit(command, session.ref.id, session.viewGeneration)) return "unsupported";
+      const pending = this.#closeView(session, commandId);
+      session.closing = pending;
+      void pending.finally(() => { if (session.closing === pending) delete session.closing; });
+      return "handled";
+    }
+    if (session.closing) return "offline";
     if (command.type !== "session.sync" && command.type !== "user_message" && command.type !== "stop") return "unsupported";
     const reply = (event: RuntimeEvent): void => { if (this.#current(session)) this.callbacks.event(runtimeId, event); };
     void this.#command(session, commandId, command, reply).catch(error => {

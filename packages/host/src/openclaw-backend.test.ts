@@ -168,3 +168,55 @@ test("keeps native OpenClaw image blocks in order without forwarding data", () =
     { type: "text", text: "Before" }, { type: "render", renderKind: "image", text: "图片内容暂不可显示" }, { type: "text", text: "After" },
   ]);
 });
+
+// SHARED-VIEW-01/03: detach is a subscription operation; explicit resume gets a fresh baseline.
+test("detaches only the OpenClaw view and reopens the exact native session", async () => {
+  const f = await fixture((method, args) => {
+    if (method === "sessions.list") return { sessions: args.archived ? [] : [row], hasMore: false };
+    if (method === "chat.history") return page([], { sessionInfo: { hasActiveRun: false, activeRunIds: [] } });
+    return {};
+  });
+  try {
+    const [entry] = await f.backend.catalog(); await f.backend.activate({ type: "resume", sessionId: entry!.sessionId });
+    const runtime = f.runtimes[0]!;
+    const capabilities = [...f.events].reverse().find(event => event.type === "runtime.capabilities") as Extract<RuntimeEvent, { type: "runtime.capabilities" }>;
+    const close = capabilities.capabilities.commands.find(command => command.name === "orbis-exit-view");
+    expect(close?.closeGeneration).toBeTruthy();
+    expect(f.backend.dispatchCommand(runtime.runtimeId, "close", { type: "session.close", sessionId: runtime.sessionId!, confirmed: true,
+      closeGeneration: close!.closeGeneration })).toBe("handled");
+    await vi.waitFor(() => expect(f.events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "close", ok: true })));
+    expect(f.request).toHaveBeenCalledWith("sessions.messages.unsubscribe", expect.objectContaining({ key, subscriptionId: expect.any(String) }));
+    expect(f.offline).toHaveBeenCalledWith(runtime.runtimeId, "view_closed");
+    expect(f.backend.directoryEntries()).toEqual([]);
+    await f.backend.activate({ type: "resume", sessionId: runtime.sessionId! });
+    expect(f.runtimes).toHaveLength(2);
+    expect(f.runtimes[1]?.sessionId).toBe(runtime.sessionId);
+  } finally { await f.backend.stop(); }
+});
+
+// SHARED-VIEW-02: an exact active-run transition, not an old run, brings a hidden view back.
+test("does not revive an OpenClaw view for the old run but adopts a new active run", async () => {
+  const f = await fixture((method, args) => {
+    if (method === "sessions.list") return { sessions: args.archived ? [] : [row], hasMore: false };
+    if (method === "chat.history") return page([], { sessionInfo: { hasActiveRun: true, activeRunIds: ["run-old"] } });
+    return {};
+  });
+  try {
+    const [entry] = await f.backend.catalog(); await f.backend.activate({ type: "resume", sessionId: entry!.sessionId });
+    const runtime = f.runtimes[0]!;
+    const capabilities = [...f.events].reverse().find(event => event.type === "runtime.capabilities") as Extract<RuntimeEvent, { type: "runtime.capabilities" }>;
+    const close = capabilities.capabilities.commands.find(command => command.name === "orbis-exit-view");
+    f.backend.dispatchCommand(runtime.runtimeId, "close", { type: "session.close", sessionId: runtime.sessionId!, confirmed: true, closeGeneration: close!.closeGeneration });
+    await vi.waitFor(() => expect(f.offline).toHaveBeenCalledWith(runtime.runtimeId, "view_closed"));
+    const change = (activeRunIds: string[]) => f.connection.event({ event: "sessions.changed", payload: {
+      sessionKey: key, sessionId: nativeId, agentId: "main", session: { ...row, activeRunIds, hasActiveRun: activeRunIds.length > 0 },
+    } });
+    change(["run-old"]);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(f.runtimes).toHaveLength(1);
+    change([]);
+    change(["run-new"]);
+    await vi.waitFor(() => expect(f.runtimes).toHaveLength(2));
+    expect(f.runtimes[1]?.sessionId).toBe(runtime.sessionId);
+  } finally { await f.backend.stop(); }
+});
