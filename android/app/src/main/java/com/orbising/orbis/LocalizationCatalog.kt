@@ -1938,6 +1938,7 @@ internal object LocalizationCatalog {
         "选择此 Codex 会话的模型" to "Select the model for this Codex session",
         "选择电脑" to "Select computer",
         "选择电脑上的文件" to "Select a file on the computer",
+        "引用到输入框" to "Insert into message",
         "选择这个目录" to "Choose this directory",
         "通知状态待核对" to "Notification status needs checking",
         "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。" to "Some sessions cannot be closed remotely, or commands are not ready. Try again shortly.",

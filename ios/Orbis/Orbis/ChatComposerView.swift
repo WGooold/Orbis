@@ -17,6 +17,7 @@ private final class ComposerDraftStorage {
     var key = ""
     var revision = -1
     var programmaticRevision = 0
+    var programmaticSelectionUTF16: Int?
     var measuredHeight = 0
     var text = ""
 
@@ -25,6 +26,7 @@ private final class ComposerDraftStorage {
         let loaded = fallback()
         key = identity
         revision = draftRevision
+        programmaticSelectionUTF16 = nil
         text = loaded
         return loaded
     }
@@ -32,14 +34,16 @@ private final class ComposerDraftStorage {
     func updateFromUser(identity: String, draftRevision: Int, text: String, height: Int) {
         key = identity
         revision = draftRevision
+        programmaticSelectionUTF16 = nil
         self.text = text
         measuredHeight = height
     }
 
-    func updateProgrammatically(identity: String, draftRevision: Int, text: String) {
+    func updateProgrammatically(identity: String, draftRevision: Int, text: String, selectionUTF16: Int? = nil) {
         key = identity
         revision = draftRevision
         programmaticRevision &+= 1
+        programmaticSelectionUTF16 = selectionUTF16
         self.text = text
     }
 }
@@ -176,6 +180,9 @@ struct ChatComposerView: View, Equatable {
     @State private var selectedCommand: String?
     @State private var deliveryChoices = false
     @State private var permissionsOpen = false
+    @State private var computerPathPickerOpen = false
+    @State private var pathPickerOwner: HostConnection?
+    @State private var pendingPathTriggerRange: NSRange?
     @State private var filePickerOpen = false
     @State private var photoPickerOpen = false
     @State private var photoPickerItems: [PhotosPickerItem] = []
@@ -401,8 +408,11 @@ struct ChatComposerView: View, Equatable {
                                  lineFragmentPadding: 0, submitsOnSoftwareReturn: false,
                                  identifier: "chat-composer",
                                  programmaticRevision: facts.draftRevision &+ presentation.programmaticRevision &+ voiceInput.draftRevision,
+                                 programmaticSelectionUTF16: draftStorage.programmaticSelectionUTF16,
                                  measuredHeight: presentation.measuredHeight,
-                                 onEdit: { text, marked, height in handleUserDraftEdit(text, marked: marked, height: height) },
+                                 onEdit: { text, marked, height, selectionUTF16 in
+                                     handleUserDraftEdit(text, marked: marked, height: height, selectionUTF16: selectionUTF16)
+                                 },
                                  onSubmit: handleReturnSubmit,
                                  onCancel: { composerFocus.focused = false })
                     .allowsHitTesting(!voiceInput.isActive)
@@ -455,6 +465,17 @@ struct ChatComposerView: View, Equatable {
             .orbisBottomSheet(isPresented: $permissionsOpen) {
                 PermissionsView(target: target, runtime: actions.runtime ?? fallbackRuntime).orbisSheet([.large])
             }
+            .orbisBottomSheet(isPresented: $computerPathPickerOpen, onDismiss: {
+                pathPickerOwner?.dismissDownloadBrowser()
+                pathPickerOwner = nil
+                pendingPathTriggerRange = nil
+                if actions.isCurrent { composerFocus.focused = true }
+            }) {
+                if let owner = pathPickerOwner {
+                    DownloadBrowserView(owner: owner, onDismiss: { computerPathPickerOpen = false },
+                                       onSelectPath: selectComputerPath).orbisSheet([.large])
+                }
+            }
             .task(id: command?.argument?.optionCatalog?.id) {
                 guard actions.isCurrent, let command, target.runtimeId != nil else { return }
                 actions.loadMenuOptions(command.name)
@@ -463,6 +484,10 @@ struct ChatComposerView: View, Equatable {
                 if actions.ownsRuntime, let old, target.runtimeId != nil { actions.cancelMenuOptions(old) }
             }
             .onDisappear {
+                pathPickerOwner?.dismissDownloadBrowser()
+                pathPickerOwner = nil
+                pendingPathTriggerRange = nil
+                computerPathPickerOpen = false
                 voiceInput.cancel()
                 voiceSavedDraft = nil
                 cancelVoiceCleanup()
@@ -545,9 +570,10 @@ struct ChatComposerView: View, Equatable {
         voiceCleanupCleanedDraft = nil
     }
 
-    private func handleUserDraftEdit(_ text: String, marked: Bool, height: Int) {
+    private func handleUserDraftEdit(_ text: String, marked: Bool, height: Int, selectionUTF16: Int) {
         guard actions.isCurrent else { return }
-        if text != currentDraft { cancelVoiceCleanup() }
+        let previous = currentDraft
+        if text != previous { cancelVoiceCleanup() }
         draftStorage.updateFromUser(identity: target.identity, draftRevision: facts.draftRevision, text: text, height: height)
         actions.editDraft(text, persist: !marked)
         reconcileDraftSideEffects(text)
@@ -555,11 +581,26 @@ struct ChatComposerView: View, Equatable {
                                              programmaticRevision: draftStorage.programmaticRevision,
                                              measuredHeight: height, text: text)
         if draftPresentation != next { draftPresentation = next }
+        if actions.connection.connection == .secured,
+           let range = ComputerPathMention.triggerRange(previous: previous, current: text,
+                                                        caretUTF16: selectionUTF16, markedText: marked) {
+            pendingPathTriggerRange = range
+            pathPickerOwner = actions.connection
+            composerFocus.focused = false
+            computerPathPickerOpen = true
+        }
     }
 
-    private func setProgrammaticDraft(_ text: String) {
+    private func selectComputerPath(_ path: String) {
+        guard actions.isCurrent, let range = pendingPathTriggerRange,
+              let insertion = ComputerPathMention.insertion(path: path, into: currentDraft, replacing: range) else { return }
+        setProgrammaticDraft(insertion.text, selectionUTF16: insertion.caretUTF16)
+    }
+
+    private func setProgrammaticDraft(_ text: String, selectionUTF16: Int? = nil) {
         guard actions.isCurrent else { return }
-        draftStorage.updateProgrammatically(identity: target.identity, draftRevision: facts.draftRevision, text: text)
+        draftStorage.updateProgrammatically(identity: target.identity, draftRevision: facts.draftRevision,
+                                            text: text, selectionUTF16: selectionUTF16)
         actions.editDraft(text, persist: true)
         reconcileDraftSideEffects(text)
         draftPresentation = ComposerDraftPresentation(key: target.identity, revision: facts.draftRevision,

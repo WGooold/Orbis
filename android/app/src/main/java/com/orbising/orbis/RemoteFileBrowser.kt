@@ -181,6 +181,7 @@ internal fun DownloadFileSheet(
     onBrowseUp: () -> Unit,
     onDownload: (String) -> Unit,
     onOpen: () -> Unit = { onBrowse(null) },
+    onSelectPath: ((String) -> Unit)? = null,
 ) {
     val browse = state.sessionBrowse?.takeIf { it.forDownload }
     val connected = state.connection == RelayConnection.ONLINE && state.e2eReady
@@ -202,12 +203,20 @@ internal fun DownloadFileSheet(
     ) {
         val confirmDownload = sheetCloseAction {
             if (selected.isNotEmpty()) {
-                selected.forEach { onDownload(remoteBrowsePath(browse?.path, it.name)) }
+                if (onSelectPath != null) {
+                    selected.singleOrNull()?.let { onSelectPath(remoteBrowsePath(browse?.path, it.name)) }
+                } else {
+                    selected.forEach { onDownload(remoteBrowsePath(browse?.path, it.name)) }
+                }
                 onDismiss()
             }
         }
         val toggleFile = { name: String ->
-            selectedFiles = if (name in selectedFiles) selectedFiles - name else selectedFiles + name
+            selectedFiles = when {
+                name in selectedFiles -> selectedFiles - name
+                onSelectPath != null -> setOf(name)
+                else -> selectedFiles + name
+            }
         }
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f, fill = false)) {
             // A compact window cannot fit browser chrome plus a fixed footer. Keep them in one
@@ -225,8 +234,8 @@ internal fun DownloadFileSheet(
                 FileNameText(selected.singleOrNull()?.name.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
                     style = MaterialTheme.typography.labelSmall)
                 NeumorphActionButton(
-                    text = if (selected.size <= 1) L10n.tr("下载到手机") else L10n.tr("下载所选 {0} 个文件", selected.size),
-                    icon = OrbisSymbols.Download, modifier = Modifier.fillMaxWidth(),
+                    text = if (onSelectPath != null) L10n.tr("引用到输入框") else if (selected.size <= 1) L10n.tr("下载到手机") else L10n.tr("下载所选 {0} 个文件", selected.size),
+                    icon = if (onSelectPath != null) OrbisSymbols.Check else OrbisSymbols.Download, modifier = Modifier.fillMaxWidth(),
                     enabled = connected && browse?.isLoading == false && browse.error == null && selected.isNotEmpty(),
                     onClick = confirmDownload,
                 )

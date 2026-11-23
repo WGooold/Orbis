@@ -56,7 +56,7 @@ struct DownloadsView: View {
                 browserOwner?.dismissDownloadBrowser()
                 browserOwner = nil
             }) {
-                if let browserOwner { DownloadBrowserView(owner: browserOwner) { browserOpen = false }.orbisSheet([.large]) }
+                if let browserOwner { DownloadBrowserView(owner: browserOwner, onDismiss: { browserOpen = false }).orbisSheet([.large]) }
             }
     }
 
@@ -136,14 +136,21 @@ struct DownloadsView: View {
 }
 
 /// FILE-BROWSER-01: direct path navigation and multi-file downloads share one browser state.
-private struct DownloadBrowserView: View {
+struct DownloadBrowserView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @ObservedObject var owner: HostConnection
     let onDismiss: () -> Void
+    let onSelectPath: ((String) -> Void)?
     @State private var selected: Set<String> = []
     @State private var pathInput = ""
     @FocusState private var pathFocused: Bool
+
+    init(owner: HostConnection, onDismiss: @escaping () -> Void, onSelectPath: ((String) -> Void)? = nil) {
+        self.owner = owner
+        self.onDismiss = onDismiss
+        self.onSelectPath = onSelectPath
+    }
 
     private var directory: DirectoryBrowse? { owner.browse?.forDownload == true ? owner.browse : nil }
     private var selectedFiles: [BrowseEntry] {
@@ -164,6 +171,11 @@ private struct DownloadBrowserView: View {
 
     private func downloadSelected() {
         guard owner.connection == .secured, directory?.loading == false, directory?.error == nil, !selectedFiles.isEmpty else { return }
+        if let onSelectPath, let entry = selectedFiles.first {
+            onSelectPath(remoteBrowsePath(parent: directory?.path, name: entry.name))
+            onDismiss()
+            return
+        }
         for entry in selectedFiles {
             owner.transfers.download(path: remoteBrowsePath(parent: directory?.path, name: entry.name))
         }
@@ -177,6 +189,8 @@ private struct DownloadBrowserView: View {
             if entry.isDir {
                 selected.removeAll()
                 owner.browseDownloadDirectory(remoteBrowsePath(parent: directory?.path, name: entry.name))
+            } else if onSelectPath != nil {
+                selected = selected.contains(entry.id) ? [] : [entry.id]
             } else if !selected.insert(entry.id).inserted {
                 selected.remove(entry.id)
             }
@@ -241,8 +255,8 @@ private struct DownloadBrowserView: View {
 
     private var downloadFooter: some View {
         OrbisActionButton(
-            title: selectedFiles.count > 1 ? L10n.tr("下载所选 {0} 个文件", selectedFiles.count) : L10n.tr("下载到手机"),
-            symbol: "arrow.down.to.line",
+            title: onSelectPath != nil ? L10n.tr("引用到输入框") : selectedFiles.count > 1 ? L10n.tr("下载所选 {0} 个文件", selectedFiles.count) : L10n.tr("下载到手机"),
+            symbol: onSelectPath != nil ? "checkmark" : "arrow.down.to.line",
             action: downloadSelected
         )
         .disabled(selectedFiles.isEmpty || directory?.loading != false || directory?.error != nil || owner.connection != .secured)

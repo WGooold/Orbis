@@ -792,7 +792,7 @@ struct SessionDraftView: View {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
                     placeholder: !canUseSelectedAgent ? L10n.tr("输入消息") : L10n.tr("让 {0} 做什么？", owner.unifiedCodexHistory && family == "codex" ? "Codex" : agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
                     ink: UIColor(p.text), placeholderInk: UIColor(p.secondary),
-                    onEdit: { value, marked, _ in
+                    onEdit: { value, marked, _, _ in
                         text = value
                         owner.clearSessionLaunchValidationError()
                         if onImportSubmit == nil { owner.editDraft(value, for: draftRuntime, persist: !marked) }
@@ -1132,8 +1132,9 @@ struct OrbisDraftEditor: UIViewRepresentable {
     let submitsOnSoftwareReturn: Bool
     let identifier: String
     let programmaticRevision: Int
+    let programmaticSelectionUTF16: Int?
     let measuredHeight: Int
-    let onEdit: ((String, Bool, Int) -> Void)?
+    let onEdit: ((String, Bool, Int, Int) -> Void)?
     let onSubmit: () -> Void
     let onCancel: () -> Void
 
@@ -1142,7 +1143,8 @@ struct OrbisDraftEditor: UIViewRepresentable {
          tint: UIColor = .tintColor, font: UIFont = .systemFont(ofSize: 15),
          lineFragmentPadding: CGFloat = 4, submitsOnSoftwareReturn: Bool = true,
          identifier: String = "draft-message", programmaticRevision: Int = 0,
-         measuredHeight: Int = 0, onEdit: ((String, Bool, Int) -> Void)? = nil,
+         programmaticSelectionUTF16: Int? = nil, measuredHeight: Int = 0,
+         onEdit: ((String, Bool, Int, Int) -> Void)? = nil,
          onSubmit: @escaping () -> Void, onCancel: @escaping () -> Void) {
         _text = text
         _focused = focused
@@ -1155,6 +1157,7 @@ struct OrbisDraftEditor: UIViewRepresentable {
         self.submitsOnSoftwareReturn = submitsOnSoftwareReturn
         self.identifier = identifier
         self.programmaticRevision = programmaticRevision
+        self.programmaticSelectionUTF16 = programmaticSelectionUTF16
         self.measuredHeight = measuredHeight
         self.onEdit = onEdit
         self.onSubmit = onSubmit
@@ -1189,7 +1192,10 @@ struct OrbisDraftEditor: UIViewRepresentable {
         }
         // Slash selection and other explicit draft replacements append subsequent
         // typing to the new value. Ordinary updates retain the user's selection.
-        if programmaticChange { view.selectedRange = NSRange(location: text.utf16.count, length: 0) }
+        if programmaticChange {
+            let requested = programmaticSelectionUTF16 ?? text.utf16.count
+            view.selectedRange = NSRange(location: min(max(0, requested), text.utf16.count), length: 0)
+        }
         view.lastProgrammaticRevision = programmaticRevision
         view.textColor = ink
         view.tintColor = tint
@@ -1212,7 +1218,7 @@ struct OrbisDraftEditor: UIViewRepresentable {
             let editor = textView as? Editor
             let width = max(1, textView.bounds.width)
             let height = Int(ceil(editor?.measuredEditorHeight(width: width) ?? textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
-            if let onEdit = parent.onEdit { onEdit(textView.text, marked, height) }
+            if let onEdit = parent.onEdit { onEdit(textView.text, marked, height, textView.selectedRange.location) }
             else { parent.text = textView.text }
             editor?.placeholder.isHidden = !textView.text.isEmpty
             if editor?.lastReportedHeight != height { editor?.lastReportedHeight = height; textView.invalidateIntrinsicContentSize() }
@@ -1222,7 +1228,7 @@ struct OrbisDraftEditor: UIViewRepresentable {
             let editor = textView as? Editor
             let width = max(1, textView.bounds.width)
             let height = Int(ceil(editor?.measuredEditorHeight(width: width) ?? textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
-            onEdit(textView.text, false, height)
+            onEdit(textView.text, false, height, textView.selectedRange.location)
         }
         func textViewDidBeginEditing(_ textView: UITextView) { parent.focused = true }
         func textViewDidEndEditing(_ textView: UITextView) { flush(textView); parent.focused = false }

@@ -188,6 +188,8 @@ import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -200,10 +202,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -1905,8 +1909,23 @@ internal fun ChatScreen(
                 }
             }
     }
-    var input by remember(runtimeId, sessionId, state.deviceId) {
-        mutableStateOf(model.loadDraft(runtimeId))
+    var composerValue by remember(runtimeId, sessionId, state.deviceId) {
+        val draft = model.loadDraft(runtimeId)
+        mutableStateOf(TextFieldValue(draft, selection = TextRange(draft.length)))
+    }
+    val input = composerValue.text
+    fun setComposerInput(text: String, selectionUtf16: Int = text.length) {
+        composerValue = TextFieldValue(text, selection = TextRange(selectionUtf16.coerceIn(0, text.length)))
+    }
+    var computerPathPickerOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    var pendingPathTriggerIndex by remember(runtimeId, sessionId) { mutableStateOf<Int?>(null) }
+    var restoreComposerFocus by remember(runtimeId, sessionId) { mutableStateOf(false) }
+    val composerFocusRequester = remember(runtimeId, sessionId) { FocusRequester() }
+    LaunchedEffect(computerPathPickerOpen) {
+        if (!computerPathPickerOpen && restoreComposerFocus) {
+            restoreComposerFocus = false
+            composerFocusRequester.requestFocus()
+        }
     }
     val openClawComposer = (runtime?.agentKind ?: state.launchPage?.agentKind) == "openclaw"
     var selectedSlashCommandName by remember(runtimeId) { mutableStateOf<String?>(null) }
@@ -1998,7 +2017,7 @@ internal fun ChatScreen(
                 val base = input
                 val prefix = base + if (base.isBlank() || base.endsWith("\n")) "" else "\n"
                 val rawDraft = prefix + recognized
-                input = rawDraft
+                setComposerInput(rawDraft)
                 model.saveDraft(runtimeId, rawDraft)
                 if (!matchesSelectedSlashCommand(rawDraft, selectedSlashCommandName)) selectedSlashCommandName = null
                 voiceCleanupJob = scope.launch {
@@ -2022,7 +2041,7 @@ internal fun ChatScreen(
                         current.runtimes[runtimeId]?.sessionId != sessionId || input != rawDraft) return@launch
                     if (result.text != recognized) {
                         val cleanedDraft = prefix + result.text
-                        input = cleanedDraft
+                        setComposerInput(cleanedDraft)
                         model.saveDraft(runtimeId, cleanedDraft)
                         voiceCleanupRawDraft = rawDraft
                         voiceCleanupCleanedDraft = cleanedDraft
@@ -2124,7 +2143,7 @@ internal fun ChatScreen(
         animateSend(commandId)
         actionHaptic()
         model.clearComposerError(runtimeId)
-        input = ""
+        setComposerInput("")
         selectedSlashCommandName = null
         model.clearDraft(runtimeId)
     }
@@ -2276,7 +2295,7 @@ internal fun ChatScreen(
                 if (branchSessionId != null) {
                     model.saveDraft(branchSessionId, text)
                 } else {
-                    input = text
+                    setComposerInput(text)
                     selectedSlashCommandName = null
                     model.saveDraft(runtimeId, text)
                 }
@@ -2408,7 +2427,7 @@ internal fun ChatScreen(
         val commandId = pendingMessageCommandId ?: return@LaunchedEffect
         val result = state.commandResults[commandId] ?: return@LaunchedEffect
         if (result.ok && input == pendingMessageText) {
-            input = ""
+            setComposerInput("")
             selectedSlashCommandName = null
             model.clearDraft(runtimeId)
         }
@@ -2585,7 +2604,7 @@ internal fun ChatScreen(
                         onOpenTree = {
                             // /tree 不再把候选铺在输入框下面：整页打开，命令词也一并清掉，
                             // 免得节点 ID 落到聊天输入框里。
-                            input = ""
+                            setComposerInput("")
                             selectedSlashCommandName = null
                             model.clearDraft(runtimeId)
                             historyActionError = null
@@ -2594,7 +2613,7 @@ internal fun ChatScreen(
                         onCommandSelected = { command, invocation ->
                             showDeliveryChoices = false
                             selectedSlashCommandName = command.name
-                            input = invocation
+                            setComposerInput(invocation)
                             model.saveDraft(runtimeId, invocation)
                         },
                     )
@@ -2682,7 +2701,7 @@ internal fun ChatScreen(
                                 if (voiceCleanupCleanedDraft == input && voiceCleanupRawDraft != null) {
                                     TextButton(onClick = {
                                         val original = voiceCleanupRawDraft ?: return@TextButton
-                                        input = original
+                                        setComposerInput(original)
                                         model.saveDraft(runtimeId, original)
                                         voiceCleanupStatus = null
                                         voiceCleanupRawDraft = null
@@ -2732,18 +2751,31 @@ internal fun ChatScreen(
                         }
                     }
                     OutlinedTextField(
-                        value = input,
+                        value = composerValue,
                         onValueChange = { value ->
+                            val triggerIndex = insertedComputerPathTriggerIndex(
+                                previous = input,
+                                current = value.text,
+                                caretUtf16 = value.selection.end,
+                                markedText = value.composition != null,
+                            )
                             showDeliveryChoices = false
                             cancelVoiceCleanup()
                             if (conversation.operationError != null) model.clearComposerError(runtimeId)
-                            input = value
-                            model.saveDraft(runtimeId, value)
-                            if (!matchesSelectedSlashCommand(value, selectedSlashCommandName)) {
+                            composerValue = value
+                            model.saveDraft(runtimeId, value.text)
+                            if (!matchesSelectedSlashCommand(value.text, selectedSlashCommandName)) {
                                 selectedSlashCommandName = null
                             }
+                            if (triggerIndex != null && !computerPathPickerOpen && state.e2eReady) {
+                                pendingPathTriggerIndex = triggerIndex
+                                restoreComposerFocus = true
+                                computerPathPickerOpen = true
+                                focusManager.clearFocus()
+                            }
                         },
-                        modifier = Modifier.weight(1f).onGloballyPositioned { sendFlight.composer = it.boundsInWindow() },
+                        modifier = Modifier.weight(1f).focusRequester(composerFocusRequester)
+                            .onGloballyPositioned { sendFlight.composer = it.boundsInWindow() },
                         placeholder = { Text(L10n.tr(if (openClawComposer) "发给 {0}" else "发给 {0}，/ 命令", LocalAgentBrand.current.title), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         trailingIcon = {
                             NeumorphIconButton(
@@ -2817,7 +2849,7 @@ internal fun ChatScreen(
                                                 if (executeSlash(selectedCommand.name, slash.second) != null) {
                                                     actionHaptic()
                                                     model.clearComposerError(runtimeId)
-                                                    input = ""
+                                                    setComposerInput("")
                                                     selectedSlashCommandName = null
                                                     model.clearDraft(runtimeId)
                                                 }
@@ -2947,7 +2979,7 @@ internal fun ChatScreen(
                                         // 附件没传成：正文和附件都回到输入框（ADR-0049 §6.1）。
                                         val uploads = model.uploadsOf(item.message.messageId)
                                         model.restorePendingSend(item.message.messageId)?.let { text ->
-                                            input = if (input.isBlank()) text else input + "\n" + text
+                                            setComposerInput(if (input.isBlank()) text else input + "\n" + text)
                                             if (uploads.isNotEmpty()) updateAttachedTaskIds(attachedTaskIds + uploads)
                                         }
                                     }
@@ -3144,6 +3176,33 @@ internal fun ChatScreen(
         },
         content = historyPage,
     )
+    if (computerPathPickerOpen) {
+        val owner = state.hostId?.let(model::connectionFor)
+        DownloadFileSheet(
+            state = state,
+            onDismiss = {
+                computerPathPickerOpen = false
+                pendingPathTriggerIndex = null
+                owner?.dismissBrowse(forDownload = true)
+            },
+            onBrowse = { owner?.browseDownloadDirectory(it) },
+            onBrowseInto = { owner?.browseInto(it, forDownload = true) },
+            onBrowseUp = { owner?.browseUp(forDownload = true) },
+            onDownload = {},
+            onOpen = { owner?.openDownloadBrowser() },
+            onSelectPath = { path ->
+                val insertion = pendingPathTriggerIndex?.let { index ->
+                    insertComputerPathMention(composerValue.text, index, path)
+                }
+                if (insertion != null) {
+                    setComposerInput(insertion.text, insertion.caretUtf16)
+                    model.saveDraft(runtimeId, insertion.text)
+                    selectedSlashCommandName = null
+                    showDeliveryChoices = false
+                }
+            },
+        )
+    }
     if (showVoicePrivacyNotice) {
         AlertDialog(
             onDismissRequest = { showVoicePrivacyNotice = false },

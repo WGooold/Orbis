@@ -1279,3 +1279,51 @@ actor SessionDirectoryWorker {
         previous = result; return result
     }
 }
+
+
+/// CHAT-PATH-01: recognizes a just-typed @ at the editor caret and replaces it with a computer path.
+enum ComputerPathMention {
+    struct Insertion: Equatable {
+        let text: String
+        let caretUTF16: Int
+    }
+
+    static func triggerRange(previous: String, current: String, caretUTF16: Int, markedText: Bool) -> NSRange? {
+        guard !markedText else { return nil }
+        let old = previous as NSString
+        let new = current as NSString
+        var prefix = 0
+        while prefix < min(old.length, new.length), old.character(at: prefix) == new.character(at: prefix) {
+            prefix += 1
+        }
+        var oldEnd = old.length
+        var newEnd = new.length
+        while oldEnd > prefix, newEnd > prefix, old.character(at: oldEnd - 1) == new.character(at: newEnd - 1) {
+            oldEnd -= 1
+            newEnd -= 1
+        }
+        guard newEnd - prefix == 1, new.character(at: prefix) == 64, caretUTF16 == prefix + 1 else { return nil }
+        return NSRange(location: prefix, length: 1)
+    }
+
+    static func insertion(path: String, into text: String, replacing range: NSRange) -> Insertion? {
+        let source = text as NSString
+        guard range.location >= 0, NSMaxRange(range) <= source.length,
+              source.substring(with: range) == "@" else { return nil }
+        let prefix = source.substring(to: range.location)
+        let suffix = source.substring(from: NSMaxRange(range))
+        let mention = referenceText(path)
+        let leading = prefix.last.map { $0.isWhitespace ? "" : " " } ?? ""
+        let trailing = suffix.first.map { $0.isWhitespace ? "" : " " } ?? " "
+        let inserted = leading + mention + trailing
+        let result = prefix + inserted + suffix
+        return Insertion(text: result, caretUTF16: range.location + (leading + mention + trailing).utf16.count)
+    }
+
+    static func referenceText(_ path: String) -> String {
+        if path.contains(where: \.isWhitespace) || path.contains("\"") {
+            return "@\"" + path.replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        }
+        return "@" + path
+    }
+}
