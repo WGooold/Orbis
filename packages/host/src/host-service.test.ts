@@ -4179,6 +4179,38 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     } finally { await runtime.stop(); }
   });
 
+  // HOST-RUNNING-01: a native-only row is desktop presence, not a mobile runtime.
+  it("merges read-only running facts by session identity and drops them on disconnect", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-running-"));
+    relay = await startRelayLocal(stateDir);
+    const kimi = new KimiRuntime({ stateDir });
+    const sessionId = "kimi-code:fixture:session_host_presence";
+    const runtimeId = "attached-kimi-runtime";
+    let attached: RuntimeMetadata[] = [];
+    const ready = vi.spyOn(kimi, "isReady").mockReturnValue(true);
+    vi.spyOn(kimi, "start").mockImplementation(() => {});
+    vi.spyOn(kimi, "directoryEntries").mockImplementation(() => attached);
+    const read = vi.spyOn(kimi, "readRunningSessions").mockResolvedValue([{ sessionId, name: "Native turn" }]);
+    const activate = vi.spyOn(kimi, "activate");
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      reconnect: false, lan: false, kimiCodeRuntime: kimi, openClaw: false });
+    host.refreshRunningAgentSessions();
+    host.refreshRunningAgentSessions();
+    await vi.waitFor(() => expect(host!.runningAgentSessions()).toMatchObject({ kimiCode: { sessions: ["Native turn"], total: 1 } }));
+    expect(read).toHaveBeenCalledOnce();
+    expect(activate).not.toHaveBeenCalled();
+    expect(host.readHostState(["backends"]).domains).toContainEqual(expect.objectContaining({ value: expect.objectContaining({
+      backends: expect.arrayContaining([expect.objectContaining({ kind: "kimiCode", runtimeCount: 0 })]),
+    }) }));
+    attached = [{ runtimeId, sessionId, name: "Kimi", sessionName: "Attached turn", cwd: stateDir, status: "running" }];
+    expect(host.runningAgentSessions()).toMatchObject({ kimiCode: { sessions: ["Attached turn"], total: 1 } });
+    attached = attached.map(entry => ({ ...entry, status: "idle" }));
+    expect(host.runningAgentSessions()).not.toHaveProperty("kimiCode");
+    attached = [];
+    ready.mockReturnValue(false);
+    expect(host.runningAgentSessions()).not.toHaveProperty("kimiCode");
+  });
+
   // KIMI-06: use the real encrypted transport and verify both directions, including a same-device downgrade.
   it("gates Kimi discovery, commands, scoped diagnostics, launch recovery and receipts on the current handshake", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-kimi-host-"));

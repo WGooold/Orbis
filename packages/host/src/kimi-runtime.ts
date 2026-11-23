@@ -6,7 +6,7 @@ import WebSocket from "ws";
 import type { AgentKey, AgentSessionSummary, RemoteSessionEntry, RuntimeCommand, RuntimeEvent, RuntimeMetadata, SessionConfigurationCatalog } from "@orbis/protocol";
 import { ToolActivityProducer, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { KimiConversation, kimiObject, type KimiFrame } from "./kimi-conversation.js";
-import type { AgentBackend, AgentActivateTarget, AgentActivateContext, BackendActivation, CommandDispatch } from "./agent-backend.js";
+import type { AgentBackend, AgentActivateTarget, AgentActivateContext, BackendActivation, CommandDispatch, NativeRunningSession } from "./agent-backend.js";
 import { KimiBusinessError, KimiWebConnector, defaultKimiHome, type KimiWebClient, type KimiWebClientOptions } from "./kimi-web-client.js";
 import { KIMI_KIND, KimiLaunchBlocked, KimiSessions, kimiLocalDirectory, kimiSourceKey, type KimiSession } from "./kimi-sessions.js";
 import { ActivationError } from "./spawner.js";
@@ -130,6 +130,13 @@ export class KimiRuntime implements AgentBackend {
   }
   #assertConnection(connection: Connection): void {
     if (this.#connection !== connection || !this.isReady()) throw new Error("Kimi Code 连接已改变，结果待核对");
+  }
+
+  async readRunningSessions(): Promise<NativeRunningSession[]> {
+    const connection = this.#requireConnection();
+    const sessions = await connection.sessions.runningSessions();
+    this.#assertConnection(connection);
+    return sessions;
   }
 
   async catalog(archived = false): Promise<AgentSessionSummary[]> { return (await this.catalogCoverage(archived)).sessions; }

@@ -7,7 +7,7 @@ import {
   RecoverableSessionSource, SessionSyncPreparer, type AgentSessionSummary, type RemoteSessionEntry,
   type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata, type SessionConfigurationCatalog,
 } from "@orbis/protocol";
-import type { AgentActivateContext, AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
+import type { AgentActivateContext, AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch, NativeRunningSession } from "./agent-backend.js";
 import { OpenClawGateway, openClawRecord, openClawUrl, type OpenClawConfig, type OpenClawGatewayEvents, type OpenClawMethod } from "./openclaw-gateway.js";
 import { clawHash, clawInt, clawMessage, clawText, clawTime, OPENCLAW_PREFIX, readClawHistory, type ClawHistoryPage } from "./openclaw-history.js";
 import { ActivationError } from "./spawner.js";
@@ -96,12 +96,17 @@ export class OpenClawBackend implements AgentBackend {
   #address(ref: SessionRef): { sessionKey: string; agentId?: string } {
     return { sessionKey: ref.key, ...(ref.agentId ? { agentId: ref.agentId } : {}) };
   }
-  #ref(row: Record<string, unknown>): SessionRef | undefined {
-    const key = clawText(row.key, 512), nativeId = clawText(row.sessionId, 256), cwd = cwdFrom(row);
-    if (!key || !nativeId || !cwd) return undefined;
+  #identity(row: Record<string, unknown>): Omit<SessionRef, "cwd"> | undefined {
+    const key = clawText(row.key, 512), nativeId = clawText(row.sessionId, 256);
+    if (!key || !nativeId) return undefined;
     const agentId = clawText(row.agentId, 128), name = clawText(row.displayName, 256) ?? clawText(row.derivedTitle, 256) ?? clawText(row.label, 256);
-    return { key, nativeId, id: this.#publicId(nativeId, key, agentId), cwd, archived: row.archived === true,
+    return { key, nativeId, id: this.#publicId(nativeId, key, agentId), archived: row.archived === true,
       ...(agentId ? { agentId } : {}), ...(name ? { name } : {}) };
+  }
+
+  #ref(row: Record<string, unknown>): SessionRef | undefined {
+    const identity = this.#identity(row), cwd = cwdFrom(row);
+    return identity && cwd ? { ...identity, cwd } : undefined;
   }
 
   async #handshake(): Promise<void> {
@@ -153,6 +158,29 @@ export class OpenClawBackend implements AgentBackend {
     return { runtimeId: session.id, sessionId: session.ref.id, name: "OpenClaw", cwd: session.ref.cwd,
       ...(session.ref.name ? { sessionName: session.ref.name } : {}), status: session.turn || session.busy ? "running" : "idle", sessionGraphSync: true,
       sessionLeafId: session.entries.at(-1)?.entryId ?? null };
+  }
+
+  async readRunningSessions(): Promise<NativeRunningSession[]> {
+    const generation = this.#generation;
+    const sessions = new Map<string, NativeRunningSession>();
+    const signal = AbortSignal.timeout(4_000);
+    let offset = 0;
+    for (let page = 0; page < 3; page++) {
+      const result = openClawRecord(await this.#transport.request("sessions.list", { activeOnly: true, archived: false,
+        limit: 200, offset, includeDerivedTitles: true, excludeCron: true, excludeSubagents: true, excludeSystem: true, excludeDock: true }, { signal }));
+      if (generation !== this.#generation || !this.isReady() || !Array.isArray(result?.sessions) || result.sessions.length > 200)
+        throw new Error("OpenClaw running session list unavailable");
+      for (const item of result.sessions) {
+        const row = openClawRecord(item);
+        if (!row || !(row.hasActiveRun === true || Array.isArray(row.activeRunIds) && row.activeRunIds.some(id => clawText(id, 256)))) continue;
+        const ref = this.#identity(row);
+        if (ref && !ref.archived) sessions.set(ref.id, { sessionId: ref.id, ...(ref.name ? { name: ref.name } : {}) });
+      }
+      const next = clawInt(result.nextOffset);
+      if (result.hasMore !== true || next === undefined || next <= offset) break;
+      offset = next;
+    }
+    return [...sessions.values()];
   }
 
   async catalog(archived = false): Promise<AgentSessionSummary[]> {

@@ -177,6 +177,16 @@ describe("Hermes Gateway bootstrap", () => {
     expect(attachment.runtime.session_create.sources).toEqual(["tui"]);
   });
 
+  // HOST-RUNNING-01: a background read may attach only to an existing Gateway.
+  it("does not fall back to Gateway ensure during a background attach", async () => {
+    const runEnsure = vi.fn();
+    const runAttach = vi.fn(async () => JSON.stringify({ state: "not_running" }));
+    await expect(connectHermesGateway({ command: { command: "hermes", prefixArgs: [] }, existingOnly: true,
+      runAttach, runEnsure })).rejects.toThrow();
+    expect(runAttach).toHaveBeenCalledOnce();
+    expect(runEnsure).not.toHaveBeenCalled();
+  });
+
   it("uses a remote SSH attachment and releases its tunnel with the Orbis socket", async () => {
     const home = "/remote/.hermes";
     const closeTunnel = vi.fn(async () => {});

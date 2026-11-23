@@ -3,6 +3,7 @@ import { realpath, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import type { AgentSessionSummary } from "@orbis/protocol";
+import type { NativeRunningSession } from "./agent-backend.js";
 import { localHostname } from "./sessions.js";
 import { ActivationError } from "./spawner.js";
 import type { KimiWebClient } from "./kimi-web-client.js";
@@ -28,6 +29,8 @@ const catalogPage = z.object({ items: z.array(z.object({
   id: nativeId, workspace: z.object({ cwd }),
   meta: z.object({ title: z.string().nullable(), created_at: z.number().int().nonnegative(), updated_at: z.number().int().nonnegative(), archived: z.boolean() }),
 })).max(PAGE_SIZE), has_more: z.boolean(), next_page_token: z.string().min(1).max(4096).nullable() });
+const runningSession = KimiSessionSchema.pick({ id: true, archived: true, main_turn_active: true }).extend({ title: z.string().optional() });
+const runningPage = z.object({ items: z.array(z.unknown()).max(PAGE_SIZE), has_more: z.boolean() });
 const recoveryPage = z.object({ items: z.array(KimiSessionSchema).max(PAGE_SIZE), has_more: z.boolean() });
 export class KimiLaunchBlocked extends ActivationError {}
 export function isKimiId(value: unknown): value is `kimi-code:${string}` { return typeof value === "string" && value.startsWith(KIMI_PREFIX); }
@@ -117,6 +120,30 @@ export class KimiSessions {
       }
     } catch { /* Partial observations are not authoritative absence. */ }
     return { sessions: [...sessions.values()], complete: false };
+  }
+
+  /** Desktop presence only: v2 catalog rows do not include main-turn state. */
+  async runningSessions(): Promise<NativeRunningSession[]> {
+    const signal = AbortSignal.timeout(4_000);
+    const sessions = new Map<string, NativeRunningSession>();
+    let before: string | undefined;
+    for (let i = 0; i < 3; i++) {
+      const query = new URLSearchParams({ page_size: String(PAGE_SIZE), include_archive: "false", busy: "true" });
+      if (before) query.set("before_id", before);
+      const page = runningPage.parse(await this.client.requestJson(`/api/v1/sessions?${query}`, { signal }));
+      for (const value of page.items) {
+        const parsed = runningSession.safeParse(value);
+        if (!parsed.success || parsed.data.archived || !parsed.data.main_turn_active) continue;
+        const { id, title } = parsed.data;
+        const sessionId = this.publicId(id);
+        sessions.set(sessionId, { sessionId, ...(title ? { name: title.slice(0, 256) } : {}) });
+      }
+      const tail = z.object({ id: nativeId }).safeParse(page.items.at(-1));
+      const next = tail.data?.id;
+      if (!page.has_more || !next || next === before) break;
+      before = next;
+    }
+    return [...sessions.values()];
   }
 
   /** v1 includes our creation marker. v2 deliberately omits arbitrary metadata. */

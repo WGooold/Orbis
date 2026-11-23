@@ -64,6 +64,9 @@ export type AgentActivateContext = {
   onCreated?: (activation: BackendActivation) => Promise<void>;
 };
 
+/** Read-only desktop presence; it does not confer a runtime or mobile control. */
+export type NativeRunningSession = { sessionId: string; name?: string };
+
 export interface AgentBackend {
   readonly kind: AgentKind;
   /** False when the native catalog has no way to enumerate archived rows; active rows may still be complete. */
@@ -104,6 +107,8 @@ export interface AgentBackend {
    * 常驻进程可以同时挂多个会话（如 Codex 的 app-server）：一个会话一条进程卡。
    */
   directoryEntries?(): RuntimeMetadata[];
+  /** Optional bounded read from an already-connected native source, without activating sessions. */
+  readRunningSessions?(): Promise<NativeRunningSession[]>;
 }
 
 export type PiBackendOptions = {

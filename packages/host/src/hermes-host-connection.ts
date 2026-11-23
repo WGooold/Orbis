@@ -13,6 +13,7 @@ export type HermesHostOptions = Pick<HermesGatewayBootstrapOptions, "env" | "com
 export class HermesHostConnection {
   #slot: Slot | undefined;
   #connecting: Promise<HermesAgentBackend> | undefined;
+  #attaching: Promise<HermesAgentBackend> | undefined;
   #profileId: string | undefined;
   #connectionScope: string | undefined;
   #closed = false;
@@ -46,14 +47,27 @@ export class HermesHostConnection {
     if (this.#closed) return Promise.reject(new Error("Host 已停止"));
     if (this.backend?.isReady()) return Promise.resolve(this.backend);
     if (this.#connecting) return this.#connecting;
+    if (this.#attaching) return this.#attaching.catch(() => this.ensure());
     if (this.#slot) this.#retire(this.#slot);
-    const attempt = this.#open();
+    const attempt = this.#open(false);
     this.#connecting = attempt;
     void attempt.then(() => { this.#connecting = undefined; }, () => { this.#connecting = undefined; });
     return attempt;
   }
 
-  async #open(): Promise<HermesAgentBackend> {
+  attachExisting(): Promise<HermesAgentBackend> {
+    if (this.#closed) return Promise.reject(new Error("Host 已停止"));
+    if (this.backend?.isReady()) return Promise.resolve(this.backend);
+    if (this.#connecting) return this.#connecting;
+    if (this.#attaching) return this.#attaching;
+    if (this.#slot) this.#retire(this.#slot);
+    const attempt = this.#open(true);
+    this.#attaching = attempt;
+    void attempt.then(() => { this.#attaching = undefined; }, () => { this.#attaching = undefined; });
+    return attempt;
+  }
+
+  async #open(existingOnly: boolean): Promise<HermesAgentBackend> {
     let slot: Slot | undefined;
     const { connect = connectHermesGateway, getRemoteGateway, ...options } = this.options;
     const remoteGateway = await getRemoteGateway?.();
@@ -62,7 +76,7 @@ export class HermesHostConnection {
       : "local";
     if (this.#connectionScope !== undefined && this.#connectionScope !== scope) this.#profileId = undefined;
     this.#connectionScope = scope;
-    const attachment = await connect({ ...options, env: this.#env, ...(remoteGateway ? { remoteGateway } : {}),
+    const attachment = await connect({ ...options, env: this.#env, existingOnly, ...(remoteGateway ? { remoteGateway } : {}),
       ...(this.#profileId === undefined ? {} : { expectedProfileId: this.#profileId }),
       onEvent: event => { if (slot && slot === this.#slot) void slot.backend.handleGatewayEvent(event); },
       onTransportError: () => { if (slot?.backend.isReady() === false) this.#retire(slot); },

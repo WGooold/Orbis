@@ -110,6 +110,20 @@ describe("HermesAgentBackend", () => {
     expect(events.some(event => event.type === "runtime.metadata")).toBe(true);
   });
 
+  // HOST-RUNNING-01: native presence must not resume cold sessions or publish mobile runtimes.
+  it("only reads running rows from the live Gateway scope", async () => {
+    const gateway = new GatewayFixture();
+    gateway.handlers.set("session.list", () => ({ scope: "live", sessions: [
+      { session_id: "one", running: true, title: "Native turn" },
+      { session_id: "idle", running: false }, { session_id: "unknown" }, { id: "wrong-identity", running: true },
+    ] }));
+    const { backend, events } = makeBackend(gateway);
+    await expect(backend.readRunningSessions()).resolves.toEqual([{ sessionId: "one", name: "Native turn" }]);
+    expect(gateway.calls).toEqual([{ method: "session.list", params: { scope: "live", limit: 200 } }]);
+    expect(backend.directoryEntries()).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
   it("lists live and resumable history without claiming archived coverage", async () => {
     const gateway = new GatewayFixture();
     gateway.handlers.set("session.list", params => params.scope === "live"

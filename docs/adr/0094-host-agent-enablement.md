@@ -145,3 +145,11 @@ Host Agent 详情「运行中」列表的绿点与单行会话标题居中对齐
 
 - 自动验证：macOS Qt 离屏 1020／1180 两种宽度的 Agent 详情、侧栏连接、设备胶囊及诊断状态共线断言通过；`OverviewRowHoverTest` 全部通过。单平台 Android 下载菜单的更新标签对齐断言通过；双平台菜单打开的三条断言在本次修改前的对照中同样失败。回归入口为 [`OverviewRowHoverTest.cpp`](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp) 和 [`MobileDownloadLayoutTest.cpp`](../../packages/windows-host/src/tests/MobileDownloadLayoutTest.cpp)，日志和截图见 `.artifacts/host-status-alignment-20261123/`。
 - 未发布安装包，用户验收未进行。
+
+### HOST-RUNNING-01：Host Agent 页统一显示运行中会话
+
+左轨与右栏共用同一份运行会话计数与标题；Host 断线、停用或没有已确认运行会话时不显示。桌面状态合并已附着的 runtime 与 Kimi Code 主回合、OpenClaw 原生 run、Hermes live Gateway 的只读观测，同一原生会话优先采用已附着状态。Hermes 后台只 `attach` 现有 Gateway，不 `ensure` 或恢复会话。只读观测不加入手机首页的 runtime，也不改变停用复核、停止或退出视图语义。
+
+实现：[Host 状态聚合](../../packages/host/src/host-service.ts)、[Agent 页](../../packages/windows-host/src/qml/Main.qml)；回归：[Host 集成](../../packages/host/src/host-service.test.ts)、[Qt 展示](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp)。
+
+暂存版本本机验证：[TypeScript 与 Node 定向回归](../../.artifacts/host-running-sessions-20261123/staged-node.log)、[macOS Qt 回归](../../.artifacts/host-running-sessions-20261123/staged-qt-test.txt)。真实 Agent 联动及安装验收待用户验证；未发布。

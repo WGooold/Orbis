@@ -427,6 +427,39 @@ private slots:
             QVERIFY(window->grabWindow().save(QString("%1-%2.png").arg(screenshotBase).arg(windowWidth)));
         }
 
+        // HOST-RUNNING-01: every agent uses the same state, count and session pane, even
+        // for a native-only running session with no mobile runtime. Idle and paused hide it.
+        QJsonObject running;
+        const QStringList kinds{"pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "kimiCode", "opencode", "hermes", "openclaw"};
+        controller.m_openClaw.insert("url", "ws://127.0.0.1:18789");
+        for (const auto &kind : kinds)
+            running.insert(kind, QJsonObject{{"total", 1}, {"sessions", QJsonArray{kind + " test turn"}}});
+        controller.receiveLine({{"event", "status"}, {"activeAgentSessions", running}});
+        auto *pane = findVisualItem(content, "agentRunningSessions");
+        auto *detailState = findVisualItem(content, "agentDetailState");
+        QVERIFY(pane && detailState);
+        for (const auto &kind : kinds) {
+            QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, kind)));
+            auto *rail = findVisualItem(content, "agent-rail-" + kind);
+            QVERIFY(rail);
+            QTRY_VERIFY(pane->isVisible());
+            QCOMPARE(detailState->property("text").toString(), QString("已连接，1 个运行中"));
+            QCOMPARE(rail->property("subText").toString(), detailState->property("text").toString());
+            auto *session = findVisualItem(pane, "agentRunningSession-0");
+            QVERIFY(session);
+            QCOMPARE(session->property("text").toString(), kind + " test turn");
+        }
+        controller.receiveLine({{"event", "status"}, {"activeAgentSessions", QJsonObject{}}});
+        QVERIFY(!pane->isVisible());
+        controller.receiveLine({{"event", "status"}, {"activeAgentSessions", running}});
+        QVERIFY(pane->isVisible());
+        controller.receiveLine({{"event", "state"}, {"state", "reconnecting"}});
+        QVERIFY(!pane->isVisible());
+        controller.receiveLine({{"event", "state"}, {"state", "connected"}});
+        QVERIFY(!pane->isVisible()); // A state event alone cannot revive stale running facts.
+        controller.receiveLine({{"event", "status"}, {"activeAgentSessions", running}});
+        QVERIFY(pane->isVisible());
+
         QVERIFY(QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 4)));
         QTRY_VERIFY(aligned(findVisualItem(content, "codexDesktopAttachStatus"), "codexDesktopAttachLabel"));
         QTRY_VERIFY(aligned(findVisualItem(content, "dshDesktopAttachStatus"), "statusText"));

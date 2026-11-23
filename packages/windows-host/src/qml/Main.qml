@@ -230,7 +230,7 @@ ApplicationWindow {
     readonly property string detailProviderGroup: providerGroup(detailKind)
     readonly property bool detailPowered: selectedAgentRow !== null && selectedAgentRow.enabled === true
     readonly property var detailChange: host.agentChanges[detailKind] || null
-    readonly property var detailSessions: host.activeAgentSessions[detailKind] || ({})
+    readonly property var detailSessions: window.runningSessionsFor(detailKind)
     readonly property var detailFacts: window.overviewAgents.find(row => row.kind === detailKind) || null
     readonly property bool canEditAgent: host.agentChoicesAvailable
     readonly property string inlineListOwner: page === 2 && detailPowered && !providersOpen ? detailProviderGroup : ""
@@ -245,6 +245,13 @@ ApplicationWindow {
     }
     function variantSymbol(kind) {
         return ["codex", "dsh"].includes(kind) ? "terminal" : ["codexDesktop", "dshDesktop"].includes(kind) ? "computer" : ""
+    }
+    function runningSessionsFor(kind) {
+        return window.hostOnline && window.agentEnabled(kind) && host.activeAgentSessions[kind]?.total > 0
+            ? host.activeAgentSessions[kind] : ({total: 0, sessions: []})
+    }
+    function agentStatusWithSessions(state, count) {
+        return count > 0 ? state.text + "，" + count + " 个运行中" : state.text
     }
     function groupSessionCount(group) {
         if (!group) return 0
@@ -322,9 +329,11 @@ ApplicationWindow {
         if (prep.state === "preparing" || window.hostLinking) return {text: "准备中", color: Theme.warning, sync: true}
         if (row.kind === "codexDesktop" && window.codexDesktopState() === "error") return {text: "接入失败", color: Theme.danger, detail: window.codexDesktopReason()}
         if (row.kind === "dshDesktop" && window.dshDesktopBlocked()) return {text: window.dshDesktopShortState(), color: Theme.warning}
+        // A confirmed running turn outranks a local CLI detection result (the backend can be remote).
+        if (window.runningSessionsFor(row.kind).total > 0) return {text: "已连接", color: Theme.success}
         if (agent && !agent.passive && agent.installed === false && !window.agentCliDetecting(row.kind)) return {text: "未安装", color: Theme.warning, idle: true}
         if (agent && agent.broken) return {text: "需要修复", color: Theme.warning, detail: window.agentCliHint(agent)}
-        if (backend && backend.ready && window.hostOnline) return {text: host.activeAgentSessions[row.kind]?.total > 0 ? "运行中" : "可用", color: Theme.success, idle: !(host.activeAgentSessions[row.kind]?.total > 0)}
+        if (backend && backend.ready && window.hostOnline) return {text: "可用", color: Theme.success, idle: true}
         if (backend && backend.launchable) return {text: "可启动", color: Theme.inkMuted, idle: true}
         return {text: "等待接入", color: Theme.inkMuted, idle: true}
     }
@@ -1829,10 +1838,8 @@ ApplicationWindow {
                                                 readonly property bool multi: window.selectedAgents.includes(kind)
                                                 readonly property var change: window.choiceFor(kind)
                                                 readonly property var state: window.agentStatus(modelData)
-                                                readonly property int sessions: window.hostOnline && (host.activeAgentSessions[kind]?.total > 0) ? host.activeAgentSessions[kind].total : 0
-                                                readonly property string subText: window.agentVisualOn(modelData) && sessions > 0
-                                                    ? (state.text === "运行中" ? "已连接，" + sessions + " 个运行中" : state.text + "，" + sessions + " 个运行中")
-                                                    : state.text
+                                                readonly property int sessions: window.runningSessionsFor(kind).total
+                                                readonly property string subText: window.agentStatusWithSessions(state, sessions)
                                                 objectName: "agent-rail-" + kind
                                                 Layout.fillWidth: true; Layout.preferredHeight: 56
                                                 Accessible.role: Accessible.ListItem
@@ -1903,10 +1910,11 @@ ApplicationWindow {
                                             Layout.fillWidth: true; spacing: 3
                                             Heading { text: window.selectedAgentRow ? window.selectedAgentRow.label : ""; font.pixelSize: Theme.title; Layout.fillWidth: true; elide: Text.ElideRight }
                                             Hint {
-                                                readonly property int runCount: window.detailPowered ? (window.detailSessions.total || 0) : 0
-                                                readonly property string baseState: window.selectedAgentRow ? window.agentStatus(window.selectedAgentRow).text : ""
-                                                text: (baseState === "运行中" && runCount > 0 ? "已连接" : baseState) + (runCount > 0 ? "，" + runCount + " 个运行中" : "")
-                                                color: window.selectedAgentRow ? window.agentStatus(window.selectedAgentRow).color : Theme.inkMuted
+                                                objectName: "agentDetailState"
+                                                readonly property int runCount: window.detailSessions.total
+                                                readonly property var state: window.selectedAgentRow ? window.agentStatus(window.selectedAgentRow) : ({text: "", color: Theme.inkMuted})
+                                                text: window.agentStatusWithSessions(state, runCount)
+                                                color: state.color
                                             }
                                         }
                                         AgentLatch { objectName: "detailAgentLatch"; large: true; powered: window.agentVisualOn(window.selectedAgentRow); change: window.detailChange; tint: Theme.agent(window.detailKind); enabled: window.canEditAgent && (!change || change.withdrawable); Accessible.name: window.selectedAgentRow ? window.selectedAgentRow.label : "Agent"; onClicked: window.flipAgent(window.detailKind) }
@@ -2142,7 +2150,8 @@ ApplicationWindow {
 
                                         }
                                         ColumnLayout {
-                                            visible: (window.detailSessions.total || 0) > 0; Layout.fillWidth: true; spacing: 8
+                                            objectName: "agentRunningSessions"
+                                            visible: window.detailSessions.total > 0; Layout.fillWidth: true; spacing: 8
                                             Heading { text: "运行中（" + window.detailSessions.total + "）" }
                                             Item {
                                                 Layout.fillWidth: true

@@ -74,6 +74,33 @@ describe("desktop Host lifecycle", () => {
     } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
   });
 
+  // HOST-RUNNING-01: Qt drops session facts on reconnecting; a fresh connected event must replay
+  // the current status even when the session names and counts are unchanged.
+  it("replays unchanged running sessions after the Host reconnects", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-running-reconnect-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const create = vi.spyOn(HostService, "create");
+    const running = { pi: { total: 1, sessions: ["Running turn"] } };
+    vi.spyOn(HostService.prototype, "runningAgentSessions").mockReturnValue(running);
+    const events: DesktopEvent[] = [];
+    const runtime = new DesktopRuntime(event => events.push(event), root,
+      { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
+    try {
+      await runtime.start({ relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
+        piIntegrationEnabled: false, claudeIntegrationEnabled: false });
+      runtime.status();
+      const onStateChange = create.mock.calls[0]![0].onStateChange!;
+      const beforeReconnect = events.length;
+      onStateChange("reconnecting");
+      onStateChange("connected");
+      expect(events.slice(beforeReconnect).filter(event => event.event !== "codexDesktop")).toEqual([
+        { event: "state", state: "reconnecting" }, { event: "state", state: "connected" },
+        expect.objectContaining({ event: "status", activeAgentSessions: running }),
+      ]);
+    } finally { await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
   // An explicit legacy UI off wins once, while a later common switch starts
   // the actual Kimi adapter with its separately selected native source.
   it("migrates Kimi off once and uses Host policy for its connection status", async () => {

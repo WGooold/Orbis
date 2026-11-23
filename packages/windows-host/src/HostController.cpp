@@ -402,6 +402,7 @@ void HostController::receiveLine(const QJsonObject &line) {
             m_state = line.value("state").toString();
             if (m_state == "error") m_desiredRunning = false;
             if (m_state == "connected") bindHostKey();
+            else m_activeAgentSessions.clear(); // Wait for a fresh status snapshot after reconnect.
             if (m_state == "stopped" || m_state == "error") clearRunningFacts();
             if (line.contains("message")) setMessage(line.value("message").toString());
             // Older bundled bridges report only the original authentication message.

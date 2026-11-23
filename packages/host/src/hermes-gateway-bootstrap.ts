@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join, normalize, resolve, win32 } from "node:path"
 import { promisify } from "node:util";
 import { agentCommandForEntry, agentInvocation, findExternalAgentEntries, type AgentCommand } from "./agent-command.js";
 import { HERMES_GATEWAY_WS_PROTOCOL, HermesGatewayRpcClient, type HermesGatewayEvent, type HermesJsonObject, type HermesServerRequestHandler } from "./hermes-gateway-rpc.js";
-import { attachRemoteHermesGateway, type HermesRemoteGatewayConfig } from "./hermes-remote-gateway.js";
+import { attachRemoteHermesGateway, parseHermesRemoteAttachResult, type HermesRemoteGatewayConfig } from "./hermes-remote-gateway.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_CONTROL_BYTES = 512 * 1024;
@@ -60,6 +60,8 @@ export type HermesGatewayBootstrapOptions = {
   timeoutSeconds?: number;
   expectedProfileId?: string;
   remoteGateway?: HermesRemoteGatewayConfig;
+  existingOnly?: boolean;
+  runAttach?: typeof runHermesGatewayAttach;
   runEnsure?: HermesEnsureRunner;
   requestTicket?: typeof requestHermesGatewayTicket;
   connect?: typeof HermesGatewayRpcClient.connect;
@@ -95,6 +97,10 @@ export async function connectHermesGateway(options: HermesGatewayBootstrapOption
     url = remote.url;
     protocols = remote.protocols;
     closeRemote = remote.close;
+  } else if (options.existingOnly) {
+    const command = options.command ?? await resolveHermesGatewayCommand(env, platform);
+    const attached = parseHermesRemoteAttachResult(await (options.runAttach ?? runHermesGatewayAttach)(command, env, platform));
+    ({ endpoint, url, protocols } = attached);
   } else {
     const command = options.command ?? await resolveHermesGatewayCommand(env, platform);
     const timeoutSeconds = options.timeoutSeconds ?? ENSURE_TIMEOUT_SECONDS;
@@ -340,6 +346,17 @@ function validateLoopbackOrigin(value: string): URL {
     !url.username && !url.password && (url.pathname === "/" || url.pathname === "") && !url.search && !url.hash))
     throw new HermesGatewayBootstrapError("gateway_origin_not_local", "Hermes Gateway 仅支持本机 profile");
   return url;
+}
+
+async function runHermesGatewayAttach(command: HermesGatewayCliCommand, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): Promise<string> {
+  const invocation = agentInvocation(command, ["gateway", "attach", "--json"], env, platform);
+  try {
+    return (await execFileAsync(invocation.command, invocation.args, { env, timeout: CONTROL_TIMEOUT_MS,
+      maxBuffer: MAX_CONTROL_BYTES, windowsHide: true,
+      ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}) })).stdout;
+  } catch {
+    throw new HermesGatewayBootstrapError("gateway_attach_failed", "未连接到现有 Hermes Gateway");
+  }
 }
 
 async function runHermesGatewayEnsure(command: HermesGatewayCliCommand, timeoutMs: number, env: NodeJS.ProcessEnv,

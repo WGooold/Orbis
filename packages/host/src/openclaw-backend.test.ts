@@ -36,6 +36,21 @@ async function fixture(rpc: (method: OpenClawMethod, args: Record<string, unknow
   return { backend, request, runtimes, events, offline, connection, drop: () => { ready = false; connection.offline(); }, reconnect: () => { ready = true; connection.online(); } };
 }
 
+// HOST-RUNNING-01: recent, idle, or archived Gateway records must not light up Host.
+test("reports native active runs without opening OpenClaw sessions", async () => {
+  const f = await fixture((method, args) => method === "sessions.list" ? { hasMore: false, sessions: args.activeOnly ? [
+    { ...row, workspaceDir: undefined, displayName: "Native run", activeRunIds: ["run-1"] },
+    { ...row, sessionId: "idle", hasActiveRun: false }, { ...row, sessionId: "recent" },
+    { ...row, sessionId: "archived", archived: true, hasActiveRun: true },
+  ] : [] } : {});
+  try {
+    await expect(f.backend.readRunningSessions()).resolves.toEqual([{ sessionId: expect.stringMatching(/^openclaw:/u), name: "Native run" }]);
+    expect(f.backend.directoryEntries()).toEqual([]);
+    expect(f.runtimes).toEqual([]);
+    expect(f.request.mock.calls.map(call => call[0])).toEqual(["sessions.subscribe", "sessions.list", "sessions.list"]);
+  } finally { await f.backend.stop(); }
+});
+
 // OPENCLAW-02: overlap is identified by native occurrence, not equal text; only confirmed
 // user rows retire the phone's optimistic message. Events from another session are ignored.
 test("maps Gateway chat and older anchored pages to the common recoverable source", async () => {

@@ -19,7 +19,7 @@ import {
 } from "@orbis/protocol";
 import { HermesGatewayRpcError, type HermesGatewayEvent, type HermesGatewayRpcClient } from "./hermes-gateway-rpc.js";
 import type { HermesGatewayEndpoint, HermesGatewayRuntimeDescriptor } from "./hermes-gateway-bootstrap.js";
-import type { AgentActivateContext, AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
+import type { AgentActivateContext, AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch, NativeRunningSession } from "./agent-backend.js";
 import { ActivationError } from "./spawner.js";
 import { SessionArchiveError } from "./session-archive.js";
 import { localHostname } from "./sessions.js";
@@ -130,6 +130,20 @@ export class HermesAgentBackend implements AgentBackend {
 
   directoryEntries(): RuntimeMetadata[] {
     return [...this.#byRuntime.values()].map(session => this.#metadata(session));
+  }
+
+  async readRunningSessions(): Promise<NativeRunningSession[]> {
+    this.#assertReady();
+    const result = await this.#request<{ scope?: unknown; sessions?: unknown }>("session.list", { scope: "live", limit: 200 }, 2_000);
+    this.#assertReady();
+    if (result.scope !== "live" || !Array.isArray(result.sessions) || result.sessions.length > 200)
+      throw new Error("Hermes live session list unavailable");
+    return result.sessions.flatMap(value => {
+      const row = asRecord(value);
+      const sessionId = hermesToolIdentity(row.session_id);
+      const name = boundedString(row.title, 256);
+      return sessionId && row.running === true ? [{ sessionId, ...(name ? { name } : {}) }] : [];
+    });
   }
 
   async currentProvider(): Promise<string | undefined> {

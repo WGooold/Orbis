@@ -20,6 +20,16 @@ function fixture(handler: (path: string, init?: { method?: string; body?: unknow
 }
 
 describe("KIMI-02 native session identity", () => {
+  // HOST-RUNNING-01: unrelated native work and archived rows are not running chats.
+  it("reads main-turn presence without subscribing or using the history catalog", async () => {
+    const { sessions, request } = fixture(() => ({ has_more: false, items: [
+      { ...row(id), busy: false, main_turn_active: true }, { ...row(other), busy: true },
+      { ...row("session_archived", undefined, true), main_turn_active: true },
+    ] }));
+    await expect(sessions.runningSessions()).resolves.toEqual([{ sessionId: sessions.publicId(id), name: "Same name" }]);
+    expect(request).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/^\/api\/v1\/sessions\?/u), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
   it("keeps names independent of identity and propagates an opaque cursor without interpreting it", async () => {
     const { sessions, request } = fixture(path => new URL(path, "http://localhost").searchParams.has("page_token")
       ? { items: [{ ...item(other), meta: { ...item(other).meta, title: null } }], has_more: false, next_page_token: null }

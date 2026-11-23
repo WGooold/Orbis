@@ -116,7 +116,7 @@ import { SessionWireContent } from "./session-wire-content.js";
 import { encodeDeviceMessage, omitRuntimeSendNow, projectCompactDeviceMessage, type DeviceMessageProjectionOptions } from "./device-message-projection.js";
 import { CompactStateModel } from "./compact-state-model.js";
 import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
-import type { AgentActivateContext, AgentBackend, BackendActivation } from "./agent-backend.js";
+import type { AgentActivateContext, AgentBackend, BackendActivation, NativeRunningSession } from "./agent-backend.js";
 import { AgentLaunchRevoked, ClaudeBackend, PiBackend } from "./agent-backend.js";
 import type { KimiRuntime } from "./kimi-runtime.js";
 import { isKimiId, KIMI_KIND, KimiLaunchBlocked } from "./kimi-sessions.js";
@@ -1126,7 +1126,10 @@ export class HostService {
     if (this.#toolContentStore) runtime.setToolContentStore(this.#toolContentStore, this.#identity.hostId);
     runtime.setEventSink((event, id) => { if (current()) this.#publishRuntimeEvent(id, event); });
     runtime.onCatalogChange = () => { if (current()) this.#invalidateCatalog(); };
-    runtime.onReadyChange = () => { if (current()) this.#broadcastDeviceReady(); };
+    runtime.onReadyChange = () => {
+      this.#desktopPresence.delete(runtime);
+      if (current()) this.#broadcastDeviceReady();
+    };
     runtime.onMetadataChange = metadata => {
       if (!current()) return;
       const { runtimeId, sessionId } = metadata;
@@ -2272,17 +2275,64 @@ export class HostService {
 
   readonly #agentReviewKey = randomBytes(32);
 
+  readonly #desktopPresenceInFlight = new Set<AgentBackend>();
+  #desktopHermesAttaching = false;
+  #desktopPresenceCheckedAt = -Infinity;
+  readonly #desktopPresence = new Map<AgentBackend, { rows: NativeRunningSession[]; expiresAt: number }>();
+
+  /** Driven by the desktop only. A read never activates a mobile session or starts a Gateway. */
+  refreshRunningAgentSessions(): void {
+    if (this.#providerFactsClosing || this.#serviceClosed ||
+        performance.now() - this.#desktopPresenceCheckedAt < 10_000) return;
+    this.#desktopPresenceCheckedAt = performance.now();
+    const current = (backend: AgentBackend) => !this.#providerFactsClosing && !this.#serviceClosed &&
+      this.#backends.includes(backend) && !this.#disabledSources.has(backend.kind) && backend.isReady();
+    const refresh = async (backend: AgentBackend) => {
+      if (!backend.readRunningSessions || !current(backend) || this.#desktopPresenceInFlight.has(backend)) return;
+      this.#desktopPresenceInFlight.add(backend);
+      try {
+        const rows = await backend.readRunningSessions();
+        if (current(backend)) this.#desktopPresence.set(backend, { rows, expiresAt: performance.now() + 20_000 });
+      } catch { /* Unsupported or temporarily unavailable: only show bounded, confirmed observations. */ }
+      finally { this.#desktopPresenceInFlight.delete(backend); }
+    };
+    for (const backend of this.#desktopPresence.keys()) if (!current(backend)) this.#desktopPresence.delete(backend);
+    const hermes = this.#hermes;
+    for (const backend of this.#backends) void refresh(backend);
+    if (hermes?.installed && !hermes.backend?.isReady() && !this.#disabledSources.has("hermes") && !this.#desktopHermesAttaching) {
+      this.#desktopHermesAttaching = true;
+      void hermes.attachExisting().then(refresh, () => {}).finally(() => { this.#desktopHermesAttaching = false; });
+    }
+  }
+
   runningAgentSessions(): Record<string, { sessions: string[]; total: number }> {
-    const rows = new Map<AgentKind, Map<string, RuntimeMetadata>>();
-    const sources = this.#backends.map(backend => [backend.kind, backend.directoryEntries?.() ?? []] as const);
-    for (const [kind, entries] of [["pi", this.localRuntimes] as const, ...sources]) {
-      if (this.#disabledSources.has(kind)) continue;
-      const runtimes = rows.get(kind) ?? new Map<string, RuntimeMetadata>();
-      for (const entry of entries) if (entry.status !== "idle") runtimes.set(entry.runtimeId, entry);
+    const rows = new Map<AgentKind, Map<string, string>>();
+    const attached = new Map<AgentKind, Set<string>>();
+    const backends = this.#backends.filter(backend => !this.#disabledSources.has(backend.kind) && backend.isReady());
+    const sources = backends.map(backend => [backend.kind,
+      backend.kind === "pi" ? this.localRuntimes : backend.directoryEntries?.() ?? []] as const);
+    for (const [kind, entries] of sources) {
+      const identities = attached.get(kind) ?? new Set<string>();
+      const runtimes = rows.get(kind) ?? new Map<string, string>();
+      for (const entry of entries) {
+        const id = entry.sessionId ?? entry.runtimeId;
+        identities.add(id);
+        if (entry.status !== "idle") runtimes.set(id, entry.sessionName?.trim() || entry.name.trim());
+      }
+      attached.set(kind, identities);
       rows.set(kind, runtimes);
     }
+    for (const backend of backends) {
+      const observed = this.#desktopPresence.get(backend);
+      if (!observed || observed.expiresAt <= performance.now()) continue;
+      const runtimes = rows.get(backend.kind)!;
+      for (const entry of observed.rows) {
+        // The attached source has the current execution state, even when it says idle.
+        if (!attached.get(backend.kind)?.has(entry.sessionId)) runtimes.set(entry.sessionId, entry.name?.trim() ?? "");
+      }
+    }
     return Object.fromEntries([...rows].filter(([, entries]) => entries.size).map(([kind, entries]) => [kind, {
-      sessions: [...entries.values()].slice(0, 24).map(runtime => (runtime.sessionName?.trim() || runtime.name.trim() || "未命名会话").slice(0, 256)),
+      sessions: [...entries.values()].slice(0, 24).map(name => (name || "未命名会话").slice(0, 256)),
       total: entries.size,
     }]));
   }
@@ -2395,7 +2445,10 @@ export class HostService {
       const config = this.#options.openClaw ?? await loadOpenClawConfig(this.#stateDir);
       if (!config || !current() || this.#providerFactsClosing) return;
       const backend = await OpenClawBackend.create(config, this.#stateDir, this.hostId, {
-        ready: () => { if (current()) { this.#invalidateCatalog(); this.#broadcastDeviceReady(); } },
+        ready: () => {
+          this.#desktopPresence.delete(backend);
+          if (current()) { this.#invalidateCatalog(); this.#broadcastDeviceReady(); }
+        },
         catalog: () => { if (current()) this.#invalidateCatalog(); },
         online: runtime => {
           if (!current()) return;

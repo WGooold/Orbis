@@ -989,7 +989,11 @@ export class DesktopRuntime {
         // 它事后发出的 closed/reconnecting 会盖掉“已暂停”，把界面卡在“连接已断开”。
         onStateChange: state => {
           if (state === "connected") relayAuthenticated = true;
-          if (this.#desired === settings) this.#emit({ event: "state", state });
+          if (this.#desired !== settings) return;
+          this.#emit({ event: "state", state });
+          // The desktop drops running facts while disconnected. Replay on reconnect even
+          // when the actual counts and names have not changed.
+          if (state === "connected") { this.#lastStatus = ""; this.status(); }
         },
         onRelayAuthenticationError: error => {
           // Startup rejects through the catch below; reconnects have no start() caller.
@@ -1137,6 +1141,7 @@ export class DesktopRuntime {
     this.#publishCodexDesktopRecovery();
     const service = this.#service;
     if (!service) return;
+    service.refreshRunningAgentSessions();
     const devices = service.devices.filter(d => !d.revoked).map(d => {
       const path = service.activePathOf(d.deviceId);
       if (path) this.#lastSeen.set(d.deviceId, Date.now());
