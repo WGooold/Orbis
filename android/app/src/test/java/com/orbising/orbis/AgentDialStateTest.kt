@@ -83,4 +83,18 @@ class AgentDialStateTest {
         assertEquals("externalOn", fetched.agentDial.notice?.status)
         assertTrue(fetched.agentDial.queue.isEmpty())
     }
+
+    @Test fun variantBadgesInfoHintsAndActiveSessionPinReleaseHintsMatchDialSpec() {
+        assertEquals("terminal", agentDialVariant("codex"))
+        assertEquals("terminal", agentDialVariant("dsh"))
+        assertEquals("desktop", agentDialVariant("codexDesktop"))
+        assertEquals("desktop", agentDialVariant("dshDesktop"))
+        assertNull(agentDialVariant("claude"))
+        assertEquals("在电脑上的 Orbis 里安装，完成后自动接入。", agentDialInfoHint("未安装"))
+        assertEquals("在电脑上的 Orbis 里填写连接配置。", agentDialInfoHint("待配置"))
+        assertNull(agentDialInfoHint("已连接"))
+        assertEquals("松手启用", agentDialPinReleaseHint(effectiveEnabled = false, activeSessions = 2))
+        assertEquals("松手停用", agentDialPinReleaseHint(effectiveEnabled = true, activeSessions = 0))
+        assertEquals("松手后确认停用", agentDialPinReleaseHint(effectiveEnabled = true, activeSessions = 1))
+    }
 }

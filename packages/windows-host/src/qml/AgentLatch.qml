@@ -8,12 +8,15 @@ AbstractButton {
     property bool powered: false
     property var change: null
     property bool failed: false
+    property bool large: false
+    readonly property int boltSize: large ? 30 : 24
+    readonly property int dotSize: large ? 8 : 6
     onFailedChanged: if (failed && Theme.motionEnabled) shake.restart()
     property color tint: Theme.accent
     property real nudge: hovered && enabled && !change ? (powered ? -5 : 5) : 0
     readonly property real position: change ? (change.target ? 0.72 : 0.28) : powered ? 1 : 0
-    implicitWidth: 60
-    implicitHeight: 30
+    implicitWidth: large ? 76 : 60
+    implicitHeight: large ? 38 : 30
     hoverEnabled: true
     Accessible.role: Accessible.CheckBox
     Accessible.checkable: true
@@ -27,11 +30,17 @@ AbstractButton {
         shadowScale: 0.4; focused: latch.activeFocus; hovered: latch.hovered && latch.enabled
     }
     contentItem: Item {
-        Rectangle { x: parent.width - 27; y: 3; width: 24; height: 24; radius: 12; color: "transparent"; border.color: latch.failed ? Theme.danger : latch.powered ? latch.tint : Theme.hairline }
+        Rectangle {
+            x: parent.width - latch.boltSize - 3; y: (parent.height - latch.boltSize) / 2
+            width: latch.boltSize; height: latch.boltSize; radius: latch.boltSize / 2
+            color: "transparent"
+            border.color: latch.failed ? Theme.danger : latch.powered ? latch.tint : Theme.hairline
+        }
         Item {
             id: bolt
-            x: 3 + (parent.width - 30) * latch.position + latch.nudge
-            y: 3; width: 24; height: 24
+            x: 3 + (parent.width - latch.boltSize - 6) * latch.position + latch.nudge
+            y: (parent.height - latch.boltSize) / 2
+            width: latch.boltSize; height: latch.boltSize
             transform: Translate { id: recoil }
             SequentialAnimation {
                 id: shake
@@ -40,8 +49,8 @@ AbstractButton {
                 NumberAnimation { target: recoil; property: "x"; to: 0; duration: 70 }
             }
             Behavior on x { enabled: Theme.motionEnabled; NumberAnimation { duration: Theme.durState; easing.type: Easing.OutCubic } }
-            Surface { anchors.fill: parent; cornerRadius: 12; margin: 4; shadowScale: 0.45; visible: !latch.change; inset: latch.down }
-            Rectangle { anchors.centerIn: parent; width: 6; height: 6; radius: 3; color: latch.powered ? latch.tint : Theme.inkFaint; visible: !latch.change }
+            Surface { anchors.fill: parent; cornerRadius: latch.boltSize / 2; margin: 4; shadowScale: 0.45; visible: !latch.change; inset: latch.down }
+            Rectangle { anchors.centerIn: parent; width: latch.dotSize; height: latch.dotSize; radius: latch.dotSize / 2; color: latch.powered ? latch.tint : Theme.inkFaint; visible: !latch.change }
             Canvas {
                 id: ring
                 anchors.fill: parent
@@ -53,9 +62,10 @@ AbstractButton {
                     if (!latch.change) return
                     ctx.lineWidth = 1.5; ctx.strokeStyle = Theme.accent; ctx.lineCap = "round"
                     const segments = latch.change.queued ? 8 : 1
+                    const r = width / 2 - 2
                     for (let i = 0; i < segments; ++i) {
                         const angle = i * Math.PI / 4
-                        ctx.beginPath(); ctx.arc(12, 12, 10, angle, angle + (segments === 1 ? 4.6 : 0.44)); ctx.stroke()
+                        ctx.beginPath(); ctx.arc(width / 2, height / 2, r, angle, angle + (segments === 1 ? 4.6 : 0.44)); ctx.stroke()
                     }
                 }
                 RotationAnimator on rotation { from: 0; to: 360; duration: Theme.durLoop; loops: Animation.Infinite; running: ring.visible && !latch.change.queued && Theme.motionEnabled }

@@ -55,4 +55,18 @@ struct ProviderDialGeometryTests {
         #expect(ProviderDialGeometry.pinArmed(enabled: true, position: ProviderDialGeometry.pinPosition(enabled: true, dx: -g.pinTravel, travel: g.pinTravel)))
     }
 
+    @Test func variantBadgesInfoHintsAndActiveSessionPinReleaseHintsMatchDialSpec() {
+        #expect(ProviderDialGeometry.variant(for: "codex") == "terminal")
+        #expect(ProviderDialGeometry.variant(for: "dsh") == "terminal")
+        #expect(ProviderDialGeometry.variant(for: "codexDesktop") == "desktop")
+        #expect(ProviderDialGeometry.variant(for: "dshDesktop") == "desktop")
+        #expect(ProviderDialGeometry.variant(for: "claude") == nil)
+        #expect(ProviderDialGeometry.infoHint(for: "未安装") == "在电脑上的 Orbis 里安装，完成后自动接入。")
+        #expect(ProviderDialGeometry.infoHint(for: "待配置") == "在电脑上的 Orbis 里填写连接配置。")
+        #expect(ProviderDialGeometry.infoHint(for: "已连接") == nil)
+        #expect(ProviderDialGeometry.pinReleaseHint(effectiveEnabled: false, activeSessions: 2) == "松手启用")
+        #expect(ProviderDialGeometry.pinReleaseHint(effectiveEnabled: true, activeSessions: 0) == "松手停用")
+        #expect(ProviderDialGeometry.pinReleaseHint(effectiveEnabled: true, activeSessions: 1) == "松手后确认停用")
+    }
+
 }

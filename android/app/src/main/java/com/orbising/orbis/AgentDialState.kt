@@ -18,6 +18,24 @@ internal fun agentDialProviderGroup(kind: String): String? = when (kind) {
     else -> null
 }
 
+internal fun agentDialVariant(kind: String): String? = when (kind) {
+    "codex", "dsh" -> "terminal"
+    "codexDesktop", "dshDesktop" -> "desktop"
+    else -> null
+}
+
+internal fun agentDialInfoHint(statusLabel: String): String? = when (statusLabel) {
+    "未安装" -> "在电脑上的 Orbis 里安装，完成后自动接入。"
+    "待配置" -> "在电脑上的 Orbis 里填写连接配置。"
+    else -> null
+}
+
+internal fun agentDialPinReleaseHint(effectiveEnabled: Boolean, activeSessions: Int): String = when {
+    !effectiveEnabled -> "松手启用"
+    activeSessions > 0 -> "松手后确认停用"
+    else -> "松手停用"
+}
+
 data class AgentDialReview(val kind: String, val revision: Long, val sessions: List<String>, val total: Int?, val token: String?)
 data class AgentDialChoice(val kind: String, val target: Boolean, val previous: Boolean, val review: AgentDialReview? = null, val expectedRevision: Long? = null)
 data class AgentDialRequest(val id: String, val choice: AgentDialChoice?, val revision: Long?)

@@ -132,8 +132,16 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         @Composable fun Dial(modifier: Modifier) {
-            DualProviderDial(kinds, rows.associateBy { it.kind }, kind, label, dialProfiles, currentIndex, hostId, active,
+            val statuses = remember(kinds, rows, connected, state.supportedAgents, state.launchableAgents, state.codexDesktop, state.openCodeAvailability, state.agentDial) {
+                kinds.associateWith { k -> state.dialSourceStatus(k, rows.firstOrNull { it.kind == k }, connected) }
+            }
+            val activeSessionCount = if (connected && on) state.runtimes.values.count { it.agentKind == kind } else 0
+            val externalSubtitle = visibleNotice?.takeIf { it.kind == kind && (it.status == "externalOn" || it.status == "externalOff") }
+                ?.let { if (it.status == "externalOn") "其他设备已启用" else "其他设备已停用" }
+            val errorReason = if (kind == "codexDesktop" && on && connected && sourceStatus.tone == "error") state.codexDesktop?.reason else null
+            DualProviderDial(kinds, rows.associateBy { it.kind }, statuses, kind, label, dialProfiles, currentIndex, hostId, active,
                 managed, visualOn, canEdit && row != null && (write == null || queued), write, queued, sourceStatus, !connected,
+                activeSessionCount = activeSessionCount, externalSubtitle = externalSubtitle, errorReason = errorReason,
                 autoNudge = canEdit && rows.isNotEmpty() && rows.none { it.enabled },
                 conflictId = visibleNotice?.takeIf { it.kind == kind && it.status == "conflict" }?.id,
                 onToggle = ::toggle,
@@ -144,9 +152,24 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
             val brand = knownAgentBrand(kind)
             val content: @Composable () -> Unit = {
                 Column(modifier.padding(horizontal = 20.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    val sessions = if (connected && on) state.runtimes.values.count { it.agentKind == kind } else 0
-                    if (sessions > 0 && (preview?.subscriptionSupported != true || !preview.enabled))
-                        Text(L10n.tr("{0} 个会话", sessions), style = MaterialTheme.typography.labelMedium, color = LocalOrbisPalette.current.success)
+                    val activeSessions = if (connected && on) state.runtimes.values.filter { it.agentKind == kind } else emptyList()
+                    if (activeSessions.isNotEmpty() && (preview?.subscriptionSupported != true || !preview.enabled)) {
+                        NeumorphSurface(Modifier.fillMaxWidth().testTag("provider-running-sessions"), RoundedCornerShape(12.dp), NeumorphStyle.Pressed, shadowScale = 0.35f) {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                activeSessions.take(2).forEach { runtime ->
+                                    val sessionTitle = runtime.sessionName?.takeIf { it.isNotBlank() } ?: runtime.name.ifBlank { runtime.runtimeId }
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Box(Modifier.size(8.dp).background(LocalOrbisPalette.current.success, CircleShape))
+                                        Text(sessionTitle, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                                val remaining = activeSessions.size - 2
+                                Text(if (remaining > 0) L10n.tr("另外 {0} 个", remaining) else L10n.tr("{0} 个会话", activeSessions.size),
+                                    style = MaterialTheme.typography.labelSmall, color = LocalOrbisPalette.current.success)
+                            }
+                        }
+                    }
                     if (on && group != null && (preview != null || !managed))
                         ProviderQuotaPair(state, group, preview, canQuery = canUse, onQuery = { onQuerySubscription(it, hostId) })
                     if (on && group != null) {
@@ -242,9 +265,11 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
 
 /** The neutral moat and hollow never claim a gesture; the starting ring owns it until release. */
 @Composable
-private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablementRow>, kind: String, label: String,
+private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablementRow>, statuses: Map<String, AgentDialStatus>,
+    kind: String, label: String,
     providers: List<AgentProvider>, selectedIndex: Int, hostId: String?, active: Boolean, managed: Boolean, on: Boolean,
     canEdit: Boolean, pending: AgentDialChoice?, queued: Boolean, status: AgentDialStatus, offline: Boolean,
+    activeSessionCount: Int, externalSubtitle: String?, errorReason: String?,
     autoNudge: Boolean, conflictId: String?,
     onToggle: (Boolean) -> Unit, onKind: (String) -> Unit, onBrowse: (Int) -> Unit, onMoving: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val density = LocalDensity.current
@@ -262,8 +287,11 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
     val currentOn by rememberUpdatedState(on)
     val currentEdit by rememberUpdatedState(canEdit)
     val currentPending by rememberUpdatedState(pending)
+    val currentActiveSessions by rememberUpdatedState(activeSessionCount)
     val toggle by rememberUpdatedState(onToggle)
     var pinDrag by remember(hostId, kind) { mutableStateOf<Float?>(null) }
+    var pinArmed by remember(hostId, kind) { mutableStateOf(false) }
+    var showStatusInfo by remember(hostId, kind, status.label) { mutableStateOf(false) }
     var hint by remember(hostId, kind) { mutableStateOf<String?>(null) }
     var hintEvent by remember(hostId, kind) { mutableIntStateOf(0) }
     val nudge = remember(hostId, kind) { Animatable(0f) }
@@ -294,13 +322,22 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
     val pin by animateFloatAsState(target, tween(InteractionMotion.duration(170)), label = "agent-pin")
     var ringLit by remember(hostId, kind) { mutableStateOf(on) }
     val sweep = remember(hostId, kind) { Animatable(1f) }
+    val dimSweep = remember(hostId, kind) { Animatable(0f) }
     val power by animateFloatAsState(if (ringLit) 1f else 0f, tween(InteractionMotion.duration(240)), label = "agent-ring-power")
     LaunchedEffect(on) {
         if (managed && on && !ringLit && !offline) {
+            dimSweep.snapTo(0f)
             delay(InteractionMotion.duration(170).toLong()); ringLit = true; haptic()
             if (ValueAnimator.areAnimatorsEnabled()) { sweep.snapTo(0f); sweep.animateTo(1f, tween(580, easing = InteractionMotion.Easing)) }
-        } else { ringLit = on; sweep.snapTo(1f) }
+        } else if (managed && !on && ringLit && !offline) {
+            ringLit = false
+            if (ValueAnimator.areAnimatorsEnabled()) { dimSweep.snapTo(1f); dimSweep.animateTo(0f, tween(520, easing = InteractionMotion.Easing)) }
+        } else { ringLit = on; sweep.snapTo(1f); dimSweep.snapTo(0f) }
     }
+    val flowing = managed && on && !offline && (status.label.startsWith("准备") || status.label.startsWith("正在") || status.label.startsWith("安装"))
+    val flowTransition = rememberInfiniteTransition(label = "agent-ring-flow")
+    val flowAngle by if (flowing && ValueAnimator.areAnimatorsEnabled()) flowTransition.animateFloat(0f, 360f,
+        infiniteRepeatable(tween(1400, easing = LinearEasing)), label = "agent-ring-flow-angle") else rememberUpdatedState(0f)
     val currentProviders by rememberUpdatedState(if (ringLit) providers else emptyList())
     val currentOnKind by rememberUpdatedState(onKind)
     val currentOnBrowse by rememberUpdatedState(onBrowse)
@@ -385,13 +422,14 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                         }
                         if (locked && inChannel && !vertical && !radial) { change.consume() }
                         if (radial) {
-                            if (!currentEdit || currentKind != startKind || currentOn != startEnabled || currentPending != startPending) { radial = false; armed = false; pinDrag = null; hint = null; break }
+                            if (!currentEdit || currentKind != startKind || currentOn != startEnabled || currentPending != startPending) { radial = false; armed = false; pinArmed = false; pinDrag = null; hint = null; break }
                             val effective = startPending?.target ?: startEnabled
                             val value = AgentDialPin.drag(effective, dx, gestureGeometry.pinTravel)
                             pinDrag = value
                             val next = AgentDialPin.armed(effective, value)
                             if (next != armed) { if (next) tick(); armed = next }
-                            hint = if (armed) if (effective) "松手停用" else "松手启用" else null
+                            pinArmed = next
+                            hint = if (armed) agentDialPinReleaseHint(effective, currentActiveSessions) else null
                             change.consume()
                         } else if (vertical) {
                             if (ring == ProviderDialRing.Agent) {
@@ -410,7 +448,7 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                     }
                 } finally {
                     if (vertical) { grabbed = null; currentOnMoving(false) }
-                    if (radial) { pinDrag = null; hint = null }
+                    if (radial) { pinDrag = null; pinArmed = false; hint = null }
                 }
                 if (radial && released && armed && currentEdit && currentKind == startKind && currentOn == startEnabled && currentPending == startPending)
                     toggle(!(startPending?.target ?: startEnabled))
@@ -433,6 +471,24 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                         val tint = accent.copy(alpha = sin(sweep.value * PI.toFloat()) * 0.7f)
                         drawArc(tint, 0f, sweep.value * 110f, false, topLeft, size, style = Stroke(2.dp.toPx()))
                         drawArc(tint, 0f, -sweep.value * 110f, false, topLeft, size, style = Stroke(2.dp.toPx()))
+                    }
+                }
+                if (managed && !offline && dimSweep.value > 0.01f) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val radius = (g.radius - 12) * px
+                        val topLeft = Offset((g.cx - g.radius + 12) * px, (g.cy - g.radius + 12) * px)
+                        val size = androidx.compose.ui.geometry.Size(2 * radius, 2 * radius)
+                        val tint = palette.faint.copy(alpha = sin(dimSweep.value * PI.toFloat()) * 0.55f)
+                        drawArc(tint, 0f, dimSweep.value * 110f, false, topLeft, size, style = Stroke(2.dp.toPx()))
+                        drawArc(tint, 0f, -dimSweep.value * 110f, false, topLeft, size, style = Stroke(2.dp.toPx()))
+                    }
+                }
+                if (flowing) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val radius = (g.radius - 12) * px
+                        val topLeft = Offset((g.cx - g.radius + 12) * px, (g.cy - g.radius + 12) * px)
+                        val size = androidx.compose.ui.geometry.Size(2 * radius, 2 * radius)
+                        drawArc(accent.copy(alpha = 0.55f), flowAngle - 36f, 72f, false, topLeft, size, style = Stroke(2.dp.toPx()))
                     }
                 }
                 NeumorphSurface(Modifier.disc(g.seamRadius), CircleShape, NeumorphStyle.Pressed, shadowScale = 0.4f) {}
@@ -478,14 +534,23 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                 val angle = Math.toRadians(((index - agentPosition) * g.agentStep).toDouble())
                 val x = g.cx + g.agentRadius * cos(angle).toFloat()
                 val y = g.cy + g.agentRadius * sin(angle).toFloat()
+                val agentEnabled = if (agent == kind) on else rows[agent]?.enabled == true
+                val agentStatus = statuses[agent] ?: status
                 if (abs(index - agentPosition) < 3.1f && x >= 12 && y in 20f..(height - 20) && !(managed && agent == kind && grabbed != ProviderDialRing.Agent)) Box(Modifier.offset(x = (x-24).dp, y = (y-24).dp).size(48.dp)
                     .testTag("provider-agent-$agent")
                     .graphicsLayer { alpha = if (grabbed == ProviderDialRing.Profile || agent != kind) 0.4f else 1f }
                     .orbisKeyboardFocus().clickable(enabled = active,
                         interactionSource = remember { MutableInteractionSource() }, indication = null) { tick(); settle(ProviderDialRing.Agent, index) }, contentAlignment = Alignment.Center) {
-                    DialAgentMark(agent, offline || (if (agent == kind) !on else rows[agent]?.enabled == false))
-                    if (managed && ownsComputerWindow(agent)) Icon(OrbisSymbols.Computer, null, Modifier.align(Alignment.BottomEnd).padding(4.dp).size(11.dp), tint = palette.faint)
+                    DialAgentMark(agent, offline || !agentEnabled)
+                    if (managed) DialAgentBadges(agent, agentEnabled && !offline, agentStatus)
                 }
+            }
+            val infoHint = agentDialInfoHint(status.label)
+            val subtitleText = externalSubtitle ?: errorReason ?: if (on && !offline && activeSessionCount > 0) L10n.tr("{0} 个运行中", activeSessionCount) else null
+            val subtitleColor = when {
+                externalSubtitle != null -> accent
+                errorReason != null -> palette.danger
+                else -> palette.success
             }
             providers.forEachIndexed { index, provider ->
                 val angle = Math.toRadians(((index - itemPosition.floatValue) * g.profileStep).toDouble())
@@ -504,7 +569,22 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                         if (selected) {
                             Text(if (provider.official) L10n.tr("官方配置") else L10n.tr("已保存的配置"),
                                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (managed && (status.tone != "success" || pending != null)) Text(L10n.tr(hint ?: status.label), style = MaterialTheme.typography.labelSmall, color = if (status.tone == "warning") palette.warning else accent)
+                            if (managed && (status.tone != "success" || pending != null || hint != null)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(L10n.tr(hint ?: status.label), style = MaterialTheme.typography.labelSmall,
+                                        color = when (status.tone) { "warning" -> palette.warning; "error" -> palette.danger; else -> accent })
+                                    if (infoHint != null && hint == null) {
+                                        Icon(OrbisSymbols.Info, L10n.tr("查看说明"), Modifier.size(15.dp).clickable { showStatusInfo = !showStatusInfo },
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                                if (showStatusInfo && infoHint != null && hint == null) {
+                                    Text(L10n.tr(infoHint), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                            if (subtitleText != null) {
+                                Text(subtitleText, style = MaterialTheme.typography.labelSmall, color = subtitleColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            }
                             if (provider.enabled) Text(if (provider.additive) L10n.tr("已启用") else L10n.tr("使用中"),
                                 style = MaterialTheme.typography.labelSmall, color = palette.success)
                         }
@@ -515,8 +595,20 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                 val x = g.cx + g.radius + 28
                 Column(Modifier.offset(x = x.dp, y = (g.cy - 31).dp).width((width - x - 12).coerceIn(64f, 150f).dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text(label, style = MaterialTheme.typography.labelSmall, color = if (on && !offline) accent else palette.faint)
-                    Text(L10n.tr(hint ?: status.label), style = MaterialTheme.typography.titleLarge,
-                        color = when (status.tone) { "success" -> palette.success; "warning" -> palette.warning; "error" -> palette.danger; "accent" -> accent; else -> MaterialTheme.colorScheme.onSurfaceVariant })
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(L10n.tr(hint ?: status.label), style = MaterialTheme.typography.titleLarge,
+                            color = when (status.tone) { "success" -> palette.success; "warning" -> palette.warning; "error" -> palette.danger; "accent" -> accent; else -> MaterialTheme.colorScheme.onSurfaceVariant })
+                        if (infoHint != null && hint == null) {
+                            Icon(OrbisSymbols.Info, L10n.tr("查看说明"), Modifier.size(18.dp).testTag("provider-status-info")
+                                .clickable { showStatusInfo = !showStatusInfo }, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    if (showStatusInfo && infoHint != null && hint == null) {
+                        Text(L10n.tr(infoHint), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (subtitleText != null) {
+                        Text(subtitleText, style = MaterialTheme.typography.labelSmall, color = subtitleColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
             // Two distinct keyboard/accessible sliders mirror the physical rings without remote writes.
@@ -561,13 +653,30 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                 NeumorphSurface(Modifier.offset((x - 22).dp, (g.cy - 22).dp).size((g.pinTravel + 44).dp, 44.dp),
                     RoundedCornerShape(22.dp), NeumorphStyle.Pressed, shadowScale = 0.55f) {}
                 Canvas(Modifier.fillMaxSize()) {
-                    drawCircle((if (conflictId != null) palette.danger else palette.faint).copy(alpha = 0.50f), 18.dp.toPx(), Offset((x + g.pinTravel) * px, g.cy * px), style = Stroke(1.dp.toPx()))
+                    val socketColor = when {
+                        conflictId != null -> palette.danger.copy(alpha = 0.75f)
+                        on && !offline -> accent.copy(alpha = 0.85f)
+                        else -> palette.faint.copy(alpha = 0.50f)
+                    }
+                    val socketStroke = if (on && !offline || conflictId != null) 1.5.dp.toPx() else 1.dp.toPx()
+                    drawCircle(socketColor, 18.dp.toPx(), Offset((x + g.pinTravel) * px, g.cy * px), style = Stroke(socketStroke))
+                    if (pinArmed) {
+                        drawRoundRect(
+                            color = accent.copy(alpha = 0.8f),
+                            topLeft = Offset((x - 22) * px, (g.cy - 22) * px),
+                            size = androidx.compose.ui.geometry.Size((g.pinTravel + 44) * px, 44 * px),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(22 * px, 22 * px),
+                            style = Stroke(2.dp.toPx())
+                        )
+                    }
                 }
                 NeumorphSurface(Modifier.offset((x + g.pinTravel * fraction - 20 + recoil.value).dp, (g.cy - 20).dp).size(40.dp),
                     CircleShape, shadowScale = if (on) 0.6f else 0.28f) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        if (pending == null) DialAgentMark(kind, !on || offline)
-                        else Canvas(Modifier.size(29.dp)) {
+                        if (pending == null) {
+                            DialAgentMark(kind, !on || offline)
+                            DialAgentBadges(kind, on && !offline, status)
+                        } else Canvas(Modifier.size(29.dp)) {
                             if (queued) drawCircle(color, style = Stroke(1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx()))))
                             else drawArc(color, spin, 260f, useCenter = false, style = Stroke(1.5.dp.toPx()))
                         }
@@ -603,6 +712,34 @@ private fun DialAgentMark(kind: String, muted: Boolean) {
     if (brand == null) Icon(OrbisSymbols.Computer, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
     else Box(Modifier.graphicsLayer { alpha = if (muted) 0.50f else 1f }, contentAlignment = Alignment.Center) {
         AgentIcon(brand, Modifier.size(20.dp), tintOverride = if (muted) LocalOrbisPalette.current.faint else null)
+    }
+}
+
+@Composable
+private fun BoxScope.DialAgentBadges(kind: String, showStatusDot: Boolean, status: AgentDialStatus) {
+    val palette = LocalOrbisPalette.current
+    val secondary = MaterialTheme.colorScheme.onSurfaceVariant
+    if (showStatusDot) {
+        Canvas(Modifier.align(Alignment.TopEnd).padding(5.dp).size(7.dp)) {
+            val dotColor = when {
+                status.tone == "success" -> palette.success
+                status.label == "可启动" -> secondary
+                status.tone == "warning" -> palette.warning
+                status.tone == "error" -> palette.danger
+                else -> palette.faint
+            }
+            if (status.label == "可启动") drawCircle(dotColor, style = Stroke(1.5.dp.toPx()))
+            else drawCircle(dotColor)
+        }
+    }
+    val variant = agentDialVariant(kind)
+    if (variant != null) {
+        NeumorphSurface(Modifier.align(Alignment.BottomEnd).padding(2.dp).size(14.dp), CircleShape, shadowScale = 0.25f) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Icon(if (variant == "terminal") OrbisSymbols.Terminal else OrbisSymbols.Computer,
+                    null, Modifier.size(9.dp), tint = secondary)
+            }
+        }
     }
 }
 

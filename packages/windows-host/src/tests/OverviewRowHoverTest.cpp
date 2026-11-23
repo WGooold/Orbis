@@ -50,15 +50,12 @@ QQuickItem *findHoverHighlight(QQuickItem *card, const QColor &expectedColor) {
     }
     return nullptr;
 }
-}
 
-class OverviewRowHoverTest : public QObject {
-    Q_OBJECT
-    static void writeFixtureBridge(const QString &root) {
-        QDir().mkpath(root + "/packages/host/dist");
-        QFile file(root + "/packages/host/dist/desktop-bridge.js");
-        QVERIFY(file.open(QIODevice::WriteOnly));
-        file.write(R"JS(
+void writeFixtureBridge(const QString &root) {
+    QDir().mkpath(root + "/packages/host/dist");
+    QFile file(root + "/packages/host/dist/desktop-bridge.js");
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(R"JS(
 const out = value => process.stdout.write(JSON.stringify(value) + "\n");
 const agents = [
   { kind: "pi", label: "Pi", enabled: true },
@@ -124,6 +121,38 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     });
     return;
   }
+  if (method === "provider.list") {
+    out({
+      id,
+      result: [
+        {
+          id: "openai",
+          name: "OpenAI Official",
+          kind: "codex",
+          category: "official",
+          enabled: true,
+          subscriptionSupported: true,
+          websiteUrl: "https:\/\/platform.openai.com",
+          notes: "官方 ChatGPT 托管登录与原生 CLI 配置"
+        },
+        {
+          id: "openrouter",
+          name: "OpenRouter Aggregator Gateway",
+          kind: "codex",
+          category: "aggregator",
+          enabled: false,
+          subscriptionSupported: false,
+          websiteUrl: "https:\/\/openrouter.ai/api/v1/responses",
+          notes: "备用中转节点，支持多模型路由与连通性检测"
+        }
+      ]
+    });
+    return;
+  }
+  if (method === "provider.presets") {
+    out({ id, result: [] });
+    return;
+  }
   if (method === "shutdown") {
     out({ id, result: {} });
     process.exit(0);
@@ -131,7 +160,11 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   out({ id, result: {} });
 });
 )JS");
-    }
+}
+}
+
+class OverviewRowHoverTest : public QObject {
+    Q_OBJECT
 private slots:
     void initTestCase() {
         qputenv("ORBIS_NO_KEYCHAIN", "1");
@@ -265,6 +298,37 @@ private slots:
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, hoverPoint);
         QTRY_COMPARE(window->property("page").toInt(), 2);
         QCOMPARE(window->property("selectedAgent").toString(), QString("codex"));
+
+        // AGENT-DIAL-02: Agent-specific settings and twin-agent navigation live inside the Agent detail pane.
+        auto *rail = findVisualItem(window->contentItem(), "agentRail");
+        auto *detail = findVisualItem(window->contentItem(), "agentDetail");
+        auto *integrationSection = findVisualItem(detail, "agentIntegrationSection");
+        auto *codexPrestart = findVisualItem(detail, "codexPrestartSwitch");
+        auto *twinChip = findVisualItem(detail, "twinAgentChip");
+        auto *openProvidersBtn = findVisualItem(detail, "openAgentProviders");
+        QVERIFY(rail && detail && integrationSection && codexPrestart && twinChip && openProvidersBtn);
+        QTRY_VERIFY(integrationSection->isVisible() && codexPrestart->isVisible() && twinChip->isVisible() && openProvidersBtn->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(twinChip, "clicked"));
+        QCOMPARE(window->property("selectedAgent").toString(), QString("codexDesktop"));
+        QVERIFY(QMetaObject::invokeMethod(twinChip, "clicked"));
+        QCOMPARE(window->property("selectedAgent").toString(), QString("codex"));
+
+        // Opening provider configuration inside the two-column Agent page must keep the rail and detail
+        // widths stable instead of feeding providerCard's childrenRect width back into RowLayout.
+        const qreal railWidthBefore = rail->width();
+        const qreal detailWidthBefore = detail->width();
+        QVERIFY(QMetaObject::invokeMethod(openProvidersBtn, "clicked"));
+        QTRY_COMPARE(window->property("providersOpen").toBool(), true);
+        QTRY_COMPARE(controller.providers().size(), 2);
+        QQuickItem *officialCard = nullptr;
+        QQuickItem *customCard = nullptr;
+        QTRY_VERIFY((officialCard = findVisualItem(detail, "providerCard-openai")) && officialCard->isVisible() &&
+                    (customCard = findVisualItem(detail, "providerCard-openrouter")) && customCard->isVisible());
+        QTest::qWait(80);
+        QVERIFY2(qAbs(rail->width() - railWidthBefore) <= 0.5 && qAbs(detail->width() - detailWidthBefore) <= 0.5,
+                 qPrintable(QString("Opening provider cards shifted rail/detail width: rail %1 -> %2, detail %3 -> %4")
+                                .arg(railWidthBefore).arg(rail->width())
+                                .arg(detailWidthBefore).arg(detail->width())));
 
         controller.shutdown();
     }

@@ -61,4 +61,22 @@ enum ProviderDialGeometry {
         let projection = handle == .agent ? translation : translation + (predictedTranslation - translation) * 0.3
         return Int(clamp((position - projection / step).rounded(), 0, Double(max(0, count - 1))))
     }
+    static func variant(for kind: String) -> String? {
+        switch kind {
+        case "codex", "dsh": return "terminal"
+        case "codexDesktop", "dshDesktop": return "desktop"
+        default: return nil
+        }
+    }
+    static func infoHint(for statusLabel: String) -> String? {
+        switch statusLabel {
+        case "未安装": return "在电脑上的 Orbis 里安装，完成后自动接入。"
+        case "待配置": return "在电脑上的 Orbis 里填写连接配置。"
+        default: return nil
+        }
+    }
+    static func pinReleaseHint(effectiveEnabled: Bool, activeSessions: Int) -> String {
+        if !effectiveEnabled { return "松手启用" }
+        return activeSessions > 0 ? "松手后确认停用" : "松手停用"
+    }
 }

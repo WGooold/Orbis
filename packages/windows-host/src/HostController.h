@@ -113,6 +113,7 @@ class HostController : public QObject {
     Q_PROPERTY(QString agentInstallVersion READ agentInstallVersion NOTIFY changed)
     Q_PROPERTY(bool agentInstalling READ agentInstalling NOTIFY changed)
     Q_PROPERTY(QVariantList providers READ providers NOTIFY providersChanged)
+    Q_PROPERTY(QVariantMap providerQuotas READ providerQuotas NOTIFY providersChanged)
     Q_PROPERTY(QString providerKind READ providerKind NOTIFY changed)
     Q_PROPERTY(QVariantList providerPresets READ providerPresets NOTIFY providerPresetsChanged)
     Q_PROPERTY(QString piDefaultProvider READ piDefaultProvider NOTIFY changed)
@@ -202,6 +203,7 @@ public:
     QString agentInstallVersion() const { return m_agentInstallVersion; }
     bool agentInstalling() const { return QStringList{"queued", "resolving", "downloading", "verifying", "activating", "restarting", "cancelling"}.contains(m_agentInstallStage); }
     QVariantList providers() const { return m_providers; }
+    QVariantMap providerQuotas() const { return m_providerQuotas; }
     QString providerKind() const { return m_providerKind; }
     QVariantList providerPresets() const { return m_providerPresets; }
     QString piDefaultProvider() const { return m_piDefaultProvider; }
@@ -433,6 +435,7 @@ private:
     QString m_agentInstallKind, m_agentInstallStage, m_agentInstallVersion;
     QVariantList m_providers;
     QVariantList m_providerPresets;
+    QVariantMap m_providerQuotas;
     QString m_providerKind = "codex";
     QString m_piDefaultProvider;
     int m_nextId = 1, m_busy = 0, m_cooldown = 0, m_runtimeCount = 0, m_crashes = 0;

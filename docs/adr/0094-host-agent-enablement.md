@@ -114,3 +114,27 @@ OpenCode 只在当前启用租约内创建连接监视器和会话适配器。�
 桌面概览安装动作区分已安装、明确未安装与未知：未知显示检测状态且不触发安装。移动端旧端目录筛选与原型的固定列表不同，是为遵循 Host 能力公告。
 
 本机自动验证（2026-11-23）：[Node 类型检查与 65 项定向回归](../../.artifacts/agent-dial-20261123/node-dial.log)、[Android 9 项状态／几何回归](../../.artifacts/agent-dial-20261123/android-final/run.log)、[Android 插桩源码编译](../../.artifacts/agent-dial-20261123/android-instrumented-compile/run.log)、[Swift 9 项旧端目录、回执与几何回归](../../.artifacts/agent-dial-20261123/ios-state/run.log)、Qt [`provider-model`](../../.artifacts/agent-dial-20261123/qt-provider-model.log) 与 [`host-live-change`](../../.artifacts/agent-dial-20261123/qt-host-live-change.log) 定向测试。尚未做原型与原生界面的同尺寸截图对比，未部署、未安装，待用户安装及视觉交互验收。
+
+## AGENT-DIAL-02｜双端原型对齐与桌面 Agent 设置内聚
+
+对照 [`orbis-agent-dial.html`](../design/orbis-agent-dial.html) 收敛桌面端与移动端的剩余视觉、交互及设置归属缺口：
+
+1. **桌面双栏宽度解耦与供应商卡片布局稳定**：Agent 页双栏 `RowLayout` 左栏固定列宽，右栏 `agentDetail` 与各 `providerCard` 的 `contentWidth` 自顶向下绑定 `availableWidth`，并用单一内容容器包裹拖放层与表单列，避免 `QQuickPane` 多子项 `childrenRect` 将当前宽度回传为 `implicitWidth` 而在 `QQuickWindowPrivate::polishItems()` 中触发左右栏无限重排死循环。
+2. **桌面 Agent 从属设置迁入 Agent 页**：将原位于全局「设置」页的所有 Agent 相关配置（Codex 预启动与终端 PATH 修复、DeepSeek Harness 预启动与 DeepSeek Web 启动链接、Kimi Code Web／桌面版来源切换及说明、Pi 终端扩展接入与 `pi` 终端命令安装／移除、Claude Code 终端插件接入）全部迁入 Agent 页右栏对应 Agent 的「接入」区就地配置并应用；涉及运行中 Host 启动参数的修改仍通过既有暂停—重连链路生效。全局「设置」页仅保留外观、登录启动、电脑名称、中继服务器与 Host 自身更新，移除 Agent 详情页跳转全局设置的「接入设置」入口。
+3. **桌面概览页对齐**：
+   - 更新提示条移入概览流内，采用凹陷槽表面、左侧琥珀色 `info` 图标、单「查看」入口与关闭钮。
+   - 首次引导条封装为独立 `Card`，5 等分步骤采用 18×18 凹陷圆孔与步间 2px 连接线，已完成步点亮 8×8 绿点，当前步带 2px `accent` 外环与加粗文案。
+   - 链路卡设备列表改为 32px 紧凑胶囊标签，含 6×6 在线／离线状态点及连接路径或离线时间。
+   - 概览 Agent 行右侧状态区按「会话气泡与计数 → 语义色状态词 → 状态圆点 → 112px 动作按钮」排列，正在安装的进度条内嵌于对应 Agent 行下方。
+4. **桌面 Agent 双栏页对齐**：
+   - 左轨每行使用 36×36 凹陷圆孔承载图标，Codex／DeepSeek 的终端与桌面双生项均带 15×15 凸起圆形右下角标（终端 `>_`／显示器），去掉行首多余 `▸` 与重复 `StatusDot`，副标题拼接运行中会话数；多选达 2 项及以上时在页头右侧展示批量操作胶囊条。
+   - 右栏详情头部采用 52×52 凹陷圆盘与 76×38 大号插销；未启用态居中留白展示「未启用」与主启用按钮，并在底部为 Codex／DeepSeek 提供共用供应商的孪生互跳胶囊。
+   - 供应商列表置于凹陷容器内，头部显示配置总数，每行展示当前三角／候选项圆点、名称与官方／已保存副标题、当前项行内 5 小时／7 天迷你配额条及底部「+ 添加供应商」行；无运行中会话时切换供应商直接生效，仅在存在运行中会话时提示确认。运行中会话列表置于凹陷容器并带 8×8 绿点。
+5. **移动端（Android／iOS）轮盘页对齐**：
+   - 内环与插销栓头：已启用 Agent 图标右上角绘制 7×7 状态点；Codex／DeepSeek 终端与桌面版在环上及滑入插销栓头时均带 14×14 凸起圆形右下角标（终端 `>_`／显示器）；插销槽右端插孔在通电时点亮 `1.5px` 品牌色圈，拖拽越过阈值时插销槽点亮 `2px` 品牌色外框；补齐断电反向退光与准备／安装态循环流光弧。
+   - 铭牌与事实区：`未安装`／`待配置` 状态词旁提供低干扰 `info` 按钮弹出提示气泡；铭牌副标题行展示运行中会话数、外部变更提示或错误原因；拖拽停用有运行中会话的 Agent 时显示「松手后确认停用」；底部事实区在有运行中会话且未展开配额时以凹陷容器展示带 8px 绿点的会话标题列表（最多 2 条及剩余计数）。
+
+实现与验证指针：
+
+- 桌面端：[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)、[`AgentLatch.qml`](../../packages/windows-host/src/qml/AgentLatch.qml)、[`Symbols.js`](../../packages/windows-host/src/qml/Symbols.js)、[`HostController.h`](../../packages/windows-host/src/HostController.h)、[`HostController.cpp`](../../packages/windows-host/src/HostController.cpp)、[`main.cpp`](../../packages/windows-host/src/main.cpp) 及 [`OverviewRowHoverTest.cpp`](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp)（验证 Agent 页双栏点击「供应商配置」零位移、Agent 接入设置就地展示、双生胶囊互跳及 Kimi Smoke 检查）。
+- 移动端：Android [`OrbisSymbols.kt`](../../android/app/src/main/java/com/orbising/orbis/OrbisSymbols.kt)、[`AgentDialState.kt`](../../android/app/src/main/java/com/orbising/orbis/AgentDialState.kt)、[`ProviderDialScreen.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialScreen.kt)、[`AgentDialStateTest.kt`](../../android/app/src/test/java/com/orbising/orbis/AgentDialStateTest.kt)；iOS [`ProviderDialGeometry.swift`](../../ios/Orbis/Orbis/ProviderDialGeometry.swift)、[`StatusViews.swift`](../../ios/Orbis/Orbis/StatusViews.swift)、[`ProviderDialGeometryTests.swift`](../../ios/Orbis/Tests/ProviderDialGeometryTests.swift)。

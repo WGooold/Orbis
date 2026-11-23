@@ -1190,14 +1190,24 @@ void HostController::querySubscription(const QString &id) {
         }
         if (!current) return;
         const auto quota = value.toObject();
+        QVariantMap summary;
         QStringList lines;
         for (const auto &item : quota.value("windows").toArray()) {
             const auto window = item.toObject();
-            const auto label = window.value("name").toString() == "five_hour" ? QStringLiteral("5 小时配额") : QStringLiteral("周配额");
+            const auto name = window.value("name").toString();
+            const auto label = name == "five_hour" ? QStringLiteral("5 小时配额") : QStringLiteral("周配额");
+            if (window.value("remainingPercent").isDouble()) {
+                summary.insert(name == "five_hour" ? QStringLiteral("fiveHour") : QStringLiteral("sevenDay"),
+                               qRound(window.value("remainingPercent").toDouble()));
+            }
             QString line = label + "：" + (window.value("remainingPercent").isDouble()
                 ? "剩余 " + QString::number(window.value("remainingPercent").toDouble(), 'f', 1) + "%" : "暂不可用");
             if (window.value("resetsAt").isDouble()) line += "\n重置时间：" + QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(window.value("resetsAt").toDouble())).toString("yyyy-MM-dd HH:mm");
             lines.append(line);
+        }
+        if (!summary.isEmpty()) {
+            m_providerQuotas.insert(kind + ":" + id, summary);
+            emit providersChanged();
         }
         lines.append("查询时间：" + QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(quota.value("checkedAt").toDouble())).toString("yyyy-MM-dd HH:mm"));
         emit providerInfoReady("当前订阅配额", lines.join("\n\n"));

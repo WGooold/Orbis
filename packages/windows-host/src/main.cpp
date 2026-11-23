@@ -367,17 +367,17 @@ int main(int argc, char *argv[]) {
                 return;
             }
             if (parser.isSet("smoke-kimi")) {
-                // KIMI-10: the fixture advertises an inherited opt-in; render observed status on the settings page.
+                // KIMI-10: the fixture advertises an inherited opt-in; render observed status on the Agent page.
                 controller.smokeActivation(true);
                 controller.smokeReceive({{"event", "status"}, {"kimiCodeState", "connected"}});
-                QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 3));
+                QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, "kimiCode"));
                 QTimer::singleShot(400, &app, [&] {
-                    auto *toggle = findVisualItem(window->contentItem(), "kimiCodeSwitch");
+                    auto *toggle = findVisualItem(window->contentItem(), "enableAgent-kimiCode");
                     auto *status = findVisualItem(window->contentItem(), "kimiCodeStatus");
                     auto *source = findVisualItem(window->contentItem(), "kimiCodeSource");
                     auto *scroll = findVisualItem(window->contentItem(), "pageScroll");
                     auto *viewport = scroll ? qobject_cast<QQuickItem *>(scroll->property("contentItem").value<QObject *>()) : nullptr;
-                    if (!toggle || !toggle->isVisible() || !toggle->property("checked").toBool() ||
+                    if (!toggle || !toggle->isVisible() || !toggle->property("powered").toBool() ||
                         !status || !status->isVisible() || status->property("text").toString() != "已接入" || !viewport) { app.exit(86); return; }
                     if (controller.kimiDesktopSupported() && (!source || !source->isVisible() ||
                         source->property("currentValue").toString() != controller.kimiCodeSource())) { app.exit(90); return; }
