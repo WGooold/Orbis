@@ -10,7 +10,7 @@
 | Claude Code | [Lobe Icons](https://github.com/lobehub/lobe-icons) `claudecode-color.svg` | `app/src/main/res/drawable/ic_agent_claude.xml` | 使用 Claude Code 像素小人，保留原橙色和眼睛镂空。 |
 | Kimi Code | [Moonshot AI 的 Kimi Code 标志](https://github.com/MoonshotAI/kimi-code/blob/83e4dde93453dd22e89da03d2c96d84999e7d0c2/KIMI%20CODE%20LOGO/Original%20Logo.svg) | `app/src/main/res/drawable/ic_agent_kimi.xml` | 使用桌面软件同款蓝色终端小人，无应用图标底板；保留原色、比例和渐变。 |
 | OpenClaw | [Lobe Icons](https://github.com/lobehub/lobe-icons) `openclaw-color.svg` | `app/src/main/res/drawable/ic_agent_openclaw.xml` | 复用官网推广页已有素材，保留路径和渐变；iOS 使用同源的 `AgentOpenClaw.svg`。 |
-| Hermes Agent | [Lobe Icons](https://github.com/lobehub/lobe-icons) `hermesagent.svg` | `app/src/main/res/drawable/ic_agent_hermes.xml` | 单色标志按明暗主题切换同色系墨色。 |
+| Hermes Agent | [Lobe Icons](https://github.com/lobehub/lobe-icons) `hermesagent.svg` | `app/src/main/res/drawable/ic_agent_hermes.xml` | 单色标志按明暗主题切换同色系墨色；将 SVG 压缩的弧线标志位与坐标逐项分隔，避免 Android PathParser 解析错位。 |
 | OpenCode | [OpenCode 品牌资源](https://opencode.ai/brand) | `app/src/main/res/drawable/ic_agent_opencode.xml`、`ic_agent_opencode_dark.xml` | 透明款方框标识，跟随 Orbis 外观选择官方深墨／浅墨版本，不覆盖颜色。 |
 
 来源与权利声明随 APK 放在 [`app/src/main/assets/agent-icon-notices.txt`](../app/src/main/assets/agent-icon-notices.txt)。
