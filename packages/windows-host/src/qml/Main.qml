@@ -1074,7 +1074,7 @@ ApplicationWindow {
                     Image { source: "qrc:/src/assets/orbis.png"; Layout.preferredWidth: 40; Layout.preferredHeight: 40; smooth: true }
                     EngravedWordmark { text: "Orbis" }
                 }
-                Label { text: "Easy Agents Everywhere"; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.leftMargin: 4; Layout.bottomMargin: 36 }
+                Label { text: "Nothing But the Remote"; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.leftMargin: 4; Layout.bottomMargin: 36 }
                 Repeater {
                     model: window.pageNames
                     delegate: Button {

@@ -151,7 +151,7 @@ posters.push(page(6, 'iphone-duo', ['折叠、半展、展开，', '界面随姿
 
         <div class="duo-pane duo-right">
           <div class="duo-right-main">
-            <div class="duo-brand-center"><b>Orbis</b><small>Easy Agents Everywhere</small></div>
+            <div class="duo-brand-center"><b>Orbis</b><small>Nothing But the Remote</small></div>
             <div class="duo-conn-bar">
               <span>${icon('material-desktop', 13)} 工作电脑</span>
               <span class="duo-conn-pill"><i></i>中继 ${shieldCheckSvg(10)}</span>
@@ -215,7 +215,7 @@ posters.push(page(6, 'iphone-duo', ['折叠、半展、展开，', '界面随姿
   <div class="duo-folded-device" style="${pos(186, 724, 214, 'transform:rotate(-2deg)')}">
     <div class="duo-folded-screen">
       <div class="duo-folded-main">
-        <div class="duo-folded-brand"><b>Orbis</b><small>Easy Agents Everywhere</small></div>
+        <div class="duo-folded-brand"><b>Orbis</b><small>Nothing But the Remote</small></div>
         <div class="duo-folded-status">
           <span class="dfs-host">${icon('material-desktop', 10)}工作电脑</span>
           <span class="dfs-pill"><i></i>中继 ${shieldCheckSvg(8)}</span>

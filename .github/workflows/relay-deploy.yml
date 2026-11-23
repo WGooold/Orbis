@@ -274,7 +274,7 @@ jobs:
           site_url="${HEALTH_URL%/healthz}/"
           site_body="$(curl -fsS --max-time 20 "$site_url")"
           admin_body="$(curl -fsS --max-time 20 "${site_url}admin/")"
-          grep -q 'Easy Agents Everywhere' <<<"$site_body"
+          grep -q 'Nothing But the Remote' <<<"$site_body"
           grep -q 'Relay 控制台' <<<"$admin_body"
           status="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "${site_url}v1/admin/overview")"
           test "$status" = 401

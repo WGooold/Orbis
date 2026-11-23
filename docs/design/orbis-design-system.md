@@ -50,7 +50,7 @@ Orbis 是"从手机连接电脑上的 Agent"的原生客户端：Android（Compo
 - 功能文案直接写操作或状态；明显的功能不配解释性小字，操作后果尽量写进按钮。必须说明的非显然后果由小型 info 图标展开提示。不要用 `·` 作为分隔符；信息之间优先用独立布局，文本列表用逗号或顿号。
 - 中英混排时中英之间留一个空格（「发给 Codex，/ 命令」）；产品名照原样写：Pi、Codex、DeepSeek、Claude Code、Orbis。
 - 不用感叹号、不用 emoji、不用"您"；称呼用户的电脑为「电脑」，不写 Host / runtime 等内部词。
-- Slogan 统一写作 **Easy Agents Everywhere**（不是 EveryWhere）。
+- Slogan 统一写作 **Nothing But the Remote**（the 小写，其余首字母大写）。
 
 ## 3 视觉基础速览
 
@@ -610,7 +610,7 @@ F0 不产生界面元素；F1–F4 不拦截自身范围外的触摸；只有 F5
 
 ### 首页
 
-- 顶栏：目录圆钮、`Wordmark`（Orbis + Easy Agents Everywhere）、下载、新建。
+- 顶栏：目录圆钮、`Wordmark`（Orbis + Nothing But the Remote）、下载、新建。
 - 电脑行：电脑名（`body-strong`）+ 连接胶囊（`StatusPill`：静止实心点 + 局域网 / 中继 + 锁；只在同步或重连时出现绕行弧）。多台电脑时电脑名可点切换（SC06）。
 - 新建会话：点 + 时列表最上方升起 `SessionDraft`，其余卡片退到 `opacity-dim`。
 - 会话卡列表：`SessionCard`，Agent 标记槽 44；标题固定两行，路径、模型、状态各一行，模型为空时显示 Agent 名称，状态为空时保留行槽。长按进入多选，左滑到 40% 上膛关闭。列表下方提示“长按卡片多选，向左滑动关闭”。
@@ -704,9 +704,9 @@ Agent 的身份：标记、用自身颜色写的名称，以及可选的实时�
 
 凹刻的 Orbis 字标与 Slogan，只在首页顶栏出现一次。
 
-- 属性：`tagline`（字符串，或 `false` 隐藏；默认 "Easy Agents Everywhere"）。
+- 属性：`tagline`（字符串，或 `false` 隐藏；默认 "Nothing But the Remote"）。
 - 名称为 `title`、`ink`，加 `engrave` 文字阴影（暗壁左上、亮壁右下，浮雕 1.8）；语义上只有一个文字节点，两层墙只是装饰。
-- Slogan 用 `label`、`ink-muted`，不着色。拼写为 "Easy Agents Everywhere"。
+- Slogan 用 `label`、`ink-muted`，不着色。拼写为 "Nothing But the Remote"。
 - 原生：Android `OrbisWordmark` 与 Host 的三层字标已是此画法，浮雕保持 1.8dp/pt。
 
 #### StatusDot

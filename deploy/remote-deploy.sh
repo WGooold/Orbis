@@ -186,7 +186,7 @@ docker exec orbis-relay node packages/relay/dist/protocol-smoke.js "${public_hea
 site_url="${public_health_url%/healthz}/"
 site_body="$(curl -fsS --max-time 20 "$site_url")"
 admin_body="$(curl -fsS --max-time 20 "${site_url}admin/")"
-grep -q 'Easy Agents Everywhere' <<<"$site_body"
+grep -q 'Nothing But the Remote' <<<"$site_body"
 grep -q 'Relay 控制台' <<<"$admin_body"
 admin_status="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "${site_url}v1/admin/overview")"
 test "$admin_status" = 401

@@ -1093,7 +1093,7 @@ internal fun RuntimeListScreen(
                         } else Column {
                             OrbisWordmark()
                             Text(
-                                "Easy Agents Everywhere",
+                                "Nothing But the Remote",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,

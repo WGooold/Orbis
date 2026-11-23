@@ -943,7 +943,7 @@ struct HomeView: View, Equatable {
                     Text("Orbis").font(.orbisTitle())
                         .foregroundStyle(palette.secondary)
                         .shadow(color: palette.light, radius: 0, x: 1, y: 1)
-                    Text("Easy Agents Everywhere").font(.orbisCaption()).tracking(0.4)
+                    Text("Nothing But the Remote").font(.orbisCaption()).tracking(0.4)
                         .foregroundStyle(palette.secondary)
                         .lineLimit(1)
                 }
@@ -1625,7 +1625,7 @@ private struct HomeSystemToolbarModifier: ViewModifier {
             VStack(spacing: 0) {
                 Text("Orbis").font(.orbisBody(.semibold))
                     .foregroundStyle(palette.secondary)
-                Text("Easy Agents Everywhere").font(.system(size: 10, weight: .medium))
+                Text("Nothing But the Remote").font(.system(size: 10, weight: .medium))
                     .tracking(0.3)
                     .foregroundStyle(palette.secondary)
                     .lineLimit(1)

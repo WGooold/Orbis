@@ -34,7 +34,7 @@ describe("Relay web console", () => {
     const base = relay.url.replace("ws://", "http://");
     const site = await fetch(`${base}/`);
     expect(site.status).toBe(200);
-    expect(await site.text()).toContain("Easy Agents Everywhere");
+    expect(await site.text()).toContain("Nothing But the Remote");
     await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({ windows: [], macos: [] });
     expect((await fetch(`${base}/admin/`)).status).toBe(200);
     expect((await fetch(`${base}/v1/admin/overview`)).status).toBe(401);
@@ -307,7 +307,7 @@ describe("Relay web console", () => {
     expect((await fetch(`${base}/assets/admin.js`)).headers.get("content-type")).toContain("javascript");
     // The cinematic homepage must work under the same strict CSP and finite asset allowlist.
     const homepage = await fetch(base).then(response => response.text());
-    expect(homepage).toContain("你想要的");
+    expect(homepage).toContain("你只缺");
     expect(homepage).toContain('src="assets/cinema.js"');
     expect(homepage).not.toContain("feature-tour");
     for (const [path, type] of [

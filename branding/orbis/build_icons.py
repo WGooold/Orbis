@@ -330,7 +330,7 @@ def main():
         font=ImageFont.load_default(); title=ImageFont.load_default()
     ink = (16, 33, 61)
     d.text((48,30),'Orbis / porcelain',font=title,fill=ink)
-    d.text((48,88),'Easy Agents Everywhere',font=font,fill=ink)
+    d.text((48,88),'Nothing But the Remote',font=font,fill=ink)
     for i, shape in enumerate(['rounded','circle','squircle']):
         tile=master.resize((320,320),LANCZOS)
         mask=Image.new('L',(1280,1280)); md=ImageDraw.Draw(mask)

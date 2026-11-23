@@ -4,7 +4,7 @@
 
 <h1 align="center">Orbis</h1>
 
-<p align="center"><strong>Easy Agents Everywhere.</strong><br>Zero desktop intrusion. The smoothest mobile remote behind all your agents.</p>
+<p align="center"><strong>Nothing But the Remote.</strong><br>Maybe all you need is a remote.</p>
 
 <p align="center"><a href="README.md">简体中文</a> · <strong>English</strong></p>
 
@@ -16,23 +16,23 @@
   <a href="https://github.com/WGooold/Orbis/issues">Feedback</a>
 </p>
 
-Orbis never merges or gets in the way of your native desktop agents. Keep using Claude Code, Codex, DeepSeek, or Pi as usual—Orbis quietly backs them up, focused purely on the smoothest mobile remote control.
+Your desktop agents, continued on your phone.
 
-Run **Orbis Host** on your computer, install **Orbis App** on your phone, scan once to continue chats, follow progress, review diffs, and download files.
+Run **Orbis Host** on your computer, install **Orbis App** on your phone, and scan to connect.
 
-## What you can do from your phone
+## On your phone
 
-| Feature | What it lets you do |
+| Feature | |
 | --- | --- |
-| Live chat | Send tasks, follow responses and tool activity, add instructions, or stop the current task. |
-| File review | See which files changed during a turn and inspect the differences. |
-| File downloads | Browse files on your computer and download the results to your phone. |
-| Session management | Find conversations by computer and project folder, switch tasks, and resume earlier sessions. |
-| New sessions | Choose an agent and a project folder on your computer to start a new task. |
-| Subscription usage | Check usage limits and reset times for supported accounts. |
-| QR pairing | Scan a code on your computer to connect it. You can pair more than one computer. |
+| Live chat | Send tasks, follow progress, add to or stop a turn. |
+| File review | Every change from the turn, one by one. |
+| File downloads | Files from your computer, saved to your phone. |
+| Sessions | Find any session by computer and project, and pick it up. |
+| New sessions | Pick an agent and a folder, and start. |
+| Usage | Limits and reset times. |
+| QR pairing | Scan to connect. Pair as many computers as you like. |
 
-[Try the interactive demo on the website](https://orbising.com/#experience) to explore chat, file review, and session switching.
+[Try the interactive demo](https://orbising.com/#experience)
 
 ## Screens
 

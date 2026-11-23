@@ -1,6 +1,6 @@
 # Orbis 品牌资源
 
-品牌名：Orbis。Slogan：Easy Agents Everywhere。
+品牌名：Orbis。Slogan：Nothing But the Remote。中文主张：其实，你只缺一个远控。
 
 开口方环象征稳定的基地，右上小方块象征可以独立出发的能力。当前应用图标为瓷白反色版：暖瓷白底面从左上 #FBFBF9 到右下 #E4E6EA 在 OKLab 中过渡，方环与小方块均为墨蓝 #151E33，墨色随左上光向轻微压暗，并带墨色调的贴边与环境两层柔和投影。标志按 B 版母图的形状遮罩重绘并平滑轮廓，1024px 下边缘无阶梯与亮边。底面与标志分别由 `build_icons.py` 的 `SURFACE` 与 `MARK` 参数合成，带固定种子抖动，避免 8 位渐变出现色带。
 
