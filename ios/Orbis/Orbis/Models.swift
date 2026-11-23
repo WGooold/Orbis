@@ -184,11 +184,18 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
         }
         return remoteCloseCommand(commands, negotiated: negotiated) == nil ? .unavailableCommand : nil
     }
+    private var usesSharedRemoteView: Bool {
+        ["opencode", "kimiCode", "hermes", "openclaw"].contains(agentKind ?? "")
+    }
+
+    var viewOnlyClose: Bool { agentKind == "codexDesktop" || usesSharedRemoteView }
+
     func remoteCloseCommand(_ commands: [SlashCommand], negotiated: Bool) -> SlashCommand? {
-        let name = negotiated && agentKind == "claude" ? SlashCommand.closeCapability : "quit"
+        guard !usesSharedRemoteView || negotiated else { return nil }
+        let name = usesSharedRemoteView ? SlashCommand.viewCloseCapability : negotiated && agentKind == "claude" ? SlashCommand.closeCapability : "quit"
         return commands.first {
             $0.name == name && $0.argument?.required != true && (!negotiated || $0.source == "builtin") &&
-                (name != SlashCommand.closeCapability || $0.closeGeneration?.isEmpty == false)
+                (name == "quit" || $0.closeGeneration?.isEmpty == false)
         }
     }
 }
@@ -265,9 +272,9 @@ struct RuntimeCloseImpact {
         }
         if queued > 0 { details.append(L10n.tr("有 {0} 条消息尚未确认送达，关闭后可能不会发送。", queued)) }
         activity = details
-        viewOnly = runtime.agentKind == "codexDesktop"
+        viewOnly = runtime.viewOnlyClose
         switch runtime.agentKind {
-        case "codexDesktop": effect = L10n.tr("只退出手机视图，不会停止电脑端的工作。")
+        case "codexDesktop", "opencode", "kimiCode", "hermes", "openclaw": effect = L10n.tr("只退出手机视图，不会停止电脑端的工作。")
         case "claude": effect = L10n.tr("将结束电脑上的 Claude Code 进程；不能确认所有后台任务都会停止。")
         case "codex": effect = L10n.tr("将尝试关闭电脑上的 Codex 终端；不能确认所有后台任务都会停止。")
         case "dsh", "dshDesktop": effect = L10n.tr("关闭会尝试停止当前回合；不能确认所有后台任务都会停止。")
@@ -682,6 +689,7 @@ struct RuntimeOption: Codable, Hashable, Identifiable {
 
 struct SlashCommand: Codable, Hashable, Identifiable {
     static let closeCapability = "orbis-close"
+    static let viewCloseCapability = "orbis-exit-view"
     let name: String
     let description: String?
     let source: String

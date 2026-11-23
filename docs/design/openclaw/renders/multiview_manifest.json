@@ -1,0 +1,79 @@
+{
+  "job_id": "86138807e04640088a6efc52ed8caeca",
+  "kind": "multiview",
+  "status": "completed",
+  "items": [
+    {
+      "camera": "Cam_Hero_34",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "c588d7cf40abe65e11204aa45da4ab1ce94ddeabe040dbe40c29d494dffcc0e0",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1215967
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/openclaw/renders/hero_34.png"
+    },
+    {
+      "camera": "Cam_Top_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "3502d40cef7c258d0dae62b0ecbceda236d5f6bad96558f9858b2fa4bdef9055",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1295676
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/openclaw/renders/top_ortho.png"
+    },
+    {
+      "camera": "Cam_Side_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "3b9ecf068d46fec520510d4b713ef1ed5259fa8c09cca9ee7548c5e1a056b3a5",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1076819
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/openclaw/renders/side_ortho.png"
+    },
+    {
+      "camera": "Cam_Front_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "b42e45f4eb35943ea0e5e581f7d19a6d97e39a9dbad921a383b317125ee7d061",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1052222
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/openclaw/renders/front_ortho.png"
+    },
+    {
+      "camera": "Cam_Back_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "6f5af71f616e3fb4a3f85abb2137d87549501050112840e6f1a7da719440918d",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1038087
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/openclaw/renders/back_ortho.png"
+    },
+    {
+      "camera": "Cam_Rear_34",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "1077f07ca722f1363ba725780e2ebbad75a22db68584f497fca09ef52ca0005a",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1191928
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/openclaw/renders/rear_34.png"
+    }
+  ]
+}

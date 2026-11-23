@@ -92,6 +92,8 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     out({ event: "state", state: "connected" });
     out({ event: "claudeStatus", installed: true, compatible: true, version: "2.1.300", minimumVersion: "2.1.287" });
     out({ event: "codexDesktop", status: { state: "attached", reason: "" } });
+    out({ event: "dshDesktop", status: { state: "attached", reason: "已接入 DeepSeek 桌面版 0.2.2-rc.2", version: "0.2.2-rc.2" } });
+    out({ event: "hermesCli", installed: true, version: "0.1.4" });
     out({
       event: "status",
       runtimeCount: 4,
@@ -119,14 +121,19 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     return;
   }
   if (method === "detect") {
+    globalThis.__detectCalls = (globalThis.__detectCalls || 0) + 1;
+    const withUpdates = !!(params && params.checkLatest) && globalThis.__detectCalls > 1;
     out({
       id,
       result: [
-        { kind: "pi", installed: true },
-        { kind: "codex", installed: true, desktopInstalled: true },
-        { kind: "dsh", installed: true, desktopInstalled: true }
+        { kind: "pi", installed: true, version: "0.70.0", latestVersion: "0.70.0", recommendedVersion: "0.70.0", updateAvailable: false },
+        { kind: "codex", installed: true, desktopInstalled: true, version: "0.130.0", ...(withUpdates ? { latestVersion: "0.132.0", recommendedVersion: "0.132.0", updateAvailable: true } : {}) },
+        { kind: "dsh", installed: true, desktopInstalled: true, version: "0.2.0", ...(withUpdates ? { latestVersion: "0.2.2", recommendedVersion: "0.2.2", updateAvailable: true, compatibilityNote: "Orbis 手机接入需要 0.2.2 或兼容版本，推荐安装 0.2.2" } : {}) }
       ]
     });
+    if (withUpdates) {
+      out({ event: "claudeStatus", installed: true, compatible: true, version: "2.1.300", minimumVersion: "2.1.287", latestVersion: "2.1.325", updateAvailable: true });
+    }
     return;
   }
   if (method === "agent.enablement.write") {
@@ -269,7 +276,7 @@ private slots:
         QVERIFY(initialLabelBounds.width() > 30);
         QVERIFY(initialActionBounds.right() <= cardBounds.right() + 0.5);
 
-        const QPoint hoverPoint(qRound(cardBounds.left() + 140), qRound(initialMarkBounds.center().y()));
+        const QPoint hoverPoint = codexRow->mapRectToScene(codexRow->boundingRect()).center().toPoint();
         QEnterEvent enter(hoverPoint, hoverPoint, window->mapToGlobal(hoverPoint));
         QCoreApplication::sendEvent(window, &enter);
         QMouseEvent move(QEvent::MouseMove, hoverPoint, window->mapToGlobal(hoverPoint), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
@@ -279,7 +286,8 @@ private slots:
         auto *theme = engine.singletonInstance<QObject *>("Orbis.Host", "Theme");
         QVERIFY(theme);
         const QColor surfaceLift = theme->property("surfaceLift").value<QColor>();
-        auto *highlight = findHoverHighlight(card, surfaceLift);
+        QQuickItem *highlight = nullptr;
+        QTRY_VERIFY((highlight = findHoverHighlight(card, surfaceLift)) != nullptr);
         const auto screenshotBase = qEnvironmentVariable("ORBIS_OVERVIEW_HOVER_SCREENSHOT");
         if (!screenshotBase.isEmpty()) {
             window->grabWindow().save(QString("%1-%2.png").arg(screenshotBase).arg(windowWidth));
@@ -330,8 +338,14 @@ private slots:
         auto *openProvidersBtn = findVisualItem(detail, "openAgentProviders");
         auto *detailLatch = findVisualItem(detail, "detailAgentLatch");
         auto *detailTitle = findVisualItem(detail, "agentDetailTitle");
-        QVERIFY(rail && detail && integrationSection && codexPrestart && twinChip && openProvidersBtn);
-        QVERIFY(detailLatch && detailTitle);
+        auto *detailVersion = findVisualItem(detail, "agentDetailVersion");
+        auto *detailVersionState = findVisualItem(detail, "agentDetailVersionState");
+        auto *detailInstall = findVisualItem(detail, "agentDetailInstall");
+        auto *detailNotice = findVisualItem(detail, "agentDetailNotice");
+        auto *codexRailDot = findVisualItem(rail, "agentRailUpdateDot-codex");
+        auto *piRailDot = findVisualItem(rail, "agentRailUpdateDot-pi");
+        QVERIFY(rail && detail && integrationSection && codexPrestart && twinChip && openProvidersBtn && detailLatch && detailTitle &&
+                detailVersion && detailVersionState && detailInstall && detailNotice && codexRailDot && piRailDot);
         QTRY_VERIFY(integrationSection->isVisible() && codexPrestart->isVisible() && twinChip->isVisible() && openProvidersBtn->isVisible());
         auto *socket = findVisualItem(detailLatch, "agentLatchSocket");
         auto *knobFace = findVisualItem(detailLatch, "agentLatchKnobFace");
@@ -345,6 +359,55 @@ private slots:
         QCOMPARE(socketTint, latchTheme->property("agentCodex").value<QColor>());
         const auto knobOutline = QQmlProperty(knobFace, "border.color").read().value<QColor>();
         QCOMPARE(knobOutline, latchTheme->property("hairline").value<QColor>());
+        controller.detectAgents(true);
+        QTRY_VERIFY(!controller.busy() && !controller.activityKinds().contains("agents") && controller.claudeUpdateAvailable());
+
+        // Version appears directly below the Agent title, while the target update version appears only once on the primary update button.
+        QTRY_VERIFY(detailVersion->isVisible() && detailInstall->isVisible() && detailInstall->isEnabled() && detailInstall->property("primary").toBool());
+        QCOMPARE(detailVersion->property("text").toString(), QString("· v0.130.0"));
+        QCOMPARE(detailInstall->property("text").toString(), QString("更新到 v0.132.0"));
+        QVERIFY(codexRailDot->isVisible());
+        QVERIFY(!piRailDot->isVisible());
+        QVERIFY(findTextLabel(integrationSection, "当前版本") == nullptr);
+
+        // Up-to-date managed CLI (Pi) hides the update button and marks the header version as latest.
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("pi")), Q_ARG(QVariant, 0)));
+        QCOMPARE(detailVersion->property("text").toString(), QString("· v0.70.0"));
+        QVERIFY(detailVersionState->isVisible());
+        QCOMPARE(detailVersionState->property("text").toString(), QString("· 已是最新"));
+        QVERIFY(!detailInstall->isVisible());
+
+        // Claude Code uses the exact same header version and single update button presentation as npm CLIs.
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("claude")), Q_ARG(QVariant, 0)));
+        QCOMPARE(detailVersion->property("text").toString(), QString("· v2.1.300"));
+        QVERIFY(detailInstall->isVisible() && detailInstall->property("primary").toBool());
+        QCOMPARE(detailInstall->property("text").toString(), QString("更新到 v2.1.325"));
+        QVERIFY(findVisualItem(detail, "claudeVersions") == nullptr);
+        QVERIFY(findVisualItem(detail, "updateClaude") == nullptr);
+
+        // DeepSeek Web does not duplicate its recommended update version in a separate compatibility notice line.
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("dsh")), Q_ARG(QVariant, 0)));
+        QCOMPARE(detailTitle->property("text").toString(), QString("DeepSeek Web"));
+        QCOMPARE(detailVersion->property("text").toString(), QString("· v0.2.0"));
+        QVERIFY(detailInstall->isVisible());
+        QCOMPARE(detailInstall->property("text").toString(), QString("更新到 v0.2.2"));
+        QVERIFY(!detailNotice->isVisible());
+
+        // Hermes and OpenClaw render their connection settings inside the unified agentIntegrationSection.
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("hermes")), Q_ARG(QVariant, 0)));
+        QVERIFY(detailVersion->isVisible());
+        QCOMPARE(detailVersion->property("text").toString(), QString("· v0.1.4"));
+        QVERIFY(integrationSection->isVisible());
+        auto *hermesCard = findVisualItem(integrationSection, "hermesRemoteCard");
+        QVERIFY(hermesCard && hermesCard->isVisible());
+
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("openclaw")), Q_ARG(QVariant, 0)));
+        QVERIFY(!detailVersion->isVisible());
+        QVERIFY(integrationSection->isVisible());
+        auto *openClawCard = findVisualItem(integrationSection, "openClawCard");
+        QVERIFY(openClawCard && openClawCard->isVisible());
+
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("codex")), Q_ARG(QVariant, 0)));
         QVERIFY(QMetaObject::invokeMethod(twinChip, "clicked"));
         QCOMPARE(window->property("selectedAgent").toString(), QString("codexDesktop"));
         QCOMPARE(window->property("detailProviderGroup").toString(), QString("codex"));
@@ -356,6 +419,8 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("dshDesktop")), Q_ARG(QVariant, 0)));
         QCOMPARE(window->property("selectedAgent").toString(), QString("dshDesktop"));
         QCOMPARE(window->property("detailProviderGroup").toString(), QString("dsh"));
+        QVERIFY(detailVersion->isVisible());
+        QCOMPARE(detailVersion->property("text").toString(), QString("· v0.2.2-rc.2"));
         QTRY_VERIFY(openProvidersBtn->isVisible());
         QTRY_COMPARE(controller.providerKind(), QString("dsh"));
         QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("codex")), Q_ARG(QVariant, 0)));
@@ -434,7 +499,6 @@ private slots:
 
         controller.shutdown();
     }
-
     void runningSessionTitleElidesWithoutMovingDot_data() {
         QTest::addColumn<int>("windowWidth");
         QTest::newRow("compact") << 1020;

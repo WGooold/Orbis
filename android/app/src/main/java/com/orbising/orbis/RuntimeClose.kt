@@ -6,6 +6,12 @@ import kotlinx.serialization.json.contentOrNull
 
 internal const val RUNTIME_CLOSE_FEATURE = "runtime.close.v1"
 internal const val RUNTIME_CLOSE_CAPABILITY = "orbis-close"
+internal const val RUNTIME_VIEW_CLOSE_FEATURE = "runtime.view-close.v1"
+internal const val RUNTIME_VIEW_CLOSE_CAPABILITY = "orbis-exit-view"
+
+private val sharedViewKinds = setOf("opencode", "kimiCode", "hermes", "openclaw")
+internal val RuntimeSummary.viewOnlyClose: Boolean
+    get() = agentKind == "codexDesktop" || agentKind in sharedViewKinds
 
 /** SESSION-CLOSE-01: a dialog authorizes only these sessions on this connection. */
 internal data class RuntimeCloseTarget(
@@ -43,15 +49,19 @@ data class RuntimeCloseImpact(val activity: List<String>, val effect: String, va
 }
 
 internal fun List<RuntimeSlashCommand>.visibleSlashCommands(): List<RuntimeSlashCommand> {
-    if (none { it.name == RUNTIME_CLOSE_CAPABILITY }) return this
-    val menu = filterNot { it.name == RUNTIME_CLOSE_CAPABILITY }
+    if (none { it.name == RUNTIME_CLOSE_CAPABILITY || it.name == RUNTIME_VIEW_CLOSE_CAPABILITY }) return this
+    val menu = filterNot { it.name == RUNTIME_CLOSE_CAPABILITY || it.name == RUNTIME_VIEW_CLOSE_CAPABILITY }
     return if (menu.any { it.name == "quit" }) menu else menu + RuntimeSlashCommand("quit", source = "builtin")
 }
 
 internal fun RuntimeSummary.remoteCloseCommand(commands: List<RuntimeSlashCommand>, negotiated: Boolean): RuntimeSlashCommand? {
-    val name = if (negotiated && agentKind == "claude") RUNTIME_CLOSE_CAPABILITY else "quit"
+    val name = when {
+        agentKind in sharedViewKinds -> if (negotiated) RUNTIME_VIEW_CLOSE_CAPABILITY else return null
+        negotiated && agentKind == "claude" -> RUNTIME_CLOSE_CAPABILITY
+        else -> "quit"
+    }
     return commands.firstOrNull { it.name == name && it.argument?.required != true && (!negotiated || it.source == "builtin") &&
-        (name != RUNTIME_CLOSE_CAPABILITY || !it.closeGeneration.isNullOrBlank()) }
+        (name == "quit" || !it.closeGeneration.isNullOrBlank()) }
 }
 
 internal fun RemoteState.closeTarget(id: String): RuntimeCloseTarget? {
@@ -101,14 +111,14 @@ internal fun RemoteState.closeImpact(id: String): RuntimeCloseImpact? {
         if (queued > 0) add(L10n.tr("有 {0} 条消息尚未确认送达，关闭后可能不会发送。", queued))
     }
     val effect = when (runtime.agentKind) {
-        "codexDesktop" -> L10n.tr("只退出手机视图，不会停止电脑端的工作。")
+        "codexDesktop", "opencode", "kimiCode", "hermes", "openclaw" -> L10n.tr("只退出手机视图，不会停止电脑端的工作。")
         "claude" -> L10n.tr("将结束电脑上的 Claude Code 进程；不能确认所有后台任务都会停止。")
         "codex" -> L10n.tr("将尝试关闭电脑上的 Codex 终端；不能确认所有后台任务都会停止。")
         "dsh", "dshDesktop" -> L10n.tr("关闭会尝试停止当前回合；不能确认所有后台任务都会停止。")
         "pi" -> L10n.tr("将请求退出电脑上的 Pi 会话；不能确认所有后台任务都会停止。")
         else -> L10n.tr("关闭可能中断电脑端的工作；不能确认所有后台任务都会停止。")
     }
-    return RuntimeCloseImpact(activity, effect, runtime.agentKind == "codexDesktop")
+    return RuntimeCloseImpact(activity, effect, runtime.viewOnlyClose)
 }
 
 internal fun RemoteState.closePlan(ids: Set<String>): RuntimeClosePlan? {

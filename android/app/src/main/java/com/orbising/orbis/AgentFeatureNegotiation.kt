@@ -31,6 +31,7 @@ internal fun requestedAgentFeatures(ready: JsonObject): List<String> {
         (AGENT_ENABLEMENT_FEATURE !in features || readyAdmitsAgentEnablement(ready)) &&
         (AGENT_DIAL_REVIEW_FEATURE !in features || readyAdmitsAgentDialReview(ready)) &&
         (CODEX_UNIFIED_HISTORY !in features || readyAdmitsCodexHistory(ready)) &&
-        (RUNTIME_CLOSE_FEATURE !in features || readyAdmitsRuntimeClose(ready))) return emptyList()
+        (RUNTIME_CLOSE_FEATURE !in features || readyAdmitsRuntimeClose(ready)) &&
+        (RUNTIME_VIEW_CLOSE_FEATURE !in features || RUNTIME_VIEW_CLOSE_FEATURE in ready.features("deviceFeatures"))) return emptyList()
     return deviceAgentFeatures(ready)
 }

@@ -235,8 +235,167 @@ ApplicationWindow {
     readonly property var detailSessions: window.runningSessionsFor(detailKind)
     readonly property var detailFacts: window.overviewAgents.find(row => row.kind === detailKind) || null
     readonly property bool canEditAgent: host.agentChoicesAvailable
+    readonly property var detailVersionMeta: {
+        const kind = window.detailKind
+        const agents = host.agents
+        const checkingAgents = window.activityKinds.indexOf("agents") >= 0
+        const claudeInstalled = host.claudeInstalled === true
+        const claudeCompatible = host.claudeCompatible === true
+        const claudeDetecting = host.claudeDetecting === true
+        const claudeLatestChecking = host.claudeLatestChecking === true
+        const claudeVersion = host.claudeVersion || ""
+        const claudeLatest = host.claudeLatestVersion || ""
+        const claudeUpdate = host.claudeUpdateAvailable === true
+        const claudeError = host.claudeVersionError || host.claudeLatestError || ""
+        const dshDesktopVer = (host.dshDesktop && host.dshDesktop.version) ? String(host.dshDesktop.version) : ""
+        const hermesCli = host.hermesCli || ({})
+        const hermesReady = window.backendFor("hermes")?.ready === true
+        if (!kind) {
+            return {
+                managed: false, canInstall: false, canUpdate: false,
+                installed: false, broken: false, current: "", target: "",
+                updateAvailable: false, upToDate: false, checking: false,
+                error: "", note: "", installerData: null
+            }
+        }
+        if (kind === "claude") {
+            const checking = claudeDetecting || claudeLatestChecking
+            const updateAvailable = claudeInstalled && claudeUpdate && claudeLatest.length > 0
+            const broken = claudeInstalled && !claudeCompatible && !claudeDetecting
+            return {
+                managed: true,
+                canInstall: false,
+                canUpdate: claudeInstalled,
+                installed: claudeInstalled,
+                broken: broken,
+                current: claudeVersion,
+                target: claudeLatest,
+                updateAvailable: updateAvailable,
+                upToDate: claudeInstalled && claudeVersion.length > 0 && claudeLatest.length > 0 && !updateAvailable && !checking && !broken,
+                checking: checking,
+                error: claudeError,
+                note: "",
+                installerData: { kind: "claude", installed: claudeInstalled, version: claudeVersion, latestVersion: claudeLatest }
+            }
+        }
+        const data = agents.find(a => a.kind === kind)
+        if (data) {
+            const installed = data.installed === true
+            const broken = data.installedButBroken === true
+            const current = data.version || ""
+            const target = data.recommendedVersion || data.latestVersion || ""
+            const updateAvailable = installed && data.updateAvailable === true && target.length > 0
+            return {
+                managed: true,
+                canInstall: true,
+                canUpdate: installed,
+                installed: installed,
+                broken: broken,
+                current: current,
+                target: target,
+                updateAvailable: updateAvailable,
+                upToDate: installed && current.length > 0 && target.length > 0 && !updateAvailable && !checkingAgents && !broken,
+                checking: checkingAgents,
+                error: data.error || data.latestError || "",
+                note: data.compatibilityNote || "",
+                installerData: data
+            }
+        }
+        if (kind === "dshDesktop") {
+            const dsh = agents.find(a => a.kind === "dsh")
+            return {
+                managed: false, canInstall: false, canUpdate: false,
+                installed: dsh?.desktopInstalled === true,
+                broken: window.dshDesktopBlocked(),
+                current: dshDesktopVer,
+                target: "", updateAvailable: false, upToDate: false, checking: false,
+                error: "", note: "", installerData: null
+            }
+        }
+        if (kind === "hermes") {
+            const ver = !hermesCli.remote && hermesCli.version && hermesCli.version !== "SSH 远程" ? String(hermesCli.version) : ""
+            return {
+                managed: false, canInstall: false, canUpdate: false,
+                installed: hermesCli.installed === true || hermesReady,
+                broken: hermesCli.cliIssue === "unrunnable",
+                current: ver,
+                target: "", updateAvailable: false, upToDate: false,
+                checking: hermesCli.detecting === true,
+                error: "", note: "", installerData: null
+            }
+        }
+        return {
+            managed: false, canInstall: false, canUpdate: false,
+            installed: false, broken: false, current: "", target: "",
+            updateAvailable: false, upToDate: false, checking: false,
+            error: "", note: "", installerData: null
+        }
+    }
+    readonly property var detailUpdateAction: {
+        const meta = window.detailVersionMeta
+        const busy = !window.canEditAgent || host.agentInstalling || meta.checking
+        if (!meta.managed) return { visible: false, enabled: false, primary: false, text: "" }
+        const targetLabel = window.formatVersion(meta.target)
+        if (!meta.installed) {
+            if (!meta.canInstall) return { visible: false, enabled: false, primary: false, text: "" }
+            return {
+                visible: true,
+                enabled: !busy,
+                primary: true,
+                text: targetLabel ? "安装 " + targetLabel : "安装最新版本"
+            }
+        }
+        if (meta.broken) {
+            return {
+                visible: true,
+                enabled: !busy,
+                primary: true,
+                text: targetLabel ? "更新到 " + targetLabel : "修复或更新"
+            }
+        }
+        if (meta.updateAvailable) {
+            return {
+                visible: true,
+                enabled: !busy,
+                primary: true,
+                text: "更新到 " + targetLabel
+            }
+        }
+        if (meta.upToDate || meta.checking) {
+            return { visible: false, enabled: false, primary: false, text: "" }
+        }
+        return {
+            visible: true,
+            enabled: !busy,
+            primary: false,
+            text: "更新到最新版本"
+        }
+    }
+    readonly property string detailNoticeText: {
+        const row = window.selectedAgentRow
+        const meta = window.detailVersionMeta
+        if (!row) return ""
+        const statusDetail = window.agentStatus(row).detail || ""
+        if (statusDetail && meta.error && statusDetail !== meta.error) return statusDetail + "\n" + meta.error
+        return statusDetail || meta.error || ""
+    }
     readonly property string inlineListOwner: page === 2 && detailPowered && !providersOpen ? detailProviderGroup : ""
     onInlineListOwnerChanged: if (inlineListOwner) host.refreshAgentProviders(inlineListOwner)
+    function formatVersion(version) {
+        const text = String(version || "").trim()
+        if (!text) return ""
+        return /^v/i.test(text) ? text : "v" + text
+    }
+    function agentHasUpdate(kind) {
+        if (kind === "claude") return host.claudeInstalled === true && host.claudeUpdateAvailable === true && (host.claudeLatestVersion || "").length > 0
+        const data = host.agents.find(a => a.kind === kind)
+        return Boolean(data && data.installed === true && data.updateAvailable === true && (data.recommendedVersion || data.latestVersion || "").length > 0)
+    }
+    function agentTargetVersion(kind) {
+        if (kind === "claude") return host.claudeLatestVersion || ""
+        const data = host.agents.find(a => a.kind === kind)
+        return data ? (data.recommendedVersion || data.latestVersion || "") : ""
+    }
     function providerGroup(kind) {
         return kind === "codexDesktop" ? "codex"
             : kind === "dshDesktop" ? "dsh"
@@ -334,7 +493,7 @@ ApplicationWindow {
         // A confirmed running turn outranks a local CLI detection result (the backend can be remote).
         if (window.runningSessionsFor(row.kind).total > 0) return {text: "已连接", color: Theme.success}
         if (agent && !agent.passive && agent.installed === false && !window.agentCliDetecting(row.kind)) return {text: "未安装", color: Theme.warning, idle: true}
-        if (agent && agent.broken) return {text: "需要修复", color: Theme.warning, detail: window.agentCliHint(agent)}
+        if (agent && agent.broken) return {text: row.kind === "claude" ? "需升级" : "需要修复", color: Theme.warning, detail: window.agentCliHint(agent)}
         if (backend && backend.ready && window.hostOnline) return {text: "可用", color: Theme.success, idle: true}
         if (backend && backend.launchable) return {text: "可启动", color: Theme.inkMuted, idle: true}
         return {text: "等待接入", color: Theme.inkMuted, idle: true}
@@ -553,8 +712,8 @@ ApplicationWindow {
     function availableUpdatesText() {
         var updates = []
         if (host.hostUpdateAvailable) updates.push("Orbis Host " + host.hostUpdateVersion)
-        if (host.claudeInstalled && host.claudeUpdateAvailable) updates.push("Claude Code " + host.claudeLatestVersion)
-        host.agents.filter(function(agent) { return agent.installed && agent.updateAvailable }).forEach(function(agent) {
+        if (window.agentEnabled("claude") && host.claudeInstalled && host.claudeUpdateAvailable) updates.push("Claude Code " + host.claudeLatestVersion)
+        host.agents.filter(function(agent) { return window.agentEnabled(agent.kind) && agent.installed && agent.updateAvailable }).forEach(function(agent) {
             updates.push(window.agentName(agent.kind) + " " + (agent.recommendedVersion || agent.latestVersion))
         })
         host.devices.filter(function(device) { return device.androidUpdateAvailable }).forEach(function(device) {
@@ -822,6 +981,8 @@ ApplicationWindow {
         onToggled: if (marksProviderDirty && providerDialog.visible && !window.loadingProviderDraft) window.providerFormDirty = true
         spacing: 12
         implicitHeight: Theme.touchTarget
+        // Design .mini: 44x24 inset pill, 18 knob 3 px in, accent knob when on; the switch trails its label.
+        Layout.fillWidth: true
         indicator: Item {
             implicitWidth: 44; implicitHeight: 24
             x: softSwitch.width - width - softSwitch.rightPadding; y: (softSwitch.height - height) / 2
@@ -964,8 +1125,6 @@ ApplicationWindow {
             opacity: softTool.down ? 0.82 : 1
             Behavior on scale { enabled: window.motionEnabled; NumberAnimation { duration: softTool.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
         }
-        // Design .mini: 44x24 inset pill, 18 knob 3 px in, accent knob when on; the switch trails its label.
-        Layout.fillWidth: true
         background: Surface {
             x: 4 - 8; y: 4 - 8; width: 40 + 16; height: 40 + 16; margin: 8
             cornerRadius: 20; inset: softTool.down || softTool.checked
@@ -1145,7 +1304,7 @@ ApplicationWindow {
                 }
             }
             Item {
-                visible: !window.updateNoticeDismissed && (host.hostUpdateAvailable || window.agentUpdatesAvailable() || window.androidUpdatesAvailable())
+                visible: window.page === 0 && !window.updateNoticeDismissed && (host.hostUpdateAvailable || window.agentUpdatesAvailable() || window.androidUpdatesAvailable())
                 Layout.fillWidth: true; Layout.leftMargin: 40; Layout.rightMargin: 40; Layout.bottomMargin: 14
                 implicitHeight: Math.max(56, updateNoticeRow.implicitHeight + 16)
                 Surface { anchors.fill: parent; anchors.margins: -8; margin: 8; cornerRadius: Theme.radiusMd; inset: true; shadowScale: 0.35 }
@@ -1628,6 +1787,7 @@ ApplicationWindow {
                                     padding: 8
                                     transformOrigin: Item.TopRight
                                     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+                                    onOpened: forceActiveFocus()
                                     enter: Transition {
                                         ParallelAnimation {
                                             NumberAnimation { property: "opacity"; from: 0; to: 1; duration: window.motionEnabled ? Theme.durPanel : 0; easing.type: Easing.OutCubic }
@@ -1841,11 +2001,14 @@ ApplicationWindow {
                                                 readonly property var change: window.choiceFor(kind)
                                                 readonly property var state: window.agentStatus(modelData)
                                                 readonly property int sessions: window.runningSessionsFor(kind).total
+                                                readonly property bool hasUpdate: railRow.modelData.enabled === true && (railRow.kind === "claude"
+                                                    ? (host.claudeInstalled && host.claudeUpdateAvailable && host.claudeLatestVersion.length > 0)
+                                                    : Boolean(host.agents.find(a => a.kind === railRow.kind)?.installed && host.agents.find(a => a.kind === railRow.kind)?.updateAvailable))
                                                 readonly property string subText: window.agentStatusWithSessions(state, sessions)
                                                 objectName: "agent-rail-" + kind
                                                 Layout.fillWidth: true; Layout.preferredHeight: 56
                                                 Accessible.role: Accessible.ListItem
-                                                Accessible.name: modelData.label + "，" + subText
+                                                Accessible.name: modelData.label + "，" + subText + (hasUpdate ? "，有可用更新" : "")
                                                 Accessible.onPressAction: window.chooseAgent(kind, 0)
                                                 Rectangle {
                                                     anchors.fill: parent; radius: Theme.radiusMd
@@ -1871,7 +2034,16 @@ ApplicationWindow {
                                                     AgentDisc { kind: railRow.kind; powered: window.agentVisualOn(railRow.modelData); showVariant: true }
                                                     ColumnLayout {
                                                         Layout.fillWidth: true; spacing: 1
-                                                        Label { text: railRow.modelData.label; font.pixelSize: Theme.body; color: Theme.ink; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                        RowLayout {
+                                                            Layout.fillWidth: true; spacing: 6
+                                                            Label { text: railRow.modelData.label; font.pixelSize: Theme.body; color: Theme.ink; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                            Rectangle {
+                                                                objectName: "agentRailUpdateDot-" + railRow.kind
+                                                                visible: railRow.hasUpdate
+                                                                Layout.preferredWidth: 6; Layout.preferredHeight: 6; radius: 3
+                                                                color: Theme.warning
+                                                            }
+                                                        }
                                                         Label { text: railRow.subText; font.pixelSize: Theme.caption; color: railRow.state.color; elide: Text.ElideRight; Layout.fillWidth: true }
                                                     }
                                                     AgentLatch {
@@ -1911,12 +2083,34 @@ ApplicationWindow {
                                         ColumnLayout {
                                             Layout.fillWidth: true; spacing: 3
                                             Heading { objectName: "agentDetailTitle"; text: window.selectedAgentRow ? window.selectedAgentRow.label : ""; font.pixelSize: Theme.title; Layout.fillWidth: true; elide: Text.ElideRight }
-                                            Hint {
-                                                objectName: "agentDetailState"
+                                            RowLayout {
+                                                id: detailMetaRow
+                                                objectName: "agentDetailMeta"
+                                                Layout.fillWidth: true; spacing: 6
                                                 readonly property int runCount: window.detailSessions.total
                                                 readonly property var state: window.selectedAgentRow ? window.agentStatus(window.selectedAgentRow) : ({text: "", color: Theme.inkMuted})
-                                                text: window.agentStatusWithSessions(state, runCount)
-                                                color: state.color
+                                                Label {
+                                                    objectName: "agentDetailState"
+                                                    text: window.agentStatusWithSessions(detailMetaRow.state, detailMetaRow.runCount)
+                                                    color: detailMetaRow.state.color
+                                                    font.pixelSize: Theme.label
+                                                }
+                                                Label {
+                                                    objectName: "agentDetailVersion"
+                                                    visible: window.detailPowered && window.detailVersionMeta.current.length > 0
+                                                    text: "· " + window.formatVersion(window.detailVersionMeta.current)
+                                                    color: Theme.inkMuted
+                                                    font.pixelSize: Theme.label
+                                                }
+                                                Label {
+                                                    objectName: "agentDetailVersionState"
+                                                    visible: window.detailPowered && window.detailVersionMeta.managed
+                                                        && (window.detailVersionMeta.checking || window.detailVersionMeta.upToDate)
+                                                    text: window.detailVersionMeta.checking ? "· 检查更新中" : "· 已是最新"
+                                                    color: Theme.inkFaint
+                                                    font.pixelSize: Theme.label
+                                                }
+                                                Item { Layout.fillWidth: true }
                                             }
                                         }
                                         AgentLatch { objectName: "detailAgentLatch"; large: true; powered: window.agentVisualOn(window.selectedAgentRow); change: window.detailChange; tint: Theme.agent(window.detailKind); enabled: window.canEditAgent && (!change || change.withdrawable); Accessible.name: window.selectedAgentRow ? window.selectedAgentRow.label : "Agent"; onClicked: window.flipAgent(window.detailKind) }
@@ -1952,18 +2146,55 @@ ApplicationWindow {
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 16
                                         visible: window.detailPowered
-                                        Hint { text: window.selectedAgentRow && window.agentStatus(window.selectedAgentRow).detail || ""; visible: text.length > 0; color: Theme.warning; Layout.fillWidth: true }
-                                        Flow {
-                                            Layout.fillWidth: true; spacing: 8
-                                            ActionButton { id: dialInstall; objectName: "agentDetailInstall"; visible: !!window.detailFacts && (window.detailFacts.data !== undefined); text: window.detailFacts && window.detailFacts.broken ? "修复或更新" : window.detailFacts && window.detailFacts.installed ? "更新到最新版本" : "安装最新版本"; enabled: window.canEditAgent && !host.agentInstalling && (window.detailKind !== "claude" || (!host.claudeDetecting && !host.claudeLatestChecking && (!host.claudeLatestVersion || host.claudeUpdateAvailable || !host.claudeVersion))); onClicked: window.showAgentInstaller(window.detailKind === "claude" ? {kind:"claude", installed:true, version:host.claudeVersion, latestVersion:host.claudeLatestVersion} : window.detailFacts.data) }
-                                            ActionButton { objectName: "updateClaude"; visible: window.detailKind === "claude" && window.detailPowered; text: host.claudeLatestVersion && !host.claudeUpdateAvailable && !!host.claudeVersion ? "已是最新版本" : "更新到最新版本"; enabled: host.claudeInstalled && dialInstall.enabled; onClicked: window.showAgentInstaller({kind:"claude", installed:true, version:host.claudeVersion, latestVersion:host.claudeLatestVersion}) }
-                                            ActionButton { text: "打开"; visible: !!window.detailFacts && !window.detailFacts.passive && window.detailKind !== "openclaw"; enabled: window.canEditAgent && !!window.detailFacts && window.detailFacts.installed === true; onClicked: window.openOverviewAgent(window.detailKind) }
-                                            ActionButton { objectName: "restartDshServer"; text: "重启 DSH Server"; visible: window.detailKind === "dsh"; enabled: window.canEditAgent && !host.agentInstalling && !!window.detailFacts && window.detailFacts.installed === true; onClicked: restartDshDialog.open() }
-                                            ActionButton { text: "入口设置"; visible: !!window.detailFacts && (!!window.agentCliHint(window.detailFacts) || !!host.agentEntryOverrides[window.detailKind]); enabled: window.canEditAgent; onClicked: window.showAgentEntry(window.detailFacts) }
+                                        Hint {
+                                            objectName: "agentDetailNotice"
+                                            text: window.detailNoticeText
+                                            visible: text.length > 0
+                                            color: Theme.warning
+                                            Layout.fillWidth: true
                                         }
-                                        Hint { objectName: "claudeVersions"; visible: window.detailKind === "claude"; text: "当前 " + (host.claudeVersion || "—") + "，最新 " + (host.claudeLatestChecking ? "查询中" : host.claudeLatestVersion || "未知") + (host.claudeUpdateAvailable ? "，有可用更新" : ""); Layout.fillWidth: true }
-                                        Hint { visible: window.detailKind === "claude" && text.length > 0; text: host.claudeVersionError || host.claudeLatestError; Layout.fillWidth: true; color: Theme.warning }
-                                        Hint { visible: !!window.detailFacts?.data && window.detailKind !== "claude" && text.length > 0; text: window.detailFacts?.data?.error || window.detailFacts?.data?.latestError || window.detailFacts?.data?.compatibilityNote || ""; Layout.fillWidth: true; color: Theme.warning }
+                                        Flow {
+                                            id: detailActionBar
+                                            objectName: "agentDetailActions"
+                                            readonly property bool hasOpenAction: !!window.detailFacts && !window.detailFacts.passive && window.detailKind !== "openclaw"
+                                            readonly property bool hasEntryAction: !!window.detailFacts && (!!window.agentCliHint(window.detailFacts) || !!host.agentEntryOverrides[window.detailKind])
+                                            visible: window.detailUpdateAction.visible || hasOpenAction || window.detailKind === "dsh" || hasEntryAction
+                                            Layout.fillWidth: true; spacing: 8
+                                            ActionButton {
+                                                id: dialInstall
+                                                objectName: "agentDetailInstall"
+                                                visible: window.detailUpdateAction.visible
+                                                text: window.detailUpdateAction.text
+                                                primary: window.detailUpdateAction.primary
+                                                enabled: window.detailUpdateAction.enabled
+                                                loading: host.agentInstalling && host.agentInstallKind === window.detailKind
+                                                onClicked: if (window.detailVersionMeta.installerData) window.showAgentInstaller(window.detailVersionMeta.installerData)
+                                            }
+                                            ActionButton {
+                                                id: detailOpenBtn
+                                                objectName: "agentDetailOpen"
+                                                text: "打开"
+                                                visible: detailActionBar.hasOpenAction
+                                                enabled: window.canEditAgent && !!window.detailFacts && window.detailFacts.installed === true
+                                                onClicked: window.openOverviewAgent(window.detailKind)
+                                            }
+                                            ActionButton {
+                                                id: restartDshBtn
+                                                objectName: "restartDshServer"
+                                                text: "重启 DSH Server"
+                                                visible: window.detailKind === "dsh"
+                                                enabled: window.canEditAgent && !host.agentInstalling && !!window.detailFacts && window.detailFacts.installed === true
+                                                onClicked: restartDshDialog.open()
+                                            }
+                                            ActionButton {
+                                                id: detailEntryBtn
+                                                objectName: "agentDetailEntry"
+                                                text: "入口设置"
+                                                visible: detailActionBar.hasEntryAction
+                                                enabled: window.canEditAgent
+                                                onClicked: window.showAgentEntry(window.detailFacts)
+                                            }
+                                        }
                                         RowLayout { visible: host.agentInstalling && host.agentInstallKind === window.detailKind; Layout.fillWidth: true
                                             Hint { text: window.installationStage(); Layout.fillWidth: true }
                                             ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
@@ -2207,17 +2438,17 @@ ApplicationWindow {
                                             }
                                         }
                                         ColumnLayout {
+                                            id: agentIntegrationSection
                                             objectName: "agentIntegrationSection"
-                                            visible: ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "kimiCode", "opencode"].includes(window.detailKind)
+                                            readonly property bool hasContent:
+                                                ["codex", "codexDesktop", "claude", "dsh", "dshDesktop", "opencode"].includes(window.detailKind)
+                                                || (window.detailKind === "pi" && (Qt.platform.os === "osx" || ["installed", "available", "foreign"].includes(window.piAgent().terminalCommand)))
+                                                || (window.detailKind === "kimiCode" && host.kimiCodeAvailable)
+                                                || (window.detailKind === "openclaw" && host.bridgeReady && !!host.openClaw.source)
+                                                || (window.detailKind === "hermes" && host.bridgeReady && !!host.hermesRemote.source)
+                                            visible: hasContent
                                             Layout.fillWidth: true; spacing: 12
                                             Heading { text: "接入" }
-                                            RowLayout {
-                                                visible: ["pi", "codex", "dsh"].includes(window.detailKind) && !!window.detailFacts?.data?.version
-                                                Layout.fillWidth: true; spacing: 8
-                                                Label { text: "当前版本"; color: Theme.inkMuted; Layout.fillWidth: true }
-                                                Label { text: window.detailFacts?.data?.version || "—"; color: Theme.ink }
-                                                Label { visible: !!window.detailFacts?.data?.updateAvailable; text: "· 可更新到 " + (window.detailFacts?.data?.recommendedVersion || window.detailFacts?.data?.latestVersion || ""); color: Theme.warning }
-                                            }
                                             RowLayout {
                                                 visible: window.detailKind === "codexDesktop"
                                                 Layout.fillWidth: true; spacing: 8
@@ -2292,9 +2523,11 @@ ApplicationWindow {
                                             RowLayout {
                                                 visible: window.detailKind === "kimiCode" && host.kimiCodeAvailable
                                                 Layout.fillWidth: true; spacing: 12
-                                                onVisibleChanged: if (visible) kimiSource.currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0
-                                                AgentMark { kind: "kimiCode" }
-                                                Label { text: "来源"; Layout.fillWidth: true }
+                                                onVisibleChanged: {
+                                                    if (visible) kimiSource.currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0
+                                                    else kimiInfoBtn.expanded = false
+                                                }
+                                                Label { text: "接入来源"; color: Theme.inkMuted; Layout.fillWidth: true }
                                                 SoftComboBox {
                                                     id: kimiSource; objectName: "kimiCodeSource"
                                                     visible: host.kimiDesktopSupported
@@ -2311,11 +2544,16 @@ ApplicationWindow {
                                                     visible: host.kimiCodeEnabled && (!host.kimiDesktopSupported || kimiSource.currentValue === host.kimiCodeSource)
                                                     text: !host.desiredRunning ? "未连接" : ({ connected: "已接入", connecting: "正在连接", not_running: host.kimiCodeSource === "desktop" ? "桌面版未连接" : "服务未启动", ambiguous: "有多个实例", unauthorized: "认证失败", unsupported: "版本不支持", unsafe: "配置不安全", unavailable: "暂不可用" })[host.kimiCodeState] || "未连接"
                                                 }
-                                                SoftToolButton {
-                                                    symbol: "info"; Accessible.name: "Kimi Code 接入说明"
-                                                    onClicked: kimiHelp.open()
-                                                    ToolTip.visible: hovered; ToolTip.text: "Kimi Code 接入说明"
+                                                InfoHintButton {
+                                                    id: kimiInfoBtn
+                                                    objectName: "kimiCodeInfo"
+                                                    Accessible.name: "Kimi Code 接入说明"
                                                 }
+                                            }
+                                            Hint {
+                                                visible: window.detailKind === "kimiCode" && host.kimiCodeAvailable && kimiInfoBtn.expanded
+                                                text: "桌面版：先打开 Kimi Code。Web：先运行 kimi web。"
+                                                Layout.fillWidth: true
                                             }
                                             RowLayout {
                                                 visible: Qt.platform.os === "osx" && window.detailKind === "pi"
@@ -2380,41 +2618,36 @@ ApplicationWindow {
                                                 text: "开启后自动安装插件（关闭即卸载），运行中的 Claude Code 执行 /reload-plugins 或重启即可连接（需 2.1.287+ 及 node）。"
                                                 Layout.fillWidth: true
                                             }
-                                        }
-                                        // OPENCLAW-04/05: explicit local/remote mode; the mode, not the typed address, selects the connection.
-                                        Card {
-                                            id: openClawCard
-                                            objectName: "openClawCard"
-                                            Layout.fillWidth: true
-                                            visible: host.bridgeReady && !!host.openClaw.source && window.detailKind === "openclaw" && window.detailPowered
-                                            readonly property bool editable: host.openClaw.source === "file"
-                                            readonly property string savedUrl: host.openClaw.url || ""
-                                            readonly property string savedMode: savedUrl && !/^ws:\/\/(127\.0\.0\.1|\[::1\])(:\d+)?\/?$/.test(savedUrl) ? "remote" : "local"
-                                            readonly property string savedPort: { var m = /:(\d+)\/?$/.exec(savedUrl); return savedMode === "local" && m ? m[1] : "18789" }
-                                            property string mode: "local"
-                                            readonly property string remoteUrl: { var t = clawUrl.text.trim(); return t && t.indexOf("://") < 0 ? "wss://" + t : t }
-                                            readonly property bool remoteInsecure: /^ws:/i.test(remoteUrl)
-                                            readonly property bool valid: mode === "local"
-                                                ? /^\d{1,5}$/.test(clawPort.text.trim()) && Number(clawPort.text) >= 1 && Number(clawPort.text) <= 65535
-                                                : remoteUrl.length > 0 && !remoteInsecure
-                                            readonly property bool dirty: mode !== savedMode || !savedUrl || clawToken.text.length > 0
-                                                || (mode === "local" ? clawPort.text.trim() !== savedPort : remoteUrl !== savedUrl)
-                                            function reset() {
-                                                mode = savedMode
-                                                clawPort.text = savedPort
-                                                clawUrl.text = savedMode === "remote" ? savedUrl : ""
-                                                clawToken.clear()
-                                            }
-                                            onVisibleChanged: { reset(); if (!visible) openClawInfoBtn.expanded = false }
-                                            Component.onCompleted: reset()
-                                            Connections { target: host; function onOpenClawChanged() { openClawCard.reset() } }
+                                            // OPENCLAW-04/05: explicit local/remote mode; the mode, not the typed address, selects the connection.
                                             ColumnLayout {
-                                                anchors.fill: parent; spacing: 12
+                                                id: openClawCard
+                                                objectName: "openClawCard"
+                                                Layout.fillWidth: true; spacing: 12
+                                                visible: host.bridgeReady && !!host.openClaw.source && window.detailKind === "openclaw" && window.detailPowered
+                                                readonly property bool editable: host.openClaw.source === "file"
+                                                readonly property string savedUrl: host.openClaw.url || ""
+                                                readonly property string savedMode: savedUrl && !/^ws:\/\/(127\.0\.0\.1|\[::1\])(:\d+)?\/?$/.test(savedUrl) ? "remote" : "local"
+                                                readonly property string savedPort: { var m = /:(\d+)\/?$/.exec(savedUrl); return savedMode === "local" && m ? m[1] : "18789" }
+                                                property string mode: "local"
+                                                readonly property string remoteUrl: { var t = clawUrl.text.trim(); return t && t.indexOf("://") < 0 ? "wss://" + t : t }
+                                                readonly property bool remoteInsecure: /^ws:/i.test(remoteUrl)
+                                                readonly property bool valid: mode === "local"
+                                                    ? /^\d{1,5}$/.test(clawPort.text.trim()) && Number(clawPort.text) >= 1 && Number(clawPort.text) <= 65535
+                                                    : remoteUrl.length > 0 && !remoteInsecure
+                                                readonly property bool dirty: mode !== savedMode || !savedUrl || clawToken.text.length > 0
+                                                    || (mode === "local" ? clawPort.text.trim() !== savedPort : remoteUrl !== savedUrl)
+                                                function reset() {
+                                                    mode = savedMode
+                                                    clawPort.text = savedPort
+                                                    clawUrl.text = savedMode === "remote" ? savedUrl : ""
+                                                    clawToken.clear()
+                                                }
+                                                onVisibleChanged: { reset(); if (!visible) openClawInfoBtn.expanded = false }
+                                                Component.onCompleted: reset()
+                                                Connections { target: host; function onOpenClawChanged() { openClawCard.reset() } }
                                                 RowLayout {
-                                                    Layout.fillWidth: true
-                                                    AgentMark { kind: "openclaw" }
-                                                    Heading { text: "OpenClaw"; Layout.fillWidth: true }
-                                                    StatusDot { idle: !window.openClawReady; color: window.openClawReady ? Theme.success : host.openClaw.invalid ? Theme.warning : Theme.inkFaint }
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    Label { text: "连接方式"; color: Theme.inkMuted; Layout.fillWidth: true }
                                                     Hint {
                                                         objectName: "openClawState"
                                                         text: window.openClawConnectionState(openClawCard.savedMode === "remote" ? "远程已连接" : "本机已连接")
@@ -2474,38 +2707,33 @@ ApplicationWindow {
                                                     }
                                                 }
                                             }
-                                        }
-                                        Card {
-                                            id: hermesRemoteCard
-                                            objectName: "hermesRemoteCard"
-                                            Layout.fillWidth: true
-                                            visible: host.bridgeReady && !!host.hermesRemote.source && window.detailKind === "hermes" && window.detailPowered
-                                            readonly property bool editable: host.hermesRemote.source === "file"
-                                            readonly property string savedMode: host.hermesRemote.host ? "remote" : "local"
-                                            property string mode: "local"
-                                            readonly property bool valid: mode === "local"
-                                                || (hermesSshHost.text.trim().length > 0 && /^\d{1,5}$/.test(String(hermesSshPort.text || 22).trim())
-                                                    && Number(hermesSshPort.text || 22) >= 1 && Number(hermesSshPort.text || 22) <= 65535)
-                                            readonly property bool dirty: mode !== savedMode || !!host.hermesRemote.invalid
-                                                || (mode === "remote" && (hermesSshHost.text.trim() !== (host.hermesRemote.host || "")
-                                                    || hermesSshPort.text.trim() !== String(host.hermesRemote.port || 22)
-                                                    || hermesSshProfile.text.trim() !== (host.hermesRemote.profile || "")))
-                                            function reset() {
-                                                mode = savedMode
-                                                hermesSshHost.text = host.hermesRemote.host || ""
-                                                hermesSshPort.text = String(host.hermesRemote.port || 22)
-                                                hermesSshProfile.text = host.hermesRemote.profile || ""
-                                            }
-                                            onVisibleChanged: { reset(); if (!visible) hermesInfoBtn.expanded = false }
-                                            Component.onCompleted: reset()
-                                            Connections { target: host; function onHermesRemoteChanged() { hermesRemoteCard.reset() } }
                                             ColumnLayout {
-                                                anchors.fill: parent; spacing: 12
+                                                id: hermesRemoteCard
+                                                objectName: "hermesRemoteCard"
+                                                Layout.fillWidth: true; spacing: 12
+                                                visible: host.bridgeReady && !!host.hermesRemote.source && window.detailKind === "hermes" && window.detailPowered
+                                                readonly property bool editable: host.hermesRemote.source === "file"
+                                                readonly property string savedMode: host.hermesRemote.host ? "remote" : "local"
+                                                property string mode: "local"
+                                                readonly property bool valid: mode === "local"
+                                                    || (hermesSshHost.text.trim().length > 0 && /^\d{1,5}$/.test(String(hermesSshPort.text || 22).trim())
+                                                        && Number(hermesSshPort.text || 22) >= 1 && Number(hermesSshPort.text || 22) <= 65535)
+                                                readonly property bool dirty: mode !== savedMode || !!host.hermesRemote.invalid
+                                                    || (mode === "remote" && (hermesSshHost.text.trim() !== (host.hermesRemote.host || "")
+                                                        || hermesSshPort.text.trim() !== String(host.hermesRemote.port || 22)
+                                                        || hermesSshProfile.text.trim() !== (host.hermesRemote.profile || "")))
+                                                function reset() {
+                                                    mode = savedMode
+                                                    hermesSshHost.text = host.hermesRemote.host || ""
+                                                    hermesSshPort.text = String(host.hermesRemote.port || 22)
+                                                    hermesSshProfile.text = host.hermesRemote.profile || ""
+                                                }
+                                                onVisibleChanged: { reset(); if (!visible) hermesInfoBtn.expanded = false }
+                                                Component.onCompleted: reset()
+                                                Connections { target: host; function onHermesRemoteChanged() { hermesRemoteCard.reset() } }
                                                 RowLayout {
-                                                    Layout.fillWidth: true
-                                                    AgentMark { kind: "hermes" }
-                                                    Heading { text: "Hermes Agent"; Layout.fillWidth: true }
-                                                    StatusDot { idle: window.backendFor("hermes")?.ready !== true; color: window.backendFor("hermes")?.ready === true ? Theme.success : Theme.inkFaint }
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    Label { text: "连接方式"; color: Theme.inkMuted; Layout.fillWidth: true }
                                                     Hint {
                                                         objectName: "hermesConnectionState"
                                                         readonly property bool ready: window.backendFor("hermes")?.ready === true && host.desiredRunning
@@ -2532,7 +2760,7 @@ ApplicationWindow {
                                                     onPicked: function(i) { hermesRemoteCard.mode = i === 1 ? "remote" : "local" }
                                                 }
                                                 Field { id: hermesSshHost; objectName: "hermesSshHost"; visible: hermesRemoteCard.mode === "remote"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 260; marksProviderDirty: false; placeholderText: "user@server 或 SSH 别名"; Accessible.name: "Hermes 远程 SSH 主机" }
-                                                Flow {
+                                                RowLayout {
                                                     visible: hermesRemoteCard.mode === "remote"
                                                     Layout.fillWidth: true; spacing: 10
                                                     Field { id: hermesSshPort; objectName: "hermesSshPort"; Layout.preferredWidth: 120; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 5; inputMethodHints: Qt.ImhDigitsOnly; marksProviderDirty: false; placeholderText: "22"; Accessible.name: "SSH 端口" }
@@ -2963,7 +3191,7 @@ ApplicationWindow {
         id: installDialog; objectName: "agentInstallDialog"; title: (window.installAgentData.installed ? "更新 " : "安装 ") + window.agentName(window.installKind) + " 到最新版本"; anchors.centerIn: parent; modal: true; width: 540
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { objectName: "confirmAgentInstall"; text: (window.installAgentData.installed ? "更新" : "安装") + (host.desiredRunning ? "并重新连接" : "到最新版本"); enabled: !host.busy; primary: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: installDialog.accept(); onRejected: installDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
-            Hint { text: "当前 " + (window.installAgentData.version || "未安装") + "，最新 " + (window.installAgentData.latestVersion || "未知"); Layout.fillWidth: true }
+            Hint { text: "当前 " + (window.installAgentData.version || "未安装") + "，目标 " + (window.installAgentData.recommendedVersion || window.installAgentData.latestVersion || "最新兼容版本"); Layout.fillWidth: true }
             Hint { visible: !!window.installAgentData.compatibilityNote; text: window.installAgentData.compatibilityNote || ""; Layout.fillWidth: true }
             Hint { visible: host.desiredRunning && host.runtimeCount > 0; text: "手机上 " + host.runtimeCount + " 个会话会暂时断开"; Layout.fillWidth: true; color: Theme.warning }
         }
@@ -2973,7 +3201,15 @@ ApplicationWindow {
         id: batchInstallDialog; title: "全部更新到最新版本"; anchors.centerIn: parent; modal: true; width: 540
         footer: SoftDialogButtons { ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } ActionButton { text: host.desiredRunning ? "全部更新并重新连接" : "全部更新到最新版本"; primary: true; enabled: !host.busy; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole } onAccepted: batchInstallDialog.accept(); onRejected: batchInstallDialog.reject() }
         ColumnLayout { width: parent.width; spacing: 12
-            Repeater { model: window.batchAgentTargets(); delegate: Hint { required property var modelData; text: window.agentName(modelData.kind) + " → 最新兼容版本"; Layout.fillWidth: true } }
+            Repeater {
+                model: window.batchAgentTargets()
+                delegate: Hint {
+                    required property var modelData
+                    readonly property string targetVer: window.formatVersion(window.agentTargetVersion(modelData.kind))
+                    text: window.agentName(modelData.kind) + " → " + (targetVer || "最新兼容版本")
+                    Layout.fillWidth: true
+                }
+            }
             DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
             Hint { visible: host.desiredRunning && host.runtimeCount > 0; text: "手机上 " + host.runtimeCount + " 个会话会暂时断开"; Layout.fillWidth: true; color: Theme.warning }
         }
@@ -3284,11 +3520,6 @@ ApplicationWindow {
             ActionButton { text: "取消"; enabled: !host.busy; onClicked: codexPreferencesDialog.reject() }
             ActionButton { text: "保存"; primary: true; enabled: !host.busy; onClicked: host.saveCodexPreferences({ commonConfig: codexCommonText.text, preserveOfficialLogin: preserveCodexLogin.checked }) }
         }
-    }
-    SoftDialog {
-        id: kimiHelp; anchors.centerIn: parent; modal: true; width: 410
-        title: "Kimi Code"; standardButtons: Dialog.Ok
-        contentItem: Hint { text: "桌面版：先打开 Kimi Code。Web：先运行 kimi web。" }
     }
     SoftDialog {
         id: providerInfoDialog; anchors.centerIn: parent; modal: true; width: 590; height: 400

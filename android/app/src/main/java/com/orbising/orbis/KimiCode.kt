@@ -22,6 +22,7 @@ internal fun deviceAgentFeatures(ready: JsonObject): List<String> {
         "state.compact-bootstrap.v1",
         "claude.send-now.v1",
         RUNTIME_CLOSE_FEATURE,
+        RUNTIME_VIEW_CLOSE_FEATURE,
         CODEX_UNIFIED_HISTORY,
     ).filter { it in advertised }
 }

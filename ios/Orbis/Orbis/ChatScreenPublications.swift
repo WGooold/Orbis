@@ -71,8 +71,8 @@ struct ChatScreenSnapshot {
         attached = tasks.filter { $0.direction == "upload" && $0.runtimeId == id && $0.sessionId == session && $0.attached }
         preparing = source.transfers.preparing
         let availableCommands = source.commands[id] ?? []
-        let menu = availableCommands.filter { $0.name != SlashCommand.closeCapability }
-        commands = availableCommands.contains { $0.name == SlashCommand.closeCapability } && !menu.contains { $0.name == "quit" }
+        let menu = availableCommands.filter { $0.name != SlashCommand.closeCapability && $0.name != SlashCommand.viewCloseCapability }
+        commands = availableCommands.contains { $0.name == SlashCommand.closeCapability || $0.name == SlashCommand.viewCloseCapability } && !menu.contains { $0.name == "quit" }
             ? menu + [SlashCommand(name: "quit", description: nil, source: "builtin")] : menu
         workingBranch = source.workingBranches[id]
         draftRevision = source.draftRevision; draft = runtime.map(source.draft) ?? ""

@@ -2854,7 +2854,7 @@ final class HostConnection: ObservableObject {
         if name == "quit", args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let runtime = selectedRuntime {
             return closeRuntimes([runtime.runtimeId], cardOnly: false).contains(runtime.runtimeId)
         }
-        guard name != SlashCommand.closeCapability else { return false }
+        guard name != SlashCommand.closeCapability, name != SlashCommand.viewCloseCapability else { return false }
         guard canSend, let runtime = selectedRuntime,
               let command = commands[runtime.runtimeId]?.first(where: { $0.name == name }),
               command.argument?.required != true || !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
@@ -3918,7 +3918,8 @@ final class HostConnection: ObservableObject {
             let filtered = features.contains("device.features") && (message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw ||
                features.contains(Self.agentEnablementFeature) && !readyAdmitsAgentEnablement(message) ||
                features.contains(agentDialReviewFeature) && !readyAdmitsAgentDialReview(message) ||
-               features.contains(codexUnifiedHistoryFeature) && !admittedCodex || features.contains(runtimeCloseFeature) && !admittedClose)
+               features.contains(codexUnifiedHistoryFeature) && !admittedCodex || features.contains(runtimeCloseFeature) && !admittedClose ||
+               features.contains(runtimeViewCloseFeature) && !(message["deviceFeatures"] as? [String] ?? []).contains(runtimeViewCloseFeature))
             if filtered, message["_orbisFilteredFallback"] == nil {
                 if filteredReady != nil { return }
                 let requested = deviceAgentFeatures(message)

@@ -164,9 +164,9 @@ private slots:
         QVERIFY(!menu->property("visible").toBool());
         QVERIFY(!dialog->property("visible").toBool());
 
+        QTest::qWait(80);
         const auto screenshotBase = qEnvironmentVariable("ORBIS_MOBILE_DOWNLOAD_SCREENSHOT");
         if (!screenshotBase.isEmpty()) {
-            QTest::qWait(80);
             window->grabWindow().save(QString("%1-%2-%3-closed.png").arg(screenshotBase).arg(windowWidth).arg(mode));
         }
 

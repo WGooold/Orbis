@@ -2462,7 +2462,7 @@ internal class HostConnection(
 
     fun executeSlashCommand(name: String, args: String): String? {
         // Quit must use the scoped close plan; an ordinary slash send cannot consume confirmation.
-        if (name == "quit" || name == RUNTIME_CLOSE_CAPABILITY) return null
+        if (name == "quit" || name == RUNTIME_CLOSE_CAPABILITY || name == RUNTIME_VIEW_CLOSE_CAPABILITY) return null
         val runtimeId = mutableState.value.selectedRuntimeId
         if (runtimeId == null) {
             Log.i(RELOAD_TRACE_TAG, "ui.slash.rejected name=$name reason=no_runtime")

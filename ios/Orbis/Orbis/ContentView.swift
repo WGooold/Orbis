@@ -1301,7 +1301,7 @@ struct HomeView: View, Equatable {
         let reveal = min(cardWidth, max(0, -translation))
         let canClose = host.connection.canCloseRuntime(runtime.runtimeId)
         let armed = (canClose && armedCloseRuntimeIds.contains(runtime.runtimeId)) || exitingCards[runtime.runtimeId] != nil
-        let viewOnly = runtime.agentKind == "codexDesktop"
+        let viewOnly = runtime.viewOnlyClose
         let closeLabel = canClose ? (viewOnly ? L10n.tr("退出视图") : L10n.tr("关闭")) : L10n.tr("暂不可关闭")
         let review = armed && exitingCards[runtime.runtimeId] == nil && host.connection.closeImpact(runtime.runtimeId)?.needsConfirmation == true
         let releaseLabel = review ? L10n.tr("松手确认") : viewOnly ? L10n.tr("松手退出") : L10n.tr("松手关闭")

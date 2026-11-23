@@ -1329,9 +1329,9 @@ internal fun RuntimeListScreen(
                                                         Text(when {
                                                             swipeExplainsBlock -> if (armed) L10n.tr("松手查看") else L10n.tr("查看说明")
                                                             armed && review -> L10n.tr("松手确认")
-                                                            armed && runtime.agentKind == "codexDesktop" -> L10n.tr("松手退出")
+                                                            armed && runtime.viewOnlyClose -> L10n.tr("松手退出")
                                                             armed -> L10n.tr("松手关闭")
-                                                            runtime.agentKind == "codexDesktop" -> L10n.tr("退出视图")
+                                                            runtime.viewOnlyClose -> L10n.tr("退出视图")
                                                             else -> L10n.tr("关闭")
                                                         },
                                                             modifier = Modifier.fillMaxWidth(), color = closeColor,
