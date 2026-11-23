@@ -17,6 +17,46 @@ data class OpenCodeAvailability(val ready: Boolean, val reason: String?) {
     }
 }
 
+internal fun OpenCodeAvailability?.draftNotice(selectedKind: String): String? =
+    if (selectedKind == "opencode") this?.message() else null
+
+internal data class DraftAgentReconciliation(
+    val kind: String,
+    val allowUnavailableOpenCode: Boolean,
+)
+
+internal fun reconcileDraftAgent(
+    current: String,
+    supported: Set<String>?,
+    kinds: List<String>,
+    canChooseOpenCode: Boolean,
+    allowUnavailableOpenCode: Boolean,
+    preferLaunchable: Boolean,
+): DraftAgentReconciliation {
+    val usable = if (current == "opencode") canChooseOpenCode else (supported == null || current in supported)
+    if (usable && agentFamily(current) in kinds) {
+        return DraftAgentReconciliation(current, allowUnavailableOpenCode = current == "opencode")
+    }
+    if (!preferLaunchable && allowUnavailableOpenCode && current == "opencode" && "opencode" in kinds) {
+        return DraftAgentReconciliation("opencode", allowUnavailableOpenCode = true)
+    }
+    if (supported != null) {
+        val fallback = listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, "hermes", "opencode")
+            .firstOrNull { it in supported && agentFamily(it) in kinds && (it != "opencode" || canChooseOpenCode) }
+            ?: "opencode".takeIf { "opencode" in kinds }
+        if (fallback != null) {
+            return DraftAgentReconciliation(fallback, allowUnavailableOpenCode = fallback == "opencode")
+        }
+    } else if (current == "opencode" && !canChooseOpenCode) {
+        val fallback = listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, "hermes")
+            .firstOrNull { agentFamily(it) in kinds }
+        if (fallback != null) {
+            return DraftAgentReconciliation(fallback, allowUnavailableOpenCode = false)
+        }
+    }
+    return DraftAgentReconciliation(current, allowUnavailableOpenCode = current == "opencode" && "opencode" in kinds)
+}
+
 internal fun openCodeAvailability(backends: JsonObject): OpenCodeAvailability? {
     val row = (backends["backends"] as? JsonArray)?.filterIsInstance<JsonObject>()
         ?.firstOrNull { it.text("kind") == "opencode" } ?: return null

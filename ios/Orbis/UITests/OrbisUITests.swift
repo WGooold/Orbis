@@ -553,16 +553,20 @@ final class OrbisUITests: XCTestCase {
             let openCode = app.buttons["draft-agent-opencode"]
             XCTAssertTrue(openCode.waitForExistence(timeout: 5))
             let unavailable = app.staticTexts["draft-opencode-unavailable"]
+            let send = app.buttons["draft-send"]
+            XCTAssertFalse(unavailable.exists)
+            XCTAssertTrue(openCode.isEnabled)
+            openCode.tap()
+            XCTAssertTrue(openCode.isSelected)
             if ready {
-                XCTAssertTrue(openCode.isEnabled)
                 XCTAssertFalse(unavailable.exists)
-                openCode.tap()
-                XCTAssertTrue(openCode.isSelected)
                 capture("openCode-ready", app: app)
             } else {
-                XCTAssertFalse(openCode.isEnabled)
                 XCTAssertTrue(unavailable.waitForExistence(timeout: 2))
+                XCTAssertFalse(send.isEnabled)
                 capture("openCode-incompatible", app: app)
+                app.buttons["draft-agent-codex"].tap()
+                XCTAssertFalse(unavailable.exists)
             }
             app.terminate()
         }

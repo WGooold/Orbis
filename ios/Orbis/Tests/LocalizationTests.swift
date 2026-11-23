@@ -122,5 +122,59 @@ struct OpenCodeAvailabilityTests {
         #expect(missing?.message != nil)
         #expect(incompatible?.message != nil)
         #expect(missing?.message != incompatible?.message)
+        // Only surface OpenCode unavailability when OpenCode itself is the selected draft agent.
+        #expect(OpenCodeAvailability.draftNotice(selectedAgent: "codex", availability: missing) == nil)
+        #expect(OpenCodeAvailability.draftNotice(selectedAgent: "claude", availability: incompatible) == nil)
+        #expect(OpenCodeAvailability.draftNotice(selectedAgent: "opencode", availability: missing) == missing?.message)
+        #expect(OpenCodeAvailability.draftNotice(selectedAgent: "opencode", availability: ready) == nil)
+    }
+
+    @Test func draftAgentReconciliationPrefersLaunchableWhileKeepingInspectedOpenCode() {
+        let family: (String) -> String = { $0 == "codexDesktop" ? "codex" : $0 == "dshDesktop" ? "dsh" : $0 }
+        let choices = ["codex", "claude", "dsh", "pi", "opencode"]
+        // Reopening with a previously saved OpenCode draft falls back to an available agent when OpenCode is down.
+        let initial = reconcileDraftAgent(
+            current: "opencode",
+            allowed: ["codex", "pi"],
+            choices: choices,
+            showsOpenCode: true,
+            allowUnavailableOpenCode: false,
+            preferLaunchable: true,
+            familyOf: family
+        )
+        #expect(initial == DraftAgentReconciliation(agent: "codex", allowUnavailableOpenCode: false, shouldPersist: true))
+        // Tapping unavailable OpenCode keeps it selected across unrelated capability updates while OpenCode stays shown.
+        let inspected = reconcileDraftAgent(
+            current: "opencode",
+            allowed: ["codex", "pi", "dsh"],
+            choices: choices,
+            showsOpenCode: true,
+            allowUnavailableOpenCode: true,
+            preferLaunchable: false,
+            familyOf: family
+        )
+        #expect(inspected == DraftAgentReconciliation(agent: "opencode", allowUnavailableOpenCode: true, shouldPersist: false))
+        // Disabling OpenCode on the Host falls back to an available agent.
+        let disabled = reconcileDraftAgent(
+            current: "opencode",
+            allowed: ["codex", "pi"],
+            choices: ["codex", "claude", "dsh", "pi"],
+            showsOpenCode: false,
+            allowUnavailableOpenCode: true,
+            preferLaunchable: false,
+            familyOf: family
+        )
+        #expect(disabled == DraftAgentReconciliation(agent: "codex", allowUnavailableOpenCode: false, shouldPersist: true))
+        // When only OpenCode is enabled and unavailable, select OpenCode so its reason is visible.
+        let onlyOpenCode = reconcileDraftAgent(
+            current: "codex",
+            allowed: [],
+            choices: ["opencode"],
+            showsOpenCode: true,
+            allowUnavailableOpenCode: false,
+            preferLaunchable: true,
+            familyOf: family
+        )
+        #expect(onlyOpenCode == DraftAgentReconciliation(agent: "opencode", allowUnavailableOpenCode: true, shouldPersist: false))
     }
 }

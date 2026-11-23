@@ -135,9 +135,26 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         }
     }
     LaunchedEffect(workDirectory?.path) { if (!importMode && cwd.isBlank()) cwd = workDirectory?.path.orEmpty() }
-    LaunchedEffect(supported, kinds) { if (supported != null && (kind !in supported || agentFamily(kind) !in kinds))
-        listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, "hermes", "opencode")
-            .firstOrNull { it in supported && agentFamily(it) in kinds }?.let { kind = it }
+    var allowUnavailableOpenCode by remember(state.hostId) { mutableStateOf(false) }
+    var opened by remember(state.hostId) { mutableStateOf(false) }
+    LaunchedEffect(open, supported, kinds, canChooseOpenCode) {
+        if (!open) {
+            opened = false
+            allowUnavailableOpenCode = false
+            return@LaunchedEffect
+        }
+        val initialOpen = !opened
+        opened = true
+        val next = reconcileDraftAgent(
+            current = kind,
+            supported = supported,
+            kinds = kinds,
+            canChooseOpenCode = canChooseOpenCode,
+            allowUnavailableOpenCode = allowUnavailableOpenCode,
+            preferLaunchable = initialOpen,
+        )
+        allowUnavailableOpenCode = next.allowUnavailableOpenCode
+        if (next.kind != kind) kind = next.kind
     }
     AgentTheme(agentBrand(kind)) {
         NeumorphSurface(Modifier.fillMaxWidth().testTag("session-draft").onGloballyPositioned { bounds = it.boundsInWindow() },
@@ -170,14 +187,16 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         val brand = agentBrand(agent)
                         val variants = agentVariants(agent)
                         val selected = family == agent
-                        val enabled = if (agent == "opencode") canChooseOpenCode
+                        val available = if (agent == "opencode") canChooseOpenCode
                             else supported == null || variants.any { it in supported }
+                        val enabled = if (agent == "opencode") showOpenCode else available
                         val chooseCodexVersion = versionsAvailable(agent)
                         Box(Modifier.size(48.dp).testTag("draft-agent-$agent").combinedClickable(
                             interactionSource = remember { MutableInteractionSource() }, indication = null,
                             enabled = enabled,
                             role = if (chooseCodexVersion) Role.Button else Role.RadioButton,
                             onClick = {
+                                allowUnavailableOpenCode = agent == "opencode" && !canChooseOpenCode
                                 if (chooseCodexVersion) agentMenu = agent
                                 else kind = variants.firstOrNull { supported?.contains(it) != false } ?: agent
                             },
@@ -190,13 +209,15 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         }) {
                             Box(Modifier.align(Alignment.Center).size(36.dp), contentAlignment = Alignment.Center) {
                                 if (selected) AgentIconRecess(Modifier.fillMaxSize(), CircleShape)
-                                AgentIcon(brand, Modifier.size(20.dp).graphicsLayer { alpha = if (selected) 1f else 0.4f }, brand.title,
-                                    tintOverride = if (selected) null else LocalOrbisPalette.current.faint)
+                                AgentIcon(brand, Modifier.size(20.dp).graphicsLayer {
+                                    alpha = if (selected) (if (available) 1f else 0.6f) else (if (available) 0.4f else 0.25f)
+                                }, brand.title,
+                                    tintOverride = if (selected && available) null else LocalOrbisPalette.current.faint)
                             }
                             if (variants.size > 1) NeumorphMenu(agentMenu == agent, { agentMenu = null }) {
                                 variants.filter { enabledAgentKinds?.contains(it) != false }.forEach { value ->
                                     NeumorphMenuItem(text = { Text(launchLabel(value)) },
-                                        onClick = { kind = value; agentMenu = null }, enabled = supported?.contains(value) != false)
+                                        onClick = { allowUnavailableOpenCode = false; kind = value; agentMenu = null }, enabled = supported?.contains(value) != false)
                                 }
                             }
                         }
@@ -206,7 +227,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                 if (kinds.size > 5 && enabledAgentKinds?.contains(kind) != false) agentLabel(Modifier.fillMaxWidth())
                 if (allDisabled) Text(L10n.tr("没有已启用的 Agent"), Modifier.testTag("draft-no-enabled-agents"),
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                openCode?.message()?.let { message ->
+                openCode.draftNotice(kind)?.let { message ->
                     Text(message, Modifier.testTag("draft-opencode-unavailable"), style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

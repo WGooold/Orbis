@@ -66,11 +66,20 @@ class DesignAlignmentInstrumentedTest {
         } }
         val picker = compose.onNodeWithTag("draft-agent-opencode")
         val status = compose.onNodeWithTag("draft-opencode-unavailable")
+        val send = compose.onNodeWithTag("draft-send")
         picker.assertDoesNotExist()
         compose.runOnIdle { state.value = baseline.copy(openCodeAvailability = OpenCodeAvailability(false, "unsupported_version")) }
-        picker.assertIsNotEnabled()
+        status.assertDoesNotExist()
+        send.assertIsEnabled()
+        picker.assertIsEnabled().performClick()
+        picker.assertIsSelected()
         status.assertIsDisplayed()
+        send.assertIsNotEnabled()
         capture("opencode-incompatible")
+        compose.onNodeWithTag("draft-agent-codex").performClick()
+        status.assertDoesNotExist()
+        send.assertIsEnabled()
+        picker.performClick()
         compose.runOnIdle {
             state.value = baseline.copy(
                 openCodeAvailability = OpenCodeAvailability(true, null),
@@ -78,9 +87,10 @@ class DesignAlignmentInstrumentedTest {
             )
         }
         status.assertDoesNotExist()
-        picker.assertIsEnabled().performClick()
+        picker.assertIsEnabled()
+        send.assertIsEnabled()
         capture("opencode-ready")
-        compose.onNodeWithTag("draft-send").performClick()
+        send.performClick()
         compose.runOnIdle { assertEquals(listOf("opencode"), selections) }
     }
 

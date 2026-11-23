@@ -642,7 +642,9 @@ struct SessionDraftView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var overlay: OrbisOverlay
     @Environment(\.orbisAppearance) private var appearance
-    @AppStorage("orbis.lastDraftAgent") private var agent = "codex"
+    @AppStorage("orbis.lastDraftAgent") private var persistedAgent = "codex"
+    @State private var agent = "codex"
+    @State private var allowUnavailableOpenCode = false
     @State private var text = ""
     @ObservedObject var owner: HostConnection
     let presetCwd: String?
@@ -665,6 +667,7 @@ struct SessionDraftView: View {
         self.owner = owner; self.presetCwd = presetCwd; self.closeRequest = closeRequest; self.onSubmitted = onSubmitted; self.onCancel = onCancel
         self.onImportSubmit = onImportSubmit
         _path = State(initialValue: presetCwd)
+        _agent = State(initialValue: UserDefaults.standard.string(forKey: "orbis.lastDraftAgent") ?? "codex")
     }
     private var draftRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session", name: "", cwd: "", status: "idle", sessionId: "local-new-session", agentKind: agent) }
     private var pathRuntime: RuntimeSummary { RuntimeSummary(runtimeId: "local-new-session-path", name: "", cwd: "", status: "idle", sessionId: "local-new-session-path", agentKind: agent) }
@@ -687,6 +690,12 @@ struct SessionDraftView: View {
     }
     private func canChoose(_ kind: String) -> Bool {
         (kind != "opencode" || (owner.connection == .secured && openCode?.ready != false)) && agentVariants(kind).contains(where: allowed.contains)
+    }
+    private func canSelect(_ kind: String) -> Bool {
+        canChoose(kind) || (kind == "opencode" && showsOpenCode)
+    }
+    private var canUseSelectedAgent: Bool {
+        owner.enabledAgentKinds?.contains(agent) != false && (agent != "opencode" || canChoose("opencode"))
     }
     /// Both native entries of this family can start here, so the variant is a real choice.
     private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).allSatisfy(allowed.contains) }
@@ -735,7 +744,7 @@ struct SessionDraftView: View {
                 Text(L10n.tr("没有已启用的 Agent")).font(.orbisCaption()).foregroundStyle(p.secondary)
                     .accessibilityIdentifier("draft-no-enabled-agents")
             }
-            if let message = openCode?.message {
+            if let message = OpenCodeAvailability.draftNotice(selectedAgent: agent, availability: openCode) {
                 Text(message).font(.orbisCaption()).foregroundStyle(p.secondary)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("draft-opencode-unavailable")
             }
@@ -746,8 +755,8 @@ struct SessionDraftView: View {
                     Spacer(minLength: 0); Image(systemName: "chevron.down").font(.orbisCaption())
                 }.foregroundStyle(p.secondary).frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("draft-directory")
-            if owner.enabledAgentKinds?.contains(agent) == false {
-                // Keep the draft without settings belonging to a retired source.
+            if !canUseSelectedAgent {
+                // Keep the draft without settings belonging to a retired or unavailable source.
             } else if owner.supportsSessionConfiguration(for: agent) && agent != "openclaw" {
                 if agent != kimiCodeKind {
                     // S55 / SC79: the model owns a row; permission text cannot resize either value.
@@ -781,7 +790,7 @@ struct SessionDraftView: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
-                    placeholder: owner.enabledAgentKinds?.contains(agent) == false ? L10n.tr("输入消息") : L10n.tr("让 {0} 做什么？", owner.unifiedCodexHistory && family == "codex" ? "Codex" : agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
+                    placeholder: !canUseSelectedAgent ? L10n.tr("输入消息") : L10n.tr("让 {0} 做什么？", owner.unifiedCodexHistory && family == "codex" ? "Codex" : agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
                     ink: UIColor(p.text), placeholderInk: UIColor(p.secondary),
                     onEdit: { value, marked, _ in
                         text = value
@@ -802,7 +811,8 @@ struct SessionDraftView: View {
             .onAppear {
                 // The home list is lazy and keeps this card's state under its fixed id, so a card
                 // reopened after closing would come back still cancelling and never rise.
-                cancelling = false; risen = false
+                cancelling = false; risen = false; allowUnavailableOpenCode = false
+                agent = persistedAgent
                 if onImportSubmit == nil {
                     text = owner.draft(for: draftRuntime)
                     let rememberedPath = owner.draft(for: pathRuntime)
@@ -815,7 +825,7 @@ struct SessionDraftView: View {
                     }
                     if currentPath == nil { path = owner.selectedRuntime?.cwd ?? owner.sessions.first?.cwd }
                 }
-                if !allowed.contains(agent), let first = allowed.first { agent = first }
+                reconcileAgent(preferLaunchable: true)
                 if currentPath == nil && onImportSubmit == nil { owner.browseDirectory() }
             }
             .task {
@@ -826,7 +836,16 @@ struct SessionDraftView: View {
                 if onImportSubmit == nil && !cancelling && visible && scenePhase == .active { focused = true }
             }
             // PERF-12: the native editor persists committed text without publishing each IME mark.
-            .onChange(of: allowed) { _, choices in if !choices.contains(agent), let first = choices.first { agent = first } }
+            .onChange(of: agent) { _, next in
+                if allowed.contains(next) {
+                    persistedAgent = next
+                    if next == "opencode" { allowUnavailableOpenCode = true }
+                } else if next != "opencode" {
+                    allowUnavailableOpenCode = false
+                }
+            }
+            .onChange(of: allowed) { _, _ in reconcileAgent(preferLaunchable: false) }
+            .onChange(of: agentChoices) { _, _ in reconcileAgent(preferLaunchable: false) }
             .onChange(of: presetCwd) { _, value in if let value { path = value } }
             .onChange(of: path) { _, value in if onImportSubmit == nil { owner.editDraft(value ?? "", for: pathRuntime) } }
             .onChange(of: closeRequest) { _, _ in cancel() }
@@ -840,14 +859,18 @@ struct SessionDraftView: View {
     private func agentButtons(_ kinds: [String]) -> some View {
         HStack(spacing: 4) {
             ForEach(kinds, id: \.self) { kind in
-                let variants = agentVariants(kind), chosen = family == kind
-                OrbisMotionButton { agent = variants.first(where: allowed.contains) ?? kind } label: {
+                let variants = agentVariants(kind), chosen = family == kind, available = canChoose(kind)
+                OrbisMotionButton {
+                    allowUnavailableOpenCode = kind == "opencode" && !available
+                    agent = variants.first(where: allowed.contains) ?? kind
+                } label: {
                     AgentEmblem(kind: kind, size: 20, recessed: false)
-                        .saturation(chosen ? 1 : 0).opacity(chosen ? 1 : 0.4)
+                        .saturation(chosen && available ? 1 : 0)
+                        .opacity(chosen ? (available ? 1 : 0.6) : (available ? 0.4 : 0.25))
                         .frame(width: 36, height: 36)
                         .neuSurface(inset: chosen, radius: 18, intensity: chosen ? 0.4 : 0, concentric: false)
                         .frame(width: 48, height: 48).contentShape(Rectangle())
-                }.buttonStyle(.plain).disabled(!canChoose(kind))
+                }.buttonStyle(.plain).disabled(!canSelect(kind))
                     .accessibilityLabel(agentTitle(kind))
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { familyFrames[kind] = $0 }
                     .simultaneousGesture(LongPressGesture().onEnded { _ in if variants.count > 1 { showVariantChoices(kind) } })
@@ -859,6 +882,20 @@ struct SessionDraftView: View {
                     .accessibilityIdentifier("draft-agent-" + kind).accessibilityAddTraits(chosen ? .isSelected : [])
             }
         }
+    }
+    private func reconcileAgent(preferLaunchable: Bool) {
+        let next = reconcileDraftAgent(
+            current: agent,
+            allowed: allowed,
+            choices: agentChoices,
+            showsOpenCode: showsOpenCode,
+            allowUnavailableOpenCode: allowUnavailableOpenCode,
+            preferLaunchable: preferLaunchable,
+            familyOf: agentFamily
+        )
+        allowUnavailableOpenCode = next.allowUnavailableOpenCode
+        if next.agent != agent { agent = next.agent }
+        if next.shouldPersist { persistedAgent = next.agent }
     }
     private func loadConfiguration() {
         if allowed.contains(agent), canChoose(family), let cwd = currentPath { owner.loadSessionConfiguration(agent: agent, cwd: cwd) }
@@ -973,7 +1010,10 @@ struct SessionDraftView: View {
     private func showVariantChoices(_ family: String, from anchor: CGRect? = nil) {
         focused = false
         let choices = agentVariants(family).filter(allowed.contains).map { variant in
-            OrbisMenuItem(title: launchLabel(variant), checked: agent == variant) { agent = variant }
+            OrbisMenuItem(title: launchLabel(variant), checked: agent == variant) {
+                allowUnavailableOpenCode = false
+                agent = variant
+            }
         }
         if !choices.isEmpty { overlay.showMenu(choices, from: anchor ?? familyFrames[family] ?? .zero) }
     }

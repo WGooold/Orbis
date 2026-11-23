@@ -65,6 +65,42 @@ struct OpenCodeAvailability: Equatable {
         default: return L10n.tr("OpenCode 当前不可用。请检查电脑上的服务状态。")
         }
     }
+
+    /// Surface OpenCode's unavailable reason only when OpenCode itself is selected in the draft card.
+    static func draftNotice(selectedAgent: String, availability: OpenCodeAvailability?) -> String? {
+        selectedAgent == "opencode" ? availability?.message : nil
+    }
+}
+
+struct DraftAgentReconciliation: Equatable {
+    let agent: String
+    let allowUnavailableOpenCode: Bool
+    let shouldPersist: Bool
+}
+
+func reconcileDraftAgent(
+    current: String,
+    allowed: [String],
+    choices: [String],
+    showsOpenCode: Bool,
+    allowUnavailableOpenCode: Bool,
+    preferLaunchable: Bool,
+    familyOf: (String) -> String
+) -> DraftAgentReconciliation {
+    if allowed.contains(current) {
+        return DraftAgentReconciliation(agent: current, allowUnavailableOpenCode: current == "opencode", shouldPersist: true)
+    }
+    if !preferLaunchable && allowUnavailableOpenCode && current == "opencode" && showsOpenCode {
+        return DraftAgentReconciliation(agent: current, allowUnavailableOpenCode: true, shouldPersist: false)
+    }
+    if let first = allowed.first {
+        return DraftAgentReconciliation(agent: first, allowUnavailableOpenCode: false, shouldPersist: true)
+    }
+    let family = familyOf(current)
+    if !choices.contains(family), let first = choices.first {
+        return DraftAgentReconciliation(agent: first, allowUnavailableOpenCode: first == "opencode" && showsOpenCode, shouldPersist: false)
+    }
+    return DraftAgentReconciliation(agent: current, allowUnavailableOpenCode: current == "opencode" && showsOpenCode, shouldPersist: false)
 }
 
 struct HostDomain: Decodable, Equatable {
