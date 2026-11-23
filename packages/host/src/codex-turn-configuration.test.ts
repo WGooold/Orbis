@@ -36,10 +36,24 @@ it("reads only complete contexts belonging to the exact thread and turn", async 
   expect(await readCodexTurnConfiguration(f.path, "thread", "active")).toBeUndefined();
 });
 
-it("keeps contexts outside the bounded tail unknown instead of using the session defaults", async () => {
+it("recovers contexts beyond 2 MiB via reverse chunks while respecting bounded scan limits", async () => {
   const f = await fixture();
-  await writeFile(f.path, f.header + f.context + line("response_item", { text: "x".repeat(2 * 1024 * 1024) }));
-  expect(await readCodexTurnConfiguration(f.path, "thread", "active")).toBeUndefined();
+  await writeFile(f.path, f.header + f.context + line("response_item", { text: "x".repeat(4 * 1024 * 1024) }));
+  expect(await readCodexTurnConfiguration(f.path, "thread", "active")).toEqual({
+    turnId: "active", model: { provider: "fixture", id: "a" }, thinkingLevel: "low",
+  });
+  expect(await readCodexTurnConfiguration(f.path, "thread", "active", { maxBytes: 2 * 1024 * 1024 })).toBeUndefined();
+});
+
+it("handles multi-byte UTF-8 chunk splits and huge partial EOF lines", async () => {
+  const f = await fixture();
+  const context = line("turn_context", { turn_id: "active", model: "a", effort: "high", note: "中文边界验证".repeat(8) });
+  const middle = line("response_item", { text: "测试输出，跨越分块边界。".repeat(20) });
+  const partialEof = line("response_item", { text: "未落盘结尾".repeat(30) }).trimEnd();
+  await writeFile(f.path, f.header + context + middle + partialEof);
+  expect(await readCodexTurnConfiguration(f.path, "thread", "active", { chunkBytes: 47 })).toEqual({
+    turnId: "active", model: { provider: "fixture", id: "a" }, thinkingLevel: "high",
+  });
 });
 
 async function harness(active = true, kind: "codex" | "codexDesktop" = "codex") {
