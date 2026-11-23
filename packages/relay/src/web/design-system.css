@@ -46,13 +46,22 @@
 .cinema-site .agent-current.is-preview .status-dot { background: transparent; border: 1.5px solid var(--ink-faint); }
 .cinema-site .agent-availability { border-radius: var(--radius-full); background: var(--surface-base); box-shadow: none; }
 .cinema-site .download-card { padding: var(--space-16); border-radius: var(--radius-lg); box-shadow: var(--raised-md); }
-.cinema-site .download-grid { max-width: 880px; gap: var(--space-12); }
+.cinema-site .download-card.is-recommended { box-shadow: var(--raised-md), 0 0 0 1.5px var(--accent); }
+.cinema-site .download-grid { max-width: 880px; gap: var(--space-12); margin-top: 28px; }
+.cinema-site .device-recommendation { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: var(--space-8); width: fit-content; max-width: 100%; margin: 28px auto 0; padding: 10px 16px; border-radius: var(--radius-full); background: var(--surface-lift); border: 1px solid var(--hairline); box-shadow: var(--raised-sm); font: 400 13px/20px var(--font-sans); color: var(--ink-muted); text-align: center; }
+.cinema-site .device-recommendation strong { color: var(--ink); font-weight: 600; }
+.cinema-site .recommend-badge, .cinema-site .recommend-tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-full); background: var(--accent-soft); color: var(--accent); font: 600 12px/18px var(--font-sans); }
+.cinema-site .recommend-tag { font-size: 11px; line-height: 16px; }
+.cinema-site .download-kind { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-8); }
+.cinema-site .download-meta { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-8) var(--space-12); }
+.cinema-site .download-meta > p { margin: 0; font-size: 12px; line-height: 18px; color: var(--ink-muted); }
+.cinema-site .download-meta > .version-tag { margin: 0; }
 .cinema-site .download-symbol { width: 44px; height: 44px; border-radius: var(--radius-md); color: var(--ink-muted); box-shadow: var(--inset-sm); }
 .cinema-site .download-symbol .ico { width: var(--icon-md); height: var(--icon-md); }
 .cinema-site .platform-select select { min-height: var(--field-height); background: var(--surface-base); color: var(--ink); border-radius: var(--radius-md); padding: 12px 16px; box-shadow: var(--inset-md); font: 400 15px/24px var(--font-sans); }
 .cinema-site .download-card .button { background: var(--surface-lift); box-shadow: none; }
 .cinema-site .download-card .button:active { background: var(--surface-base); box-shadow: var(--inset-md); }
-.cinema-site .platform-downloads { min-height: 96px; }
+.cinema-site .platform-downloads { min-height: var(--control-height); margin: 20px 0 0; }
 .cinema-site .platform-downloads[aria-busy=true] { color: var(--ink-muted); }
 .cinema-site :is(.checksum-link,.portable-link,.release-link,.site-footer a,.site-header nav a) { display: inline-flex; align-items: center; min-height: var(--touch-target); }
 .cinema-site .site-header .brand { color: var(--ink); }
@@ -74,6 +83,8 @@
 .cinema-site .i-desktop { --i: url(promo/icons/material-desktop.svg); }
 .cinema-site .i-download { --i: url(promo/icons/material-download.svg); }
 .cinema-site .i-palette { --i: url(promo/icons/material-palette.svg); }
+.cinema-site .i-close { --i: url(promo/icons/material-close.svg); }
+.cinema-site .i-wechat { --i: url(promo/icons/wechat.svg); }
 .cinema-site .button .ico,.cinema-site .playback .ico { width: var(--icon-sm); height: var(--icon-sm); }
 /* Appearance options stay within a single anchored material container. */
 .appearance-menu { position: relative; }
@@ -100,6 +111,25 @@
 .material-option>i { width: 28px; height: 28px; border-radius: 50%; background: var(--surface-base); box-shadow: var(--raised-sm); }
 .appearance-system { margin-left: auto; font: 400 12px/18px var(--font-sans); color: var(--ink-muted); }
 @keyframes appearance-enter { from { opacity: 0; transform: translateY(8px) scale(.96); } to { opacity: 1; transform: none; } }
+/* Persistent WeChat community button and anchored QR popover. */
+.wechat-fab { position: fixed; right: max(24px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom)); z-index: var(--z-menu); }
+.wechat-trigger { display: inline-flex; align-items: center; gap: var(--space-8); min-height: var(--control-height); padding: 10px 16px 10px 14px; border-radius: var(--radius-full); background: var(--surface-lift); color: var(--ink); border: 1px solid var(--hairline); box-shadow: var(--raised-lg); font: 600 13px/20px var(--font-sans); cursor: pointer; list-style: none; user-select: none; -webkit-user-select: none; transition: background-color var(--dur-state) var(--ease-out), color var(--dur-state) var(--ease-out), box-shadow var(--dur-release) var(--ease-emphasized), transform var(--dur-release) var(--ease-emphasized); }
+.wechat-trigger::-webkit-details-marker { display: none; }
+.wechat-trigger .i-wechat { width: 20px; height: 20px; color: var(--success); }
+.wechat-trigger:hover { background-color: var(--surface-top); }
+.wechat-trigger:active { box-shadow: var(--inset-md); }
+.wechat-trigger:active > :is(i, span) { transform: scale(var(--scale-press)); opacity: var(--opacity-glyph-pressed); }
+.wechat-fab[open] > .wechat-trigger { background: var(--surface-base); box-shadow: var(--inset-sm); color: var(--accent); }
+.wechat-popover { position: absolute; right: 0; bottom: calc(100% + 12px); width: min(280px, calc(100vw - 32px)); max-height: calc(100svh - 96px); overflow: auto; padding: 16px; border-radius: var(--radius-lg); background: var(--surface-base); border: 1px solid var(--hairline); box-shadow: var(--raised-lg); transform-origin: bottom right; animation: appearance-enter var(--dur-panel) var(--ease-out); }
+.wechat-popover-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-8); margin-bottom: var(--space-12); }
+.wechat-popover-head h2 { margin: 0; font: 600 16px/24px var(--font-sans); color: var(--ink); }
+.wechat-close { display: grid; place-items: center; width: var(--touch-target); height: var(--touch-target); min-width: var(--touch-target); border-radius: var(--radius-full); background: transparent; color: var(--ink-muted); transition: background-color var(--dur-state) var(--ease-out), color var(--dur-state) var(--ease-out), box-shadow var(--dur-release) var(--ease-emphasized); }
+.wechat-close:hover { background-color: var(--surface-lift); color: var(--ink); }
+.wechat-close:active { box-shadow: var(--inset-sm); }
+.wechat-close .ico { width: var(--icon-sm); height: var(--icon-sm); }
+.wechat-qr-frame { background: #ffffff; border-radius: var(--radius-md); padding: 8px; box-shadow: var(--inset-sm); }
+.wechat-qr-frame img { width: 100%; height: auto; display: block; border-radius: var(--radius-xs); }
+.wechat-caption { margin-top: var(--space-12); text-align: center; font: 400 12px/18px var(--font-sans); color: var(--ink-muted); }
 ::view-transition-old(root) { animation-duration: var(--dur-state); }
 ::view-transition-new(root) { animation-duration: var(--dur-state); }
 /* The embedded film retains its authored scenes, while its material follows the site. */
@@ -110,10 +140,13 @@
   .cinema-site .site-header nav { margin-left: auto; }
   .cinema-site .site-header .button.small { font-size: 12px; padding-inline: 12px; }
   .cinema-site .download-grid { gap: var(--space-12); }
+  .cinema-site .download-card.is-recommended { order: -1; }
   .cinema-site .agent-picks { gap: 0; max-width: 336px; }
   .appearance-popover { right: -48px; }
   .cinema-site .film-demo .chapter-tabs button { min-height: 48px; font-size: 13px; border-radius: 16px; }
   .cinema-site .film-controls .playback { min-height: 48px; font-size: 13px; }
+  .cinema-site .site-footer { padding-bottom: 84px; }
+  .wechat-fab { right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); }
 }
 @media(prefers-reduced-motion:reduce) {
   :root { scroll-behavior: auto; }

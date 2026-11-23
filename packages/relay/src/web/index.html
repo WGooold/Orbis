@@ -43,7 +43,7 @@
         </div>
       </div>
     </details>
-    <a class="button small" href="#download">即刻开始 <i class="ico i-arrow-right" aria-hidden="true"></i></a>
+    <a class="button small" href="#download">下载 <i class="ico i-arrow-right" aria-hidden="true"></i></a>
   </header>
   <main id="main">
     <section class="agent-section" id="agents" aria-labelledby="hero-title">
@@ -95,20 +95,19 @@
     </section>
     <section class="download-section shell" id="download" aria-labelledby="download-title">
       <div class="download-intro"><img class="outro-symbol" src="assets/promo/orbis-symbol-2048.png" width="140" height="140" alt=""><p class="eyebrow">YOUR AGENTS. WITH YOU.</p><h2 id="download-title">现在，交给你。</h2><p class="outro-tagline">Orbis <span>Easy Agents Everywhere</span></p><p class="download-lead">桌面端轻巧打底，移动端顺手即用。</p></div>
+      <p class="device-recommendation" id="device-recommendation" role="status" hidden></p>
       <div class="download-grid">
-        <article class="download-card" aria-labelledby="host-title">
-          <div class="download-heading"><div><p class="download-kind">在电脑上</p><h3 id="host-title">Orbis Host</h3></div><span class="download-symbol" aria-hidden="true"><i class="ico i-desktop"></i></span></div>
+        <article class="download-card" id="host-card" aria-labelledby="host-title">
+          <div class="download-heading"><div><p class="download-kind">在电脑上 <span class="recommend-tag" id="host-recommend" hidden>当前设备推荐</span></p><h3 id="host-title">Orbis Host</h3></div><span class="download-symbol" aria-hidden="true"><i class="ico i-desktop"></i></span></div>
           <label class="platform-select"><span>平台</span><select id="host-platform"><option value="windows">Windows</option><option value="macos-arm64">macOS（Apple Silicon）</option><option value="macos-x64">macOS（Intel）</option></select></label>
-          <p id="host-requirement">Windows 10 / 11（x64）</p><span class="version-tag" id="host-version">正在读取版本…</span>
-          <p class="download-detail" id="host-detail">安装后，添加你的手机。</p>
-          <div class="platform-downloads" id="host-downloads" role="status" aria-busy="true">正在读取下载信息…</div><small id="host-note"></small>
+          <div class="download-meta"><p id="host-requirement">Windows 10 / 11（x64）</p><span class="version-tag" id="host-version">正在读取版本…</span></div>
+          <div class="platform-downloads" id="host-downloads" role="status" aria-busy="true">正在读取下载信息…</div>
         </article>
-        <article class="download-card" aria-labelledby="app-title">
-          <div class="download-heading"><div><p class="download-kind">在手机上</p><h3 id="app-title">Orbis App</h3></div><span class="download-symbol" aria-hidden="true"><i class="ico i-iphone"></i></span></div>
+        <article class="download-card" id="app-card" aria-labelledby="app-title">
+          <div class="download-heading"><div><p class="download-kind">在手机上 <span class="recommend-tag" id="app-recommend" hidden>当前设备推荐</span></p><h3 id="app-title">Orbis App</h3></div><span class="download-symbol" aria-hidden="true"><i class="ico i-iphone"></i></span></div>
           <label class="platform-select"><span>平台</span><select id="app-platform"><option value="android">Android</option><option value="ios">iOS</option></select></label>
-          <p id="app-requirement">Android 手机（APK）</p><span class="version-tag" id="app-version">正在读取版本…</span>
-          <p class="download-detail" id="app-detail">扫码，让 Agent 来到手边。</p>
-          <div class="platform-downloads" id="app-downloads" role="status" aria-busy="true">正在读取下载信息…</div><small id="app-note"></small>
+          <div class="download-meta"><p id="app-requirement">Android 手机（APK）</p><span class="version-tag" id="app-version">正在读取版本…</span></div>
+          <div class="platform-downloads" id="app-downloads" role="status" aria-busy="true">正在读取下载信息…</div>
         </article>
       </div>
       <p class="registration-status" id="registration-status" role="status">正在读取激活状态…</p>
@@ -117,5 +116,21 @@
     </section>
   </main>
   <footer class="site-footer shell"><a class="brand" href="./"><span>Orbis</span></a><p>Easy Agents Everywhere</p><div><a href="assets/promo/agents/NOTICES.txt">图标许可</a><a href="https://github.com/WGooold/Orbis" target="_blank" rel="noopener noreferrer">GitHub <i class="ico i-arrow-right" aria-hidden="true"></i></a><span>© 2026 Orbis</span></div></footer>
+  <details class="wechat-fab" id="wechat-fab">
+    <summary class="wechat-trigger" aria-label="加入 Orbis 微信交流群">
+      <i class="ico i-wechat" aria-hidden="true"></i>
+      <span>微信群</span>
+    </summary>
+    <div class="wechat-popover" role="region" aria-label="Orbis 微信交流群二维码">
+      <div class="wechat-popover-head">
+        <h2>Orbis 交流群</h2>
+        <button class="wechat-close" type="button" id="wechat-close" aria-label="关闭微信群二维码"><i class="ico i-close" aria-hidden="true"></i></button>
+      </div>
+      <div class="wechat-qr-frame">
+        <img src="assets/promo/weixinqrcode.png" width="1166" height="1640" alt="Orbis 微信交流群二维码" decoding="async">
+      </div>
+      <p class="wechat-caption">微信扫码加入交流群</p>
+    </div>
+  </details>
 </body>
 </html>

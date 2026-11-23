@@ -54,6 +54,7 @@ const assets = {
   "/assets/promo/icons/material-palette.svg": ["promo/icons/material-palette.svg", "image/svg+xml"],
   "/assets/promo/icons/material-download.svg": ["promo/icons/material-download.svg", "image/svg+xml"],
   "/assets/promo/icons/material-desktop.svg": ["promo/icons/material-desktop.svg", "image/svg+xml"],
+  "/assets/promo/icons/wechat.svg": ["promo/icons/wechat.svg", "image/svg+xml"],
   "/assets/promo/icons/arrow-up-left.svg": ["promo/icons/arrow-up-left.svg", "image/svg+xml"],
   "/assets/promo/icons/bubble-alert.svg": ["promo/icons/bubble-alert.svg", "image/svg+xml"],
   "/assets/promo/icons/clipboard.svg": ["promo/icons/clipboard.svg", "image/svg+xml"],
@@ -105,6 +106,7 @@ const assets = {
   "/assets/promo/orbis-ring.png": ["promo/orbis-ring.png", "image/png"],
   "/assets/promo/orbis-symbol-2048.png": ["promo/orbis-symbol-2048.png", "image/png"],
   "/assets/promo/qr-orbising.svg": ["promo/qr-orbising.svg", "image/svg+xml"],
+  "/assets/promo/weixinqrcode.png": ["promo/weixinqrcode.png", "image/png"],
 } as const;
 export const downloadNames = [
   "OrbisHost-0.1.24-windows-x64-setup.exe", "OrbisHost-0.1.24-windows-x64.zip",

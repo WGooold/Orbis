@@ -1,22 +1,16 @@
 const hostPlatforms = {
   windows: {
     requirement: "Windows 10 / 11 (x64)",
-    detail: "安装后，在电脑端添加手机。",
-    note: "当前为预览版，安装时 Windows 可能提示发布者未验证。",
-    pattern: /^OrbisHost-(\d+\.\d+\.\d+)-windows-x64(?:-setup\.exe|\.zip)$/,
+    pattern: /^OrbisHost-(\d+\.\d+\.\d+)-windows-x64-setup\.exe$/,
     files: data => data.windows,
   },
   "macos-arm64": {
     requirement: "macOS (Apple Silicon)",
-    detail: "打开 DMG，将 Orbis Host 拖入「应用程序」。",
-    note: "请按「关于本机」中的芯片类型选择 Apple Silicon 或 Intel 版本。",
     pattern: /^OrbisHost-(\d+\.\d+\.\d+)-macos-arm64\.dmg$/,
     files: data => data.macos,
   },
   "macos-x64": {
     requirement: "macOS (Intel)",
-    detail: "打开 DMG，将 Orbis Host 拖入「应用程序」。",
-    note: "请按「关于本机」中的芯片类型选择 Apple Silicon 或 Intel 版本。",
     pattern: /^OrbisHost-(\d+\.\d+\.\d+)-macos-x64\.dmg$/,
     files: data => data.macos,
   },
@@ -24,16 +18,40 @@ const hostPlatforms = {
 const appPlatforms = {
   android: {
     requirement: "Android 手机（APK）",
-    detail: "安装后，扫描电脑端的配对二维码。",
-    note: "安装后扫描电脑端的配对二维码。",
   },
   ios: {
     requirement: "iPhone（iOS）",
-    detail: "扫码，让 Agent 来到手边。",
-    note: "安装入口以当前发布信息为准。",
   },
 };
 let siteData;
+let deviceRecommendation;
+
+function detectDeviceRecommendation(nav = navigator, architecture = "") {
+  const ua = typeof nav?.userAgent === "string" ? nav.userAgent : "";
+  const platform = typeof nav?.platform === "string" ? nav.platform : "";
+  const touchPoints = Number(nav?.maxTouchPoints ?? 0);
+  const arch = typeof architecture === "string" ? architecture.toLowerCase() : "";
+  // iPadOS may identify as desktop Safari; touch-capable Macs here are iPads.
+  if (/iPad|iPhone|iPod/i.test(ua) || (platform === "MacIntel" && touchPoints > 1)) {
+    return { card: "app", platform: "ios", label: "Orbis App（iOS）", matches: value => value === "ios" };
+  }
+  if (/Android/i.test(ua)) {
+    return { card: "app", platform: "android", label: "Orbis App（Android）", matches: value => value === "android" };
+  }
+  if (/Windows/i.test(ua) || /Win/i.test(platform)) {
+    return { card: "host", platform: "windows", label: "Orbis Host（Windows）", matches: value => value === "windows" };
+  }
+  if (/Macintosh|Mac OS X/i.test(ua) || /Mac/i.test(platform)) {
+    if (arch === "arm" || /arm64|aarch64/i.test(ua)) {
+      return { card: "host", platform: "macos-arm64", label: "Orbis Host（macOS · Apple Silicon）", matches: value => value === "macos-arm64" };
+    }
+    if (arch === "x86") {
+      return { card: "host", platform: "macos-x64", label: "Orbis Host（macOS · Intel）", matches: value => value === "macos-x64" };
+    }
+    return { card: "host", platform: "macos-arm64", label: "Orbis Host（macOS）", hint: "按芯片选择 Apple Silicon 或 Intel", matches: value => value === "macos-arm64" || value === "macos-x64" };
+  }
+  return undefined;
+}
 
 function compareVersions(left, right) {
   const a = left.split(".").map(Number);
@@ -46,10 +64,43 @@ function hostReleases(platform) {
   const files = siteData && Array.isArray(spec.files(siteData)) ? spec.files(siteData) : [];
   return files.flatMap(file => {
     const match = typeof file?.name === "string" ? file.name.match(spec.pattern) : null;
-    return match && typeof file.url === "string" && typeof file.checksumUrl === "string"
+    return match && typeof file.url === "string"
       ? [{ ...file, version: match[1] }] : [];
-  }).sort((a, b) => compareVersions(a.version, b.version)
-    || Number(b.name.endsWith(".exe")) - Number(a.name.endsWith(".exe")));
+  }).sort((a, b) => compareVersions(a.version, b.version));
+}
+
+function renderRecommendation(hostPlatform, appPlatform) {
+  const banner = document.getElementById("device-recommendation");
+  const hostCard = document.getElementById("host-card");
+  const appCard = document.getElementById("app-card");
+  const hostTag = document.getElementById("host-recommend");
+  const appTag = document.getElementById("app-recommend");
+  if (!banner) return;
+  if (!deviceRecommendation) {
+    banner.hidden = true;
+    hostCard?.classList.remove("is-recommended");
+    appCard?.classList.remove("is-recommended");
+    if (hostTag) hostTag.hidden = true;
+    if (appTag) appTag.hidden = true;
+    return;
+  }
+  const badge = document.createElement("span");
+  badge.className = "recommend-badge";
+  badge.textContent = "当前设备推荐";
+  const text = document.createElement("span");
+  const strong = document.createElement("strong");
+  strong.textContent = deviceRecommendation.label;
+  text.append("下载 ", strong);
+  if (deviceRecommendation.hint) text.append(`（${deviceRecommendation.hint}）`);
+  banner.replaceChildren(badge, text);
+  banner.hidden = false;
+
+  const hostMatched = deviceRecommendation.card === "host" && deviceRecommendation.matches(hostPlatform);
+  const appMatched = deviceRecommendation.card === "app" && deviceRecommendation.matches(appPlatform);
+  hostCard?.classList.toggle("is-recommended", hostMatched);
+  appCard?.classList.toggle("is-recommended", appMatched);
+  if (hostTag) hostTag.hidden = !hostMatched;
+  if (appTag) appTag.hidden = !appMatched;
 }
 
 function renderHost(platform) {
@@ -57,8 +108,6 @@ function renderHost(platform) {
   const version = document.getElementById("host-version");
   const container = document.getElementById("host-downloads");
   document.getElementById("host-requirement").textContent = spec.requirement;
-  document.getElementById("host-detail").textContent = spec.detail;
-  document.getElementById("host-note").textContent = spec.note;
   container.replaceChildren();
   container.setAttribute("aria-busy", "false");
   if (!siteData) {
@@ -67,27 +116,18 @@ function renderHost(platform) {
     return;
   }
   const releases = hostReleases(platform);
-  const latest = releases[0]?.version;
-  version.textContent = latest ? `预览版 ${latest}` : "预览包准备中";
+  const latest = releases[0];
+  version.textContent = latest ? `预览版 ${latest.version}` : "预览包准备中";
   if (!latest) {
     container.textContent = "该平台的预览包正在准备，发布后即可在这里下载。";
     return;
   }
-  for (const release of releases.filter(file => file.version === latest)) {
-    const portable = release.name.endsWith(".zip");
-    const link = document.createElement("a");
-    link.className = portable ? "text-link portable-link" : "button primary";
-    link.href = release.url;
-    const size = Number.isFinite(release.bytes) && release.bytes > 0 ? `（${(release.bytes / 1048576).toFixed(0)} MB）` : "";
-    link.textContent = portable
-      ? "下载免安装版 ZIP"
-      : `下载 ${platform === "windows" ? "Windows 安装版" : "macOS 版"}${size}`;
-    const checksum = document.createElement("a");
-    checksum.className = "checksum-link";
-    checksum.href = release.checksumUrl;
-    checksum.textContent = portable ? "免安装版 SHA-256 校验文件" : "SHA-256 校验文件";
-    container.append(link, checksum);
-  }
+  const link = document.createElement("a");
+  link.className = "button primary";
+  link.href = latest.url;
+  const size = Number.isFinite(latest.bytes) && latest.bytes > 0 ? `（${(latest.bytes / 1048576).toFixed(0)} MB）` : "";
+  link.textContent = `下载 ${platform === "windows" ? "Windows 版" : "macOS 版"}${size}`;
+  container.append(link);
 }
 
 function renderApp(platform) {
@@ -95,8 +135,6 @@ function renderApp(platform) {
   const version = document.getElementById("app-version");
   const container = document.getElementById("app-downloads");
   document.getElementById("app-requirement").textContent = spec.requirement;
-  document.getElementById("app-detail").textContent = spec.detail;
-  document.getElementById("app-note").textContent = spec.note;
   container.replaceChildren();
   container.setAttribute("aria-busy", "false");
   if (!siteData) {
@@ -116,10 +154,6 @@ function renderApp(platform) {
     link.className = "button primary";
     link.href = url;
     link.textContent = testFlight ? "加入 iOS 测试" : "获取 iOS 版";
-    if (testFlight) {
-      document.getElementById("app-detail").textContent = "通过 TestFlight 安装 Orbis 测试版。";
-      document.getElementById("app-note").textContent = "请先安装 TestFlight，再加入测试并安装 Orbis。安装后扫描电脑端的配对二维码。";
-    }
     container.append(link);
     return;
   }
@@ -134,22 +168,45 @@ function renderApp(platform) {
   link.className = "button primary";
   link.href = url;
   link.textContent = "下载 Android 版";
-  const checksum = document.createElement("a");
-  checksum.className = "checksum-link";
-  checksum.href = `${url}.sha256`;
-  checksum.textContent = "SHA-256 校验文件";
-  container.append(link, checksum);
+  container.append(link);
 }
 
 async function loadDownloads() {
   const hostSelect = document.getElementById("host-platform");
   const appSelect = document.getElementById("app-platform");
-  // iPadOS may identify as desktop Safari; touch-capable Macs here are iPads.
-  if (/iPad|iPhone|iPod/.test(navigator.userAgent) || navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) {
-    appSelect.value = "ios";
+  if (!hostSelect || !appSelect) return;
+  let hostTouched = false;
+  let appTouched = false;
+  deviceRecommendation = detectDeviceRecommendation();
+
+  function syncRecommendedSelection() {
+    if (!deviceRecommendation) return;
+    if (deviceRecommendation.card === "app" && !appTouched) {
+      appSelect.value = deviceRecommendation.platform;
+    }
+    if (deviceRecommendation.card === "host" && !hostTouched && (!siteData || hostReleases(deviceRecommendation.platform).length > 0)) {
+      if (siteData) hostSelect.value = deviceRecommendation.platform;
+    }
   }
-  hostSelect.addEventListener("change", () => renderHost(hostSelect.value));
-  appSelect.addEventListener("change", () => renderApp(appSelect.value));
+
+  if (deviceRecommendation?.card === "app") appSelect.value = deviceRecommendation.platform;
+  renderRecommendation(hostSelect.value, appSelect.value);
+
+  hostSelect.addEventListener("change", () => {
+    hostTouched = true;
+    renderHost(hostSelect.value);
+    renderRecommendation(hostSelect.value, appSelect.value);
+  });
+  appSelect.addEventListener("change", () => {
+    appTouched = true;
+    renderApp(appSelect.value);
+    renderRecommendation(hostSelect.value, appSelect.value);
+  });
+
+  const archPromise = navigator.userAgentData?.getHighEntropyValues?.(["architecture"])
+    .then(values => values?.architecture || "")
+    .catch(() => "");
+
   try {
     const response = await fetch("v1/site", { cache: "no-store" });
     if (!response.ok) throw new Error("unavailable");
@@ -157,8 +214,13 @@ async function loadDownloads() {
   } catch {
     siteData = undefined;
   }
+
+  const architecture = await Promise.resolve(archPromise);
+  if (architecture) deviceRecommendation = detectDeviceRecommendation(navigator, architecture);
+  syncRecommendedSelection();
   renderHost(hostSelect.value);
   renderApp(appSelect.value);
+  renderRecommendation(hostSelect.value, appSelect.value);
 }
 
 async function loadRegistration() {
@@ -176,6 +238,30 @@ async function loadRegistration() {
 
 void loadDownloads();
 void loadRegistration();
+
+function initWechatGroup() {
+  const fab = document.getElementById("wechat-fab");
+  if (!fab) return;
+  const trigger = fab.querySelector("summary");
+  const close = document.getElementById("wechat-close");
+  function dismiss() {
+    if (!fab.open) return;
+    fab.open = false;
+    trigger?.focus();
+  }
+  close?.addEventListener("click", dismiss);
+  fab.addEventListener("keydown", event => {
+    if (event.key === "Escape") { event.stopPropagation(); dismiss(); }
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && fab.open) dismiss();
+  });
+  document.addEventListener("pointerdown", event => {
+    if (fab.open && !fab.contains(event.target)) fab.open = false;
+  });
+}
+
+initWechatGroup();
 
 // Preferences are local to this device; the system scheme remains live while selected.
 function initAppearance() {
