@@ -1635,8 +1635,9 @@ export class HostService {
 
   #providerCurrent(kind: AgentKind): () => boolean {
     const current = this.#sourceCurrent(kind);
-    if (kind !== "codex") return current;
-    const desktop = this.#sourceCurrent("codexDesktop");
+    const desktopKind = kind === "codex" ? "codexDesktop" : kind === "dsh" ? "dshDesktop" : undefined;
+    if (!desktopKind) return current;
+    const desktop = this.#sourceCurrent(desktopKind);
     return () => current() || desktop();
   }
 

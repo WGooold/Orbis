@@ -233,8 +233,9 @@ ApplicationWindow {
     readonly property string inlineListOwner: page === 2 && detailPowered && !providersOpen ? detailProviderGroup : ""
     onInlineListOwnerChanged: if (inlineListOwner) host.refreshAgentProviders(inlineListOwner)
     function providerGroup(kind) {
-        // Codex is shared. DeepSeek Desktop exposes a separate native, read-only catalog (ADR-0076).
-        return kind === "codexDesktop" ? "codex" : ["codex", "claude", "pi", "dsh"].includes(kind) ? kind : ""
+        return kind === "codexDesktop" ? "codex"
+            : kind === "dshDesktop" ? "dsh"
+            : ["codex", "claude", "pi", "dsh"].includes(kind) ? kind : ""
     }
     function twinKind(kind) {
         return ({codex: "codexDesktop", codexDesktop: "codex", dsh: "dshDesktop", dshDesktop: "dsh"})[kind] || ""
@@ -245,6 +246,7 @@ ApplicationWindow {
     function groupSessionCount(group) {
         if (!group) return 0
         if (group === "codex") return (host.activeAgentSessions["codex"]?.total || 0) + (host.activeAgentSessions["codexDesktop"]?.total || 0)
+        if (group === "dsh") return (host.activeAgentSessions["dsh"]?.total || 0) + (host.activeAgentSessions["dshDesktop"]?.total || 0)
         return host.activeAgentSessions[group]?.total || 0
     }
     function applyAgentSettings(overrides) {

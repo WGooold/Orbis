@@ -310,8 +310,18 @@ private slots:
         QTRY_VERIFY(integrationSection->isVisible() && codexPrestart->isVisible() && twinChip->isVisible() && openProvidersBtn->isVisible());
         QVERIFY(QMetaObject::invokeMethod(twinChip, "clicked"));
         QCOMPARE(window->property("selectedAgent").toString(), QString("codexDesktop"));
+        QCOMPARE(window->property("detailProviderGroup").toString(), QString("codex"));
+        QVERIFY(openProvidersBtn->isVisible());
         QVERIFY(QMetaObject::invokeMethod(twinChip, "clicked"));
         QCOMPARE(window->property("selectedAgent").toString(), QString("codex"));
+
+        // DeepSeek Desktop shares the same provider group and inline controls as DeepSeek CLI.
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("dshDesktop")), Q_ARG(QVariant, 0)));
+        QCOMPARE(window->property("selectedAgent").toString(), QString("dshDesktop"));
+        QCOMPARE(window->property("detailProviderGroup").toString(), QString("dsh"));
+        QTRY_VERIFY(openProvidersBtn->isVisible());
+        QTRY_COMPARE(controller.providerKind(), QString("dsh"));
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("codex")), Q_ARG(QVariant, 0)));
 
         // Opening provider configuration inside the two-column Agent page must keep the rail and detail
         // widths stable instead of feeding providerCard's childrenRect width back into RowLayout.

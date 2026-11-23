@@ -1636,7 +1636,8 @@ export class DesktopRuntime {
 
   #providerCurrent(kind: AgentKind): () => boolean {
     const lease = this.#agentEnablement.lease(kind);
-    const desktop = kind === "codex" ? this.#agentEnablement.lease("codexDesktop") : undefined;
+    const desktop = kind === "codex" ? this.#agentEnablement.lease("codexDesktop")
+      : kind === "dsh" ? this.#agentEnablement.lease("dshDesktop") : undefined;
     return () => lease?.isCurrent() === true || desktop?.isCurrent() === true;
   }
 
