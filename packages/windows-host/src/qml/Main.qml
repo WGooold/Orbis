@@ -619,6 +619,42 @@ ApplicationWindow {
         Surface { anchors.fill: parent; anchors.margins: -10; margin: 10; cornerRadius: 26; shadowScale: 0.6 }
         SymbolIcon { anchors.centerIn: parent; width: Theme.iconMd; height: Theme.iconMd; name: parent.symbol; color: parent.lit ? Theme.accent : Theme.inkFaint; Behavior on color { enabled: window.motionEnabled; ColorAnimation { duration: Theme.durState } } }
     }
+    component VariantBadge: Item {
+        id: badge
+        property string kind: ""
+        property bool active: true
+        property int iconSize: 9
+        readonly property string variant: window.variantSymbol(kind)
+        readonly property color strokeColor: active ? Theme.agent(kind) : Theme.inkFaint
+        readonly property string svgBody: variant === "terminal"
+            ? '<path d="M5 7l5 5-5 5M12 18h7"/>'
+            : variant === "computer"
+                ? '<rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/>'
+                : ""
+        visible: svgBody.length > 0
+        implicitWidth: 15
+        implicitHeight: 15
+        opacity: active ? 1 : 0.45
+        Accessible.ignored: true
+        Surface {
+            anchors.fill: parent; anchors.margins: -4; margin: 4
+            cornerRadius: badge.width / 2
+            surface: Theme.surfaceLift
+            outerShadowEnabled: badge.active
+            shadowScale: 0.35
+        }
+        Image {
+            anchors.centerIn: parent
+            width: badge.iconSize; height: badge.iconSize
+            sourceSize.width: width * Screen.devicePixelRatio
+            sourceSize.height: height * Screen.devicePixelRatio
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            source: badge.svgBody.length > 0
+                ? "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="' + badge.strokeColor + '" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">' + badge.svgBody + '</svg>')
+                : ""
+        }
+    }
     component AgentDisc: Item {
         id: disc
         property string kind: ""
@@ -647,20 +683,12 @@ ApplicationWindow {
             name: "chat_bubble"; color: Theme.inkMuted
             opacity: disc.powered ? 1 : 0.38
         }
-        Item {
-            visible: disc.showVariant && disc.variant.length > 0
-            x: parent.width - 13; y: parent.height - 13
+        VariantBadge {
+            visible: disc.showVariant && svgBody.length > 0
+            x: parent.width - 12; y: parent.height - 12
             width: 15; height: 15
-            Surface {
-                anchors.fill: parent; anchors.margins: -4; margin: 4
-                cornerRadius: 7.5; shadowScale: 0.25
-            }
-            SymbolIcon {
-                anchors.centerIn: parent
-                width: 10; height: 10
-                name: disc.variant
-                color: Theme.inkMuted
-            }
+            kind: disc.kind
+            active: disc.powered
         }
     }
     component ConnectionLine: Item {
@@ -908,22 +936,30 @@ ApplicationWindow {
     component SoftToolButton: ToolButton {
         id: softTool
         property string symbol: "more_horiz"
-        Accessible.name: text || ({close:"关闭",arrow_upward:"上移",arrow_downward:"下移",more_horiz:"更多"})[symbol] || "操作"
+        Accessible.name: text || ({close:"关闭",arrow_upward:"上移",arrow_downward:"下移",more_horiz:"更多",info:"说明"})[symbol] || "操作"
         implicitWidth: Theme.touchTarget
         implicitHeight: Theme.touchTarget
         hoverEnabled: true
         contentItem: SymbolIcon {
             name: softTool.symbol
-            color: !softTool.enabled ? Theme.inkFaint : Theme.inkMuted
+            color: !softTool.enabled ? Theme.inkFaint : softTool.checked ? Theme.accent : Theme.inkMuted
             scale: softTool.down ? 0.94 : 1
             opacity: softTool.down ? 0.82 : 1
             Behavior on scale { enabled: window.motionEnabled; NumberAnimation { duration: softTool.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
         }
         background: Surface {
             x: 4 - 8; y: 4 - 8; width: 40 + 16; height: 40 + 16; margin: 8
-            cornerRadius: 20; inset: softTool.down
+            cornerRadius: 20; inset: softTool.down || softTool.checked
             focused: softTool.activeFocus; disabled: !softTool.enabled; hovered: softTool.hovered
         }
+    }
+    component InfoHintButton: SoftToolButton {
+        property bool expanded: false
+        symbol: "info"
+        checked: expanded
+        onClicked: expanded = !expanded
+        ToolTip.visible: hovered && !expanded
+        ToolTip.text: Accessible.name
     }
     Image {
         id: themeOverlay
@@ -1304,13 +1340,22 @@ ApplicationWindow {
                                             anchors.fill: parent; spacing: 14
                                             Item {
                                                 Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd
-                                                opacity: agentRow.modelData.installed === false ? 0.4 : 1
-                                                AgentMark {
-                                                    id: overviewMark
-                                                    objectName: "overviewAgentMark-" + agentRow.modelData.kind
-                                                    anchors.fill: parent; kind: agentRow.modelData.kind; visible: hasMark
+                                                Item {
+                                                    anchors.fill: parent
+                                                    opacity: agentRow.modelData.installed === false ? 0.4 : 1
+                                                    AgentMark {
+                                                        id: overviewMark
+                                                        objectName: "overviewAgentMark-" + agentRow.modelData.kind
+                                                        anchors.fill: parent; kind: agentRow.modelData.kind; visible: hasMark
+                                                    }
+                                                    SymbolIcon { anchors.fill: parent; visible: !overviewMark.hasMark; name: "chat_bubble"; color: Theme.inkMuted }
                                                 }
-                                                SymbolIcon { anchors.fill: parent; visible: !overviewMark.hasMark; name: "chat_bubble"; color: Theme.inkMuted }
+                                                VariantBadge {
+                                                    x: parent.width - 9; y: parent.height - 9
+                                                    width: 13; height: 13; iconSize: 8
+                                                    kind: agentRow.modelData.kind
+                                                    active: agentRow.modelData.installed !== false
+                                                }
                                             }
                                             Label { text: agentRow.modelData.name; color: agentRow.modelData.installed === false ? Theme.inkFaint : Theme.ink; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
                                             Item {
@@ -1405,15 +1450,208 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
+                        id: devicesPage
                         visible: window.page === 1; Layout.fillWidth: true; spacing: 16
+                        property bool mobileDownloadExpanded: false
+                        readonly property bool hasAndroidDownload: host.appDownloadQr.length > 0
+                        readonly property bool hasIosDownload: host.iosAppDownloadQr.length > 0
+                        readonly property bool mobileDownloadAvailable: hasAndroidDownload || hasIosDownload
+                        readonly property bool mobileDownloadOpen: mobileDownloadExpanded && mobileDownloadAvailable
                         RowLayout {
-                            Layout.fillWidth: true
+                            Layout.fillWidth: true; spacing: 12
                             Heading { text: "已配对设备" }
                             Item { Layout.fillWidth: true }
-                            // HOST-IOS-DOWNLOAD-01: both platforms share the download dialog with their own QR target.
-                            ActionButton { objectName: "downloadAndroidClient"; text: window.androidUpdatesAvailable() ? "更新Android客户端" : "下载Android客户端"; visible: host.appDownloadQr.length > 0; onClicked: { appDownloadDialog.platform = "android"; appDownloadDialog.open() } }
-                            ActionButton { objectName: "downloadIosClient"; text: "下载iOS客户端"; visible: host.iosAppDownloadQr.length > 0; onClicked: { appDownloadDialog.platform = "ios"; appDownloadDialog.open() } }
+                            // HOST-MOBILE-DOWNLOAD-02: single "下载移动端" toggle expands Android and iOS QR codes inline.
+                            Button {
+                                id: downloadMobileButton
+                                objectName: "downloadMobileClient"
+                                visible: devicesPage.mobileDownloadAvailable
+                                implicitHeight: Theme.controlHeight
+                                implicitWidth: Math.max(100, contentItem.implicitWidth + 32)
+                                font.pixelSize: Theme.body
+                                font.weight: Font.DemiBold
+                                hoverEnabled: true
+                                Accessible.role: Accessible.Button
+                                Accessible.name: "下载移动端"
+                                Accessible.checked: devicesPage.mobileDownloadOpen
+                                onClicked: devicesPage.mobileDownloadExpanded = !devicesPage.mobileDownloadExpanded
+                                contentItem: Item {
+                                    implicitWidth: mobileBtnRow.implicitWidth
+                                    implicitHeight: Math.max(24, mobileBtnLabel.implicitHeight)
+                                    scale: downloadMobileButton.down ? 0.94 : 1
+                                    opacity: downloadMobileButton.down ? 0.82 : 1
+                                    Behavior on scale { enabled: window.motionEnabled; NumberAnimation { duration: downloadMobileButton.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
+                                    Row {
+                                        id: mobileBtnRow
+                                        anchors.centerIn: parent
+                                        spacing: 8
+                                        SymbolIcon {
+                                            width: 18; height: 18
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            name: "download"
+                                            color: devicesPage.mobileDownloadOpen ? Theme.accent : Theme.ink
+                                        }
+                                        MotionText {
+                                            id: mobileBtnLabel
+                                            objectName: "downloadMobileCaption"
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: "下载移动端"
+                                            font: downloadMobileButton.font
+                                            color: devicesPage.mobileDownloadOpen ? Theme.accent : Theme.ink
+                                            Accessible.ignored: true
+                                        }
+                                        Rectangle {
+                                            objectName: "downloadMobileUpdateDot"
+                                            visible: window.androidUpdatesAvailable()
+                                            width: 8; height: 8; radius: 4
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            color: Theme.warning
+                                        }
+                                        SymbolIcon {
+                                            id: mobileBtnChevron
+                                            objectName: "downloadMobileChevron"
+                                            width: 18; height: 18
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            name: "keyboard_arrow_down"
+                                            color: devicesPage.mobileDownloadOpen ? Theme.accent : Theme.inkMuted
+                                            rotation: devicesPage.mobileDownloadOpen ? 180 : 0
+                                            Behavior on rotation { enabled: window.motionEnabled; NumberAnimation { duration: Theme.durCollapse; easing.type: Easing.OutCubic } }
+                                        }
+                                    }
+                                }
+                                background: Surface {
+                                    anchors.fill: parent; anchors.margins: -12; margin: 12
+                                    inset: devicesPage.mobileDownloadOpen || downloadMobileButton.down
+                                    focused: downloadMobileButton.activeFocus
+                                    hovered: downloadMobileButton.hovered
+                                }
+                            }
                             ActionButton { text: "添加手机"; symbol: "add"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
+                        }
+                        Item {
+                            id: mobileDownloadDrawer
+                            objectName: "mobileDownloadPanel"
+                            property real expandProgress: devicesPage.mobileDownloadOpen ? 1 : 0
+                            Behavior on expandProgress { enabled: window.motionEnabled; NumberAnimation { duration: Theme.durCollapse; easing.type: Easing.OutCubic } }
+                            readonly property int shadowPad: 16
+                            visible: expandProgress > 0.001
+                            clip: expandProgress < 1
+                            Layout.fillWidth: true
+                            Layout.leftMargin: -shadowPad
+                            Layout.rightMargin: -shadowPad
+                            Layout.topMargin: -shadowPad
+                            Layout.bottomMargin: -shadowPad
+                            Layout.preferredHeight: mobileDownloadCard.implicitHeight * expandProgress + shadowPad * 2
+                            Card {
+                                id: mobileDownloadCard
+                                objectName: "mobileDownloadCard"
+                                x: mobileDownloadDrawer.shadowPad
+                                y: mobileDownloadDrawer.shadowPad
+                                width: mobileDownloadDrawer.width - mobileDownloadDrawer.shadowPad * 2
+                                padding: 24
+                                opacity: Math.min(1, mobileDownloadDrawer.expandProgress * 1.35)
+                                contentWidth: availableWidth
+                                contentHeight: mobileDownloadRow.implicitHeight
+                                RowLayout {
+                                    id: mobileDownloadRow
+                                    anchors.fill: parent
+                                    spacing: 24
+                                    ColumnLayout {
+                                        id: androidDownloadSection
+                                        objectName: "androidDownloadSection"
+                                        visible: devicesPage.hasAndroidDownload
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 240
+                                        Layout.alignment: Qt.AlignTop
+                                        spacing: 12
+                                        RowLayout {
+                                            Layout.alignment: Qt.AlignHCenter
+                                            spacing: 8
+                                            Heading { text: "Android"; font.pixelSize: Theme.body }
+                                            RowLayout {
+                                                objectName: "androidDownloadUpdateBadge"
+                                                visible: window.androidUpdatesAvailable()
+                                                spacing: 5
+                                                Rectangle { width: 7; height: 7; radius: 3.5; color: Theme.warning }
+                                                Label { text: "有新版本"; color: Theme.warning; font.pixelSize: Theme.caption; font.weight: Font.DemiBold }
+                                            }
+                                        }
+                                        Item {
+                                            Layout.alignment: Qt.AlignHCenter
+                                            Layout.preferredWidth: 216
+                                            Layout.preferredHeight: 216
+                                            Surface {
+                                                anchors.fill: parent; anchors.margins: -8; margin: 8
+                                                cornerRadius: Theme.radiusMd; inset: true; shadowScale: 0.4
+                                            }
+                                            Rectangle {
+                                                anchors.centerIn: parent
+                                                width: 196; height: 196
+                                                radius: Theme.radiusSm
+                                                color: "#ffffff"
+                                                Image {
+                                                    objectName: "androidDownloadQrImage"
+                                                    anchors.centerIn: parent
+                                                    width: 184; height: 184
+                                                    source: host.appDownloadQr
+                                                    sourceSize.width: 320; sourceSize.height: 320
+                                                    fillMode: Image.PreserveAspectFit
+                                                    smooth: false
+                                                    mipmap: false
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Rectangle {
+                                        objectName: "mobileDownloadDivider"
+                                        visible: devicesPage.hasAndroidDownload && devicesPage.hasIosDownload
+                                        Layout.preferredWidth: 1
+                                        Layout.fillHeight: true
+                                        Layout.topMargin: 8
+                                        Layout.bottomMargin: 8
+                                        color: Theme.hairline
+                                    }
+                                    ColumnLayout {
+                                        id: iosDownloadSection
+                                        objectName: "iosDownloadSection"
+                                        visible: devicesPage.hasIosDownload
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 240
+                                        Layout.alignment: Qt.AlignTop
+                                        spacing: 12
+                                        Heading {
+                                            text: "iOS · TestFlight"
+                                            font.pixelSize: Theme.body
+                                            Layout.alignment: Qt.AlignHCenter
+                                        }
+                                        Item {
+                                            Layout.alignment: Qt.AlignHCenter
+                                            Layout.preferredWidth: 216
+                                            Layout.preferredHeight: 216
+                                            Surface {
+                                                anchors.fill: parent; anchors.margins: -8; margin: 8
+                                                cornerRadius: Theme.radiusMd; inset: true; shadowScale: 0.4
+                                            }
+                                            Rectangle {
+                                                anchors.centerIn: parent
+                                                width: 196; height: 196
+                                                radius: Theme.radiusSm
+                                                color: "#ffffff"
+                                                Image {
+                                                    objectName: "iosDownloadQrImage"
+                                                    anchors.centerIn: parent
+                                                    width: 184; height: 184
+                                                    source: host.iosAppDownloadQr
+                                                    sourceSize.width: 320; sourceSize.height: 320
+                                                    fillMode: Image.PreserveAspectFit
+                                                    smooth: false
+                                                    mipmap: false
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Card {
                             visible: host.devices.length === 0; Layout.fillWidth: true
@@ -1456,6 +1694,7 @@ ApplicationWindow {
                                 SoftToolButton { symbol: "close"; Accessible.name: "取消多选"; onClicked: window.selectedAgents = [] }
                             }
                             ActionButton { text: "检查更新"; enabled: host.bridgeReady && !host.busy && window.activityKinds.indexOf("agents") < 0; loading: window.activityKinds.indexOf("agents") >= 0; onClicked: host.detectAgents(true) }
+                            ActionButton { text: "全部更新到最新（" + window.batchAgentTargets().length + "）"; visible: window.batchAgentTargets().length > 0; enabled: window.canEditAgent; onClicked: window.showAgentBatch() }
                         }
                         Hint { visible: host.bridgeReady && !window.agentRows.length; text: "无法读取 Agent 设置，请检查 Host 状态目录后重启 Host。"; Layout.fillWidth: true }
                         RowLayout {
@@ -1607,7 +1846,6 @@ ApplicationWindow {
                                             ActionButton { text: "打开"; visible: !!window.detailFacts && !window.detailFacts.passive && window.detailKind !== "openclaw"; enabled: window.canEditAgent && !!window.detailFacts && window.detailFacts.installed === true; onClicked: window.openOverviewAgent(window.detailKind) }
                                             ActionButton { objectName: "restartDshServer"; text: "重启 DSH Server"; visible: window.detailKind === "dsh"; enabled: window.canEditAgent && !host.agentInstalling && !!window.detailFacts && window.detailFacts.installed === true; onClicked: restartDshDialog.open() }
                                             ActionButton { text: "入口设置"; visible: !!window.detailFacts && (!!window.agentCliHint(window.detailFacts) || !!host.agentEntryOverrides[window.detailKind]); enabled: window.canEditAgent; onClicked: window.showAgentEntry(window.detailFacts) }
-                                            ActionButton { text: "全部更新到最新（" + window.batchAgentTargets().length + "）"; visible: window.batchAgentTargets().length > 0; enabled: window.canEditAgent; onClicked: window.showAgentBatch() }
                                         }
                                         Hint { objectName: "claudeVersions"; visible: window.detailKind === "claude"; text: "当前 " + (host.claudeVersion || "—") + "，最新 " + (host.claudeLatestChecking ? "查询中" : host.claudeLatestVersion || "未知") + (host.claudeUpdateAvailable ? "，有可用更新" : ""); Layout.fillWidth: true }
                                         Hint { visible: window.detailKind === "claude" && text.length > 0; text: host.claudeVersionError || host.claudeLatestError; Layout.fillWidth: true; color: Theme.warning }
@@ -1942,19 +2180,29 @@ ApplicationWindow {
                                                     ToolTip.visible: hovered; ToolTip.text: "Kimi Code 接入说明"
                                                 }
                                             }
-                                            SoftSwitch {
-                                                id: piIntegrationSwitch
-                                                objectName: "piIntegrationSwitch"
-                                                enabled: host.bridgeReady && !host.busy
-                                                marksProviderDirty: false
+                                            RowLayout {
                                                 visible: Qt.platform.os === "osx" && window.detailKind === "pi"
-                                                checked: host.piIntegrationEnabled
-                                                text: "让终端里运行的 Pi 连接 Orbis"
-                                                onToggled: if (checked !== host.piIntegrationEnabled) window.applyAgentSettings({piIntegration: checked})
+                                                Layout.fillWidth: true; spacing: 8
+                                                onVisibleChanged: if (!visible) piInfoBtn.expanded = false
+                                                SoftSwitch {
+                                                    id: piIntegrationSwitch
+                                                    objectName: "piIntegrationSwitch"
+                                                    Layout.fillWidth: true
+                                                    enabled: host.bridgeReady && !host.busy
+                                                    marksProviderDirty: false
+                                                    checked: host.piIntegrationEnabled
+                                                    text: "让终端里运行的 Pi 连接 Orbis"
+                                                    onToggled: if (checked !== host.piIntegrationEnabled) window.applyAgentSettings({piIntegration: checked})
+                                                }
+                                                InfoHintButton {
+                                                    id: piInfoBtn
+                                                    objectName: "piIntegrationInfo"
+                                                    Accessible.name: "Pi 接入说明"
+                                                }
                                             }
                                             Hint {
-                                                visible: Qt.platform.os === "osx" && window.detailKind === "pi"
-                                                text: "会在 Pi 的 settings.json 里追加 Orbis 扩展，不影响你已有的扩展；已在运行的 Pi 需重启后才会连接。删除 Orbis Host 前请先关闭此项（终端命令 pi 也会一并移除）。"
+                                                visible: Qt.platform.os === "osx" && window.detailKind === "pi" && piInfoBtn.expanded
+                                                text: "开启后终端里的 Pi 重启即可连上 Orbis；卸载 Host 前请先关闭。"
                                                 Layout.fillWidth: true
                                             }
                                             RowLayout {
@@ -1970,19 +2218,29 @@ ApplicationWindow {
                                                     onClicked: host.piCommand(window.piAgent().terminalCommand === "installed" ? "remove" : "install")
                                                 }
                                             }
-                                            SoftSwitch {
-                                                id: claudeIntegrationSwitch
-                                                objectName: "claudeIntegrationSwitch"
+                                            RowLayout {
                                                 visible: window.detailKind === "claude"
-                                                enabled: host.bridgeReady && !host.busy
-                                                marksProviderDirty: false
-                                                checked: host.claudeIntegrationEnabled
-                                                text: "让终端里运行的 Claude Code 连接 Orbis"
-                                                onToggled: if (checked !== host.claudeIntegrationEnabled) window.applyAgentSettings({claudeIntegration: checked})
+                                                Layout.fillWidth: true; spacing: 8
+                                                onVisibleChanged: if (!visible) claudeInfoBtn.expanded = false
+                                                SoftSwitch {
+                                                    id: claudeIntegrationSwitch
+                                                    objectName: "claudeIntegrationSwitch"
+                                                    Layout.fillWidth: true
+                                                    enabled: host.bridgeReady && !host.busy
+                                                    marksProviderDirty: false
+                                                    checked: host.claudeIntegrationEnabled
+                                                    text: "让终端里运行的 Claude Code 连接 Orbis"
+                                                    onToggled: if (checked !== host.claudeIntegrationEnabled) window.applyAgentSettings({claudeIntegration: checked})
+                                                }
+                                                InfoHintButton {
+                                                    id: claudeInfoBtn
+                                                    objectName: "claudeIntegrationInfo"
+                                                    Accessible.name: "Claude Code 接入说明"
+                                                }
                                             }
                                             Hint {
-                                                visible: window.detailKind === "claude"
-                                                text: "安装或首次打开 Host 时自动安装 Orbis 插件；未安装 Claude Code 时跳过，安装后重新打开 Host 即可。关闭此项会卸载插件，更新 Host 会保留关闭状态。需要 Claude Code 2.1.287 或更新版本，以及 PATH 中的 node。已在运行的 Claude Code 需执行 /reload-plugins 或重启。"
+                                                visible: window.detailKind === "claude" && claudeInfoBtn.expanded
+                                                text: "开启后自动安装插件（关闭即卸载），运行中的 Claude Code 执行 /reload-plugins 或重启即可连接（需 2.1.287+ 及 node）。"
                                                 Layout.fillWidth: true
                                             }
                                         }
@@ -1995,7 +2253,7 @@ ApplicationWindow {
                                             readonly property bool editable: host.openClaw.source === "file"
                                             readonly property bool dirty: clawUrl.text.trim() !== (host.openClaw.url || "") || clawToken.text.length > 0
                                             function reset() { clawUrl.text = host.openClaw.url || ""; clawToken.clear() }
-                                            onVisibleChanged: reset()
+                                            onVisibleChanged: { reset(); if (!visible) openClawInfoBtn.expanded = false }
                                             Component.onCompleted: reset()
                                             Connections { target: host; function onOpenClawChanged() { openClawCard.reset() } }
                                             ColumnLayout {
@@ -2006,9 +2264,15 @@ ApplicationWindow {
                                                     Heading { text: "OpenClaw"; Layout.fillWidth: true }
                                                     StatusDot { idle: !window.openClawReady; color: window.openClawReady ? Theme.success : host.openClaw.invalid ? Theme.warning : Theme.inkFaint }
                                                     Hint { objectName: "openClawState"; text: window.openClawStateText }
+                                                    InfoHintButton {
+                                                        id: openClawInfoBtn
+                                                        objectName: "openClawInfo"
+                                                        visible: openClawCard.editable
+                                                        Accessible.name: "OpenClaw 连接说明"
+                                                    }
                                                 }
+                                                Hint { visible: openClawCard.editable && openClawInfoBtn.expanded; text: "本机填 ws://，远程必须填 wss:// 才能连接。"; Layout.fillWidth: true }
                                                 Field { id: clawUrl; objectName: "openClawUrl"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "ws://127.0.0.1:18789 或 wss://gateway.example.com"; Accessible.name: "OpenClaw Gateway 地址" }
-                                                Hint { visible: openClawCard.editable; text: "本机可用 ws://；远程连接必须使用 wss:// 加密。"; Layout.fillWidth: true }
                                                 Field {
                                                     id: clawToken; objectName: "openClawToken"
                                                     visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
@@ -2057,7 +2321,7 @@ ApplicationWindow {
                                                 hermesSshPort.text = String(host.hermesRemote.port || 22)
                                                 hermesSshProfile.text = host.hermesRemote.profile || ""
                                             }
-                                            onVisibleChanged: reset()
+                                            onVisibleChanged: { reset(); if (!visible) hermesInfoBtn.expanded = false }
                                             Component.onCompleted: reset()
                                             Connections { target: host; function onHermesRemoteChanged() { hermesRemoteCard.reset() } }
                                             ColumnLayout {
@@ -2068,15 +2332,20 @@ ApplicationWindow {
                                                     Heading { text: "Hermes Agent"; Layout.fillWidth: true }
                                                     StatusDot { idle: window.backendFor("hermes")?.ready !== true; color: window.backendFor("hermes")?.ready === true ? Theme.success : Theme.inkFaint }
                                                     Hint { text: window.backendFor("hermes")?.ready === true ? "已连接" : host.hermesRemote.host ? "SSH 远程" : "本机 CLI" }
+                                                    InfoHintButton {
+                                                        id: hermesInfoBtn
+                                                        objectName: "hermesRemoteInfo"
+                                                        visible: hermesRemoteCard.editable
+                                                        Accessible.name: "Hermes 远程说明"
+                                                    }
                                                 }
+                                                Hint { visible: hermesRemoteCard.editable && hermesInfoBtn.expanded; text: "填写后将通过免密 SSH 连接已运行的远程 Gateway（需支持 gateway attach 且工作目录两端均可访问）。"; Layout.fillWidth: true }
                                                 Field { id: hermesSshHost; objectName: "hermesSshHost"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 260; marksProviderDirty: false; placeholderText: "user@server 或 SSH 别名（留空=本机）"; Accessible.name: "Hermes 远程 SSH 主机" }
                                                 Flow {
                                                     Layout.fillWidth: true; spacing: 10
                                                     Field { id: hermesSshPort; objectName: "hermesSshPort"; Layout.preferredWidth: 120; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 5; marksProviderDirty: false; placeholderText: "22"; Accessible.name: "SSH 端口" }
                                                     Field { id: hermesSshProfile; objectName: "hermesSshProfile"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 64; marksProviderDirty: false; placeholderText: "Hermes profile（默认）"; Accessible.name: "远程 Hermes profile" }
                                                 }
-                                                Hint { visible: hermesRemoteCard.editable && !!hermesSshHost.text.trim(); text: "只连接已运行的远程 Gateway，不会启动它。需预先验证 SSH 主机密钥并配置密钥登录；远程 Hermes CLI 需支持 gateway attach。"; Layout.fillWidth: true }
-                                                Hint { visible: hermesRemoteCard.editable && !!hermesSshHost.text.trim(); text: "远程新会话的工作目录路径需在 Host 与远端均可访问。"; Layout.fillWidth: true }
                                                 Hint { visible: !!host.hermesRemote.invalid; text: "Hermes SSH 配置无效；请检查主机、端口和 profile。"; Layout.fillWidth: true; color: Theme.warning }
                                                 Hint { visible: !hermesRemoteCard.editable; text: "由 ORBIS_HERMES_SSH_* 环境变量配置" }
                                                 Flow {
@@ -2335,30 +2604,6 @@ ApplicationWindow {
         RowLayout { width: parent.width; spacing: 12
             BusyIndicator { running: host.exiting }
             Hint { text: "正在保存状态并关闭后台任务"; Layout.fillWidth: true }
-        }
-    }
-    SoftDialog {
-        id: appDownloadDialog
-        objectName: "appDownloadDialog"
-        property string platform: "android"
-        title: platform === "ios" ? "Orbis iOS · TestFlight" : "Orbis Android"
-        anchors.centerIn: parent
-        width: 370
-        modal: true
-        footer: SoftDialogButtons { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: appDownloadDialog.reject() }
-        ColumnLayout {
-            width: parent.width; spacing: 12
-            Label { text: appDownloadDialog.platform === "ios" ? "扫描下方二维码加入测试" : "扫描下方二维码下载"; Layout.alignment: Qt.AlignHCenter; color: Theme.inkMuted; font.pixelSize: Theme.label }
-            Image {
-                objectName: "appDownloadQrImage"
-                source: appDownloadDialog.platform === "ios" ? host.iosAppDownloadQr : host.appDownloadQr
-                sourceSize.width: 320; sourceSize.height: 320
-                Layout.preferredWidth: 320; Layout.preferredHeight: 320
-                Layout.alignment: Qt.AlignHCenter
-                fillMode: Image.PreserveAspectFit
-                smooth: false
-                mipmap: false
-            }
         }
     }
     SoftDialog {
