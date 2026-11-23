@@ -153,3 +153,11 @@ Host Agent 详情「运行中」列表的绿点与单行会话标题居中对齐
 实现：[Host 状态聚合](../../packages/host/src/host-service.ts)、[Agent 页](../../packages/windows-host/src/qml/Main.qml)；回归：[Host 集成](../../packages/host/src/host-service.test.ts)、[Qt 展示](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp)。
 
 暂存版本本机验证：[TypeScript 与 Node 定向回归](../../.artifacts/host-running-sessions-20261123/staged-node.log)、[macOS Qt 回归](../../.artifacts/host-running-sessions-20261123/staged-qt-test.txt)。真实 Agent 联动及安装验收待用户验证；未发布。
+
+### HOST-AGENT-VISUAL-01：Host Agent 开关反馈与操作对齐（2026-11-24）
+
+Host Agent 开关的移动钮使用轻量场景图圆形与明暗偏移层表达凸起，去除移动钮的品牌色描边；品牌色只用于启用位置的插孔轮廓。插孔相对拨杆收小。Host 写入仍由 Qt 桥异步发送，不在点击回调中等待结果；原移动钮使用随按压状态变化的 `QQuickPaintedItem` 阴影，现改为普通 QML 图形，避免其阴影绘制参与逐帧按压／释放更新。此项优化针对开关绘制；下述软件渲染回归并不等同于完整生产环境的整页性能剖析。
+
+配额查询改为无文字刷新图标，保留「刷新配额」辅助名称及提示；未启用状态与启用动作在详情内容区共用水平中线，状态文字内部也显式居中。Host Agent 页面将 `dsh` 的展示名映射为 DeepSeek Web；共享设置快照的标签和稳定协议 kind 保持不变，以免改变旧移动端目录显示。
+
+实现与验证：[`AgentLatch.qml`](../../packages/windows-host/src/qml/AgentLatch.qml)、[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)、Host 目录 [`agent-enablement.ts`](../../packages/host/src/agent-enablement.ts)；[Qt 页面／开关回归](../../.artifacts/agent-page-feedback-20261124/host-qt-test.log)、[开关等待异步回执时的渲染帧样本](../../.artifacts/agent-page-feedback-20261124/agent-latch-frame-sample.log)、[详情截图](../../.artifacts/agent-page-feedback-20261124/agent-inactive.png)、[目录定向测试](../../.artifacts/agent-page-feedback-20261124/agent-enablement-test.log)及[类型检查](../../.artifacts/agent-page-feedback-20261124/typecheck.log)。软件渲染测试在 Host 模拟写入等待期间观测到 82 ms 内 7 个 `afterRendering` 帧，拨杆从 x=3 移至 x≈19；这说明动画在等待期间持续推进，不证明目标机器整页无掉帧。未发布或安装，完整页面性能及用户验收待实际安装验证。

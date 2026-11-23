@@ -10,6 +10,8 @@ AbstractButton {
     property bool failed: false
     property bool large: false
     readonly property int boltSize: large ? 30 : 24
+    readonly property int socketSize: boltSize - 4
+    readonly property int knobFaceSize: boltSize - 2
     readonly property int dotSize: 6
     onFailedChanged: if (failed && Theme.motionEnabled) shake.restart()
     property color tint: Theme.accent
@@ -32,14 +34,17 @@ AbstractButton {
     }
     contentItem: Item {
         Rectangle {
-            x: parent.width - latch.boltSize - 3; y: (parent.height - latch.boltSize) / 2
-            width: latch.boltSize; height: latch.boltSize; radius: latch.boltSize / 2
+            objectName: "agentLatchSocket"
+            x: parent.width - latch.boltSize / 2 - 3 - width / 2
+            y: (parent.height - height) / 2
+            width: latch.socketSize; height: width; radius: width / 2
             color: "transparent"
             border.width: latch.powered || latch.failed ? 1.5 : 1
             border.color: latch.failed ? Theme.danger : latch.powered ? latch.tint : Theme.hairline
         }
         Item {
             id: bolt
+            objectName: "agentLatchMovingKnob"
             x: 3 + (parent.width - latch.boltSize - 6) * latch.position + latch.nudge
             y: (parent.height - latch.boltSize) / 2
             width: latch.boltSize; height: latch.boltSize
@@ -50,8 +55,37 @@ AbstractButton {
                 NumberAnimation { target: recoil; property: "x"; to: 2; duration: 55 }
                 NumberAnimation { target: recoil; property: "x"; to: 0; duration: 70 }
             }
-            Behavior on x { enabled: Theme.motionEnabled; NumberAnimation { duration: Theme.durState; easing.type: Easing.OutCubic } }
-            Surface { anchors.fill: parent; cornerRadius: latch.boltSize / 2; margin: 4; shadowScale: 0.45; visible: !latch.change; inset: latch.down; disabled: !latch.enabled }
+            Behavior on x {
+                enabled: Theme.motionEnabled
+                NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+            }
+            // Keep the moving knob on scene-graph primitives. A painted NeuSurface
+            // rerasterized its soft shadow during every press/release relief frame.
+            Rectangle {
+                objectName: "agentLatchKnobHighlight"
+                x: (bolt.width - width) / 2 + (latch.down ? 2 : -2)
+                y: (bolt.height - height) / 2 + (latch.down ? 2 : -2)
+                width: latch.knobFaceSize; height: width; radius: width / 2
+                color: Theme.highlight; opacity: latch.enabled ? 0.9 : 0.5
+                visible: !latch.change
+            }
+            Rectangle {
+                objectName: "agentLatchKnobShadow"
+                x: (bolt.width - width) / 2 + (latch.down ? -2 : 2)
+                y: (bolt.height - height) / 2 + (latch.down ? -2 : 2)
+                width: latch.knobFaceSize; height: width; radius: width / 2
+                color: Theme.shade; opacity: latch.enabled ? 0.78 : 0.42
+                visible: !latch.change
+            }
+            Rectangle {
+                objectName: "agentLatchKnobFace"
+                anchors.centerIn: parent
+                width: latch.knobFaceSize; height: width; radius: width / 2
+                color: Theme.surfaceBase
+                border.width: 1
+                border.color: Theme.hairline
+                visible: !latch.change
+            }
             Rectangle { anchors.centerIn: parent; width: latch.dotSize; height: latch.dotSize; radius: latch.dotSize / 2; color: latch.powered ? latch.tint : Theme.inkFaint; visible: !latch.change }
             Canvas {
                 id: ring

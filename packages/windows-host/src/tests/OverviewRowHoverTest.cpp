@@ -2,18 +2,22 @@
 #include "../NeuSurface.h"
 #include <QAccessible>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QSignalSpy>
 #include <QEnterEvent>
 #include <QFile>
 #include <QMouseEvent>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
+#include <QQmlProperty>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <algorithm>
 
 namespace {
 QQuickItem *findVisualItem(QQuickItem *root, const QString &name) {
@@ -63,13 +67,14 @@ const agents = [
   { kind: "codex", label: "Codex", enabled: true },
   { kind: "codexDesktop", label: "Codex 桌面版", enabled: true },
   { kind: "claude", label: "Claude Code", enabled: true },
-  { kind: "dsh", label: "DeepSeek Harness", enabled: true },
+  { kind: "dsh", label: "DeepSeek CLI", enabled: true },
   { kind: "dshDesktop", label: "DeepSeek 桌面版", enabled: true },
   { kind: "kimiCode", label: "Kimi Code", enabled: true },
   { kind: "opencode", label: "OpenCode", enabled: true },
   { kind: "hermes", label: "Hermes Agent", enabled: true },
   { kind: "openclaw", label: "OpenClaw", enabled: true }
 ];
+let currentAgents = agents;
 require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
   const { id, method, params } = JSON.parse(line);
   if (method === "initialize") {
@@ -79,7 +84,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
         hostId: "fixture-host",
         hostName: "Fixture",
         devices: [{ deviceId: "phone-1", label: "iPhone", path: "relay", createdAt: 1 }],
-        agentEnablement: { revision: 1, agents },
+        agentEnablement: { revision: 1, agents: currentAgents },
         openClaw: { source: "file", url: "", hasToken: false },
         hermesRemote: { source: "file", host: "", port: 22, profile: "" }
       }
@@ -122,6 +127,12 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
         { kind: "dsh", installed: true, desktopInstalled: true }
       ]
     });
+    return;
+  }
+  if (method === "agent.enablement.write") {
+    currentAgents = currentAgents.map(agent => agent.kind === params.kind ? { ...agent, enabled: params.enabled } : agent);
+    const snapshot = { revision: params.expectedRevision + 1, agents: currentAgents };
+    setTimeout(() => out({ id, result: { status: "applied", snapshot } }), 320);
     return;
   }
   if (method === "provider.list") {
@@ -317,8 +328,23 @@ private slots:
         auto *codexPrestart = findVisualItem(detail, "codexPrestartSwitch");
         auto *twinChip = findVisualItem(detail, "twinAgentChip");
         auto *openProvidersBtn = findVisualItem(detail, "openAgentProviders");
+        auto *detailLatch = findVisualItem(detail, "detailAgentLatch");
+        auto *detailTitle = findVisualItem(detail, "agentDetailTitle");
         QVERIFY(rail && detail && integrationSection && codexPrestart && twinChip && openProvidersBtn);
+        QVERIFY(detailLatch && detailTitle);
         QTRY_VERIFY(integrationSection->isVisible() && codexPrestart->isVisible() && twinChip->isVisible() && openProvidersBtn->isVisible());
+        auto *socket = findVisualItem(detailLatch, "agentLatchSocket");
+        auto *knobFace = findVisualItem(detailLatch, "agentLatchKnobFace");
+        QVERIFY(socket && knobFace);
+        QCOMPARE(socket->width(), 26.0);
+        QCOMPARE(knobFace->width(), 28.0);
+        QVERIFY(knobFace->width() > socket->width());
+        auto *latchTheme = engine.singletonInstance<QObject *>("Orbis.Host", "Theme");
+        QVERIFY(latchTheme);
+        const auto socketTint = QQmlProperty(socket, "border.color").read().value<QColor>();
+        QCOMPARE(socketTint, latchTheme->property("agentCodex").value<QColor>());
+        const auto knobOutline = QQmlProperty(knobFace, "border.color").read().value<QColor>();
+        QCOMPARE(knobOutline, latchTheme->property("hairline").value<QColor>());
         QVERIFY(QMetaObject::invokeMethod(twinChip, "clicked"));
         QCOMPARE(window->property("selectedAgent").toString(), QString("codexDesktop"));
         QCOMPARE(window->property("detailProviderGroup").toString(), QString("codex"));
@@ -326,7 +352,7 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(twinChip, "clicked"));
         QCOMPARE(window->property("selectedAgent").toString(), QString("codex"));
 
-        // DeepSeek Desktop shares the same provider group and inline controls as DeepSeek CLI.
+        // DeepSeek Desktop shares the same provider group and inline controls as DeepSeek Web, and shows its version under the title.
         QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("dshDesktop")), Q_ARG(QVariant, 0)));
         QCOMPARE(window->property("selectedAgent").toString(), QString("dshDesktop"));
         QCOMPARE(window->property("detailProviderGroup").toString(), QString("dsh"));
@@ -345,11 +371,66 @@ private slots:
         QQuickItem *customCard = nullptr;
         QTRY_VERIFY((officialCard = findVisualItem(detail, "providerCard-openai")) && officialCard->isVisible() &&
                     (customCard = findVisualItem(detail, "providerCard-openrouter")) && customCard->isVisible());
+        auto *quotaRefresh = findVisualItem(officialCard, "providerManagerQuotaRefresh-openai");
+        QVERIFY(quotaRefresh && quotaRefresh->isVisible());
+        QCOMPARE(quotaRefresh->property("symbol").toString(), QString("refresh"));
+        QCOMPARE(quotaRefresh->property("text").toString(), QString());
+        auto *quotaAccessible = QAccessible::queryAccessibleInterface(quotaRefresh);
+        QVERIFY(quotaAccessible);
+        QCOMPARE(quotaAccessible->text(QAccessible::Name), QString("刷新配额"));
         QTest::qWait(80);
         QVERIFY2(qAbs(rail->width() - railWidthBefore) <= 0.5 && qAbs(detail->width() - detailWidthBefore) <= 0.5,
                  qPrintable(QString("Opening provider cards shifted rail/detail width: rail %1 -> %2, detail %3 -> %4")
                                 .arg(railWidthBefore).arg(rail->width())
                                 .arg(detailWidthBefore).arg(detail->width())));
+
+        QJsonArray disabledAgents;
+        for (const auto &agent : controller.agentEnablement().value("agents").toList()) {
+            auto row = agent.toMap();
+            if (row.value("kind").toString() == "dsh") row.insert("enabled", false);
+            disabledAgents.append(QJsonObject::fromVariantMap(row));
+        }
+        controller.receiveLine({{"event", "agentEnablement"}, {"snapshot", QJsonObject{{"revision", 2}, {"agents", disabledAgents}}}});
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("dsh")), Q_ARG(QVariant, 0)));
+        QCOMPARE(detailTitle->property("text").toString(), QString("DeepSeek Web"));
+        auto *inactiveState = findVisualItem(detail, "agentDetailInactiveState");
+        auto *enableAction = findVisualItem(detail, "agentDetailEnable");
+        QVERIFY(inactiveState && enableAction && inactiveState->isVisible() && enableAction->isVisible());
+        QCOMPARE(enableAction->property("text").toString(), QString("启用 DeepSeek Web"));
+        QCOMPARE(inactiveState->property("horizontalAlignment").toInt(), int(Qt::AlignHCenter));
+        const auto inactiveCenter = inactiveState->mapToItem(inactiveState->parentItem(), inactiveState->boundingRect().center());
+        const auto enableCenter = enableAction->mapToItem(enableAction->parentItem(), enableAction->boundingRect().center());
+        QVERIFY(qAbs(inactiveCenter.x() - inactiveState->parentItem()->width() / 2) <= 0.5);
+        QVERIFY(qAbs(enableCenter.x() - enableAction->parentItem()->width() / 2) <= 0.5);
+        QVERIFY(QAccessible::queryAccessibleInterface(enableAction));
+        const auto inactiveScreenshot = qEnvironmentVariable("ORBIS_AGENT_INACTIVE_SCREENSHOT");
+        if (!inactiveScreenshot.isEmpty()) QVERIFY(window->grabWindow().save(inactiveScreenshot));
+
+        // The switch animation must progress over rendered frames while its asynchronous Host write is pending.
+        auto *movingKnob = findVisualItem(detailLatch, "agentLatchMovingKnob");
+        QVERIFY(movingKnob);
+        engine.rootContext()->setContextProperty("orbisMotionEnabled", true);
+        QSignalSpy rendered(window, &QQuickWindow::afterRendering);
+        const qreal initialX = movingKnob->x();
+        QElapsedTimer pendingFrameWindow;
+        pendingFrameWindow.start();
+        QVERIFY(QMetaObject::invokeMethod(window, "flipAgent", Q_ARG(QVariant, QString("dsh"))));
+        QTest::qWait(80);
+        QVERIFY(movingKnob->x() > initialX + 1);
+        QVERIFY(movingKnob->x() < 43);
+        QVERIFY(rendered.count() > 2);
+        qInfo() << "Agent-page switch during pending write:" << rendered.count()
+                << "afterRendering frames in" << pendingFrameWindow.elapsed() << "ms; knob moved from"
+                << initialX << "to" << movingKnob->x();
+        QTRY_VERIFY_WITH_TIMEOUT(movingKnob->x() > 42, 2000);
+        auto dshEnabled = [&controller] {
+            const auto finalAgents = controller.agentEnablement().value("agents").toList();
+            return std::any_of(finalAgents.cbegin(), finalAgents.cend(), [](const QVariant &agent) {
+                const auto row = agent.toMap();
+                return row.value("kind").toString() == "dsh" && row.value("enabled").toBool();
+            });
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(dshEnabled(), 2000);
 
         controller.shutdown();
     }

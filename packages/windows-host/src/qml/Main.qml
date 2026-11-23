@@ -223,7 +223,9 @@ ApplicationWindow {
     property string agentSelectionAnchor: ""
     property string previewProviderId: ""
     property var agentFeedback: ({})
-    readonly property var agentRows: host.agentEnablement.agents || []
+    // The Host details page names this entry by its Web UI; keep the shared wire catalog unchanged for older clients.
+    readonly property var agentRows: (host.agentEnablement.agents || []).map(row =>
+        row.kind === "dsh" ? Object.assign({}, row, {label: "DeepSeek Web"}) : row)
     readonly property int enabledAgentCount: agentRows.filter(row => row.enabled).length
     readonly property var selectedAgentRow: agentRows.find(row => row.kind === selectedAgent) || agentRows[0] || null
     readonly property string detailKind: selectedAgentRow ? selectedAgentRow.kind : ""
@@ -1908,7 +1910,7 @@ ApplicationWindow {
                                         AgentDisc { kind: window.detailKind; large: true; powered: window.agentVisualOn(window.selectedAgentRow) }
                                         ColumnLayout {
                                             Layout.fillWidth: true; spacing: 3
-                                            Heading { text: window.selectedAgentRow ? window.selectedAgentRow.label : ""; font.pixelSize: Theme.title; Layout.fillWidth: true; elide: Text.ElideRight }
+                                            Heading { objectName: "agentDetailTitle"; text: window.selectedAgentRow ? window.selectedAgentRow.label : ""; font.pixelSize: Theme.title; Layout.fillWidth: true; elide: Text.ElideRight }
                                             Hint {
                                                 objectName: "agentDetailState"
                                                 readonly property int runCount: window.detailSessions.total
@@ -1932,7 +1934,12 @@ ApplicationWindow {
                                     ColumnLayout {
                                         visible: !window.detailPowered
                                         Layout.fillWidth: true; Layout.topMargin: 44; Layout.bottomMargin: 24; spacing: 14
-                                        Hint { text: window.detailChange ? (window.detailChange.queued ? "已排队" : "正在启用") : "未启用"; Layout.alignment: Qt.AlignHCenter }
+                                        Hint {
+                                            objectName: "agentDetailInactiveState"
+                                            text: window.detailChange ? (window.detailChange.queued ? "已排队" : "正在启用") : "未启用"
+                                            Layout.fillWidth: true
+                                            horizontalAlignment: Text.AlignHCenter
+                                        }
                                         ActionButton {
                                             objectName: "agentDetailEnable"
                                             visible: !window.detailPowered
@@ -2045,7 +2052,16 @@ ApplicationWindow {
                                                                         Label { text: (providerRow.quota ? providerRow.quota.sevenDay : 0) + "%"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
                                                                     }
                                                                 }
-                                                                ActionButton { text: "配额"; visible: providerRow.modelData.enabled && providerRow.modelData.subscriptionSupported === true; enabled: !host.busy && !window.detailChange; onClicked: host.querySubscription(providerRow.modelData.id) }
+                                                                SoftToolButton {
+                                                                    objectName: "providerQuotaRefresh-" + providerRow.modelData.id
+                                                                    symbol: "refresh"
+                                                                    Accessible.name: "刷新配额"
+                                                                    ToolTip.visible: hovered
+                                                                    ToolTip.text: "刷新配额"
+                                                                    visible: providerRow.modelData.enabled && providerRow.modelData.subscriptionSupported === true
+                                                                    enabled: !host.busy && !window.detailChange
+                                                                    onClicked: host.querySubscription(providerRow.modelData.id)
+                                                                }
                                                                 Label { visible: providerRow.modelData.enabled && !(providerRow.modelData.mode === "additive" && (providerHover.hovered || providerRow.activeFocus || window.previewProviderId === providerRow.modelData.id)); text: "使用中"; color: Theme.success; font.pixelSize: Theme.caption; font.weight: Font.DemiBold }
                                                                 ActionButton { text: providerRow.modelData.enabled ? "移出" : "切换"; visible: (!providerRow.modelData.enabled || providerRow.modelData.mode === "additive") && (providerHover.hovered || providerRow.activeFocus || window.previewProviderId === providerRow.modelData.id); enabled: !host.busy && !window.detailChange; onClicked: window.askProvider(providerRow.modelData) }
                                                             }
@@ -2137,7 +2153,16 @@ ApplicationWindow {
                                                           Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
                                                           Flow { Layout.fillWidth: true; spacing: 6
                                                             ActionButton { text: "检测连通"; loading: host.checkingProviderIds.indexOf(modelData.id) >= 0; visible: modelData.category !== "official"; enabled: !host.busy && host.checkingProviderIds.indexOf(modelData.id) < 0; onClicked: host.checkProvider(modelData.id) }
-                                                            ActionButton { text: "查询订阅配额"; visible: modelData.enabled && modelData.subscriptionSupported === true; enabled: !host.busy; onClicked: host.querySubscription(modelData.id) }
+                                                            SoftToolButton {
+                                                                objectName: "providerManagerQuotaRefresh-" + modelData.id
+                                                                symbol: "refresh"
+                                                                Accessible.name: "刷新配额"
+                                                                ToolTip.visible: hovered
+                                                                ToolTip.text: "刷新配额"
+                                                                visible: modelData.enabled && modelData.subscriptionSupported === true
+                                                                enabled: !host.busy
+                                                                onClicked: host.querySubscription(modelData.id)
+                                                            }
                                                             SoftToolButton { symbol: "arrow_upward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index > 0; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index - 1].id); ToolTip.visible: hovered; ToolTip.text: "上移" }
                                                             SoftToolButton { symbol: "arrow_downward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index + 1 < window.visibleProviders.length; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index + 1].id); ToolTip.visible: hovered; ToolTip.text: "下移" }
                                                           }

@@ -832,7 +832,7 @@ const CAT={
   codex:{label:'Codex CLI',mark:'codex',tone:'--agent-codex',twin:'codexDesktop',variant:'term'},
   codexDesktop:{label:'Codex Desktop',mark:'codex',tone:'--agent-codex',twin:'codex',variant:'desk'},
   claude:{label:'Claude Code',mark:'claude',tone:'--agent-claude'},
-  dsh:{label:'DeepSeek CLI',mark:'dsh',tone:'--agent-deepseek',twin:'dshDesktop',variant:'term'},
+  dsh:{label:'DeepSeek Web',mark:'dsh',tone:'--agent-deepseek',twin:'dshDesktop',variant:'term'},
   dshDesktop:{label:'DeepSeek Desktop',mark:'dsh',tone:'--agent-deepseek',twin:'dsh',variant:'desk'},
   kimiCode:{label:'Kimi Code',glyph:'K',tone:'--ink'},
   opencode:{label:'OpenCode',glyph:'O',tone:'--ink'},
@@ -1793,7 +1793,7 @@ const OV_NOTES={
   connect:{title:'概览：待连接',items:['连线是灰色虚线，两端节点都不亮。强调色移到「开始连接」。','点「开始连接」：活动行出现「正在连接中继」，连线变成往返的黄点，连接中没有强调按钮；约 1.3 秒后连上，强调色移到「添加手机」。']},
   pair:{title:'概览：待配对',items:['已连接，0 台手机。点「添加手机」弹出二维码，原型约 2.6 秒后模拟一台手机扫码完成。','配对后设备条出现，强调色移到 Agent 卡的「启用 Agent」。']},
   enable:{title:'概览：待启用',items:['Agent 卡只有一行空态和「启用 Agent」（强调）。点它进入 Agent 页；在那里启用后回到概览，行会出现。']},
-  install:{title:'概览：待安装',items:['已启用的 Claude Code 与 DeepSeek CLI 都没装：名称变淡，状态为「未安装」，「安装」按钮带强调色。','点「安装」：按钮转圈，行下出现进度条与字节数；装完状态变为「手机可用」，强调色移到「打开」，引导条消失。']},
+  install:{title:'概览：待安装',items:['已启用的 Claude Code 与 DeepSeek Web 都没装：名称变淡，状态为「未安装」，「安装」按钮带强调色。','点「安装」：按钮转圈，行下出现进度条与字节数；装完状态变为「手机可用」，强调色移到「打开」，引导条消失。']},
   daily:{title:'概览：日常',items:['引导条隐藏；更新提示条在顶部，关掉后本次运行不再出现，侧栏圆点保留。','连接卡显示路径「局域网」、3 台手机 2 台在线；设备条可跳到设备页。','Agent 行：会话数、手机可用状态与「打开」。点行空白处跳到 Agent 页并选中该项。','点「暂停连接」：连线变灰，Agent 状态变为「连接后手机可用」，手机端同步显示电脑已暂停。']},
   relink:{title:'概览：重连中',items:['状态词「重连中」，活动行说明原因；连线是黄色虚线加往返点。Agent 的圆点变为同步环，状态为「正在连接」。','设置早已完成，所以引导条不会出现；重连中也没有强调按钮。']},
   error:{title:'概览：需要处理',items:['状态词变红，连线红色虚线；连接行下方是错误行，带「诊断」和「重试」，「重试」是整页唯一的强调按钮。点它进入连接中，随后恢复。']}
@@ -1837,7 +1837,7 @@ function setOverview(name){
   if(name==='install'){['claude','dsh'].forEach(k=>{HOST.fate[k]={stage:'missing',sessions:0};HOST.agents[k]={enabled:true,stage:'missing',sessions:0,error:''}});HOST.revision++;Object.values(CLIENTS).forEach(loadClient)}
   if(name==='relink'){HUI.state='reconnecting';HUI.activity='网络已切换，正在重连'}
   if(name==='error'){HUI.state='error';HUI.error='中继握手失败：证书已过期'}
-  sim.ov=name;log('概览',{inactive:'未激活',connect:'已激活，连接已暂停',pair:'已连接，没有配对手机',enable:'2 台手机，未启用 Agent',install:'Claude Code、DeepSeek CLI 已启用但未安装',daily:'日常',relink:'网络切换后重连中',error:'中继握手失败'}[name],'sys');
+  sim.ov=name;log('概览',{inactive:'未激活',connect:'已激活，连接已暂停',pair:'已连接，没有配对手机',enable:'2 台手机，未启用 Agent',install:'Claude Code、DeepSeek Web 已启用但未安装',daily:'日常',relink:'网络切换后重连中',error:'中继握手失败'}[name],'sys');
   VIEWS.desk.page='overview';if(sim.platform==='phone')setPlatform('desk');
   drawNotes();renderAll();
 }
