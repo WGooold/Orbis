@@ -809,21 +809,22 @@ ApplicationWindow {
         spacing: 12
         implicitHeight: Theme.touchTarget
         indicator: Item {
-            implicitWidth: 64; implicitHeight: 32
-            x: softSwitch.leftPadding; y: (softSwitch.height - height) / 2
-            Surface { anchors.fill: parent; anchors.margins: -8; margin: 8; cornerRadius: Theme.radiusSm; inset: true; shadowScale: 0.4; disabled: !softSwitch.enabled; focused: softSwitch.activeFocus }
+            implicitWidth: 44; implicitHeight: 24
+            x: softSwitch.width - width - softSwitch.rightPadding; y: (softSwitch.height - height) / 2
+            Surface { anchors.fill: parent; anchors.margins: -8; margin: 8; cornerRadius: 12; inset: true; shadowScale: 0.4; disabled: !softSwitch.enabled; focused: softSwitch.activeFocus }
             Rectangle {
-                width: 24; height: 24; radius: Theme.radiusXs
-                x: softSwitch.checked ? parent.width - width - 4 : 4; y: 4
-                color: softSwitch.enabled ? Theme.surfaceLift : Theme.surfaceBase
+                width: 18; height: 18; radius: 9
+                x: softSwitch.checked ? 23 : 3; y: 3
+                color: softSwitch.checked && softSwitch.enabled ? Theme.accent : softSwitch.enabled ? Theme.surfaceLift : Theme.surfaceBase
                 border.width: softSwitch.enabled ? 0 : 1; border.color: Theme.hairline
-                Behavior on x { enabled: window.motionEnabled; NumberAnimation { duration: Theme.durSelection; easing.type: Easing.OutCubic } }
-                SymbolIcon { anchors.centerIn: parent; width: 16; height: 16; name: softSwitch.checked ? "check" : "close"; color: softSwitch.enabled ? (softSwitch.checked ? Theme.accent : Theme.inkMuted) : Theme.inkFaint }
+                Behavior on x { enabled: window.motionEnabled; NumberAnimation { duration: Theme.durState; easing.type: Easing.OutCubic } }
+                Behavior on color { enabled: window.motionEnabled; ColorAnimation { duration: Theme.durState } }
             }
         }
         contentItem: Label {
             text: softSwitch.text
-            leftPadding: agentMark.x + (agentMark.hasMark ? agentMark.width + 8 : 0)
+            leftPadding: agentMark.hasMark ? agentMark.width + 8 : 0
+            rightPadding: softSwitch.indicator.width + softSwitch.spacing
             verticalAlignment: Text.AlignVCenter
             color: softSwitch.enabled ? Theme.ink : Theme.inkFaint
             font.pixelSize: Theme.body
@@ -831,7 +832,7 @@ ApplicationWindow {
             AgentMark {
                 id: agentMark
                 anchors.verticalCenter: parent.verticalCenter
-                x: softSwitch.indicator.width + softSwitch.spacing
+                x: 0
                 kind: softSwitch.agentKind; visible: hasMark
             }
         }
@@ -949,6 +950,8 @@ ApplicationWindow {
             opacity: softTool.down ? 0.82 : 1
             Behavior on scale { enabled: window.motionEnabled; NumberAnimation { duration: softTool.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
         }
+        // Design .mini: 44x24 inset pill, 18 knob 3 px in, accent knob when on; the switch trails its label.
+        Layout.fillWidth: true
         background: Surface {
             x: 4 - 8; y: 4 - 8; width: 40 + 16; height: 40 + 16; margin: 8
             cornerRadius: 20; inset: softTool.down || softTool.checked

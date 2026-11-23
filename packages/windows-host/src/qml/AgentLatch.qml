@@ -10,11 +10,11 @@ AbstractButton {
     property bool failed: false
     property bool large: false
     readonly property int boltSize: large ? 30 : 24
-    readonly property int dotSize: large ? 8 : 6
+    readonly property int dotSize: 6
     onFailedChanged: if (failed && Theme.motionEnabled) shake.restart()
     property color tint: Theme.accent
     property real nudge: hovered && enabled && !change ? (powered ? -5 : 5) : 0
-    readonly property real position: change ? (change.target ? 0.72 : 0.28) : powered ? 1 : 0
+    readonly property real position: change ? (change.target ? 0.66 : 0.33) : powered ? 1 : 0
     implicitWidth: large ? 76 : 60
     implicitHeight: large ? 38 : 30
     hoverEnabled: true
@@ -28,12 +28,14 @@ AbstractButton {
     background: Surface {
         anchors.fill: parent; margin: 3; cornerRadius: height / 2; inset: true
         shadowScale: 0.4; focused: latch.activeFocus; hovered: latch.hovered && latch.enabled
+        disabled: !latch.enabled && !latch.change
     }
     contentItem: Item {
         Rectangle {
             x: parent.width - latch.boltSize - 3; y: (parent.height - latch.boltSize) / 2
             width: latch.boltSize; height: latch.boltSize; radius: latch.boltSize / 2
             color: "transparent"
+            border.width: latch.powered || latch.failed ? 1.5 : 1
             border.color: latch.failed ? Theme.danger : latch.powered ? latch.tint : Theme.hairline
         }
         Item {
@@ -49,7 +51,7 @@ AbstractButton {
                 NumberAnimation { target: recoil; property: "x"; to: 0; duration: 70 }
             }
             Behavior on x { enabled: Theme.motionEnabled; NumberAnimation { duration: Theme.durState; easing.type: Easing.OutCubic } }
-            Surface { anchors.fill: parent; cornerRadius: latch.boltSize / 2; margin: 4; shadowScale: 0.45; visible: !latch.change; inset: latch.down }
+            Surface { anchors.fill: parent; cornerRadius: latch.boltSize / 2; margin: 4; shadowScale: 0.45; visible: !latch.change; inset: latch.down; disabled: !latch.enabled }
             Rectangle { anchors.centerIn: parent; width: latch.dotSize; height: latch.dotSize; radius: latch.dotSize / 2; color: latch.powered ? latch.tint : Theme.inkFaint; visible: !latch.change }
             Canvas {
                 id: ring
