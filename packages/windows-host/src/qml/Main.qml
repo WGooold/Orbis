@@ -1119,8 +1119,9 @@ ApplicationWindow {
                                 }
                                 Repeater {
                                     model: window.overviewAgents
-                                    delegate: RowLayout {
+                                    delegate: Item {
                                         id: agentRow
+                                        objectName: "overviewAgentRow-" + agentRow.modelData.kind
                                         required property var modelData
                                         readonly property var backend: window.backendFor(modelData.kind)
                                         readonly property int sessions: window.hostOnline && backend ? backend.runtimeCount : 0
@@ -1130,7 +1131,9 @@ ApplicationWindow {
                                         readonly property bool desktopNotice: modelData.kind === "codexDesktop" && window.codexDesktopNeedsAttention
                                         readonly property bool pathAction: !!cliHint || !!host.agentEntryOverrides[modelData.kind]
                                         readonly property bool installable: modelData.data !== undefined
-                                        Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight + 8; spacing: 14
+                                        Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight + 8
+                                        implicitWidth: overviewRowContent.implicitWidth
+                                        implicitHeight: Math.max(Theme.controlHeight + 8, overviewRowContent.implicitHeight)
                                         Accessible.role: Accessible.ListItem
                                         Accessible.name: modelData.name + "，" + window.agentPhoneState(modelData, sessions)
                                         Accessible.onPressAction: window.goAgent(agentRow.modelData.kind)
@@ -1139,93 +1142,107 @@ ApplicationWindow {
                                         TapHandler {
                                             onTapped: point => {
                                                 const x = point.position.x
-                                                if (x < overviewAgentStatus.x || (x > overviewAgentStatus.x + overviewAgentStatus.width && (!overviewAgentAction.visible || x < overviewAgentAction.x))) window.goAgent(agentRow.modelData.kind)
+                                                const statusX = overviewRowContent.x + overviewAgentStatus.x
+                                                const actionX = overviewRowContent.x + overviewAgentAction.x
+                                                if (x < statusX || (x > statusX + overviewAgentStatus.width && (!overviewAgentAction.visible || x < actionX))) window.goAgent(agentRow.modelData.kind)
                                             }
                                         }
                                         Keys.onReturnPressed: window.goAgent(agentRow.modelData.kind)
                                         Keys.onSpacePressed: window.goAgent(agentRow.modelData.kind)
-                                        Rectangle { anchors.fill: parent; z: -1; radius: Theme.radiusSm; color: Theme.surfaceLift; visible: overviewRowHover.hovered || agentRow.activeFocus }
-                                        Item {
-                                            Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd
-                                            opacity: agentRow.modelData.installed === false ? 0.4 : 1
-                                            AgentMark {
-                                                id: overviewMark
-                                                objectName: "overviewAgentMark-" + agentRow.modelData.kind
-                                                anchors.fill: parent; kind: agentRow.modelData.kind; visible: hasMark
-                                            }
-                                            SymbolIcon { anchors.fill: parent; visible: !overviewMark.hasMark; name: "chat_bubble"; color: Theme.inkMuted }
+                                        // Keep the hover pill out of the RowLayout; a direct child with anchors.fill
+                                        // turns into a layout column on hover and squeezes the row content sideways.
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: -8; anchors.rightMargin: -8
+                                            radius: Theme.radiusSm
+                                            color: Theme.surfaceLift
+                                            visible: overviewRowHover.hovered || agentRow.activeFocus
                                         }
-                                        Label { text: agentRow.modelData.name; color: agentRow.modelData.installed === false ? Theme.inkFaint : Theme.ink; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
-                                        Item {
-                                            id: overviewAgentStatus
-                                            Layout.preferredWidth: Math.max(72, agentStatusRow.implicitWidth); Layout.preferredHeight: Theme.touchTarget
-                                            RowLayout {
-                                                id: agentStatusRow
-                                                anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 4
-                                                Label {
-                                                    objectName: agentRow.modelData.kind === "codexDesktop" ? "overviewCodexDesktopNotice" : ""
-                                                    visible: agentRow.desktopNotice
-                                                    text: visible ? window.codexDesktopLabel() : ""
-                                                    color: window.codexDesktopColor(); font.pixelSize: Theme.label
+                                        RowLayout {
+                                            id: overviewRowContent
+                                            anchors.fill: parent; spacing: 14
+                                            Item {
+                                                Layout.preferredWidth: Theme.iconMd; Layout.preferredHeight: Theme.iconMd
+                                                opacity: agentRow.modelData.installed === false ? 0.4 : 1
+                                                AgentMark {
+                                                    id: overviewMark
+                                                    objectName: "overviewAgentMark-" + agentRow.modelData.kind
+                                                    anchors.fill: parent; kind: agentRow.modelData.kind; visible: hasMark
                                                 }
-                                                Label { visible: !agentRow.desktopNotice; text: window.agentPhoneState(agentRow.modelData, 0); color: agentRow.reachable ? Theme.success : Theme.inkMuted; font.pixelSize: Theme.label }
-                                                SymbolIcon { visible: agentRow.sessions > 0; name: "chat_bubble"; color: Theme.success; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs }
-                                                MotionText { objectName: "overviewAgentSessions-" + agentRow.modelData.kind; visible: agentRow.sessions > 0; roll: true; text: String(agentRow.sessions); color: Theme.success; font.pixelSize: Theme.label; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
-                                                Item {
-                                                    id: agentState
-                                                    objectName: "overviewAgentState-" + agentRow.modelData.kind
-                                                    readonly property bool hintVisible: agentHint.visible
-                                                    readonly property bool preparing: window.preparing(agentRow.modelData.kind)
-                                                    readonly property bool canEdit: agentRow.pathAction && !host.busy && !window.agentCliDetecting(agentRow.modelData.kind)
-                                                    readonly property bool canAct: canEdit || agentRow.desktopNotice
-                                                    readonly property string detail: agentRow.desktopNotice ? window.codexDesktopReason()
-                                                        : agentRow.cliHint || window.agentPhoneState(agentRow.modelData, agentRow.sessions)
-                                                            + (agentRow.pathAction && canEdit ? "。点击圆点管理 CLI 路径。" : "")
-                                                    function activate() {
-                                                        if (agentRow.desktopNotice) window.selectPage(4)
-                                                        else if (canEdit) window.showAgentEntry(agentRow.modelData)
+                                                SymbolIcon { anchors.fill: parent; visible: !overviewMark.hasMark; name: "chat_bubble"; color: Theme.inkMuted }
+                                            }
+                                            Label { text: agentRow.modelData.name; color: agentRow.modelData.installed === false ? Theme.inkFaint : Theme.ink; font.pixelSize: Theme.body; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            Item {
+                                                id: overviewAgentStatus
+                                                Layout.preferredWidth: Math.max(72, agentStatusRow.implicitWidth); Layout.preferredHeight: Theme.touchTarget
+                                                RowLayout {
+                                                    id: agentStatusRow
+                                                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; spacing: 4
+                                                    Label {
+                                                        objectName: agentRow.modelData.kind === "codexDesktop" ? "overviewCodexDesktopNotice" : ""
+                                                        visible: agentRow.desktopNotice
+                                                        text: visible ? window.codexDesktopLabel() : ""
+                                                        color: window.codexDesktopColor(); font.pixelSize: Theme.label
                                                     }
-                                                    Layout.preferredWidth: Theme.touchTarget; Layout.preferredHeight: Theme.touchTarget
-                                                    activeFocusOnTab: canAct
-                                                    Accessible.role: canAct ? Accessible.Button : Accessible.StaticText
-                                                    Accessible.name: agentRow.modelData.name + "，" + detail
-                                                    Accessible.description: agentRow.desktopNotice ? "查看接入诊断" : canEdit && !agentRow.cliHint ? "管理手动指定的 CLI 路径" : ""
-                                                    Accessible.onPressAction: agentState.activate()
-                                                    ToolTip {
-                                                        id: agentHint
-                                                        objectName: "overviewAgentHint-" + agentRow.modelData.kind
-                                                        visible: dotHover.hovered || (agentState.canAct && agentState.activeFocus)
-                                                        delay: 300; width: Math.min(implicitWidth, 320); text: agentState.detail
-                                                    }
-                                                    HoverHandler { id: dotHover; cursorShape: agentState.canAct ? Qt.PointingHandCursor : Qt.ArrowCursor }
-                                                    TapHandler { enabled: agentState.canAct; onTapped: agentState.activate() }
-                                                    Keys.onReturnPressed: agentState.activate()
-                                                    Keys.onSpacePressed: agentState.activate()
-                                                    Rectangle { anchors.fill: parent; radius: Theme.radiusSm; color: "transparent"; border.color: Theme.accent; visible: agentState.activeFocus && agentState.canAct }
-                                                    StatusDot {
-                                                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                                        color: agentRow.desktopNotice ? window.codexDesktopColor() : agentRow.cliHint || agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking || agentState.preparing ? Theme.warning : Theme.inkFaint
-                                                        idle: !agentRow.desktopNotice && !agentRow.modelData.broken && !agentRow.reachable && (agentRow.modelData.installed === false || agentRow.modelData.installed === true && !window.hostLinking && !agentState.preparing)
-                                                        syncing: !agentRow.desktopNotice && !agentRow.cliHint && !agentRow.modelData.broken && (window.hostLinking || agentState.preparing || window.agentCliDetecting(agentRow.modelData.kind))
+                                                    Label { visible: !agentRow.desktopNotice; text: window.agentPhoneState(agentRow.modelData, 0); color: agentRow.reachable ? Theme.success : Theme.inkMuted; font.pixelSize: Theme.label }
+                                                    SymbolIcon { visible: agentRow.sessions > 0; name: "chat_bubble"; color: Theme.success; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs }
+                                                    MotionText { objectName: "overviewAgentSessions-" + agentRow.modelData.kind; visible: agentRow.sessions > 0; roll: true; text: String(agentRow.sessions); color: Theme.success; font.pixelSize: Theme.label; font.weight: Font.DemiBold; Layout.rightMargin: 6 }
+                                                    Item {
+                                                        id: agentState
+                                                        objectName: "overviewAgentState-" + agentRow.modelData.kind
+                                                        readonly property bool hintVisible: agentHint.visible
+                                                        readonly property bool preparing: window.preparing(agentRow.modelData.kind)
+                                                        readonly property bool canEdit: agentRow.pathAction && !host.busy && !window.agentCliDetecting(agentRow.modelData.kind)
+                                                        readonly property bool canAct: canEdit || agentRow.desktopNotice
+                                                        readonly property string detail: agentRow.desktopNotice ? window.codexDesktopReason()
+                                                            : agentRow.cliHint || window.agentPhoneState(agentRow.modelData, agentRow.sessions)
+                                                                + (agentRow.pathAction && canEdit ? "。点击圆点管理 CLI 路径。" : "")
+                                                        function activate() {
+                                                            if (agentRow.desktopNotice) window.selectPage(4)
+                                                            else if (canEdit) window.showAgentEntry(agentRow.modelData)
+                                                        }
+                                                        Layout.preferredWidth: Theme.touchTarget; Layout.preferredHeight: Theme.touchTarget
+                                                        activeFocusOnTab: canAct
+                                                        Accessible.role: canAct ? Accessible.Button : Accessible.StaticText
+                                                        Accessible.name: agentRow.modelData.name + "，" + detail
+                                                        Accessible.description: agentRow.desktopNotice ? "查看接入诊断" : canEdit && !agentRow.cliHint ? "管理手动指定的 CLI 路径" : ""
+                                                        Accessible.onPressAction: agentState.activate()
+                                                        ToolTip {
+                                                            id: agentHint
+                                                            objectName: "overviewAgentHint-" + agentRow.modelData.kind
+                                                            visible: dotHover.hovered || (agentState.canAct && agentState.activeFocus)
+                                                            delay: 300; width: Math.min(implicitWidth, 320); text: agentState.detail
+                                                        }
+                                                        HoverHandler { id: dotHover; cursorShape: agentState.canAct ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                                                        TapHandler { enabled: agentState.canAct; onTapped: agentState.activate() }
+                                                        Keys.onReturnPressed: agentState.activate()
+                                                        Keys.onSpacePressed: agentState.activate()
+                                                        Rectangle { anchors.fill: parent; radius: Theme.radiusSm; color: "transparent"; border.color: Theme.accent; visible: agentState.activeFocus && agentState.canAct }
+                                                        StatusDot {
+                                                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                                            color: agentRow.desktopNotice ? window.codexDesktopColor() : agentRow.cliHint || agentRow.modelData.broken ? Theme.warning : agentRow.reachable ? Theme.success : window.hostLinking || agentState.preparing ? Theme.warning : Theme.inkFaint
+                                                            idle: !agentRow.desktopNotice && !agentRow.modelData.broken && !agentRow.reachable && (agentRow.modelData.installed === false || agentRow.modelData.installed === true && !window.hostLinking && !agentState.preparing)
+                                                            syncing: !agentRow.desktopNotice && !agentRow.cliHint && !agentRow.modelData.broken && (window.hostLinking || agentState.preparing || window.agentCliDetecting(agentRow.modelData.kind))
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                        Item { visible: agentRow.modelData.passive === true; Layout.preferredWidth: 112 }
-                                        ActionButton {
-                                            id: overviewAgentAction
-                                            objectName: "overviewAgent-" + agentRow.modelData.kind
-                                            visible: agentRow.modelData.passive !== true
-                                            Layout.preferredWidth: 112
-                                            text: window.overviewAgentActionText(agentRow.modelData, agentRow.installable)
-                                            primary: window.overviewAgentActionPrimary(agentRow.modelData, agentRow.installable)
-                                            enabled: window.overviewAgentActionEnabled(agentRow.modelData, agentRow.installable)
-                                            loading: host.agentInstalling && host.agentInstallKind === agentRow.modelData.kind
-                                                || agentRow.modelData.kind === "dshDesktop" && host.dshDesktopOpen !== "idle"
-                                            Accessible.name: text + " " + agentRow.modelData.name
-                                            onClicked: {
-                                                if (agentRow.installable && (agentRow.modelData.installed === false || agentRow.modelData.broken)) window.showAgentInstaller(agentRow.modelData.data)
-                                                else window.openOverviewAgent(agentRow.modelData.kind)
+                                            Item { visible: agentRow.modelData.passive === true; Layout.preferredWidth: 112 }
+                                            ActionButton {
+                                                id: overviewAgentAction
+                                                objectName: "overviewAgent-" + agentRow.modelData.kind
+                                                visible: agentRow.modelData.passive !== true
+                                                Layout.preferredWidth: 112
+                                                text: window.overviewAgentActionText(agentRow.modelData, agentRow.installable)
+                                                primary: window.overviewAgentActionPrimary(agentRow.modelData, agentRow.installable)
+                                                enabled: window.overviewAgentActionEnabled(agentRow.modelData, agentRow.installable)
+                                                loading: host.agentInstalling && host.agentInstallKind === agentRow.modelData.kind
+                                                    || agentRow.modelData.kind === "dshDesktop" && host.dshDesktopOpen !== "idle"
+                                                Accessible.name: text + " " + agentRow.modelData.name
+                                                onClicked: {
+                                                    if (agentRow.installable && (agentRow.modelData.installed === false || agentRow.modelData.broken)) window.showAgentInstaller(agentRow.modelData.data)
+                                                    else window.openOverviewAgent(agentRow.modelData.kind)
+                                                }
                                             }
                                         }
                                     }

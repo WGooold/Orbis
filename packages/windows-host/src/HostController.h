@@ -313,6 +313,7 @@ private:
     friend class HostQaActivationTest;
     friend class HostExitTest;
     friend class HostLiveChangeTest;
+    friend class OverviewRowHoverTest;
     using Callback = std::function<void(const QJsonValue &)>;
     void launchBridge();
     bool configureBridge();

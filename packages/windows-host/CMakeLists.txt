@@ -67,7 +67,12 @@ set_source_files_properties(src/qml/Symbols.js PROPERTIES QT_RESOURCE_ALIAS Symb
 set_source_files_properties(src/qml/AgentLatch.qml PROPERTIES QT_RESOURCE_ALIAS AgentLatch.qml)
 set_source_files_properties(src/qml/AgentMark.qml PROPERTIES QT_RESOURCE_ALIAS AgentMark.qml)
 set_source_files_properties(src/qml/AgentMarks.js PROPERTIES QT_RESOURCE_ALIAS AgentMarks.js QT_QML_SKIP_QMLDIR_ENTRY TRUE)
-qt_add_qml_module(OrbisHost URI Orbis.Host VERSION 1.0 QML_FILES src/qml/StatusDot.qml src/qml/ThemePreview.qml src/qml/Theme.qml src/qml/Surface.qml src/qml/SymbolIcon.qml src/qml/Symbols.js src/qml/AgentMark.qml src/qml/AgentLatch.qml src/qml/AgentMarks.js src/qml/MotionText.qml src/qml/Motion.js src/qml/Main.qml src/qml/Card.qml src/qml/ActionButton.qml src/qml/DiagnosticLogView.qml src/qml/ProviderFlow.js SOURCES src/NeuSurface.cpp src/NeuSurface.h)
+set(_orbis_host_qml_files
+  src/qml/StatusDot.qml src/qml/ThemePreview.qml src/qml/Theme.qml src/qml/Surface.qml
+  src/qml/SymbolIcon.qml src/qml/Symbols.js src/qml/AgentMark.qml src/qml/AgentLatch.qml
+  src/qml/AgentMarks.js src/qml/MotionText.qml src/qml/Motion.js src/qml/Main.qml
+  src/qml/Card.qml src/qml/ActionButton.qml src/qml/DiagnosticLogView.qml src/qml/ProviderFlow.js)
+qt_add_qml_module(OrbisHost URI Orbis.Host VERSION 1.0 QML_FILES ${_orbis_host_qml_files} SOURCES src/NeuSurface.cpp src/NeuSurface.h)
 qt_add_resources(OrbisHost branding PREFIX "/" FILES src/assets/orbis.png)
 set(agent_mark_dir src/assets/agents)
 set(agent_mark_files ${agent_mark_dir}/kimi-code.svg ${agent_mark_dir}/opencode-light.svg
@@ -151,4 +156,15 @@ if(BUILD_TESTING)
   target_link_libraries(registration-input-test PRIVATE Qt6::QuickControls2 Qt6::Test)
   target_compile_definitions(registration-input-test PRIVATE ORBIS_MAIN_QML="${CMAKE_CURRENT_SOURCE_DIR}/src/qml/Main.qml")
   add_test(NAME registration-input COMMAND registration-input-test -o -,txt)
+  qt_add_executable(overview-row-hover-test src/tests/OverviewRowHoverTest.cpp src/HostController.cpp src/HostController.h src/StartupSettings.cpp src/StartupSettings.h src/DiagnosticLogModel.cpp src/DiagnosticLogModel.h src/CredentialStore.cpp src/CredentialStore.h src/NeuSurface.cpp src/NeuSurface.h)
+  add_dependencies(overview-row-hover-test OrbisHost)
+  target_link_libraries(overview-row-hover-test PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Quick Qt6::QuickControls2 Qt6::Network Qt6::Concurrent Qt6::Test $<$<PLATFORM_ID:Windows>:crypt32>)
+  if(APPLE)
+    target_link_libraries(overview-row-hover-test PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_compile_definitions(overview-row-hover-test PRIVATE ORBIS_VERSION="${PROJECT_VERSION}" ORBIS_DEFAULT_RELAY="${ORBIS_DEFAULT_RELAY}")
+  qt_add_resources(overview-row-hover-test overview_hover_qml PREFIX "/qt/qml/Orbis/Host" FILES "${CMAKE_CURRENT_BINARY_DIR}/Orbis/Host/qmldir" ${_orbis_host_qml_files})
+  qt_add_resources(overview-row-hover-test overview_hover_branding PREFIX "/" FILES src/assets/orbis.png)
+  qt_add_resources(overview-row-hover-test overview_hover_marks PREFIX "/agent-marks" BASE ${agent_mark_dir} FILES ${agent_mark_files})
+  add_test(NAME overview-row-hover COMMAND overview-row-hover-test -o -,txt)
 endif()
