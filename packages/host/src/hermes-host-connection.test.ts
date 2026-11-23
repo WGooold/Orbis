@@ -4,11 +4,12 @@ import type { HermesGatewayAttachment, HermesGatewayBootstrapOptions } from "./h
 
 function fixture(profile_id = "/fixture") {
   const client = { close: vi.fn(async () => undefined), closed: false, readyState: 1 };
+  const closeTunnel = vi.fn(async () => undefined);
   const endpoint = { profile_id, instance_id: "fixture", authority_epoch: 1, api_origin: "http://127.0.0.1:1",
     supervisor: "fixture", runtime_protocol: 1, capabilities: ["session-authority-v1"] };
-  const attachment = { client, endpoint, serverRequests: [], runtime: { ...endpoint,
+  const attachment = { client, endpoint, serverRequests: [], close: closeTunnel, runtime: { ...endpoint,
     session_create: { sources: ["tui"], parameters: ["cwd"] } } } as unknown as HermesGatewayAttachment;
-  return { client, attachment };
+  return { client, attachment, closeTunnel };
 }
 
 // HERMES-GATEWAY-01: a failed attach is local, and a replacement must prove the same profile.
@@ -31,15 +32,17 @@ it("coalesces concurrent attach, retires dead sockets, and refuses a different p
   callbacks?.onTransportError?.(new Error("fixture disconnect"));
   expect(changed).toHaveBeenLastCalledWith(undefined, backend);
   expect(host.backend).toBeUndefined();
+  await vi.waitFor(() => expect(first.closeTunnel).toHaveBeenCalledOnce());
   expect(first.client.close).toHaveBeenCalledOnce();
   await expect(host.ensure()).rejects.toThrow("profile");
   expect(callbacks?.expectedProfileId).toBe("/fixture");
   expect(replacement.client.close).toHaveBeenCalledOnce();
+  expect(replacement.closeTunnel).toHaveBeenCalledOnce();
   await host.close();
 });
 
 it("does not wait for bootstrap during pause or attach a late socket", async () => {
-  const { client, attachment } = fixture();
+  const { client, attachment, closeTunnel } = fixture();
   let finish!: (attachment: HermesGatewayAttachment) => void;
   const connect = () => new Promise<HermesGatewayAttachment>(resolve => { finish = resolve; });
   const changed = vi.fn();
@@ -50,4 +53,5 @@ it("does not wait for bootstrap during pause or attach a late socket", async () 
   await expect(pending).rejects.toThrow("已断开");
   expect(changed).not.toHaveBeenCalled();
   expect(client.close).toHaveBeenCalledOnce();
+  expect(closeTunnel).toHaveBeenCalledOnce();
 });

@@ -26,13 +26,13 @@ export function openClawRecord(value: unknown): Record<string, unknown> | undefi
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-/** No discovery or shared OpenClaw state. A gateway path is a local Host work directory. */
+/** No discovery or shared OpenClaw state. Remote Gateway credentials require TLS. */
 export function openClawUrl(value: string): string {
   const url = URL.parse(value);
-  if (!url || url.protocol !== "ws:" && url.protocol !== "wss:" || !["127.0.0.1", "[::1]"].includes(url.hostname) ||
-      url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-    throw new Error("OpenClaw Gateway must be a root WebSocket URL on 127.0.0.1 or [::1]");
-  }
+  if (!url || url.protocol !== "ws:" && url.protocol !== "wss:" || url.username || url.password || url.search || url.hash || url.pathname !== "/")
+    throw new Error("OpenClaw Gateway must be a root ws(s) URL without embedded credentials or query parameters");
+  const loopback = ["127.0.0.1", "[::1]"].includes(url.hostname);
+  if (url.protocol === "ws:" && !loopback) throw new Error("Remote OpenClaw Gateway connections require wss:// TLS");
   return url.origin;
 }
 
@@ -74,7 +74,10 @@ export async function saveOpenClawDesktopSettings(stateDir: string, url: unknown
   } else {
     let endpoint: string;
     try { endpoint = openClawUrl(input); }
-    catch { throw new Error("Gateway 地址须为本机根地址：ws(s)://127.0.0.1 或 ws(s)://[::1]"); }
+    catch (error) {
+      if (error instanceof Error && error.message.includes("require wss")) throw new Error("远程 Gateway 地址须使用 wss:// 加密连接");
+      throw new Error("Gateway 地址须为本机 ws(s) 或远程 wss 根地址");
+    }
     const saved = token.trim() ? undefined : await loadOpenClawConfig(stateDir, {}).catch(() => undefined);
     // A blank field retains the saved credential only for the exact same normalized endpoint.
     const credential = token.trim() || (saved?.url === endpoint ? saved.token : undefined);

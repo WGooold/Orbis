@@ -1574,7 +1574,8 @@ ApplicationWindow {
                                                     StatusDot { idle: !window.openClawReady; color: window.openClawReady ? Theme.success : host.openClaw.invalid ? Theme.warning : Theme.inkFaint }
                                                     Hint { objectName: "openClawState"; text: window.openClawStateText }
                                                 }
-                                                Field { id: clawUrl; objectName: "openClawUrl"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "ws://127.0.0.1:18789"; Accessible.name: "OpenClaw Gateway 地址" }
+                                                Field { id: clawUrl; objectName: "openClawUrl"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "ws://127.0.0.1:18789 或 wss://gateway.example.com"; Accessible.name: "OpenClaw Gateway 地址" }
+                                                Hint { visible: openClawCard.editable; text: "本机可用 ws://；远程连接必须使用 wss:// 加密。"; Layout.fillWidth: true }
                                                 Field {
                                                     id: clawToken; objectName: "openClawToken"
                                                     visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
@@ -1605,6 +1606,68 @@ ApplicationWindow {
                                                         visible: openClawCard.editable && (!!host.openClaw.url || host.openClaw.invalid)
                                                         enabled: !host.busy
                                                         onClicked: { clawToken.clear(); host.saveOpenClaw("", "") }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Card {
+                                            id: hermesRemoteCard
+                                            objectName: "hermesRemoteCard"
+                                            Layout.fillWidth: true
+                                            visible: host.bridgeReady && !!host.hermesRemote.source && window.detailKind === "hermes" && window.detailPowered
+                                            readonly property bool editable: host.hermesRemote.source === "file"
+                                            readonly property bool dirty: hermesSshHost.text.trim() !== (host.hermesRemote.host || "")
+                                                || hermesSshPort.text.trim() !== String(host.hermesRemote.port || 22)
+                                                || hermesSshProfile.text.trim() !== (host.hermesRemote.profile || "")
+                                            function reset() {
+                                                hermesSshHost.text = host.hermesRemote.host || ""
+                                                hermesSshPort.text = String(host.hermesRemote.port || 22)
+                                                hermesSshProfile.text = host.hermesRemote.profile || ""
+                                            }
+                                            onVisibleChanged: reset()
+                                            Component.onCompleted: reset()
+                                            Connections { target: host; function onHermesRemoteChanged() { hermesRemoteCard.reset() } }
+                                            ColumnLayout {
+                                                anchors.fill: parent; spacing: 12
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    AgentMark { kind: "hermes" }
+                                                    Heading { text: "Hermes Agent"; Layout.fillWidth: true }
+                                                    StatusDot { idle: window.backendFor("hermes")?.ready !== true; color: window.backendFor("hermes")?.ready === true ? Theme.success : Theme.inkFaint }
+                                                    Hint { text: window.backendFor("hermes")?.ready === true ? "已连接" : host.hermesRemote.host ? "SSH 远程" : "本机 CLI" }
+                                                }
+                                                Field { id: hermesSshHost; objectName: "hermesSshHost"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 260; marksProviderDirty: false; placeholderText: "user@server 或 SSH 别名（留空=本机）"; Accessible.name: "Hermes 远程 SSH 主机" }
+                                                Flow {
+                                                    Layout.fillWidth: true; spacing: 10
+                                                    Field { id: hermesSshPort; objectName: "hermesSshPort"; Layout.preferredWidth: 120; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 5; marksProviderDirty: false; placeholderText: "22"; Accessible.name: "SSH 端口" }
+                                                    Field { id: hermesSshProfile; objectName: "hermesSshProfile"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 64; marksProviderDirty: false; placeholderText: "Hermes profile（默认）"; Accessible.name: "远程 Hermes profile" }
+                                                }
+                                                Hint { visible: hermesRemoteCard.editable && !!hermesSshHost.text.trim(); text: "只连接已运行的远程 Gateway，不会启动它。需预先验证 SSH 主机密钥并配置密钥登录；远程 Hermes CLI 需支持 gateway attach。"; Layout.fillWidth: true }
+                                                Hint { visible: hermesRemoteCard.editable && !!hermesSshHost.text.trim(); text: "远程新会话的工作目录路径需在 Host 与远端均可访问。"; Layout.fillWidth: true }
+                                                Hint { visible: host.hermesRemote.invalid; text: "Hermes SSH 配置无效；请检查主机、端口和 profile。"; Layout.fillWidth: true; color: Theme.warning }
+                                                Hint { visible: !hermesRemoteCard.editable; text: "由 ORBIS_HERMES_SSH_* 环境变量配置" }
+                                                Flow {
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    ActionButton {
+                                                        objectName: "applyHermesRemote"
+                                                        visible: hermesRemoteCard.editable
+                                                        text: host.desiredRunning ? "应用并重新连接" : "保存配置"
+                                                        enabled: !host.busy && hermesRemoteCard.dirty
+                                                            && (!hermesSshHost.text.trim() || Number(hermesSshPort.text || 22) > 0)
+                                                        loading: window.activityKinds.indexOf("hermesRemote") >= 0
+                                                        onClicked: host.saveHermesRemote(hermesSshHost.text, Number(hermesSshPort.text || 22), hermesSshProfile.text)
+                                                    }
+                                                    ActionButton {
+                                                        objectName: "reconnectHermesRemote"; text: "重新连接 Host"
+                                                        visible: host.hermesRemote.host && host.desiredRunning
+                                                        enabled: !host.busy && !hermesRemoteCard.dirty
+                                                        onClicked: host.reconnectHermesRemote()
+                                                    }
+                                                    ActionButton {
+                                                        objectName: "disableHermesRemote"; text: "恢复本机接入"
+                                                        visible: hermesRemoteCard.editable && (!!host.hermesRemote.host || host.hermesRemote.invalid)
+                                                        enabled: !host.busy
+                                                        onClicked: host.saveHermesRemote("", 22, "")
                                                     }
                                                 }
                                             }

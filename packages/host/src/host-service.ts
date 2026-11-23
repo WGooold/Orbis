@@ -1189,7 +1189,7 @@ export class HostService {
         if (!this.#disabledSources.has("hermes") && this.#hermes === connection) return backend;
       }
     } catch { /* Native details may contain private paths; do not relay them. */ }
-    throw new ActivationError("agent_unsupported", "Hermes Gateway 不可用，请在电脑端核对 Hermes CLI 与 Gateway");
+    throw new ActivationError("agent_unsupported", "Hermes Gateway 不可用，请核对本机 CLI，或远程 SSH 配置与 Gateway 状态");
   }
 
   #attachCodexBackend(codex: CodexRuntime): void {

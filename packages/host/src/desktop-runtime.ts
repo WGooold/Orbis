@@ -11,6 +11,7 @@ import { AgentEnablementChoiceSchema, AgentKindSchema, hostRecoveryProof, type A
 import { AgentBatchConfirmationRequired, AgentDisableConfirmationRequired, AgentEnablementController, AgentEnablementStore, type AgentEnablementResult, type AgentEnablementSnapshot } from "./agent-enablement.js";
 import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
+import { loadHermesRemoteGatewayConfig, readHermesRemoteGatewaySettings, saveHermesRemoteGatewaySettings } from "./hermes-remote-gateway.js";
 import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
 import { clearCodexSelection, readCodexSelection, saveCodexSelection } from "./codex-selection.js";
@@ -270,6 +271,7 @@ export class DesktopRuntime {
       kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
       agentEnablement: enablement,
       ...(this.#qa ? {} : { openClaw: await readOpenClawDesktopSettings(this.#stateDir) }),
+      ...(this.#qa ? {} : { hermesRemote: await readHermesRemoteGatewaySettings(this.#stateDir) }),
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
       iosAppDownloadQr: await QRCode.toDataURL(IOS_APP_DOWNLOAD_URL, { width: 320, margin: 2 }) };
   }
@@ -316,6 +318,15 @@ export class DesktopRuntime {
       // Filesystem diagnostics can contain paths; expose only the safe validation messages.
       if (error instanceof Error && !("code" in error)) throw error;
       throw new Error("无法保存 OpenClaw 配置，请检查 Host 状态目录权限");
+    }
+  }
+
+  async saveHermesRemote(host: unknown, port: unknown, profile: unknown): Promise<Awaited<ReturnType<typeof saveHermesRemoteGatewaySettings>>> {
+    if (this.#qa) throw new Error("QA Host 不修改 Hermes Gateway 配置");
+    try { return await saveHermesRemoteGatewaySettings(this.#stateDir, host, port, profile); }
+    catch (error) {
+      if (error instanceof Error && !("code" in error)) throw error;
+      throw new Error("无法保存 Hermes SSH 配置，请检查 Host 状态目录权限");
     }
   }
 
@@ -566,6 +577,14 @@ export class DesktopRuntime {
     const emit = (facts: Omit<DesktopEvent, "event">) => {
       if (current()) this.#emit({ event: "hermesCli", ...facts });
     };
+    try {
+      const remote = await loadHermesRemoteGatewayConfig(this.#stateDir);
+      if (!current()) return;
+      if (remote) { emit({ installed: true, version: "SSH 远程", remote: true }); return; }
+    } catch {
+      if (current()) emit({ installed: false, cliIssue: "unrunnable", remote: true });
+      return;
+    }
     const env = { ...process.env };
     emit({ detecting: true });
     const entry = env.ORBIS_HERMES_ENTRY || (await findExternalAgentEntries("hermes", env))[0]?.entry;
@@ -937,7 +956,7 @@ export class DesktopRuntime {
         ensureDshRuntime: () => connectDshRuntime(),
         recoverDshRuntime: () => connectDshRuntime(true),
         ...(this.#qa ? { codexDesktopLaunchable: false, dshDesktopLaunchable: false } : {}),
-        ...(!this.#qa ? { hermes: {} } : {}),
+        ...(!this.#qa ? { hermes: { getRemoteGateway: () => loadHermesRemoteGatewayConfig(this.#stateDir) } } : {}),
         prepareManagedDsh: async (kind, lease) => {
           if (this.#desired !== settings || !lease.isCurrent()) return false;
           if (kind === "dsh") {

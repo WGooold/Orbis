@@ -2,7 +2,7 @@
 
 日期：2026-11-19
 
-Status: proposed（采用 Hermes 官方 TUI Gateway 作为自定义 Host 的原型路线；Host 与客户端入口已实现，发版源码兼容验证通过；真实 Gateway、设备与发布门禁待验收）
+Status: proposed（采用 Hermes 官方 TUI Gateway 作为自定义 Host 的路线；本机入口及 SSH 远程连接实现；发版源码兼容验证通过；真实远程 Gateway、设备与发布门禁待验收）
 
 关联：[ADR-0020](0020-deepseek-harness-shared-web-backend.md)、[ADR-0032](0032-host-owned-agent-state-model.md)、[ADR-0055](0055-agent-input-lifecycle-and-state-coverage.md)、[ADR-0056](0056-agent-startup-readiness-and-consent.md)、[ADR-0064](0064-protocol-compatibility.md)、[ADR-0072](0072-session-configuration-and-recoverable-launch.md)、[ADR-0077](0077-cli-host-and-headless-validation.md)。
 
@@ -54,6 +54,7 @@ Hermes 的 session、历史和 turn 由所选 Gateway profile 持有；CLI、桌
 | HERMES-04 | Orbis 已支持的工具事件、交互/审批、模型/会话配置映射 | 只映射现有 Orbis command/event/config 语义，补充对应 Host 测试。 |
 | HERMES-05 | Host 生命周期、安装/可用性、launchable/supported Agent 能力、AgentKind 与跨端 Hermes UI | 新枚举/feature 先过新旧协议兼容测试；平台 UI 按现有 Agent 路径接入。 |
 | HERMES-06 | 端到端兼容、打包/安装验证、使用说明与 ADR 状态更新 | 自动验证、用户安装验收、发布状态分别记录。 |
+| HERMES-REMOTE-01 | 通过 SSH attach 到另一台主机上已运行的 Hermes Gateway | 隧道仅绑定本机回环地址；不启动/停止远端 Gateway，不接受直连公网 Hermes WebSocket URL。 |
 
 Ticket 合并前分别审查并提交；没有可配置 issue tracker 的工作树中，`HERMES-01` 等 ID 用于本地 ticket / commit 关联，不声称已在远程看板登记。
 
@@ -67,9 +68,10 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 
 ### 2. Gateway 连接与执行所有权
 
-- v1 仅接入 Host 所在机器的用户默认 Hermes profile。先验证 profile 身份；远程 endpoint、profile 不匹配、工作目录不属于该 Host 的情况默认拒绝或保持不可用，避免在另一台机器上执行文件工具却显示为本机操作。
-- 首批已验证本机 Hermes v0.22.5 的公开 `hermes gateway ensure --json --timeout` 命令。Host 只在需要 Hermes 后端时调用 ensure；它可启动该 profile 的 Gateway，不在纯目录/状态读取时隐式启动。之后从 ensure 返回的 endpoint/control home 走同 profile 的本机 session-ticket 控制通道，再用 canonical Gateway WebSocket 协议连接；逐项验证 protocol、profile、instance、authority epoch 与 `runtime.describe`。控制通道与 JSON-RPC contract 均独立封装、版本锁定及 fixture 测试；未知 wire 版本、路径权限不安全、profile 或 instance 不匹配时 fail closed。若后续 Hermes 版本以 `gateway attach --json` 替代 ensure，需增加并验证独立 CLI adapter，不猜测或拼接远程 URL。ticket、token、credential 不写日志或发往 App。
+- 本机模式仅接入 Host 所在机器的默认 Hermes profile。远程模式必须显式配置 SSH 主机并复用远端 CLI 选择的 profile；直接远程 WebSocket endpoint、profile 不匹配均拒绝。远端会话的工作目录必须在 Orbis Host 与 Gateway 主机以相同绝对路径可访问，避免把远端执行路径误当成本机目录。
+- 本机首批 adapter 已对照 Hermes v0.22.5 的公开 `hermes gateway ensure --json --timeout` 命令。Host 只在需要本机 Hermes 后端时调用 ensure；它可启动该 profile 的 Gateway，不在纯目录/状态读取时隐式启动。之后从 ensure 返回的 endpoint/control home 走同 profile 的本机 session-ticket 控制通道，再用 canonical Gateway WebSocket 协议连接；逐项验证 protocol、profile、instance、authority epoch 与 `runtime.describe`。控制通道与 JSON-RPC contract 均独立封装、版本锁定及 fixture 测试；未知 wire 版本、路径权限不安全、profile 或 instance 不匹配时 fail closed。HERMES-REMOTE-01 则独立通过 SSH 调用远端 `hermes gateway attach --json`，仅附接已运行的 Gateway，不复用本机 ensure/control socket。ticket、token、credential 不写日志或发往 App。
 - 使用同一 profile 当前的 Gateway owner。连接流程可按 Hermes 支持的 attach / start / recover 行为建立连接；Host 不按进程名杀停、更新或重启 Gateway，也不打开 SQLite 作为第二写者。Host 负责自己建立的 transport 生命周期；执行、工具、审批、profile 和 SessionDB 由 Hermes/Gateway 持有。
+- **非本机 Gateway**：桌面可配置 SSH 主机、端口和可选 profile。Host 通过系统 `ssh` 使用 SSH agent／密钥登录和严格 `known_hosts` 校验，在远端执行只发现、不启动的 `hermes gateway attach --json`，然后将远端 `127.0.0.1` Gateway WebSocket 仅转发到 Host 自己绑定的 `127.0.0.1` 临时端口。短时单次票据只在 Host 内存中使用；Host 暂停或断线时关闭自己创建的 SSH 隧道，不停止远端 Gateway。此模式不接受任意远程 WebSocket URL，也不关闭 SSH 主机密钥校验。远端 Hermes 必须支持 `gateway attach` 且 Gateway 已在运行；新会话仍使用 Orbis 当前的工作目录路径，故该目录需在 Host 与远端以相同路径可访问。
 - `session.create` 的 `source` 从 runtime 公布的允许值中选择，并验证该值对应的 provider/tool/approval policy；不能无条件硬编码自定义 `orbis` source。若 `client` 能力存在，使用稳定的 `orbis` 名称辅助归因；client label 不是权限证明。
 - Gateway profile 是会话边界。v1 只呈现当前授权 profile 通过 session APIs 返回的原生会话；同 profile 的 CLI、ACP 或其它 Hermes surface 会话可作为共享 Hermes 历史恢复。用户选择的 profile 变化要重新建立身份与目录映射，禁止跨 profile 静默混合。
 
@@ -128,7 +130,8 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 - HERMES-04：统一 `AgentKind`、工具摘要库存、允许本次／拒绝、澄清选项及模型配置。历史以 `row_id` 和 `tool_call_id` 对账，运行中快照从同代次的可验证回放恢复工具摘要；截断时不宣称完整，工具原始输入、输出与进度正文不发布。会话内模型修改带原生 revision/generation，回读一致才成功；延期或结果未知时不重发，也不依据旧模型快照解锁发送。思考深度仅回显，不公开未验证的权限、深度或永久授权操作。
 - 自动验证：[后端 fixture](../../packages/host/src/hermes-agent-backend.test.ts)，[HERMES-04 定向测试证据](../../.artifacts/hermes/h04-tests.txt)（6 文件、60 项通过），TypeScript 类型、定向 ESLint 与 `git diff --check` 通过。源码对照本机 v0.22.5 `bf0203a794` 的 `gateway/session_controls.py`、`gateway/session_mutations.py`、`gateway/session_deferred_pick.py`，不是实际 Gateway 联动。
 - HERMES-05：CLI／桌面 Host 后台发现 Hermes，只有点名的目录、配置或激活请求才连接；停止只关闭 Orbis socket。`agent.hermes` 与 `agent.dshDesktop` 独立，按设备投影启动公告、运行时、请求、目录游标、Host 快照和推送；不在无设备协商的 Live Activity 旁路公告。iOS／Android 进入既有新建与目录筛选，Windows Host 总览只显示状态，不提供安装器。归档继续不可用。
-- 自动验证：[Host E2E fixture](../../packages/host/src/host-service.test.ts)（91 项通过）、[定向测试](../../.artifacts/hermes/h05-unit-final.txt)（69 项通过）及 [Swift Store 回归](../../.artifacts/hermes/h05-swift/run.log)（2 项通过）。实际 Gateway 联动、已发布客户端互通、Android／Windows 原生构建、打包、部署和用户验收不在这些结果内。
+- HERMES-REMOTE-01：新增可选 SSH 远程连接。桌面状态保存主机、端口和 profile，不保存远程密钥或 Gateway 票据；仅通过本机 `ssh` 的严格主机密钥校验和密钥登录，转发本机回环端口。此模式支持连接公网 Hermes 主机，但不支持直接填写公网 Hermes WebSocket URL／OAuth；远端须运行支持 `gateway attach --json` 的 CLI 与已启动 Gateway。远程新会话的工作目录还须在 Host 与远端以同一绝对路径可访问。未连真实远程 Gateway；平台设备验收待完成。
+- 自动验证：[HERMES-REMOTE-01 隔离单测及相关 Host 定向测试](../../.artifacts/hermes-openclaw-public-gateway-20261123/node-validation.log)（6 个文件，168 项通过、2 项跳过），[Qt Host 构建](../../.artifacts/hermes-openclaw-public-gateway-20261123/qt-build.log) 与 [Host live-change 测试](../../.artifacts/hermes-openclaw-public-gateway-20261123/qt-test.log)（1 项通过）。更早的 [Host E2E fixture](../../packages/host/src/host-service.test.ts)（91 项通过）、[Hermes 定向测试](../../.artifacts/hermes/h05-unit-final.txt)（69 项通过）及 [Swift Store 回归](../../.artifacts/hermes/h05-swift/run.log)（2 项通过）仍保留。实际 Gateway 联动、已发布客户端互通、设备安装、打包、部署和用户验收不在这些结果内。
 
 ### HERMES-06 兼容验证
 

@@ -96,6 +96,7 @@ class HostController : public QObject {
     Q_PROPERTY(bool agentChoicesNeedRetry READ agentChoicesNeedRetry NOTIFY changed)
     Q_PROPERTY(QVariantMap activeAgentSessions READ activeAgentSessions NOTIFY changed)
     Q_PROPERTY(QVariantMap openClaw READ openClaw NOTIFY openClawChanged)
+    Q_PROPERTY(QVariantMap hermesRemote READ hermesRemote NOTIFY hermesRemoteChanged)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
     Q_PROPERTY(QVariantMap codexDesktop READ codexDesktop NOTIFY changed)
@@ -188,6 +189,7 @@ public:
     QVariantMap agentChanges() const;
     QVariantMap activeAgentSessions() const { return m_activeAgentSessions; }
     QVariantMap openClaw() const { return m_openClaw; }
+    QVariantMap hermesRemote() const { return m_hermesRemote; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
     QVariantMap codexDesktop() const { return m_codexDesktop; }
@@ -219,6 +221,8 @@ public:
     Q_INVOKABLE void refreshAgentProviders(const QString &kind);
     Q_INVOKABLE void saveOpenClaw(const QString &url, const QString &token);
     Q_INVOKABLE void reconnectOpenClaw();
+    Q_INVOKABLE void saveHermesRemote(const QString &host, int port, const QString &profile);
+    Q_INVOKABLE void reconnectHermesRemote();
     Q_INVOKABLE void stopHost();
     Q_INVOKABLE void pair();
     Q_INVOKABLE void cancelPair();
@@ -285,6 +289,7 @@ signals:
     void agentReviewsRequested(const QStringList &kinds, const QVariantList &reviews, double revision);
     void agentWriteFeedback(const QStringList &kinds, const QString &status, double revision);
     void openClawChanged();
+    void hermesRemoteChanged();
     void providersChanged();
     void providerPresetsChanged();
     void paired();
@@ -416,6 +421,7 @@ private:
     int m_agentWriteId = -1;
     bool m_agentChoiceRecheck = false, m_agentReadPending = false;
     QVariantMap m_openClaw;
+    QVariantMap m_hermesRemote;
     QVariantMap m_codexDesktop, m_dshDesktop;
     QString m_kimiCodeState, m_kimiCodeDefaultSource = "web";
     bool m_kimiDesktopSupported = false;

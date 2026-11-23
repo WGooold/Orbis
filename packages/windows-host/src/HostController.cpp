@@ -130,11 +130,13 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             refreshDeviceUpdateIndicators();
             applyAgentEnablement(obj.value("agentEnablement").toObject());
             m_openClaw = obj.value("openClaw").toObject().toVariantMap();
+            m_hermesRemote = obj.value("hermesRemote").toObject().toVariantMap();
             m_kimiCodeSupported = obj.value("kimiCodeSupported").toBool();
             m_kimiDesktopSupported = obj.value("kimiDesktopSupported").toBool();
             m_kimiCodeDefaultSource = obj.value("kimiCodeDefaultSource").toString("web");
             m_bridgeReady = true;
             emit openClawChanged();
+            emit hermesRemoteChanged();
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
             detectAgents(true);
             checkUpdatesInternal(false);
@@ -257,6 +259,7 @@ static QPair<QString, QString> activityFor(const QString &method, const QJsonObj
     if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
     if (method.startsWith("agent.enablement.write")) return { "agentEnablement", "正在保存 Agent 设置" };
     if (method == "openclaw.save") return { "openClaw", "正在保存 OpenClaw 配置" };
+    if (method == "hermes.remote.save") return { "hermesRemote", "正在保存 Hermes SSH 配置" };
     if (method == "rename") return { "host", "正在保存电脑名称" };
     if (method.startsWith("provider.")) {
         if (method == "provider.save") return { "provider", "正在保存供应商" };
@@ -322,7 +325,8 @@ int HostController::command(const QString &method, const QJsonObject &params, Ca
     if (m_exiting && method != "shutdown") return -1;
     if (m_bridge.state() != QProcess::Running) { setMessage("Host 核心尚未就绪"); return -1; }
     int id = m_nextId++;
-    m_pending.insert(id, std::move(done)); m_methods.insert(id, method); if (method != "openclaw.save") m_requestParams.insert(id, params);
+    m_pending.insert(id, std::move(done)); m_methods.insert(id, method);
+    if (method != "openclaw.save" && method != "hermes.remote.save") m_requestParams.insert(id, params);
     if (!isBackgroundRequest(method)) ++m_busy;
     const auto activity = activityFor(method, params);
     if (!activity.first.isEmpty() || !activity.second.isEmpty()) { m_activity.insert(id, activity); m_activityOrder.append(id); }
@@ -1013,6 +1017,19 @@ void HostController::saveOpenClaw(const QString &url, const QString &token) {
 }
 void HostController::reconnectOpenClaw() {
     if (!m_bridgeReady || busy() || m_openClaw.isEmpty()) return;
+    if (pauseForChange()) afterQueuedCommands([this] { resumeAfterChange(); });
+}
+void HostController::saveHermesRemote(const QString &host, int port, const QString &profile) {
+    if (!m_bridgeReady || busy() || m_hermesRemote.value("source").toString() != "file") return;
+    command("hermes.remote.save", {{"host", host}, {"port", port}, {"profile", profile}}, [this](const QJsonValue &result) {
+        m_hermesRemote = result.toObject().toVariantMap();
+        emit hermesRemoteChanged();
+        reconnectHermesRemote();
+        setMessage(m_hermesRemote.value("host").toString().isEmpty() ? "Hermes 已恢复为本机接入" : "Hermes SSH 配置已保存");
+    });
+}
+void HostController::reconnectHermesRemote() {
+    if (!m_bridgeReady || busy() || m_hermesRemote.isEmpty()) return;
     if (pauseForChange()) afterQueuedCommands([this] { resumeAfterChange(); });
 }
 void HostController::stopHost() { m_desiredRunning = false; m_resumePending = false; m_settings.setValue("runHost", false); m_qr.clear(); command("stop"); }

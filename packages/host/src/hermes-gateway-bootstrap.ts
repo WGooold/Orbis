@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join, normalize, resolve, win32 } from "node:path"
 import { promisify } from "node:util";
 import { agentCommandForEntry, agentInvocation, findExternalAgentEntries, type AgentCommand } from "./agent-command.js";
 import { HERMES_GATEWAY_WS_PROTOCOL, HermesGatewayRpcClient, type HermesGatewayEvent, type HermesJsonObject, type HermesServerRequestHandler } from "./hermes-gateway-rpc.js";
+import { attachRemoteHermesGateway, type HermesRemoteGatewayConfig } from "./hermes-remote-gateway.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_CONTROL_BYTES = 512 * 1024;
@@ -38,6 +39,8 @@ export type HermesGatewayAttachment = {
   endpoint: HermesGatewayEndpoint;
   runtime: HermesGatewayRuntimeDescriptor;
   serverRequests: string[];
+  /** Releases only an Orbis-owned transport resource (currently an SSH forward). */
+  close?: () => Promise<void>;
 };
 export type HermesGatewayCliCommand = AgentCommand;
 export type HermesEnsureRunner = (command: HermesGatewayCliCommand, timeoutMs: number, env: NodeJS.ProcessEnv,
@@ -56,9 +59,11 @@ export type HermesGatewayBootstrapOptions = {
   platform?: NodeJS.Platform;
   timeoutSeconds?: number;
   expectedProfileId?: string;
+  remoteGateway?: HermesRemoteGatewayConfig;
   runEnsure?: HermesEnsureRunner;
   requestTicket?: typeof requestHermesGatewayTicket;
   connect?: typeof HermesGatewayRpcClient.connect;
+  attachRemote?: typeof attachRemoteHermesGateway;
   onEvent?: (event: HermesGatewayEvent) => void;
   onServerRequest?: HermesServerRequestHandler;
   onTransportError?: (error: Error) => void;
@@ -76,45 +81,58 @@ export async function resolveHermesGatewayCommand(
   catch { throw new HermesGatewayBootstrapError("hermes_command_unavailable", "Hermes CLI 启动入口不可用"); }
 }
 
-/**
- * Ensure Hermes' local Gateway using its credential-free CLI contract, mint a short-lived
- * profile-bound ticket over the private local control channel, then verify the WebSocket owner.
- * The Gateway remains Hermes-owned and is never stopped by closing the returned client.
- */
+/** Connect to the current local profile, or to a remote profile over an SSH-forwarded attach ticket. */
 export async function connectHermesGateway(options: HermesGatewayBootstrapOptions = {}): Promise<HermesGatewayAttachment> {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
-  const command = options.command ?? await resolveHermesGatewayCommand(env, platform);
-  const timeoutSeconds = options.timeoutSeconds ?? ENSURE_TIMEOUT_SECONDS;
-  const runEnsure = options.runEnsure ?? runHermesGatewayEnsure;
-  const result = await runEnsure(command, timeoutSeconds * 1000, env, platform);
-  const ensured = parseHermesGatewayEnsureResult(result.stdout, result.stderr, result.exitCode);
-  const endpoint = ensured.endpoint;
-  if (options.expectedProfileId !== undefined && endpoint.profile_id !== options.expectedProfileId)
+  let endpoint: HermesGatewayEndpoint;
+  let url: string;
+  let protocols: string[];
+  let closeRemote: (() => Promise<void>) | undefined;
+  if (options.remoteGateway) {
+    const remote = await (options.attachRemote ?? attachRemoteHermesGateway)(options.remoteGateway);
+    endpoint = remote.endpoint;
+    url = remote.url;
+    protocols = remote.protocols;
+    closeRemote = remote.close;
+  } else {
+    const command = options.command ?? await resolveHermesGatewayCommand(env, platform);
+    const timeoutSeconds = options.timeoutSeconds ?? ENSURE_TIMEOUT_SECONDS;
+    const runEnsure = options.runEnsure ?? runHermesGatewayEnsure;
+    const result = await runEnsure(command, timeoutSeconds * 1000, env, platform);
+    const ensured = parseHermesGatewayEnsureResult(result.stdout, result.stderr, result.exitCode);
+    endpoint = ensured.endpoint;
+    if (ensured.clientCodeSha && endpoint.code_sha && ensured.clientCodeSha !== endpoint.code_sha)
+      throw new HermesGatewayBootstrapError("gateway_code_mismatch", "Hermes Gateway 版本与当前 CLI 不一致");
+    const requestTicket = options.requestTicket ?? requestHermesGatewayTicket;
+    const ticket = await requestTicket(endpoint, { platform, timeoutMs: CONTROL_TIMEOUT_MS });
+    const target = hermesGatewayWebSocketTarget(endpoint, ticket);
+    url = target.url;
+    protocols = target.protocols;
+  }
+  if (options.expectedProfileId !== undefined && endpoint.profile_id !== options.expectedProfileId) {
+    await closeRemote?.();
     throw new HermesGatewayBootstrapError("gateway_identity_changed", "Hermes Gateway profile 已变化");
-  if (ensured.clientCodeSha && endpoint.code_sha && ensured.clientCodeSha !== endpoint.code_sha)
-    throw new HermesGatewayBootstrapError("gateway_code_mismatch", "Hermes Gateway 版本与当前 CLI 不一致");
-
-  const requestTicket = options.requestTicket ?? requestHermesGatewayTicket;
-  const ticket = await requestTicket(endpoint, { platform, timeoutMs: CONTROL_TIMEOUT_MS });
-  const { url, protocols } = hermesGatewayWebSocketTarget(endpoint, ticket);
+  }
   const connect = options.connect ?? HermesGatewayRpcClient.connect;
   let readyResolve!: () => void;
   let readyReject!: (error: Error) => void;
   let sawReady = false;
   const ready = new Promise<void>((resolveReady, rejectReady) => { readyResolve = resolveReady; readyReject = rejectReady; });
-  const client = await connect(url, protocols, {
-    requestTimeoutMs: 30_000,
-    onEvent: event => {
-      if (event.type === "gateway.ready" && !sawReady) { sawReady = true; readyResolve(); }
-      options.onEvent?.(event);
-    },
-    ...(options.onServerRequest ? { onServerRequest: options.onServerRequest } : {}),
-    onTransportError: error => options.onTransportError?.(error),
-  });
-  const readyTimer = setTimeout(() => readyReject(new HermesGatewayBootstrapError("gateway_handshake_timeout", "Hermes Gateway 握手超时")), 10_000);
-  readyTimer.unref?.();
+  let client: HermesGatewayRpcClient | undefined;
+  let readyTimer: NodeJS.Timeout | undefined;
   try {
+    client = await connect(url, protocols, {
+      requestTimeoutMs: 30_000,
+      onEvent: event => {
+        if (event.type === "gateway.ready" && !sawReady) { sawReady = true; readyResolve(); }
+        options.onEvent?.(event);
+      },
+      ...(options.onServerRequest ? { onServerRequest: options.onServerRequest } : {}),
+      onTransportError: error => options.onTransportError?.(error),
+    });
+    readyTimer = setTimeout(() => readyReject(new HermesGatewayBootstrapError("gateway_handshake_timeout", "Hermes Gateway 握手超时")), 10_000);
+    readyTimer.unref?.();
     await ready;
     const advertised = await client.request<unknown>("client.capabilities", { server_requests: Boolean(options.onServerRequest) });
     const serverRequests = stringArray(asRecord(advertised).server_requests, "server_requests");
@@ -123,13 +141,14 @@ export async function connectHermesGateway(options: HermesGatewayBootstrapOption
     if (runtime.profile_id !== endpoint.profile_id || runtime.instance_id !== endpoint.instance_id ||
       runtime.authority_epoch !== endpoint.authority_epoch)
       throw new HermesGatewayBootstrapError("gateway_identity_changed", "Hermes Gateway 身份在连接期间发生变化");
-    return { client, endpoint, runtime, serverRequests };
+    return { client, endpoint, runtime, serverRequests, ...(closeRemote ? { close: closeRemote } : {}) };
   } catch (error) {
-    await client.close().catch(() => undefined);
+    await client?.close().catch(() => undefined);
+    await closeRemote?.().catch(() => undefined);
     if (error instanceof HermesGatewayBootstrapError) throw error;
     throw new HermesGatewayBootstrapError("gateway_handshake_failed", "Hermes Gateway 能力协商失败");
   } finally {
-    clearTimeout(readyTimer);
+    if (readyTimer) clearTimeout(readyTimer);
   }
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createServer, type Server } from "node:net";
 import { WebSocketServer } from "ws";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   connectHermesGateway,
   hermesGatewayPipeName,
@@ -16,7 +16,7 @@ import {
   resolveHermesGatewayCommand,
   type HermesGatewayEndpoint,
 } from "./hermes-gateway-bootstrap.js";
-import { HERMES_GATEWAY_WS_PROTOCOL } from "./hermes-gateway-rpc.js";
+import { HERMES_GATEWAY_WS_PROTOCOL, type HermesGatewayRpcClient } from "./hermes-gateway-rpc.js";
 
 const tempDirectories: string[] = [];
 const controlServers: Server[] = [];
@@ -175,5 +175,37 @@ describe("Hermes Gateway bootstrap", () => {
     expect(attachment.runtime.instance_id).toBe("instance-1");
     expect(attachment.serverRequests).toEqual(["approval", "clarify"]);
     expect(attachment.runtime.session_create.sources).toEqual(["tui"]);
+  });
+
+  it("uses a remote SSH attachment and releases its tunnel with the Orbis socket", async () => {
+    const home = "/remote/.hermes";
+    const closeTunnel = vi.fn(async () => {});
+    const remoteEndpoint = endpoint(home, "http://127.0.0.1:43120");
+    const client = {
+      closed: false,
+      close: vi.fn(async () => {}),
+      request: vi.fn(async (method: string) => method === "client.capabilities"
+        ? { server_requests: ["approval"] }
+        : { profile_id: home, instance_id: "instance-1", authority_epoch: 7,
+          capabilities: ["session-authority-v1"], session_create: { sources: ["tui"], parameters: ["cwd"] } }),
+    };
+    const connect = vi.fn(async (_url: string, _protocols: string[] | undefined, options: { onEvent?: (event: { type: string }) => void }) => {
+      options.onEvent?.({ type: "gateway.ready" });
+      return client as unknown as HermesGatewayRpcClient;
+    });
+    const attachment = await connectHermesGateway({
+      remoteGateway: { host: "hermes-box", port: 2222 },
+      attachRemote: async () => ({ endpoint: remoteEndpoint, url: "ws://127.0.0.1:41414/api/ws",
+        protocols: [HERMES_GATEWAY_WS_PROTOCOL, "hermes-gateway-ticket.one-use"], close: closeTunnel }),
+      connect,
+    });
+    expect(connect).toHaveBeenCalledWith("ws://127.0.0.1:41414/api/ws",
+      [HERMES_GATEWAY_WS_PROTOCOL, "hermes-gateway-ticket.one-use"], expect.any(Object));
+    expect(attachment.runtime.instance_id).toBe("instance-1");
+    expect(client.close).not.toHaveBeenCalled();
+    await attachment.client.close();
+    await attachment.close?.();
+    expect(client.close).toHaveBeenCalledOnce();
+    expect(closeTunnel).toHaveBeenCalledOnce();
   });
 });

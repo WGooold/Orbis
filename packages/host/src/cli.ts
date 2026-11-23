@@ -35,6 +35,7 @@ import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
 import { readOpenClawDesktopSettings } from "./openclaw-gateway.js";
+import { loadHermesRemoteGatewayConfig } from "./hermes-remote-gateway.js";
 import { hostCliProfile } from "./cli-profile.js";
 
 const USAGE = `orbis —— 电脑侧的 Host 进程
@@ -219,7 +220,7 @@ async function runHostUntilShutdown(
       codexDesktopStatus: () => codexDesktop?.status,
       ensureDshRuntime: () => connectDsh(false),
       recoverDshRuntime: () => connectDsh(true),
-      ...(sessionsRoot === undefined ? { hermes: {} } : { openClaw: false as const }),
+      ...(sessionsRoot === undefined ? { hermes: { getRemoteGateway: () => loadHermesRemoteGatewayConfig(stateDir) } } : { openClaw: false as const }),
       prepareManagedDsh: async (kind, lease) => {
         if (kind === "dsh") {
           const env = await providers.environment("dsh");

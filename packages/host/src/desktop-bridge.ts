@@ -70,6 +70,7 @@ input.on("line", line => {
         }
         case "agent.enablement.writeBatch": result = await runtime.setAgentEnablementBatch(p); break;
         case "openclaw.save": result = await runtime.saveOpenClaw(p.url, p.token); break;
+        case "hermes.remote.save": result = await runtime.saveHermesRemote(p.host, p.port, p.profile); break;
         case "start": await runtime.start(p as DesktopSettings); break;
         case "stop": await runtime.stop(); break;
         case "pair": result = await runtime.pair(); break;

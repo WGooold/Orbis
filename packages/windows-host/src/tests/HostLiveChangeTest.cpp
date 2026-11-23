@@ -45,6 +45,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     return out({ id, result: { status: "applied", snapshot } });
   }
   if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
+  if (method === "hermes.remote.save") return out({ id, result: { source: "file", host: params.host, port: params.port, profile: params.profile } });
   if (method === "selectAgentEntry") return out({ id, result: { entry: params.entry, version: "2.1.322" } });
   if (method === "detect") return out({ id, result: [] });
   if (method === "updateAgent") return out({ id, result: { entry: "/fixture/pi", version: "9.9.9" } });
@@ -236,6 +237,43 @@ private slots:
         host.m_openClaw = {{"source", "environment"}, {"url", url}};
         clearMethods(root());
         host.saveOpenClaw("", "");
+        QVERIFY(!host.busy());
+        QVERIFY(methods(root()).isEmpty());
+    }
+
+    // HERMES-REMOTE-01: apply an SSH target by reconnecting the Host; never retain auth material in Qt.
+    void hermesRemoteSettingsReconnectOnlyAfterSuccessfulSave() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        host.m_hermesRemote = {{"source", "file"}, {"port", 22}};
+        host.saveHermesRemote("hermes-box", 2222, "work");
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"hermes.remote.save", "stop", "start"}));
+        QCOMPARE(host.hermesRemote().value("host").toString(), QString("hermes-box"));
+        QCOMPARE(host.hermesRemote().value("port").toInt(), 2222);
+        QCOMPARE(host.hermesRemote().value("profile").toString(), QString("work"));
+
+        QFile marker(root() + "/packages/host/dist/fail-hermes.remote.save");
+        QVERIFY(marker.open(QIODevice::WriteOnly)); marker.close();
+        clearMethods(root());
+        host.saveHermesRemote("invalid host", 22, "");
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"hermes.remote.save"}));
+        QCOMPARE(host.hermesRemote().value("host").toString(), QString("hermes-box"));
+        QVERIFY(host.desiredRunning());
+        QVERIFY(marker.remove());
+
+        host.stopHost(); settle(host);
+        clearMethods(root());
+        host.saveHermesRemote("", 22, "");
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"hermes.remote.save"}));
+        QVERIFY(!host.desiredRunning());
+        QVERIFY(host.hermesRemote().value("host").toString().isEmpty());
+
+        host.m_hermesRemote = {{"source", "environment"}, {"host", "managed"}};
+        clearMethods(root());
+        host.saveHermesRemote("", 22, "");
         QVERIFY(!host.busy());
         QVERIFY(methods(root()).isEmpty());
     }

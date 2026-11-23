@@ -15,17 +15,18 @@ async function stateDir(): Promise<string> {
   return path;
 }
 
-// An opted-in endpoint never inherits another endpoint's shared token.
-test("OPENCLAW-01 admits only loopback and keeps credential sources scoped", async () => {
+// Remote Gateway tokens travel only over TLS; endpoint credentials remain scoped.
+test("OPENCLAW-01 admits local WebSocket or remote TLS endpoints and keeps credential sources scoped", async () => {
   const dir = await stateDir();
   expect(await loadOpenClawConfig(dir, {})).toBeUndefined();
   await writeFile(join(dir, "openclaw-gateway.json"), JSON.stringify({ url: "ws://127.0.0.1:18789", token: "bootstrap" }), { mode: 0o600 });
   expect(await loadOpenClawConfig(dir, {})).toEqual({ url: "ws://127.0.0.1:18789", token: "bootstrap" });
   expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_URL: "ws://[::1]:19000/" })).toEqual({ url: "ws://[::1]:19000" });
   expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_URL: "" })).toBeUndefined();
-  for (const url of ["https://127.0.0.1", "ws://localhost", "wss://example.com", "ws://u:p@127.0.0.1", "ws://127.0.0.1/other", "ws://127.0.0.1/?token=x"]) {
-    expect(() => openClawUrl(url)).toThrow(/loopback|127\.0\.0\.1/);
-  }
+  expect(openClawUrl("wss://gateway.example.net")).toBe("wss://gateway.example.net");
+  expect(openClawUrl("wss://[2001:db8::1]:9443")).toBe("wss://[2001:db8::1]:9443");
+  for (const url of ["https://127.0.0.1", "ws://gateway.example.net", "ws://localhost", "ws://u:p@127.0.0.1",
+    "ws://127.0.0.1/other", "ws://127.0.0.1/?token=x"]) expect(() => openClawUrl(url)).toThrow();
   if (process.platform !== "win32") {
     await chmod(join(dir, "openclaw-gateway.json"), 0o644);
     await expect(loadOpenClawConfig(dir, {})).rejects.toThrow(/private regular file/);
@@ -39,9 +40,11 @@ test("desktop saves the private config, retains the token only on the same endpo
   const save = (url: string, token = "") => saveOpenClawDesktopSettings(dir, url, token, {});
   expect(await save(endpoint, "desktop-token")).toEqual({ source: "file", url: endpoint, hasToken: true, invalid: false });
   if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
-  await expect(save("ws://example.com", "wrong")).rejects.toThrow(/Gateway 地址/);
   expect(await save(`${endpoint}/`)).toHaveProperty("hasToken", true);
   expect(await loadOpenClawConfig(dir, {})).toEqual({ url: endpoint, token: "desktop-token" });
+  await expect(save("ws://example.com", "wrong")).rejects.toThrow(/wss/);
+  expect(await save("wss://gateway.example.net", "remote-token")).toHaveProperty("hasToken", true);
+  expect(await loadOpenClawConfig(dir, {})).toEqual({ url: "wss://gateway.example.net", token: "remote-token" });
   for (const env of [{ ORBIS_OPENCLAW_URL: "" }, { ORBIS_OPENCLAW_TOKEN: "environment-token" }]) {
     expect(await readOpenClawDesktopSettings(dir, env)).toHaveProperty("source", "environment");
     await expect(saveOpenClawDesktopSettings(dir, "", "", env)).rejects.toThrow(/环境变量/);
