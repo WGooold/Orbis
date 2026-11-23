@@ -138,3 +138,7 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 - **Host／Relay**：以 `v0.1.22`（`11c7a227`）原始源码独立构建。候选 Host 经发版 Relay 完成 E2E 配对、会话目录、恢复、发一条合成消息、重握手与降级隔离；对照为候选 Host／Relay。同一设备能力声明向发版 Host 发出时，重连前后均只返回原有 Agent 和目录。[发版对照](../../.artifacts/hermes/h06-old-node-send-final.txt)（2 项通过）、[候选回归](../../.artifacts/hermes/h06-candidate-node.txt)（136 项通过，1 项发版专属测试按设计跳过）。复现测试见 `host-service.test.ts`，将独立发版运行 `npm ci && npm run build` 后的根目录传给 `ORBIS_HERMES_COMPAT_RELEASE_ROOT`。首次仅运行 `tsc` 缺少 Relay web 构建产物，失败证据保留在 `.artifacts/hermes/h06-old-node.txt`。
 - **移动端**：候选 Host 的混合目录投影以 `v0.1.22` 原始 iOS parser 和 `android-v0.1.60`（`20cf37fc`）原始 Android reducer 回放，均接受过滤后的 112 条、22 个续页；iOS 负对照拒绝未过滤的 Hermes 页。[iOS 证据](../../.artifacts/hermes/h06-old-ios/release-app-compat.json)、[Android 证据](../../.artifacts/hermes/h06-old-android/test-result.xml)。候选 Swift Store 2 项、Android 目录 21 项通过。这是发版源码对照，不是已安装包、生产 Relay 或完整真机互通。
 - **待用户验证**：候选安装包就绪后，用支持 Gateway 的 Hermes CLI 启动电脑端 Host，手机在现有新建入口选择 Hermes，选工作目录并发送文本；从会话目录恢复同一会话，确认历史、工具摘要和单次审批；重连后确认未重复发送。还未运行实际 Hermes Gateway 联动、Windows 安装包、设备安装或部署，本次未操作用户 Hermes profile。
+
+### HERMES-REMOTE-02 桌面连接方式显式切换
+
+桌面 Hermes 卡以“本机／SSH 远程”切换连接方式；远程才显示主机、端口与 profile，切回本机并应用即清除远程配置（取代原“恢复本机接入”按钮）。info 图标说明两种方式含义。配置文件与桥接协议不变。实现：[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)。验证：待在 Qt 环境构建并目视检查；未运行。

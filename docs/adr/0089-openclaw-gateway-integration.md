@@ -44,3 +44,7 @@ macOS 与 Windows 共用 Qt Agent 卡配置本机 Gateway 地址和可选令牌�
 远程地址可填 `wss://gateway.example.com`（包括反向代理后的 TLS WebSocket 根地址），仍由同一 Host SDK 身份和 Gateway 配对流程认证；TLS 证书按系统信任链校验。远程令牌不会发往 App 或 Relay。`ORBIS_OPENCLAW_URL`／`ORBIS_OPENCLAW_TOKEN` 与私有状态文件使用相同校验；环境 URL 不继承文件令牌。
 
 实现：[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)、[`HostController.cpp`](../../packages/windows-host/src/HostController.cpp)、[`openclaw-gateway.ts`](../../packages/host/src/openclaw-gateway.ts)。验证：[`HostLiveChangeTest.cpp`](../../packages/windows-host/src/tests/HostLiveChangeTest.cpp)、[`openclaw-gateway.test.ts`](../../packages/host/src/openclaw-gateway.test.ts)；`.artifacts/openclaw-20261119/desktop/` 保留 TypeScript 检查、20 项定向测试、Qt 构建及生命周期测试结果、隔离桥接数据的 macOS 最小窗口截图。本轮远程接入自动验证见 [公网接入定向测试](../../.artifacts/hermes-openclaw-public-gateway-20261123/node-validation.log)（6 个文件，168 项通过、2 项跳过）、[Qt Host 构建](../../.artifacts/hermes-openclaw-public-gateway-20261123/qt-build.log) 与 [Host live-change 测试](../../.artifacts/hermes-openclaw-public-gateway-20261123/qt-test.log)（1 项通过）。Windows 安装包和真实公网 Gateway 上的桌面流程待用户验证；未发布。共享 QA 连接被拒，未登记或领取。
+
+## OPENCLAW-05｜桌面连接方式显式切换
+
+Agent 卡以“本机／远程”切换连接方式，不再由所填地址推断：本机只填端口（保存为 `ws://127.0.0.1:<端口>`），远程填写 `wss://` 地址（缺省协议按 `wss://` 补全，明文 `ws://` 不可保存）。切换并应用后令牌按新地址重新处理；已保存的配置按其地址回显对应方式。卡片头部的 info 图标说明两种方式含义。Host 配置文件与桥接协议不变。实现：[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)。验证：待在 Qt 环境构建并目视检查；未运行。

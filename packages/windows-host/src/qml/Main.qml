@@ -963,6 +963,29 @@ ApplicationWindow {
         ToolTip.visible: hovered && !expanded
         ToolTip.text: Accessible.name
     }
+    // Explicit either-or choice between connection modes; options are short captions.
+    component ModeSwitch: RowLayout {
+        id: modeSwitch
+        property var options: []
+        property int index: 0
+        signal picked(int i)
+        spacing: 8
+        Accessible.role: Accessible.RadioButton
+        Repeater {
+            model: modeSwitch.options
+            delegate: ActionButton {
+                required property int index
+                required property string modelData
+                Layout.fillWidth: true; Layout.preferredWidth: 1
+                text: modelData
+                primary: modeSwitch.index === index
+                enabled: modeSwitch.enabled
+                Accessible.checkable: true
+                Accessible.checked: modeSwitch.index === index
+                onClicked: if (modeSwitch.index !== index) modeSwitch.picked(index)
+            }
+        }
+    }
     Image {
         id: themeOverlay
         anchors.fill: parent; z: 1000; visible: false
@@ -2246,15 +2269,30 @@ ApplicationWindow {
                                                 Layout.fillWidth: true
                                             }
                                         }
-                                        // OPENCLAW-04: configure the local Gateway without managing its process.
+                                        // OPENCLAW-04/05: explicit local/remote mode; the mode, not the typed address, selects the connection.
                                         Card {
                                             id: openClawCard
                                             objectName: "openClawCard"
                                             Layout.fillWidth: true
                                             visible: host.bridgeReady && !!host.openClaw.source && window.detailKind === "openclaw" && window.detailPowered
                                             readonly property bool editable: host.openClaw.source === "file"
-                                            readonly property bool dirty: clawUrl.text.trim() !== (host.openClaw.url || "") || clawToken.text.length > 0
-                                            function reset() { clawUrl.text = host.openClaw.url || ""; clawToken.clear() }
+                                            readonly property string savedUrl: host.openClaw.url || ""
+                                            readonly property string savedMode: savedUrl && !/^ws:\/\/(127\.0\.0\.1|\[::1\])(:\d+)?\/?$/.test(savedUrl) ? "remote" : "local"
+                                            readonly property string savedPort: { var m = /:(\d+)\/?$/.exec(savedUrl); return savedMode === "local" && m ? m[1] : "18789" }
+                                            property string mode: "local"
+                                            readonly property string remoteUrl: { var t = clawUrl.text.trim(); return t && t.indexOf("://") < 0 ? "wss://" + t : t }
+                                            readonly property bool remoteInsecure: /^ws:/i.test(remoteUrl)
+                                            readonly property bool valid: mode === "local"
+                                                ? /^\d{1,5}$/.test(clawPort.text.trim()) && Number(clawPort.text) >= 1 && Number(clawPort.text) <= 65535
+                                                : remoteUrl.length > 0 && !remoteInsecure
+                                            readonly property bool dirty: mode !== savedMode || !savedUrl || clawToken.text.length > 0
+                                                || (mode === "local" ? clawPort.text.trim() !== savedPort : remoteUrl !== savedUrl)
+                                            function reset() {
+                                                mode = savedMode
+                                                clawPort.text = savedPort
+                                                clawUrl.text = savedMode === "remote" ? savedUrl : ""
+                                                clawToken.clear()
+                                            }
                                             onVisibleChanged: { reset(); if (!visible) openClawInfoBtn.expanded = false }
                                             Component.onCompleted: reset()
                                             Connections { target: host; function onOpenClawChanged() { openClawCard.reset() } }
@@ -2269,18 +2307,30 @@ ApplicationWindow {
                                                     InfoHintButton {
                                                         id: openClawInfoBtn
                                                         objectName: "openClawInfo"
-                                                        visible: openClawCard.editable
-                                                        Accessible.name: "OpenClaw 连接说明"
+                                                        Accessible.name: "OpenClaw 连接方式说明"
                                                     }
                                                 }
-                                                Hint { visible: openClawCard.editable && openClawInfoBtn.expanded; text: "本机填 ws://，远程必须填 wss:// 才能连接。"; Layout.fillWidth: true }
-                                                Field { id: clawUrl; objectName: "openClawUrl"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "ws://127.0.0.1:18789 或 wss://gateway.example.com"; Accessible.name: "OpenClaw Gateway 地址" }
+                                                Hint {
+                                                    visible: openClawInfoBtn.expanded; Layout.fillWidth: true
+                                                    text: "本机：连接这台电脑上运行的 Gateway，只需填写端口。\n远程：连接另一台主机上的 Gateway，须使用 wss:// 加密地址，不接受明文 ws://。"
+                                                }
+                                                ModeSwitch {
+                                                    objectName: "openClawMode"
+                                                    Layout.fillWidth: true
+                                                    options: ["本机", "远程"]
+                                                    index: openClawCard.mode === "remote" ? 1 : 0
+                                                    enabled: !host.busy && openClawCard.editable
+                                                    onPicked: function(i) { openClawCard.mode = i === 1 ? "remote" : "local" }
+                                                }
+                                                Field { id: clawPort; objectName: "openClawPort"; visible: openClawCard.mode === "local"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 5; inputMethodHints: Qt.ImhDigitsOnly; marksProviderDirty: false; placeholderText: "Gateway 端口（默认 18789）"; Accessible.name: "OpenClaw 本机 Gateway 端口" }
+                                                Field { id: clawUrl; objectName: "openClawUrl"; visible: openClawCard.mode === "remote"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "wss://gateway.example.com"; Accessible.name: "OpenClaw 远程 Gateway 地址" }
+                                                Hint { visible: openClawCard.mode === "remote" && openClawCard.remoteInsecure; text: "远程 Gateway 须使用 wss:// 加密连接。"; Layout.fillWidth: true; color: Theme.warning }
                                                 Field {
                                                     id: clawToken; objectName: "openClawToken"
                                                     visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
                                                     marksProviderDirty: false; maximumLength: 4096; echoMode: TextInput.Password
                                                     inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                                                    placeholderText: host.openClaw.hasToken && clawUrl.text.trim() === host.openClaw.url ? "已保存令牌" : "Gateway 令牌（可选）"
+                                                    placeholderText: host.openClaw.hasToken && openClawCard.mode === openClawCard.savedMode && !openClawCard.dirty ? "已保存令牌" : "Gateway 令牌（可选）"
                                                     Accessible.name: "OpenClaw Gateway 令牌"
                                                 }
                                                 Hint { visible: !openClawCard.editable; text: "由环境变量配置" }
@@ -2290,9 +2340,9 @@ ApplicationWindow {
                                                         objectName: "applyOpenClaw"
                                                         visible: openClawCard.editable
                                                         text: host.desiredRunning ? "应用并重新连接" : "保存配置"
-                                                        enabled: !host.busy && openClawCard.dirty && clawUrl.text.trim().length > 0
+                                                        enabled: !host.busy && openClawCard.dirty && openClawCard.valid
                                                         loading: window.activityKinds.indexOf("openClaw") >= 0
-                                                        onClicked: { host.saveOpenClaw(clawUrl.text, clawToken.text); clawToken.clear() }
+                                                        onClicked: { host.saveOpenClaw(openClawCard.mode === "local" ? "ws://127.0.0.1:" + Number(clawPort.text) : openClawCard.remoteUrl, clawToken.text); clawToken.clear() }
                                                     }
                                                     ActionButton {
                                                         objectName: "reconnectOpenClaw"; text: "重新连接 Host"
@@ -2315,10 +2365,17 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             visible: host.bridgeReady && !!host.hermesRemote.source && window.detailKind === "hermes" && window.detailPowered
                                             readonly property bool editable: host.hermesRemote.source === "file"
-                                            readonly property bool dirty: hermesSshHost.text.trim() !== (host.hermesRemote.host || "")
-                                                || hermesSshPort.text.trim() !== String(host.hermesRemote.port || 22)
-                                                || hermesSshProfile.text.trim() !== (host.hermesRemote.profile || "")
+                                            readonly property string savedMode: host.hermesRemote.host ? "remote" : "local"
+                                            property string mode: "local"
+                                            readonly property bool valid: mode === "local"
+                                                || (hermesSshHost.text.trim().length > 0 && /^\d{1,5}$/.test(String(hermesSshPort.text || 22).trim())
+                                                    && Number(hermesSshPort.text || 22) >= 1 && Number(hermesSshPort.text || 22) <= 65535)
+                                            readonly property bool dirty: mode !== savedMode || !!host.hermesRemote.invalid
+                                                || (mode === "remote" && (hermesSshHost.text.trim() !== (host.hermesRemote.host || "")
+                                                    || hermesSshPort.text.trim() !== String(host.hermesRemote.port || 22)
+                                                    || hermesSshProfile.text.trim() !== (host.hermesRemote.profile || "")))
                                             function reset() {
+                                                mode = savedMode
                                                 hermesSshHost.text = host.hermesRemote.host || ""
                                                 hermesSshPort.text = String(host.hermesRemote.port || 22)
                                                 hermesSshProfile.text = host.hermesRemote.profile || ""
@@ -2333,19 +2390,30 @@ ApplicationWindow {
                                                     AgentMark { kind: "hermes" }
                                                     Heading { text: "Hermes Agent"; Layout.fillWidth: true }
                                                     StatusDot { idle: window.backendFor("hermes")?.ready !== true; color: window.backendFor("hermes")?.ready === true ? Theme.success : Theme.inkFaint }
-                                                    Hint { text: window.backendFor("hermes")?.ready === true ? "已连接" : host.hermesRemote.host ? "SSH 远程" : "本机 CLI" }
+                                                    Hint { text: window.backendFor("hermes")?.ready === true ? "已连接" : hermesRemoteCard.savedMode === "remote" ? "SSH 远程" : "本机 CLI" }
                                                     InfoHintButton {
                                                         id: hermesInfoBtn
                                                         objectName: "hermesRemoteInfo"
-                                                        visible: hermesRemoteCard.editable
-                                                        Accessible.name: "Hermes 远程说明"
+                                                        Accessible.name: "Hermes 连接方式说明"
                                                     }
                                                 }
-                                                Hint { visible: hermesRemoteCard.editable && hermesInfoBtn.expanded; text: "填写后将通过免密 SSH 连接已运行的远程 Gateway（需支持 gateway attach 且工作目录两端均可访问）。"; Layout.fillWidth: true }
-                                                Field { id: hermesSshHost; objectName: "hermesSshHost"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 260; marksProviderDirty: false; placeholderText: "user@server 或 SSH 别名（留空=本机）"; Accessible.name: "Hermes 远程 SSH 主机" }
+                                                Hint {
+                                                    visible: hermesInfoBtn.expanded; Layout.fillWidth: true
+                                                    text: "本机：使用这台电脑上的 Hermes CLI 与 Gateway。\nSSH 远程：通过免密 SSH 连接另一台主机上已运行的 Gateway（需支持 gateway attach，工作目录两端须以相同路径可访问）。"
+                                                }
+                                                ModeSwitch {
+                                                    objectName: "hermesMode"
+                                                    Layout.fillWidth: true
+                                                    options: ["本机", "SSH 远程"]
+                                                    index: hermesRemoteCard.mode === "remote" ? 1 : 0
+                                                    enabled: !host.busy && hermesRemoteCard.editable
+                                                    onPicked: function(i) { hermesRemoteCard.mode = i === 1 ? "remote" : "local" }
+                                                }
+                                                Field { id: hermesSshHost; objectName: "hermesSshHost"; visible: hermesRemoteCard.mode === "remote"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 260; marksProviderDirty: false; placeholderText: "user@server 或 SSH 别名"; Accessible.name: "Hermes 远程 SSH 主机" }
                                                 Flow {
+                                                    visible: hermesRemoteCard.mode === "remote"
                                                     Layout.fillWidth: true; spacing: 10
-                                                    Field { id: hermesSshPort; objectName: "hermesSshPort"; Layout.preferredWidth: 120; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 5; marksProviderDirty: false; placeholderText: "22"; Accessible.name: "SSH 端口" }
+                                                    Field { id: hermesSshPort; objectName: "hermesSshPort"; Layout.preferredWidth: 120; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 5; inputMethodHints: Qt.ImhDigitsOnly; marksProviderDirty: false; placeholderText: "22"; Accessible.name: "SSH 端口" }
                                                     Field { id: hermesSshProfile; objectName: "hermesSshProfile"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !hermesRemoteCard.editable; maximumLength: 64; marksProviderDirty: false; placeholderText: "Hermes profile（默认）"; Accessible.name: "远程 Hermes profile" }
                                                 }
                                                 Hint { visible: !!host.hermesRemote.invalid; text: "Hermes SSH 配置无效；请检查主机、端口和 profile。"; Layout.fillWidth: true; color: Theme.warning }
@@ -2356,22 +2424,17 @@ ApplicationWindow {
                                                         objectName: "applyHermesRemote"
                                                         visible: hermesRemoteCard.editable
                                                         text: host.desiredRunning ? "应用并重新连接" : "保存配置"
-                                                        enabled: !host.busy && hermesRemoteCard.dirty
-                                                            && (!hermesSshHost.text.trim() || Number(hermesSshPort.text || 22) > 0)
+                                                        enabled: !host.busy && hermesRemoteCard.dirty && hermesRemoteCard.valid
                                                         loading: window.activityKinds.indexOf("hermesRemote") >= 0
-                                                        onClicked: host.saveHermesRemote(hermesSshHost.text, Number(hermesSshPort.text || 22), hermesSshProfile.text)
+                                                        onClicked: hermesRemoteCard.mode === "remote"
+                                                            ? host.saveHermesRemote(hermesSshHost.text, Number(hermesSshPort.text || 22), hermesSshProfile.text)
+                                                            : host.saveHermesRemote("", 22, "")
                                                     }
                                                     ActionButton {
                                                         objectName: "reconnectHermesRemote"; text: "重新连接 Host"
                                                         visible: !!host.hermesRemote.host && host.desiredRunning
                                                         enabled: !host.busy && !hermesRemoteCard.dirty
                                                         onClicked: host.reconnectHermesRemote()
-                                                    }
-                                                    ActionButton {
-                                                        objectName: "disableHermesRemote"; text: "恢复本机接入"
-                                                        visible: hermesRemoteCard.editable && (!!host.hermesRemote.host || !!host.hermesRemote.invalid)
-                                                        enabled: !host.busy
-                                                        onClicked: host.saveHermesRemote("", 22, "")
                                                     }
                                                 }
                                             }
