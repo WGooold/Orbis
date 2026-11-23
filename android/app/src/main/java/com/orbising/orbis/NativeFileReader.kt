@@ -22,6 +22,13 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.view.Surface
 import android.view.TextureView
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -38,6 +45,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -295,20 +303,44 @@ internal fun NativeFileReader(source: NativeReaderSource, format: FilePreviewFor
     }
 }
 
+/**
+ * FILE-PREVIEW-05: the card keeps an inset thumbnail; full screen fills the reader, pinches up to 4x and double-tap
+ * toggles 2.5x at the tapped point. Panning is clamped to the image, and a single-finger drag at 1x stays with page back.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PreviewRaster(bitmap: Bitmap, fullScreen: Boolean) {
     var scale by remember(bitmap) { mutableFloatStateOf(1f) }
     var pan by remember(bitmap) { mutableStateOf(Offset.Zero) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
-    val transform = rememberTransformableState { zoom, change, _ ->
-        scale = (scale * zoom).coerceIn(1f, 4f)
-        val horizontal = viewport.width * (scale - 1f) / 2f
-        val vertical = viewport.height * (scale - 1f) / 2f
-        pan = Offset((pan.x + change.x).coerceIn(-horizontal, horizontal), (pan.y + change.y).coerceIn(-vertical, vertical))
+    val zoomJob = remember(bitmap) { arrayOfNulls<Job>(1) }
+    val scope = rememberCoroutineScope()
+    fun bounded(value: Offset, at: Float): Offset {
+        val horizontal = viewport.width * (at - 1f) / 2f
+        val vertical = viewport.height * (at - 1f) / 2f
+        return Offset(value.x.coerceIn(-horizontal, horizontal), value.y.coerceIn(-vertical, vertical))
     }
-    Box(Modifier.fillMaxSize().clipToBounds().padding(8.dp).onSizeChanged { viewport = it }
-        .then(if (fullScreen) Modifier.transformable(transform, canPan = { scale > 1f }) else Modifier)) {
+    val transform = rememberTransformableState { zoom, change, _ ->
+        zoomJob[0]?.cancel()
+        scale = (scale * zoom).coerceIn(1f, 4f)
+        pan = bounded(pan + change, scale)
+    }
+    Box(Modifier.fillMaxSize().clipToBounds().then(if (fullScreen) Modifier else Modifier.padding(8.dp)).onSizeChanged { viewport = it }
+        .then(if (fullScreen) Modifier.transformable(transform, canPan = { scale > 1f }).pointerInput(bitmap) {
+            detectTapGestures(onDoubleTap = { tap ->
+                val fromScale = scale; val fromPan = pan
+                val toScale = if (scale > 1.01f) 1f else 2.5f
+                val focus = tap - Offset(viewport.width / 2f, viewport.height / 2f)
+                val toPan = bounded(focus - (focus - pan) * (toScale / scale), toScale)
+                zoomJob[0]?.cancel()
+                zoomJob[0] = scope.launch {
+                    animate(0f, 1f, animationSpec = tween(InteractionMotion.duration(InteractionMotion.Selection), easing = InteractionMotion.GlyphEase)) { t, _ ->
+                        scale = fromScale + (toScale - fromScale) * t
+                        pan = fromPan + (toPan - fromPan) * t
+                    }
+                }
+            })
+        } else Modifier)) {
         Image(remember(bitmap) { bitmap.asImageBitmap() }, null, Modifier.fillMaxSize().graphicsLayer {
             scaleX = scale; scaleY = scale; translationX = pan.x; translationY = pan.y
         }.testTag("native-file-raster"))
@@ -466,19 +498,23 @@ internal fun DownloadedFileReaderPage(task: ArtifactDownload, onBack: () -> Unit
     var checked by remember(task.taskId) { mutableStateOf(false) }
     var cannotOpen by remember(task.taskId) { mutableStateOf(false) }
     LaunchedEffect(task.taskId, task.savedLocation) { uri = ownedDownloadUri(context, task); checked = true }
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            NeumorphIconButton(onClick = onBack, icon = OrbisSymbols.ArrowBack, contentDescription = L10n.tr("返回"), size = 40.dp)
-            FileNameText(task.displayName, Modifier.weight(1f))
-            uri?.let { local ->
-                NeumorphIconButton(onClick = { cannotOpen = !handOffDownload(context, local, task, share = true) },
-                    icon = Icons.Outlined.Share, contentDescription = L10n.tr("分享"), compact = true)
-            }
+    val local = uri
+    val kind = FilePreviewFormat.fromName(task.artifact?.fileName ?: task.displayName)
+    val format = kind?.takeUnless { it.web }
+    // FILE-PREVIEW-05: handing the original to another App is a header action beside Share, not a footer button.
+    FilePreviewPage(task.displayName, onBack = onBack, actions = {
+        if (local != null) {
+            NeumorphIconButton(onClick = { cannotOpen = !handOffDownload(context, local, task, share = false) },
+                icon = Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = L10n.tr("用其他 App 打开"), compact = true,
+                enabled = active, modifier = Modifier.testTag("download-open-with"))
+            NeumorphIconButton(onClick = { cannotOpen = !handOffDownload(context, local, task, share = true) },
+                icon = Icons.Outlined.Share, contentDescription = L10n.tr("分享"), compact = true)
         }
-        val local = uri
-        val kind = FilePreviewFormat.fromName(task.artifact?.fileName ?: task.displayName)
-        val format = kind?.takeUnless { it.web }
-        Box(Modifier.weight(1f).fillMaxWidth().testTag("download-local-reader"), contentAlignment = Alignment.Center) {
+    }) {
+        // Only a failed handoff speaks, and only until the next attempt.
+        if (cannotOpen) Text(L10n.tr("没有可打开此文件的 App"), Modifier.align(Alignment.TopCenter).padding(top = 8.dp),
+            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(Modifier.fillMaxSize().testTag("download-local-reader"), contentAlignment = Alignment.Center) {
             when {
                 !checked -> CircularProgressIndicator()
                 local == null -> Text(L10n.tr("此文件无法预览"))
@@ -487,11 +523,6 @@ internal fun DownloadedFileReaderPage(task: ArtifactDownload, onBack: () -> Unit
                 kind != null -> DownloadedWebPage(local, kind, task.artifact?.sha256, Modifier.fillMaxSize())
                 else -> Unit // Original remains available for explicit handoff.
             }
-        }
-        if (local != null && active) {
-            if (cannotOpen) Text(L10n.tr("没有可打开此文件的 App"), Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium)
-            NeumorphTextButton(L10n.tr("用其他 App 打开"), onClick = { cannotOpen = !handOffDownload(context, local, task, share = false) },
-                modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 12.dp))
         }
     }
 }
@@ -527,10 +558,10 @@ private fun DownloadedWebPage(uri: Uri, format: FilePreviewFormat, sha256: Strin
         failed = page == null
     }
     val entry = page
-    Box(modifier.testTag("downloaded-web-page"), contentAlignment = Alignment.Center) {
+    Box(modifier.contentOwnsHorizontalDrag().testTag("downloaded-web-page"), contentAlignment = Alignment.Center) {
         if (failed) Text(L10n.tr("此文件无法预览"))
         else if (entry != null) AndroidView(
-            factory = { FrameLayout(it) }, modifier = Modifier.fillMaxSize(),
+            factory = { FrameLayout(it) }, modifier = Modifier.fillMaxSize().previewReveal(painted),
             update = { container ->
                 if (container.childCount == 0) PreviewWebOwner.load(container, entry, fullScreen = true,
                     resources = { path, done -> done(entry.takeIf { path.trimStart('/') == it.path }) },

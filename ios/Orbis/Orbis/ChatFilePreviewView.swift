@@ -129,8 +129,9 @@ struct ChatFilePreviewCard: View {
                 } else { Color.clear }
             }
         }
+        // FILE-PREVIEW-05: one surface for loading, rendering and the result; a page is white only once it has painted.
         .frame(maxWidth: .infinity).frame(height: 240)
-        .background(selection.phase == .ready && format?.isWeb == true ? Color.white : p.well)
+        .background(p.well)
         .clipShape(shape)
         .overlay(shape.strokeBorder(p.outline, lineWidth: 1))
         .overlay(alignment: .topTrailing) {
@@ -264,6 +265,7 @@ private struct ChatFileBrowser: View {
     let preview: ChatFilePreview
     let selection: ChatFilePreview.Selection
     let fullScreen: Bool
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var policy: WKContentRuleList?
     @State private var painted = false
     private var ownsDocument: Bool {
@@ -283,6 +285,10 @@ private struct ChatFileBrowser: View {
             }
             if !painted { ProgressView().accessibilityLabel(L10n.tr("正在加载预览")) }
         }
+        // An interactive page keeps its horizontal drags; page back starts from the leading edge.
+        .orbisContentOwnsHorizontalDrag(fullScreen)
+        // The WebView's white canvas stays behind the reader surface until the page paints, then fades in.
+        .animation(reduceMotion ? nil : InteractionMotion.panel, value: painted)
         .task {
             do {
                 let compiled = try await PreviewWebSurface.compilePolicy()

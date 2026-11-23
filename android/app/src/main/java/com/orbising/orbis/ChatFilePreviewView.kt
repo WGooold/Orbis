@@ -29,14 +29,18 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -56,6 +60,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -70,6 +75,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -110,15 +116,25 @@ internal fun ChatFilePreviewHost(actions: FilePreviewActions?, content: @Composa
         underlay = { CompositionLocalProvider(LocalFilePreviewActions provides actions) { content() } },
     ) {
         val selection = preview?.selection?.value?.takeIf { it.id == fullScreenId }
-        if (preview != null && selection != null) Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                NeumorphIconButton(onClick = { preview.setFullScreen(selection.id, false) }, icon = OrbisSymbols.ArrowBack,
-                    contentDescription = L10n.tr("返回"), size = 40.dp)
-                FileNameText(selection.key.name, Modifier.weight(1f))
-            }
-            if (active) PreviewReader(preview, selection, fullScreen = true,
-                modifier = Modifier.weight(1f).fillMaxWidth().testTag("chat-file-preview-reader"))
+        if (preview != null && selection != null) FilePreviewPage(selection.key.name, onBack = { preview.setFullScreen(selection.id, false) }) {
+            if (active) PreviewReader(preview, selection, fullScreen = true, modifier = Modifier.fillMaxSize().testTag("chat-file-preview-reader"))
         }
+    }
+}
+
+/**
+ * FILE-PREVIEW-05: chat and Downloads readers share the ordinary page frame. The page paints its own background from
+ * the first entrance frame (the source never shows through) and its header and reader stay inside the system bars.
+ */
+@Composable
+internal fun FilePreviewPage(name: String, onBack: () -> Unit, actions: @Composable RowScope.() -> Unit = {},
+    content: @Composable BoxScope.() -> Unit) {
+    Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = {
+        RemoteTopAppBar(title = { FileNameText(name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) },
+            navigationIcon = { NeumorphIconButton(onClick = onBack, icon = OrbisSymbols.ArrowBack, contentDescription = L10n.tr("返回"), size = 40.dp) },
+            actions = actions)
+    }) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { content() }
     }
 }
 
@@ -173,8 +189,8 @@ internal fun ChatFilePreviewCard(block: String, source: ChatFilePreview.Source, 
             var panelVisible by remember(current.id) { mutableStateOf(false) }
             val shape = RemoteUi.ControlShape
             val ready = current.phase == ChatFilePreview.Phase.READY
-            Box(Modifier.fillMaxWidth().height(240.dp).clip(shape)
-                .background(if (ready && format.web) androidx.compose.ui.graphics.Color.White else colors.surfaceVariant)
+            // One surface for loading, rendering and the result; a page is white only once it has painted.
+            Box(Modifier.fillMaxWidth().height(240.dp).clip(shape).background(colors.surfaceVariant)
                 .border(1.dp, colors.outlineVariant, shape)
                 .testTag(if (ready) "chat-file-preview-fullscreen" else "chat-file-preview-panel")
                 .onGloballyPositioned { panelVisible = !it.boundsInWindow().isEmpty }, contentAlignment = Alignment.Center) {
@@ -248,10 +264,11 @@ private fun PreviewBrowser(preview: ChatFilePreview, selection: ChatFilePreview.
     val entry = selection.entry ?: return
     var painted by remember(selection.id, fullScreen) { mutableStateOf(false) }
     fun ownsDocument() = preview.selection.value?.let { it.id == selection.id && it.phase == ChatFilePreview.Phase.READY && it.fullScreen == fullScreen } == true
-    Box(modifier, contentAlignment = Alignment.Center) {
+    // An interactive page keeps its horizontal drags; page back starts from the leading edge.
+    Box(modifier.contentOwnsHorizontalDrag(fullScreen), contentAlignment = Alignment.Center) {
         AndroidView(
             factory = { context -> FrameLayout(context) },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().previewReveal(painted),
             update = { container ->
                 if (ownsDocument() && container.childCount == 0) {
                     val entryLoad = runCatching {
@@ -270,6 +287,14 @@ private fun PreviewBrowser(preview: ChatFilePreview, selection: ChatFilePreview.
         )
         if (!painted) CircularProgressIndicator()
     }
+}
+
+/** The WebView's white canvas stays hidden behind the reader surface until the page paints, then fades in. */
+@Composable
+internal fun Modifier.previewReveal(painted: Boolean): Modifier {
+    val alpha by animateFloatAsState(if (painted) 1f else 0f,
+        tween(if (painted) InteractionMotion.duration(InteractionMotion.FadeIn) else 0), label = "preview-reveal")
+    return graphicsLayer { this.alpha = alpha }
 }
 
 /**

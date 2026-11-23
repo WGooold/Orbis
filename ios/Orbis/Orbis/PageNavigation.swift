@@ -430,7 +430,8 @@ private struct OrbisPageLayer<Page: Hashable>: ViewModifier {
                 guard let id, stack.canDrag(id) else { return }
                 if horizontalDrag == nil {
                     horizontalDrag = overlay.menu == nil && overlay.dialog == nil &&
-                        value.translation.width > abs(value.translation.height) * 1.5
+                        value.translation.width > abs(value.translation.height) * 1.5 &&
+                        !backClaim.contentOwnsDrag(from: value.startLocation)
                 }
                 guard horizontalDrag == true else { return }
                 // Scrolling keeps working, but a control under the finger must not also fire

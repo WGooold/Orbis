@@ -106,6 +106,24 @@ Web 阅读器是 App 按需创建的系统组件实例：iOS `WKWebView`、Andro
 
 实现：[工作区链接识别](../../packages/host/src/workspace-output-references.ts)、[消息投影](../../packages/host/src/device-message-rendering.ts)、[格式协议](../../packages/protocol/src/file-preview.ts)、[iOS 阅读器](../../ios/Orbis/Orbis/NativeFileReader.swift)、[Android 阅读器](../../android/app/src/main/java/com/orbising/orbis/NativeFileReader.kt)。
 
+## FILE-PREVIEW-05：阅读页与图片查看
+
+- 首次打开时阅读区先透明、再出现白底白框：Android 两个全屏阅读页（聊天全屏与下载页）未套共用页面框架，入场动画期间没有页面底色，顶栏也不避让状态栏；WebView 创建即铺白底，渲染完成前就露出白块。两端内嵌区在页面就绪时又从灰色底切成白色，加载圈压在白框里。
+- 两端全屏阅读页使用与其他整页相同的顶栏和底色（Android 改用共用 `Scaffold` + `RemoteTopAppBar`，避让系统栏；下载页的「用其他 App 打开」改为顶栏图标，与分享并列，打不开时才在阅读区顶部提示）。内嵌区在加载、渲染和结果阶段保持同一底色；网页在实际绘制前隐藏 WebView，绘制后淡入（减弱动态效果时直接显示）。
+- 图片与 PDF 页全屏铺满阅读区，双指缩放至 4 倍，双击在点击处放大到 2.5 倍、再次双击复原；1 倍时单指横滑仍交给页面返回。气泡缩略图不变。
+
+实现：[Android 视图](../../android/app/src/main/java/com/orbising/orbis/ChatFilePreviewView.kt)、[Android 阅读器](../../android/app/src/main/java/com/orbising/orbis/NativeFileReader.kt)、[iOS 视图](../../ios/Orbis/Orbis/ChatFilePreviewView.swift)、[iOS 阅读器](../../ios/Orbis/Orbis/NativeFileReader.swift)。
+
+**自动验证（2026-11-22）：** [预览交互测试](../../android/app/src/androidTest/java/com/orbising/orbis/ChatFilePreviewInteractionTest.kt)新增入场取色（SC131）：用旧实现构建的对照包在全屏入场 160 ms 时取到纯白（255，页面底色 230），[对照失败](../../.artifacts/file-preview-05/android-device-baseline/instrumentation.log)；候选包该用例与原生阅读器、渲染器共 6 项[通过](../../.artifacts/file-preview-05/android-device/instrumentation.log)。[iOS 模拟器构建](../../.artifacts/file-preview-05/ios-build-3/run.log)通过，未跑 iOS 设备测试。双击缩放与淡入的手感待用户验证。
+
+**FILE-PREVIEW-05 安装包（待用户验证）：** 基于 `2cd60dd1` 加本节改动的 ARM64 Release，`0.1.60`（61），签名与既有发布一致，可覆盖升级；第二版（`-r2`）把「用其他 App 打开」移到顶栏，[下载页与预览设备测试](../../.artifacts/file-preview-05/android-device-2/instrumentation.log) 5 项通过；[包与摘要](../../.artifacts/file-preview-05/deliverable/)，[构建记录](../../.artifacts/file-preview-05/android-release/)。未登记共享 QA。
+
+## FILE-PREVIEW-06：全屏网页的横滑归属
+
+全屏网页（聊天全屏与下载页）在阅读区内起手的横滑交给页面本身（轮播、横向滚动表格、图表拖动、放大后平移），不再触发整页右滑返回；从左边缘 24 pt/dp 内起手、在顶栏横滑、系统返回手势和返回键照常返回。不按「网页是否已滚到最左」判断：脚本自行处理触摸的页面不滚动，无法可靠区分。图片、PDF、文本阅读器不变。规则与共用实现记在 [ADR-0054](0054-shared-full-page-navigation.md) 的例外修订。
+
+**验证与安装包（2026-11-22，待用户验证）：** 安装包在隔离工作树构建，仅含 `2cd60dd1` 与本节及 FILE-PREVIEW-05 改动（[补丁](../../.artifacts/file-preview-05/scope.patch)），原生 QUIC 库用本机 Go 工具链重新编译。[设备测试](../../.artifacts/file-preview-05/candidate-device/instrumentation.log) 8 项中 7 项通过，含 SC132（阅读区内右滑不关闭、左边缘起手返回）；`HomeSwipeCloseInstrumentedTest` 的关闭进度圈用例失败，未含本节手势改动的[对照包](../../.artifacts/file-preview-05/android-device-3-control/instrumentation.log)同样失败，与本节无关，保留原断言。iOS [模拟器构建](../../.artifacts/file-preview-05/ios-build-4/run.log)通过，未跑 iOS 设备测试。ARM64 Release `0.1.60`（61），签名与既有发布一致，[包、摘要与混淆映射](../../.artifacts/file-preview-05/deliverable/)。此前 `-r2` 包构建时共享工作树里有其他任务未提交的改动，已由本包取代。
+
 ## 取舍
 
 默认就地预览比跳转单独浏览器更便于结合上下文阅读；内嵌截图与全屏入口把长文档滚动和聊天手势分开，聊天列表里不常驻 WebView。每个文件完整校验后再交给页面，不随分片渐进渲染；代价是要等该文件传完，收益是不展示未校验的内容。运行原页脚本换来真实页面的可读性，以断网、无桥接、无持久存储和单实例换取隔离；远程资源不回源，依赖 CDN 的部分会缺失，普通下载保留原件。按需取件比打包整站省流量，代价是多级依赖各多一次往返，由首块随回包抵消一部分。远程预览需要新 Host，旧端保留下载能力。
@@ -129,6 +147,8 @@ Web 阅读器是 App 按需创建的系统组件实例：iOS `WKWebView`、Andro
 | SC128 | 内嵌区显示渲染后的截图，聊天列表无常驻 WebView；点截图进入可交互全屏，返回保留截图与阅读位置。 |
 | SC129 | Agent 重写已预览过的文件后，新旧卡片都打开当前内容；读取进行中被替换的文件不展示。 |
 | SC130 | 下载页里摘要相符的 HTML／SVG 在离线阅读器中打开并运行脚本；摘要不符时不渲染。 |
+| SC131 | 打开内嵌预览和全屏阅读页时不透出下层页面、不先出现白底；全屏顶栏不压状态栏；图片双击放大与复原，1 倍时横滑返回。 |
+| SC132 | 全屏网页阅读区内起手的右滑不关闭页面、不带动外层页面；从左边缘起手仍返回聊天并保留阅读位置。 |
 
 **FILE-PREVIEW-01 初次验证（主工作树证据）：** [Host／协议及隔离 LAN、Relay 联动](../../.artifacts/file-preview-01/host-final-verification.log)覆盖超限拒绝、指定范围与摘要、普通下载及序号不受影响；[iOS 单测](../../.artifacts/file-preview-01/swift-final/run.log)和 [Android 单测](../../.artifacts/file-preview-01/android-visual-state/test-results/testDebugUnitTest/)覆盖按需拉取、选择代次、迟到回包、摘要错误与无能力回退。两端使用合成文档验证了实际渲染像素：[iOS WebKit](../../.artifacts/file-preview-01/ios-paint-device/tests.xcresult)、[Android WebView](../../.artifacts/file-preview-01/android-visual-device/device-files/SC119-static-preview.png)。Android 设备用冻结源码构建；iOS 定向设备测试未运行已有编译错误的 `ChatNativeSnapshotTests`。
 

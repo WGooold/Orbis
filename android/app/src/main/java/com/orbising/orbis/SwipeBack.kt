@@ -16,7 +16,17 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.horizontalDrag
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -57,12 +67,49 @@ internal val LocalPageActive = staticCompositionLocalOf { true }
 
 internal class PageBackGate(val parent: PageBackGate?) {
     var blockers by mutableStateOf(emptySet<Any>())
+    /** Window bounds whose horizontal drags belong to the content; read only when a gesture starts. */
+    private var interiors = emptyMap<Any, Rect>()
     fun selection(owner: Any, active: Boolean) {
         blockers = if (active) blockers + owner else blockers - owner
         parent?.selection(owner, active)
     }
+    fun interior(owner: Any, bounds: Rect?) {
+        interiors = if (bounds != null) interiors + (owner to bounds) else interiors - owner
+        parent?.interior(owner, bounds)
+    }
+    fun ownsStart(point: Offset) = interiors.values.any { it.contains(point) }
 }
 internal val LocalPageBackGate = staticCompositionLocalOf<PageBackGate?> { null }
+
+/** Leading strip that still starts page back over content that keeps its own horizontal drags. */
+internal val PageBackEdge = 24.dp
+
+/**
+ * FILE-PREVIEW-06 (ADR-0054 exception): horizontal drags that start inside this element belong to it, such as an
+ * interactive web page. Page back then starts only from the leading [PageBackEdge] or outside the element; the
+ * system back gesture is unchanged. Registered with every enclosing page, so no outer page takes the drag either.
+ */
+@Composable
+internal fun Modifier.contentOwnsHorizontalDrag(enabled: Boolean = true): Modifier {
+    val gate = LocalPageBackGate.current
+    val owner = remember { Any() }
+    DisposableEffect(gate, enabled) { onDispose { gate?.interior(owner, null) } }
+    return if (gate == null || !enabled) this else onGloballyPositioned { gate.interior(owner, it.boundsInWindow()) }
+}
+
+/** [detectHorizontalDragGestures] that leaves a gesture untouched (never consumed) when [accepts] rejects its down. */
+private suspend fun PointerInputScope.detectPageDrag(accepts: (Offset) -> Boolean, onDragStart: () -> Unit,
+    onDragEnd: () -> Unit, onDragCancel: () -> Unit, onHorizontalDrag: (PointerInputChange, Float) -> Unit) = awaitEachGesture {
+    val down = awaitFirstDown(requireUnconsumed = false)
+    if (!accepts(down.position)) return@awaitEachGesture
+    var overSlop = 0f
+    val drag = awaitHorizontalTouchSlopOrCancellation(down.id) { change, over -> change.consume(); overSlop = over }
+    if (drag != null) {
+        onDragStart()
+        onHorizontalDrag(drag, overSlop)
+        if (horizontalDrag(drag.id) { onHorizontalDrag(it, it.positionChange().x) }) onDragEnd() else onDragCancel()
+    }
+}
 
 /** A selection consumes system back itself and blocks the page's interior drag. */
 @Composable
@@ -107,7 +154,8 @@ internal fun OrbisPageHost(
                 LocalOnBackPressedDispatcherOwner provides if (active && !open) dispatcherOwner else inactiveOwner) { underlay() }
         },
         content = { CompositionLocalProvider(LocalPageActive provides active, LocalPageBackGate provides gate) { content() } },
-        dragEnabled = gate.blockers.isEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) == 0)
+        dragEnabled = gate.blockers.isEmpty() && WindowInsets.ime.getBottom(LocalDensity.current) == 0,
+        startsInContent = gate::ownsStart)
 }
 
 /**
@@ -127,9 +175,13 @@ internal fun SwipeBackLayer(
     gestureEnabled: Boolean = true,
     dragEnabled: Boolean = true,
     expandFrom: Rect? = null,
+    /** True when a drag starting at this window point belongs to the page's content. */
+    startsInContent: (Offset) -> Boolean = { false },
     content: @Composable () -> Unit,
 ) {
     val currentOnBack by rememberUpdatedState(onBack)
+    val currentStartsInContent by rememberUpdatedState(startsInContent)
+    val windowOrigin = remember { arrayOf(Offset.Zero) }
     val offset = remember(open, contentKey) { Animatable(0f) }
     val scope = rememberCoroutineScope()
     var width by remember { mutableIntStateOf(0) }
@@ -222,10 +274,13 @@ internal fun SwipeBackLayer(
             .background(MaterialTheme.colorScheme.background)
             .clipToBounds()
             .onSizeChanged { width = it.width }
+            .onGloballyPositioned { windowOrigin[0] = it.positionInWindow() }
             .pointerInput(open, contentKey, gestureEnabled, dragEnabled) {
                 if (!open || !gestureEnabled || !dragEnabled) return@pointerInput
                 val velocity = VelocityTracker()
-                detectHorizontalDragGestures(
+                val edge = PageBackEdge.toPx()
+                detectPageDrag(
+                    accepts = { down -> down.x <= edge || !currentStartsInContent(down + windowOrigin[0]) },
                     onDragStart = {
                         if (!returning && !edgeBack) {
                             val currentPosition = position().coerceAtLeast(0f)
@@ -237,7 +292,7 @@ internal fun SwipeBackLayer(
                         }
                     },
                     onHorizontalDrag = { change, dragAmount ->
-                        if (!dragging || returning) return@detectHorizontalDragGestures
+                        if (!dragging || returning) return@detectPageDrag
                         velocity.addPosition(change.uptimeMillis, change.position)
                         change.consume()
                         dragOffset = (dragOffset + dragAmount).coerceAtLeast(0f)

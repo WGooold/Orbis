@@ -10,18 +10,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -37,6 +44,7 @@ class ChatFilePreviewInteractionTest {
         lateinit var host: PreviewTestHost
         lateinit var listState: LazyListState
         var downloads = 0
+        var background = 0
         compose.setContent {
             val scope = rememberCoroutineScope()
             val fake = remember(scope) { PreviewTestHost(scope) }
@@ -44,6 +52,7 @@ class ChatFilePreviewInteractionTest {
             val list = rememberLazyListState()
             SideEffect { host = fake; listState = list }
             OrbisTheme {
+                background = MaterialTheme.colorScheme.background.toArgb()
                 ChatFilePreviewHost(actions) {
                     LazyColumn(Modifier.fillMaxSize().testTag("preview-test-list"), state = list) {
                         items(80, key = { it }) { index ->
@@ -91,10 +100,26 @@ class ChatFilePreviewInteractionTest {
         val ready = compose.runOnIdle { checkNotNull(host.preview.selection.value) }
         val wire = host.sent.size
 
+        // SC131: the entering page paints its own background; the dimmed chat never shows through it.
+        compose.mainClock.autoAdvance = false
         compose.onNodeWithTag("chat-file-preview-fullscreen").performClick()
+        compose.mainClock.advanceTimeBy(160)
+        val entering = compose.onRoot().captureToImage().asAndroidBitmap()
+        compose.mainClock.autoAdvance = true
+        val probe = entering.getPixel(entering.width - 8, entering.height * 3 / 4)
+        listOf(16, 8, 0).forEach { shift ->
+            assertEquals("entering page background at shift $shift", ((background shr shift) and 0xff).toDouble(), ((probe shr shift) and 0xff).toDouble(), 2.0)
+        }
         page.assertIsDisplayed()
         awaitBrowser(fullScreen = true)
-        compose.onNodeWithContentDescription(L10n.tr("返回")).performClick()
+        // SC132: a right swipe that starts inside the interactive page stays with the page.
+        compose.onRoot().performTouchInput { swipeRight(startX = width * 0.3f, endX = width * 0.95f, durationMillis = 250) }
+        compose.waitForIdle()
+        page.assertIsDisplayed()
+        compose.runOnIdle { assertTrue(host.preview.selection.value?.fullScreen == true) }
+        // From the leading edge it still returns to the chat.
+        compose.onRoot().performTouchInput { swipeRight(startX = 2f, endX = width * 0.95f, durationMillis = 250) }
+        compose.waitUntil(4_000) { compose.runOnIdle { host.preview.selection.value?.fullScreen == false } }
         page.assertDoesNotExist()
         compose.waitUntil(4_000) { compose.runOnIdle { webViews().isEmpty() } }
         still.assertIsDisplayed()

@@ -80,3 +80,7 @@ iOS 27 的 XCUITest 快照会列出 SwiftUI 已隐藏的子树（包括未选中
 ## 2026-11-14：整页过渡的主线程占用与返回键滑出（已实施，待用户验证）
 
 入场在新层画出起点后的下一帧开始，页面初始化工作在到达后开始，运动期间暂缓 Host 发布；返回键先以移动层静止画一帧再滑出，修复页面不滑出即消失。动效参数不变。细节与对照数据见 [ADR-0060 PERF-10](0060-mobile-relay-history-performance.md)。
+
+## 2026-11-22：可交互网页只从边缘返回（FILE-PREVIEW-06，已实施，待用户验证）
+
+整页右滑返回的例外：自身需要横向拖动的内容（目前为全屏可交互网页阅读区，含下载页离线网页）登记为内容区域。手指在该区域内、离左边缘 24 pt/dp 以外起手的横滑交给内容，本页和外层页面都不接管；从左边缘起手或在区域外（如顶栏）起手照常返回，系统返回手势与返回键不变。共用实现：Android `PageBackGate.interior` / `Modifier.contentOwnsHorizontalDrag`（[SwipeBack.kt](../../android/app/src/main/java/com/orbising/orbis/SwipeBack.kt)），iOS `OrbisBackPriorityClaim.contentOwnsDrag` / `orbisContentOwnsHorizontalDrag`（[InteractionMotion.swift](../../ios/Orbis/Orbis/InteractionMotion.swift)、[PageNavigation.swift](../../ios/Orbis/Orbis/PageNavigation.swift)）。场景与证据见 [ADR-0093 FILE-PREVIEW-06](0093-on-demand-chat-browser-preview.md#file-preview-06全屏网页的横滑归属)。

@@ -5,11 +5,19 @@ import SwiftUI
 /// claiming never re-renders the page. A preference did the same but made every view of every
 /// mounted page combine it whenever a page was built (PERF-10).
 @MainActor final class OrbisBackPriorityClaim {
+    /// Leading strip that still starts page back over content that keeps its own horizontal drags.
+    static let edge: CGFloat = 24
     private(set) var key: String?
     private(set) var action: (() -> Void)?
+    /// Global frames whose horizontal drags belong to the content; read only when a drag starts.
+    private var interiors: [UUID: CGRect] = [:]
     func set(_ key: String, action: (() -> Void)?) {
         if let action { self.key = key; self.action = action }
         else if self.key == key { self.key = nil; self.action = nil }
+    }
+    func setInterior(_ id: UUID, frame: CGRect?) { interiors[id] = frame }
+    func contentOwnsDrag(from point: CGPoint) -> Bool {
+        point.x > Self.edge && interiors.values.contains { $0.contains(point) }
     }
 }
 private struct OrbisBackPriorityClaimKey: EnvironmentKey { static let defaultValue: OrbisBackPriorityClaim? = nil }
@@ -31,9 +39,27 @@ private struct OrbisBackPriorityClaimer: ViewModifier {
             .onDisappear { claim?.set(key, action: nil) }
     }
 }
+/// FILE-PREVIEW-06 (ADR-0054 exception): horizontal drags that start inside this view belong to it, such as an
+/// interactive web page; page back starts only from the leading edge or outside it.
+private struct OrbisContentDragOwner: ViewModifier {
+    @Environment(\.orbisBackPriorityClaim) private var claim
+    @State private var id = UUID()
+    let active: Bool
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                claim?.setInterior(id, frame: active ? frame : nil)
+            }
+            .onChange(of: active) { _, active in if !active { claim?.setInterior(id, frame: nil) } }
+            .onDisappear { claim?.setInterior(id, frame: nil) }
+    }
+}
 extension View {
     func orbisBackPriority(_ key: String, active: Bool, action: @escaping () -> Void) -> some View {
         modifier(OrbisBackPriorityClaimer(key: key, active: active, action: action))
+    }
+    func orbisContentOwnsHorizontalDrag(_ active: Bool = true) -> some View {
+        modifier(OrbisContentDragOwner(active: active))
     }
 }
 import UIKit

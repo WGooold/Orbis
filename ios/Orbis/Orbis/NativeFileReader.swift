@@ -257,6 +257,7 @@ private struct PreviewZoomImage: UIViewRepresentable {
     func updateUIView(_ view: PreviewZoomScroll, context: Context) { view.setImage(image) }
 }
 
+/// FILE-PREVIEW-05: fits the reader, pinches up to 4x, and double-tap toggles 2.5x at the tapped point.
 private final class PreviewZoomScroll: UIScrollView, UIScrollViewDelegate {
     private let artwork = UIImageView()
     private var current: CGImage?
@@ -265,8 +266,21 @@ private final class PreviewZoomScroll: UIScrollView, UIScrollViewDelegate {
         super.init(frame: frame)
         delegate = self; maximumZoomScale = 4; bouncesZoom = true
         contentInsetAdjustmentBehavior = .never
+        showsHorizontalScrollIndicator = false; showsVerticalScrollIndicator = false
         artwork.contentMode = .scaleAspectFit
         addSubview(artwork)
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(toggleZoom(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        addGestureRecognizer(doubleTap)
+    }
+    @objc private func toggleZoom(_ gesture: UITapGestureRecognizer) {
+        guard artwork.image != nil else { return }
+        if zoomScale > minimumZoomScale + 0.01 { setZoomScale(minimumZoomScale, animated: !UIAccessibility.isReduceMotionEnabled); return }
+        let scale: CGFloat = 2.5
+        let point = gesture.location(in: artwork)
+        let size = CGSize(width: bounds.width / scale, height: bounds.height / scale)
+        zoom(to: CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2, width: size.width, height: size.height),
+             animated: !UIAccessibility.isReduceMotionEnabled)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func setImage(_ image: CGImage) {
@@ -372,6 +386,7 @@ private struct DownloadedWebPage: View {
     let task: FileTransfer
     @State private var page: ChatFilePreview.WebResource?
     @State private var policy: WKContentRuleList?
+    @Environment(\.orbisReduceMotion) private var reduceMotion
     @State private var painted = false
     @State private var failed = false
     @State private var id = UUID()
@@ -388,6 +403,8 @@ private struct DownloadedWebPage: View {
             }
             if !painted && !failed { ProgressView().accessibilityLabel(L10n.tr("正在加载预览")) }
         }
+        .animation(reduceMotion ? nil : InteractionMotion.panel, value: painted)
+        .orbisContentOwnsHorizontalDrag()
         .task(id: task.id) {
             do {
                 let verified = try await FileReaderWorker.shared.webPage(file, name: task.name, sha256: task.sha256)
