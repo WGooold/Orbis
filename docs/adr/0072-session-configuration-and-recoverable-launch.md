@@ -10,6 +10,8 @@ Status: accepted（主路径已实现；自动验证与后端能力边界见下�
 
 新建卡片只选择 Agent 与工作目录，创建请求不携带模型、思考深度或权限。运行中的配置修改又被通用写操作门禁阻挡，无法提前设置后续请求。进程上线、配置保存和原生配置确认属于不同事实；仅按上线释放首句会使默认配置抢先执行。丢失启动回执后重新创建请求也可能重复创建会话。
 
+Host 曾把 Hermes 以外的全部启动、启动核对、激活、归档及供应商切换串在一条全局队列上，每个启动占到原生动作结束（Claude 最长等插件连接 60 秒、配置确认 15 秒）。前一个启动未返回时，后续启动连 `preparing` 回执都收不到；App 结束等待后新建的启动仍排在其后。这条链没有处理拒绝，一个任务抛出就会跳过其后所有任务。
+
 ## 决策
 
 ### 配置作用域与来源
@@ -35,6 +37,15 @@ S52／SC76（r55）：Android Codex 顶栏运行中显示绑定原生 turn ID �
 配置和启动操作按身份及参数指纹去重。重复请求读取原结果或继续同一操作；同身份异参拒绝。启动操作持久保存原生会话身份及阶段，回执丢失后按启动身份查询。恢复配置使用原生读取或幂等 setter 对同一会话核对并确认；超时表示未确认，不能自动使用默认值或新建另一个会话。原生创建已执行、返回身份尚未持久记录时若无法精确找回，保留未知并阻止自动重建。
 
 Host 明确报告 `session.launch.result.phase=failed` 后，两端将原记录仅用于恢复新建草稿。启动未确认时，可核对原启动或显式“结束等待”；原会话可能仍会出现，结束等待不会关闭原生会话。LAUNCH-WAIT-02：转换期间暂停旧请求的核对与首句放行；只有草稿落盘成功才放开新建资格。保存失败保留原身份和首句，并允许重试。草稿不会覆盖已有编辑内容，也不会自动发送。释放操作仅清理原启动及其等待发送；迟到结果不能改变新启动，离开启动页或切换电脑后也不自动返回新建。已确认过原生会话的记录遇到 Host 回报 `absent` 时保留未确认，不再创建。
+
+LAUNCH-QUEUE-01：Host 按资源排队，只有共享资源的操作才互相等待，失败的任务不影响后续任务。
+
+- 同一设备同一启动身份的创建、重复请求与核对按到达顺序执行。核对与重复请求在本次创建结束后再核对并回报结果，不提前回报 `absent` 或中间阶段；iOS 外部导入核对会把中间阶段视为未确认。
+- 同一会话 ID 的恢复、归档，以及启动核对中重开该会话的动作按到达顺序执行，保持 Pi 文件移动与进程注册间隙互斥。新建不占用会话资源，不同启动与不同 Agent 互不等待。
+- 启动、激活及核对重开在原生动作结束前占用所属供应商组；Codex 终端与桌面版、DSH Web 与桌面版各为一组。切换期间，该组的新启动等待切换完成；组内有启动在途时，切换直接拒绝并提示稍后重试，不排到启动之后。供应商操作之间保持原有顺序。
+- “结束等待”仍只在 App 生效，不通知 Host，也不中断原生启动。
+
+实现见 `launch-lanes.ts` 与 `host-service.ts` 的会话分发。
 
 Claude 配置启动在开窗前按设备与启动记录持久保存预定原生 UUID，通过 `--session-id` 创建。插件继续使用既有 `launchId`／`sessionId` 握手，初次确认与迟到恢复均核对预定 UUID；同进程切换会话、断线或 Host 重启后仍只认原身份。预定身份不代表已创建，不作为就绪结果发送给 App。旧记录若既无已确认身份又无预定身份，则保留未知；已确认的旧记录继续按原会话恢复。实现见 `SessionConfigurationStore`、`ClaudeBackend`、`ClaudeModsBridge`、`TerminalClaudeLauncher`。Host 发起的 Claude 启动按 ADR-0073 无条件跳过 bypass 首次风险提示，通过单次临时 settings 传入 `skipDangerousModePermissionPrompt=true`，权限模式按所选配置执行。
 
@@ -63,6 +74,8 @@ Claude 启动准备及 Android 结束等待回归：`claude-startup.test.ts`、`
 ## 验证与完成状态
 
 LAUNCH-WAIT-02：回归见 iOS `LaunchLedgerTests` 和 Android `ConfiguredLaunchJournalTest`、`LaunchLedgerTest`。写盘失败首证据见 `.artifacts/session-launch-recovery-review-20261121/ios-review-probes/` 与 `android-review-probe-with-python/`；双端定向回归和构建见同目录的 `ios-main-final/`、`android-main-final/` 与 `ios-app-main-final/`。本轮不改变线协议，不部署或安装，设备交互待用户验证。
+
+LAUNCH-QUEUE-01：修复前用临时用例复现，Codex 首个 `thread/start` 不返回时，3 秒内第二个启动无回执、对首个启动的核对无回应，放开后第二个启动才就绪。回归见 `launch-lanes.test.ts` 及 `host-service.test.ts` 的 “keeps a stuck configured launch from holding other launches”：首个启动卡住时，另一启动与旧版激活均就绪，对首个启动的核对在其创建结束后回报，同组供应商切换被拒绝，结束后切换成功且原生创建不重复。Host 全量测试通过。首次复现结果、定向与全量日志及源码指纹见 `.artifacts/launch-queue-20261124/verification.json`。不改变线协议和 App；未构建安装包，未部署或安装，未用真实原生 Agent 联动，待用户验证。
 
 2026-11-12 未提交改动审查发现的两项回归已修复：Claude 迟到恢复按持久预定原生身份核对，Android 结束等待同时释放发送账本。对应回归见 `claude-mods-bridge.test.ts`、`agent-backend.test.ts`、`session-configuration-store.test.ts`、`host-service.test.ts` 与 `LaunchLedgerTest`。隔离 Host／Relay 的实际重启、旧插件握手、会话切换及同会话重连通过；Claude 2.1.318／2.1.322 的原生隔离 TUI 均报告预定 UUID，并继续无条件跳过首次 bypass 提示。首次失败、修复前快照及修复后证据分别保留于 `.artifacts/native-cli-startup-review-20261112/verification-before-fixes.json`、`verification.json` 与 `fixes/`。Windows 所需验证见 ADR-0073「Windows 待验证」。
 

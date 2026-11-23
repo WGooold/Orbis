@@ -28,6 +28,7 @@ import type { HermesAgentBackend } from "./hermes-agent-backend.js";
 import { AgentDisableConfirmationRequired, AgentLifecycleRegistry, type AgentEnablementController, type AgentEnablementSnapshot, type AgentLifecycleLease, type AgentLifecycleRegistration } from "./agent-enablement.js";
 import { LiveActivityPublisher } from "./live-activity.js";
 import { sharedViewBackend } from "./shared-session-view.js";
+import { KeyedLanes, ProviderLaunchGate, providerGroup } from "./launch-lanes.js";
 
 import {
   E2eError,
@@ -93,6 +94,7 @@ import {
   type RelayToDeviceMessage,
   type RuntimeMetadata,
   type RuntimeEvent,
+  type SessionLaunchResult,
   assertToolWireBudget,
   agentKeyId,
 } from "@orbis/protocol";
@@ -176,6 +178,16 @@ type DshSlot = {
   runtime?: DshRuntime | undefined; starting?: Promise<DshRuntime | undefined> | undefined; startingExistingOnly: boolean;
   recoveryTimer?: ReturnType<typeof setTimeout> | undefined; recoveryError?: string | undefined;
 };
+/** LAUNCH-QUEUE-01 lane keys: a launch identity is scoped to its device, a session ID to the Host. */
+const launchLane = (deviceId: string, launchId: string): string => JSON.stringify(["launch", deviceId, launchId]);
+const sessionLane = (sessionId: string): string => JSON.stringify(["session", sessionId]);
+/** The backend a resume addresses, from its explicit kind or namespaced ID; a legacy bare ID stays undefined. */
+function resumeAgentKind(target: { sessionId: string; agentKind?: AgentKind | undefined }): AgentKind | undefined {
+  const id = target.sessionId, history = isCodexHistoryId(id as unknown);
+  return target.agentKind ?? (isKimiId(id) ? KIMI_KIND : id.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : id.startsWith("hermes:") ? "hermes"
+    : history ? "codex" : id.startsWith("codex-desktop:") ? "codexDesktop"
+    : id.startsWith("dsh-desktop:") ? "dshDesktop" : id.startsWith("dsh:") ? "dsh" : undefined);
+}
 /**
  * 一条 Host→设备的消息该走哪个 channel（票 07）。
  *
@@ -434,8 +446,6 @@ export class HostService {
   #unsubscribeEnablement: (() => void) | undefined;
   #hermes: HermesHostConnection | undefined;
   #kimi: KimiRuntime | undefined;
-  #hermesMutation: Promise<void> = Promise.resolve();
-  readonly #hermesLaunches = new Map<string, Promise<void>>();
   /** Keep the per-backend announcement ledger aligned when a viewer detaches. */
   readonly #hermesAnnouncements = new Map<HermesAgentBackend, Set<string>>();
   /** DSH Web and Desktop each own their connection, start and recovery state (ADR-0076 DSH-DESKTOP-03). */
@@ -837,7 +847,10 @@ export class HostService {
   #catalogRefreshFirstAt = 0;
   #catalogInFlight: { epoch: number; promise: Promise<AgentSessionSummary[]> } | undefined;
   #catalogEpoch = 0;
-  #sessionMutation: Promise<void> = Promise.resolve();
+  /** LAUNCH-QUEUE-01: launches serialize per launch identity, activations and archives per session. */
+  readonly #sessionLanes = new KeyedLanes();
+  readonly #providerGate = new ProviderLaunchGate();
+  #providerMutation: Promise<void> = Promise.resolve();
   readonly #gitReads = new Map<string, ReturnType<typeof readGitBranch>>();
   #providerChanging: AgentKind | undefined;
   #providerFactsGeneration = 0;
@@ -1497,6 +1510,8 @@ export class HostService {
 
   async assertProviderSwitchReady(kind: AgentKind): Promise<void> {
     try {
+      // LAUNCH-QUEUE-01: a running launch still reads this group's provider; refuse instead of waiting behind it.
+      if (this.#providerGate.busy(providerGroup(kind))) throw new ProviderError("有会话正在启动，请等启动完成后再切换供应商");
       if (kind === "codex") {
         this.#options.codexRuntime?.assertProviderSwitchReady();
         for (const backend of this.#backends) {
@@ -1521,7 +1536,8 @@ export class HostService {
     const current = this.#providerCurrent(kind);
     const requireCurrent = () => { if (!current()) throw new ProviderError("此 Agent 未启用"); };
     const operationId = this.#beginSharedOperation("provider.change", kind);
-    const result = this.#sessionMutation.then(async () => {
+    // Changes stay ordered among themselves; the gate only holds back new launches of this provider group.
+    const result = this.#providerMutation.then(() => this.#providerGate.exclusive(providerGroup(kind), async () => {
       this.#providerChanging = kind;
       this.#settleSharedOperation(operationId, "running");
       void this.refreshProviderFacts();
@@ -1553,8 +1569,8 @@ export class HostService {
         throw error;
       }
       finally { this.#providerChanging = undefined; void this.refreshProviderFacts(); }
-    });
-    this.#sessionMutation = result.then(() => {}, () => {});
+    }));
+    this.#providerMutation = result.then(() => {}, () => {});
     return result;
   }
 
@@ -2800,22 +2816,13 @@ export class HostService {
     }
     if (message.type === "session.configuration.read" || message.type === "session.configuration.save"
       || message.type === "session.launch" || message.type === "session.launch.read") {
-      if (message.type === "session.launch" && message.agentKind === "hermes") {
-        const key = JSON.stringify([deviceId, message.launchId]);
+      if (message.type === "session.launch" || message.type === "session.launch.read") {
+        // LAUNCH-QUEUE-01: a read or duplicate waits for the same launch identity
+        // (it must not report absence or recover while the create runs), never for other launches.
         const epoch = this.#deviceViewEpochs.get(deviceId);
-        const pending = this.#hermesMutation.then(() => {
-          if (!this.#providerFactsClosing && epoch === this.#deviceViewEpochs.get(deviceId)) return this.#handleSessionConfiguration(deviceId, message);
-        });
-        this.#hermesLaunches.set(key, pending);
-        this.#hermesMutation = pending.catch(() => undefined);
-        void this.#hermesMutation.then(() => { if (this.#hermesLaunches.get(key) === pending) this.#hermesLaunches.delete(key); });
-      } else if (message.type === "session.launch.read" && allowsAgent(this.#agentView(deviceId), "hermes")) {
-        void this.#readConfiguredLaunch(deviceId, message);
-      } else if (message.type === "session.launch" || message.type === "session.launch.read") {
-        const epoch = this.#deviceViewEpochs.get(deviceId);
-        this.#sessionMutation = this.#sessionMutation.then(() => {
-          if (epoch === this.#deviceViewEpochs.get(deviceId)) return this.#handleSessionConfiguration(deviceId, message);
-        });
+        void this.#sessionLanes.run([launchLane(deviceId, message.launchId)], async () => {
+          if (!this.#providerFactsClosing && epoch === this.#deviceViewEpochs.get(deviceId)) await this.#handleSessionConfiguration(deviceId, message);
+        }).catch(error => this.#options.onDeviceError?.(deviceId, error));
       } else void this.#handleSessionConfiguration(deviceId, message);
       return;
     }
@@ -2944,20 +2951,23 @@ export class HostService {
       void this.#uploads.handleCancel(deviceId, message.uploadId);
       return;
     }
-    if (message.type === "session.activate" && message.target.agentKind === "hermes") {
-      const epoch = this.#deviceViewEpochs.get(deviceId), link = this.#links.get(deviceId);
-      this.#hermesMutation = this.#hermesMutation.then(() => {
-        if (!this.#providerFactsClosing && epoch === this.#deviceViewEpochs.get(deviceId) && link === this.#links.get(deviceId) && link?.active && this.#allowsDeviceRequest(deviceId, message)) return this.#handleSessionRequest(deviceId, message);
-      });
-      return;
-    }
     if (message.type === "session.activate" || message.type === "session.archive") {
-      // Serialize activation with file moves, including the gap before a spawned Pi registers.
-      const epoch = this.#deviceViewEpochs.get(deviceId);
-      this.#sessionMutation = this.#sessionMutation.then(() => {
-        if (epoch === this.#deviceViewEpochs.get(deviceId) && this.#links.get(deviceId)?.active !== undefined && this.#allowsDeviceRequest(deviceId, message))
-          return this.#handleSessionRequest(deviceId, message);
-      });
+      // LAUNCH-QUEUE-01: a resume and an archive of the same session stay ordered with its file moves,
+      // including the gap before a spawned Pi registers. A new session shares no resource with other work.
+      const epoch = this.#deviceViewEpochs.get(deviceId), link = this.#links.get(deviceId);
+      const hermes = message.type === "session.activate" && message.target.agentKind === "hermes";
+      const sessionId = message.type === "session.archive" ? message.sessionId
+        : message.target.type === "resume" ? message.target.sessionId : undefined;
+      void this.#sessionLanes.run(sessionId === undefined ? [] : [sessionLane(sessionId)], async () => {
+        if (epoch !== this.#deviceViewEpochs.get(deviceId) || !this.#allowsDeviceRequest(deviceId, message)) return;
+        if (hermes ? this.#providerFactsClosing || link !== this.#links.get(deviceId) || !link?.active
+          : this.#links.get(deviceId)?.active === undefined) return;
+        if (message.type === "session.archive") { await this.#handleSessionRequest(deviceId, message); return; }
+        const target = message.target;
+        const kind = target.type === "new" ? target.agentKind : resumeAgentKind(target);
+        const release = await this.#providerGate.enter(kind === undefined ? undefined : providerGroup(kind));
+        try { await this.#handleSessionRequest(deviceId, message); } finally { release(); }
+      }).catch(error => this.#options.onDeviceError?.(deviceId, error));
       return;
     }
     if (message.type === "session.list" || message.type === "session.browse") {
@@ -3500,21 +3510,6 @@ export class HostService {
     return backend;
   }
 
-  async #readConfiguredLaunch(deviceId: string, message: Extract<DeviceE2ePayload, { type: "session.launch.read" }>): Promise<void> {
-    try {
-      const link = this.#links.get(deviceId);
-      const key = JSON.stringify([deviceId, message.launchId]);
-      await this.#hermesLaunches.get(key);
-      const prior = await this.#hermesConfigurations.result(deviceId, message.launchId, message.requestId);
-      if (this.#providerFactsClosing || link !== this.#links.get(deviceId)) return;
-      if (prior?.agentKind === "hermes") {
-        await this.#handleSessionConfiguration(deviceId, message);
-      } else {
-        this.#sessionMutation = this.#sessionMutation.then(() => this.#handleSessionConfiguration(deviceId, message));
-      }
-    } catch (error) { this.#options.onDeviceError?.(deviceId, error); }
-  }
-
   async #handleSessionConfiguration(deviceId: string, message: Extract<DeviceE2ePayload, {
     type: "session.configuration.read" | "session.configuration.save" | "session.launch" | "session.launch.read"
   }>): Promise<void> {
@@ -3536,9 +3531,10 @@ export class HostService {
       this.#sendToDevice(deviceId, result ?? { type: "session.launch.result", requestId: message.requestId,
         launchId, phase: "absent" });
     };
+    let releaseProvider: (() => void) | undefined;
     try {
       if (message.type === "session.launch.read") {
-        // Serialize with creation: a read must not report absence while the original create is queued.
+        // The caller's launch lane orders this read after the original create, so it never reports a queued create as absent.
         if (allowsAgent(this.#agentView(deviceId), KIMI_KIND) &&
             !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#kimiConfigurations;
         if (allowsAgent(this.#agentView(deviceId), OPENCLAW_KIND) && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#openClawLaunches;
@@ -3566,6 +3562,8 @@ export class HostService {
           await this.#recoverSessionLaunch(ledger, deviceId, message.launchId, current);
           await sendLaunch(message.launchId); return;
         }
+        // LAUNCH-QUEUE-01: held until native creation settles, so a provider change cannot rewrite its settings mid-start.
+        releaseProvider = await this.#providerGate.enter(providerGroup(message.agentKind));
       }
       const backend = await this.#configuredBackend(message.agentKind, current);
       const catalog = await backend.sessionConfiguration!(message.cwd);
@@ -3644,13 +3642,20 @@ export class HostService {
       }
       this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId,
         code: error instanceof SessionConfigurationError ? error.code : "session_configuration_failed", message: describeError(error) });
-    }
+    } finally { releaseProvider?.(); }
   }
 
   async #recoverSessionLaunch(ledger: SessionConfigurationStore, deviceId: string, launchId: string, current: () => boolean): Promise<void> {
     const prior = await ledger.result(deviceId, launchId, launchId);
-    if (!current() || prior && !allowsAgentIdentity(this.#agentView(deviceId), prior)) return;
-    if (prior?.phase === "unknown" && !prior.sessionId && prior.agentKind) {
+    if (!current() || !prior || !allowsAgentIdentity(this.#agentView(deviceId), prior)) return;
+    // LAUNCH-QUEUE-01: recovery may reopen the session with this provider group's settings.
+    const release = prior.agentKind === undefined ? undefined : await this.#providerGate.enter(providerGroup(prior.agentKind));
+    try { await this.#recoverAdmittedLaunch(ledger, deviceId, launchId, current, prior); } finally { release?.(); }
+  }
+
+  async #recoverAdmittedLaunch(ledger: SessionConfigurationStore, deviceId: string, launchId: string, current: () => boolean,
+    prior: SessionLaunchResult): Promise<void> {
+    if (prior.phase === "unknown" && !prior.sessionId && prior.agentKind) {
       const sourceCurrent = this.#sourceCurrent(prior.agentKind);
       const admitted = () => sourceCurrent() && current();
       if (prior.agentKind === "kimiCode") {
@@ -3691,10 +3696,12 @@ export class HostService {
           validateSessionConfiguration(catalog, record.values);
         }
         if (!current()) return;
-        const result = await backend.activate({ type: "resume", sessionId: record.sessionId }, {
+        const sessionId = record.sessionId;
+        // Same session lane as session.activate/archive: a reopen never races an archive file move.
+        const result = await this.#sessionLanes.run([sessionLane(sessionId)], () => backend.activate({ type: "resume", sessionId }, {
           deviceId, requireCurrent, spawnMode: record.spawnMode ?? "tui", legacyCodexSpawn: true,
           ...(record.phase === "ready" ? {} : { configuration: record.values }),
-        });
+        }));
         if (result.sessionId !== record.sessionId) throw new Error("恢复返回了不同会话身份，已停止发送");
         spawnMode = result.spawnMode;
       }
@@ -3947,8 +3954,7 @@ export class HostService {
         this.#sendActivated(deviceId, requestId, backend.kind, activated);
         return;
       }
-      const resumeKind = target.agentKind ?? (isKimiId(target.sessionId) ? KIMI_KIND : target.sessionId.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : target.sessionId.startsWith("hermes:") ? "hermes" : target.sessionId.startsWith("codex-desktop:") ? "codexDesktop"
-        : target.sessionId.startsWith("dsh-desktop:") ? "dshDesktop" : target.sessionId.startsWith("dsh:") ? "dsh" : undefined);
+      const resumeKind = resumeAgentKind(target);
       if (resumeKind === KIMI_KIND && !this.#kimi?.isReady())
         throw new ActivationError("agent_unsupported", this.#kimi?.reason ?? "Kimi Code Web 未连接");
       if (resumeKind === "hermes") await this.#ensureHermes();

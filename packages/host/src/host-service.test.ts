@@ -4008,6 +4008,80 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(1);
   });
 
+  // LAUNCH-QUEUE-01: a native start that never answers held one Host-wide queue, so every later
+  // launch, legacy activation and read waited behind it even after the App ended its wait.
+  // Other launch identities proceed; the stuck launch's own read stays ordered after its create;
+  // a provider switch for that agent is refused instead of queueing behind the start.
+  it("keeps a stuck configured launch from holding other launches, and refuses provider switches meanwhile", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-launch-lanes-"));
+    relay = await startRelayLocal(stateDir);
+    let releaseFirst: (() => void) | undefined; let starts = 0;
+    const settings = { model: "model-a", reasoningEffort: "high", modelProvider: "fixture", approvalPolicy: "never",
+      approvalsReviewer: "user", sandboxPolicy: { type: "readOnly", networkAccess: false } };
+    const threads: Record<string, unknown>[] = [];
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "model/list") return { data: [{ id: "model-a", model: "model-a", displayName: "Fixture A", isDefault: true,
+        defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high", description: "High" }] }] };
+      if (method === "config/read") return { config: { model: "model-a", model_reasoning_effort: "high", model_provider: "fixture" } };
+      if (method === "thread/start") {
+        const thread = { id: `lane-thread-${++starts}`, cwd: stateDir, status: { type: "idle" }, turns: [] };
+        threads.push(thread);
+        if (starts === 1) await new Promise<void>(resolve => { releaseFirst = resolve; });
+        return { thread, ...settings };
+      }
+      if (method === "thread/resume" || method === "thread/read") return { thread: threads.find(item => item.id === params?.threadId), ...settings };
+      if (method === "thread/loaded/list") return { data: threads.map(item => item.id) };
+      return { data: [] };
+    });
+    const runtime = new CodexRuntime({ server: { mode: "owned", request, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer,
+      onEvent: () => {}, rolloutRoot: join(stateDir, "rollouts") });
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+      stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, codexRuntime: runtime });
+    await host.start();
+    device = (await readyDeviceCapturing({ host, relay })).device;
+    const seen: Record<string, unknown>[] = [];
+    let reading = true;
+    void (async () => { while (reading) { try { seen.push(await device!.receiveMessage() as Record<string, unknown>); } catch { return; } } })();
+    const observe = async (predicate: (message: Record<string, unknown>) => boolean, ms: number) => {
+      for (const end = Date.now() + ms; Date.now() < end; await new Promise(resolve => setTimeout(resolve, 20))) {
+        const hit = seen.find(predicate);
+        if (hit) return hit;
+      }
+      return seen.find(predicate);
+    };
+    try {
+      sendRequest(device, { type: "session.configuration.read", protocolVersion: PROTOCOL_VERSION, requestId: "config", agentKind: "codex", cwd: stateDir });
+      const config = (await observe(message => message.requestId === "config", 5_000))!;
+      const launch = { type: "session.launch", protocolVersion: PROTOCOL_VERSION, agentKind: "codex", cwd: stateDir,
+        binding: config.binding, revision: config.revision, values: config.values, spawnMode: "tui" };
+      sendRequest(device, { ...launch, requestId: "first", launchId: "stuck-launch" });
+      expect(await observe(message => message.requestId === "first", 3_000)).toMatchObject({ phase: "preparing" });
+      await vi.waitFor(() => expect(releaseFirst).toBeDefined());
+
+      sendRequest(device, { ...launch, requestId: "second", launchId: "next-launch" });
+      sendRequest(device, { type: "session.activate", protocolVersion: PROTOCOL_VERSION, requestId: "legacy",
+        target: { type: "new", agentKind: "codex", cwd: stateDir }, spawnMode: "headless" });
+      sendRequest(device, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "read-stuck", launchId: "stuck-launch" });
+      const second = await observe(message => message.requestId === "second" && message.phase === "ready", 3_000);
+      const legacy = await observe(message => message.requestId === "legacy" && message.type === "session.activated", 3_000);
+      // Both start concurrently, so either may reach thread/start first.
+      expect(new Set([second?.sessionId, legacy?.sessionId])).toEqual(new Set(["lane-thread-2", "lane-thread-3"]));
+      // The read waits for its own create, so it reports the result instead of a stale phase or absence.
+      expect(seen.some(message => message.requestId === "read-stuck")).toBe(false);
+      await expect(host.changeProvider("codex", async () => "switched")).rejects.toThrow("有会话正在启动");
+
+      releaseFirst!();
+      expect(await observe(message => message.requestId === "first" && message.phase === "ready", 3_000)).toMatchObject({ sessionId: "lane-thread-1" });
+      expect(await observe(message => message.requestId === "read-stuck", 3_000)).toMatchObject({ phase: "ready", sessionId: "lane-thread-1" });
+      await expect(host.changeProvider("codex", async () => "switched")).resolves.toBe("switched");
+      expect(starts).toBe(3);
+    } finally {
+      reading = false;
+      releaseFirst?.();
+      await runtime.stop();
+    }
+  });
+
   it("lets DSH saves reach provider validation while busy, but still blocks switches", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-dsh-save-gate-"));
     relay = await startRelayLocal(stateDir);
