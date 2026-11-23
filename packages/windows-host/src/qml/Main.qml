@@ -1477,16 +1477,14 @@ ApplicationWindow {
                     ColumnLayout {
                         id: devicesPage
                         visible: window.page === 1; Layout.fillWidth: true; spacing: 16
-                        property bool mobileDownloadExpanded: false
                         readonly property bool hasAndroidDownload: host.appDownloadQr.length > 0
                         readonly property bool hasIosDownload: host.iosAppDownloadQr.length > 0
                         readonly property bool mobileDownloadAvailable: hasAndroidDownload || hasIosDownload
-                        readonly property bool mobileDownloadOpen: mobileDownloadExpanded && mobileDownloadAvailable
                         RowLayout {
                             Layout.fillWidth: true; spacing: 12
                             Heading { text: "已配对设备" }
                             Item { Layout.fillWidth: true }
-                            // HOST-MOBILE-DOWNLOAD-02: single "下载移动端" toggle expands Android and iOS QR codes inline.
+                            // HOST-MOBILE-DOWNLOAD-02: single "下载移动端" button opens a dropdown menu for Android and iOS QR dialogs.
                             Button {
                                 id: downloadMobileButton
                                 objectName: "downloadMobileClient"
@@ -1498,8 +1496,8 @@ ApplicationWindow {
                                 hoverEnabled: true
                                 Accessible.role: Accessible.Button
                                 Accessible.name: "下载移动端"
-                                Accessible.checked: devicesPage.mobileDownloadOpen
-                                onClicked: devicesPage.mobileDownloadExpanded = !devicesPage.mobileDownloadExpanded
+                                Accessible.checked: mobileDownloadMenu.visible
+                                onClicked: mobileDownloadMenu.visible ? mobileDownloadMenu.close() : mobileDownloadMenu.open()
                                 contentItem: Item {
                                     implicitWidth: mobileBtnRow.implicitWidth
                                     implicitHeight: Math.max(24, mobileBtnLabel.implicitHeight)
@@ -1514,7 +1512,7 @@ ApplicationWindow {
                                             width: 18; height: 18
                                             anchors.verticalCenter: parent.verticalCenter
                                             name: "download"
-                                            color: devicesPage.mobileDownloadOpen ? Theme.accent : Theme.ink
+                                            color: mobileDownloadMenu.visible ? Theme.accent : Theme.ink
                                         }
                                         MotionText {
                                             id: mobileBtnLabel
@@ -1522,7 +1520,7 @@ ApplicationWindow {
                                             anchors.verticalCenter: parent.verticalCenter
                                             text: "下载移动端"
                                             font: downloadMobileButton.font
-                                            color: devicesPage.mobileDownloadOpen ? Theme.accent : Theme.ink
+                                            color: mobileDownloadMenu.visible ? Theme.accent : Theme.ink
                                             Accessible.ignored: true
                                         }
                                         Rectangle {
@@ -1538,145 +1536,166 @@ ApplicationWindow {
                                             width: 18; height: 18
                                             anchors.verticalCenter: parent.verticalCenter
                                             name: "keyboard_arrow_down"
-                                            color: devicesPage.mobileDownloadOpen ? Theme.accent : Theme.inkMuted
-                                            rotation: devicesPage.mobileDownloadOpen ? 180 : 0
-                                            Behavior on rotation { enabled: window.motionEnabled; NumberAnimation { duration: Theme.durCollapse; easing.type: Easing.OutCubic } }
+                                            color: mobileDownloadMenu.visible ? Theme.accent : Theme.inkMuted
+                                            rotation: mobileDownloadMenu.visible ? 180 : 0
+                                            Behavior on rotation { enabled: window.motionEnabled; NumberAnimation { duration: Theme.durPanel; easing.type: Easing.OutCubic } }
                                         }
                                     }
                                 }
                                 background: Surface {
                                     anchors.fill: parent; anchors.margins: -12; margin: 12
-                                    inset: devicesPage.mobileDownloadOpen || downloadMobileButton.down
+                                    inset: mobileDownloadMenu.visible || downloadMobileButton.down
                                     focused: downloadMobileButton.activeFocus
                                     hovered: downloadMobileButton.hovered
                                 }
-                            }
-                            ActionButton { text: "添加手机"; symbol: "add"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
-                        }
-                        Item {
-                            id: mobileDownloadDrawer
-                            objectName: "mobileDownloadPanel"
-                            property real expandProgress: devicesPage.mobileDownloadOpen ? 1 : 0
-                            Behavior on expandProgress { enabled: window.motionEnabled; NumberAnimation { duration: Theme.durCollapse; easing.type: Easing.OutCubic } }
-                            readonly property int shadowPad: 16
-                            visible: expandProgress > 0.001
-                            clip: expandProgress < 1
-                            Layout.fillWidth: true
-                            Layout.leftMargin: -shadowPad
-                            Layout.rightMargin: -shadowPad
-                            Layout.topMargin: -shadowPad
-                            Layout.bottomMargin: -shadowPad
-                            Layout.preferredHeight: mobileDownloadCard.implicitHeight * expandProgress + shadowPad * 2
-                            Card {
-                                id: mobileDownloadCard
-                                objectName: "mobileDownloadCard"
-                                x: mobileDownloadDrawer.shadowPad
-                                y: mobileDownloadDrawer.shadowPad
-                                width: mobileDownloadDrawer.width - mobileDownloadDrawer.shadowPad * 2
-                                padding: 24
-                                opacity: Math.min(1, mobileDownloadDrawer.expandProgress * 1.35)
-                                contentWidth: availableWidth
-                                contentHeight: mobileDownloadRow.implicitHeight
-                                RowLayout {
-                                    id: mobileDownloadRow
-                                    anchors.fill: parent
-                                    spacing: 24
-                                    ColumnLayout {
-                                        id: androidDownloadSection
-                                        objectName: "androidDownloadSection"
-                                        visible: devicesPage.hasAndroidDownload
-                                        Layout.fillWidth: true
-                                        Layout.preferredWidth: 240
-                                        Layout.alignment: Qt.AlignTop
-                                        spacing: 12
-                                        RowLayout {
-                                            Layout.alignment: Qt.AlignHCenter
-                                            spacing: 8
-                                            Heading { text: "Android"; font.pixelSize: Theme.body }
-                                            RowLayout {
-                                                objectName: "androidDownloadUpdateBadge"
-                                                visible: window.androidUpdatesAvailable()
-                                                spacing: 5
-                                                Rectangle { width: 7; height: 7; radius: 3.5; color: Theme.warning }
-                                                Label { text: "有新版本"; color: Theme.warning; font.pixelSize: Theme.caption; font.weight: Font.DemiBold }
-                                            }
-                                        }
-                                        Item {
-                                            Layout.alignment: Qt.AlignHCenter
-                                            Layout.preferredWidth: 216
-                                            Layout.preferredHeight: 216
-                                            Surface {
-                                                anchors.fill: parent; anchors.margins: -8; margin: 8
-                                                cornerRadius: Theme.radiusMd; inset: true; shadowScale: 0.4
-                                            }
-                                            Rectangle {
-                                                anchors.centerIn: parent
-                                                width: 196; height: 196
-                                                radius: Theme.radiusSm
-                                                color: "#ffffff"
-                                                Image {
-                                                    objectName: "androidDownloadQrImage"
-                                                    anchors.centerIn: parent
-                                                    width: 184; height: 184
-                                                    source: host.appDownloadQr
-                                                    sourceSize.width: 320; sourceSize.height: 320
-                                                    fillMode: Image.PreserveAspectFit
-                                                    smooth: false
-                                                    mipmap: false
-                                                }
-                                            }
+                                Popup {
+                                    id: mobileDownloadMenu
+                                    objectName: "mobileDownloadMenu"
+                                    readonly property int orbisSurfaceLevel: 0
+                                    parent: downloadMobileButton
+                                    focus: true
+                                    width: Math.max(downloadMobileButton.width, 224)
+                                    x: downloadMobileButton.width - width
+                                    y: downloadMobileButton.height + 8
+                                    padding: 8
+                                    transformOrigin: Item.TopRight
+                                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+                                    enter: Transition {
+                                        ParallelAnimation {
+                                            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: window.motionEnabled ? Theme.durPanel : 0; easing.type: Easing.OutCubic }
+                                            NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: window.motionEnabled ? Theme.durPanel : 0; easing.type: Easing.OutCubic }
                                         }
                                     }
-                                    Rectangle {
-                                        objectName: "mobileDownloadDivider"
-                                        visible: devicesPage.hasAndroidDownload && devicesPage.hasIosDownload
-                                        Layout.preferredWidth: 1
-                                        Layout.fillHeight: true
-                                        Layout.topMargin: 8
-                                        Layout.bottomMargin: 8
-                                        color: Theme.hairline
-                                    }
-                                    ColumnLayout {
-                                        id: iosDownloadSection
-                                        objectName: "iosDownloadSection"
-                                        visible: devicesPage.hasIosDownload
-                                        Layout.fillWidth: true
-                                        Layout.preferredWidth: 240
-                                        Layout.alignment: Qt.AlignTop
-                                        spacing: 12
-                                        Heading {
-                                            text: "iOS · TestFlight"
-                                            font.pixelSize: Theme.body
-                                            Layout.alignment: Qt.AlignHCenter
+                                    exit: Transition {
+                                        ParallelAnimation {
+                                            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: window.motionEnabled ? Theme.durExit : 0; easing.type: Easing.InCubic }
+                                            NumberAnimation { property: "scale"; from: 1; to: 0.96; duration: window.motionEnabled ? Theme.durExit : 0; easing.type: Easing.InCubic }
                                         }
-                                        Item {
-                                            Layout.alignment: Qt.AlignHCenter
-                                            Layout.preferredWidth: 216
-                                            Layout.preferredHeight: 216
-                                            Surface {
-                                                anchors.fill: parent; anchors.margins: -8; margin: 8
-                                                cornerRadius: Theme.radiusMd; inset: true; shadowScale: 0.4
+                                    }
+                                    background: Surface {
+                                        objectName: "mobileDownloadMenuSurface"
+                                        anchors.fill: parent; anchors.margins: -16; margin: 16
+                                        cornerRadius: Theme.radiusLg; surface: Theme.surfaceBase; shadowScale: 1
+                                    }
+                                    contentItem: ColumnLayout {
+                                        spacing: 4
+                                        ItemDelegate {
+                                            id: androidMenuItem
+                                            objectName: "downloadAndroidClient"
+                                            visible: devicesPage.hasAndroidDownload
+                                            Layout.fillWidth: true
+                                            implicitHeight: Theme.controlHeight
+                                            leftPadding: 12; rightPadding: 12
+                                            topPadding: 0; bottomPadding: 0
+                                            hoverEnabled: true
+                                            Accessible.name: window.androidUpdatesAvailable() ? "Android，有可用更新" : "Android"
+                                            onClicked: {
+                                                mobileDownloadMenu.close()
+                                                appDownloadDialog.platform = "android"
+                                                appDownloadDialog.open()
                                             }
-                                            Rectangle {
-                                                anchors.centerIn: parent
-                                                width: 196; height: 196
-                                                radius: Theme.radiusSm
-                                                color: "#ffffff"
-                                                Image {
-                                                    objectName: "iosDownloadQrImage"
-                                                    anchors.centerIn: parent
-                                                    width: 184; height: 184
-                                                    source: host.iosAppDownloadQr
-                                                    sourceSize.width: 320; sourceSize.height: 320
-                                                    fillMode: Image.PreserveAspectFit
-                                                    smooth: false
-                                                    mipmap: false
+                                            contentItem: Item {
+                                                implicitWidth: androidItemRow.implicitWidth
+                                                implicitHeight: Theme.controlHeight
+                                                scale: androidMenuItem.down ? 0.94 : 1
+                                                opacity: androidMenuItem.down ? 0.82 : 1
+                                                Behavior on scale { enabled: window.motionEnabled; NumberAnimation { duration: androidMenuItem.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
+                                                RowLayout {
+                                                    id: androidItemRow
+                                                    anchors.fill: parent
+                                                    spacing: 8
+                                                    SymbolIcon {
+                                                        Layout.preferredWidth: Theme.iconSm; Layout.preferredHeight: Theme.iconSm
+                                                        name: "qr_code_scanner"
+                                                        color: Theme.inkMuted
+                                                    }
+                                                    Label {
+                                                        objectName: "downloadAndroidLabel"
+                                                        text: "Android"
+                                                        color: Theme.ink
+                                                        font.pixelSize: Theme.body; font.weight: Font.Normal
+                                                        Layout.fillWidth: true
+                                                    }
+                                                    RowLayout {
+                                                        objectName: "androidDownloadUpdateBadge"
+                                                        visible: window.androidUpdatesAvailable()
+                                                        spacing: 6
+                                                        Rectangle { width: 8; height: 8; radius: 4; color: Theme.warning }
+                                                        Label { text: "更新"; color: Theme.warning; font.pixelSize: Theme.label; font.weight: Font.Normal }
+                                                    }
                                                 }
+                                            }
+                                            background: Surface {
+                                                objectName: "downloadAndroidSurface"
+                                                anchors.fill: parent; anchors.margins: -4; margin: 4
+                                                cornerRadius: Theme.radiusMd
+                                                shadowScale: 0.4
+                                                inset: androidMenuItem.down
+                                                flat: !androidMenuItem.down
+                                                focused: androidMenuItem.activeFocus
+                                                surface: androidMenuItem.down ? Theme.surfaceBase : androidMenuItem.hovered ? Theme.surfaceLift : Theme.surfaceBase
+                                            }
+                                        }
+                                        ItemDelegate {
+                                            id: iosMenuItem
+                                            objectName: "downloadIosClient"
+                                            visible: devicesPage.hasIosDownload
+                                            Layout.fillWidth: true
+                                            implicitHeight: Theme.controlHeight
+                                            leftPadding: 12; rightPadding: 12
+                                            topPadding: 0; bottomPadding: 0
+                                            hoverEnabled: true
+                                            Accessible.name: "iOS TestFlight"
+                                            onClicked: {
+                                                mobileDownloadMenu.close()
+                                                appDownloadDialog.platform = "ios"
+                                                appDownloadDialog.open()
+                                            }
+                                            contentItem: Item {
+                                                implicitWidth: iosItemRow.implicitWidth
+                                                implicitHeight: Theme.controlHeight
+                                                scale: iosMenuItem.down ? 0.94 : 1
+                                                opacity: iosMenuItem.down ? 0.82 : 1
+                                                Behavior on scale { enabled: window.motionEnabled; NumberAnimation { duration: iosMenuItem.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
+                                                RowLayout {
+                                                    id: iosItemRow
+                                                    anchors.fill: parent
+                                                    spacing: 8
+                                                    SymbolIcon {
+                                                        Layout.preferredWidth: Theme.iconSm; Layout.preferredHeight: Theme.iconSm
+                                                        name: "qr_code_scanner"
+                                                        color: Theme.inkMuted
+                                                    }
+                                                    Label {
+                                                        objectName: "downloadIosLabel"
+                                                        text: "iOS"
+                                                        color: Theme.ink
+                                                        font.pixelSize: Theme.body; font.weight: Font.Normal
+                                                        Layout.fillWidth: true
+                                                    }
+                                                    Label {
+                                                        objectName: "downloadIosHint"
+                                                        text: "TestFlight"
+                                                        color: Theme.inkMuted
+                                                        font.pixelSize: Theme.label; font.weight: Font.Normal
+                                                    }
+                                                }
+                                            }
+                                            background: Surface {
+                                                objectName: "downloadIosSurface"
+                                                anchors.fill: parent; anchors.margins: -4; margin: 4
+                                                cornerRadius: Theme.radiusMd
+                                                shadowScale: 0.4
+                                                inset: iosMenuItem.down
+                                                flat: !iosMenuItem.down
+                                                focused: iosMenuItem.activeFocus
+                                                surface: iosMenuItem.down ? Theme.surfaceBase : iosMenuItem.hovered ? Theme.surfaceLift : Theme.surfaceBase
                                             }
                                         }
                                     }
                                 }
                             }
+                            ActionButton { text: "添加手机"; symbol: "add"; primary: true; enabled: host.state === "connected" && !host.busy; onClicked: host.pair() }
                         }
                         Card {
                             visible: host.devices.length === 0; Layout.fillWidth: true
@@ -2669,6 +2688,30 @@ ApplicationWindow {
         RowLayout { width: parent.width; spacing: 12
             BusyIndicator { running: host.exiting }
             Hint { text: "正在保存状态并关闭后台任务"; Layout.fillWidth: true }
+        }
+    }
+    SoftDialog {
+        id: appDownloadDialog
+        objectName: "appDownloadDialog"
+        property string platform: "android"
+        title: platform === "ios" ? "Orbis iOS · TestFlight" : "Orbis Android"
+        anchors.centerIn: parent
+        width: 370
+        modal: true
+        footer: SoftDialogButtons { ActionButton { text: "关闭"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole } onRejected: appDownloadDialog.reject() }
+        ColumnLayout {
+            width: parent.width; spacing: 12
+            Label { text: appDownloadDialog.platform === "ios" ? "扫描下方二维码加入测试" : "扫描下方二维码下载"; Layout.alignment: Qt.AlignHCenter; color: Theme.inkMuted; font.pixelSize: Theme.label }
+            Image {
+                objectName: "appDownloadQrImage"
+                source: appDownloadDialog.platform === "ios" ? host.iosAppDownloadQr : host.appDownloadQr
+                sourceSize.width: 320; sourceSize.height: 320
+                Layout.preferredWidth: 320; Layout.preferredHeight: 320
+                Layout.alignment: Qt.AlignHCenter
+                fillMode: Image.PreserveAspectFit
+                smooth: false
+                mipmap: false
+            }
         }
     }
     SoftDialog {
