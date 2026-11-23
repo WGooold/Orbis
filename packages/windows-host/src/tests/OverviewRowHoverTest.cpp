@@ -1,5 +1,6 @@
 #include "../HostController.h"
 #include "../NeuSurface.h"
+#include <QAccessible>
 #include <QDir>
 #include <QEnterEvent>
 #include <QFile>
@@ -70,7 +71,7 @@ const agents = [
   { kind: "openclaw", label: "OpenClaw", enabled: true }
 ];
 require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
-  const { id, method } = JSON.parse(line);
+  const { id, method, params } = JSON.parse(line);
   if (method === "initialize") {
     out({
       id,
@@ -151,6 +152,14 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   }
   if (method === "provider.presets") {
     out({ id, result: [] });
+    return;
+  }
+  if (method === "openclaw.save") {
+    out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
+    return;
+  }
+  if (method === "hermes.remote.save") {
+    out({ id, result: { source: "file", host: params.host, port: params.port, profile: params.profile } });
     return;
   }
   if (method === "shutdown") {
@@ -340,6 +349,111 @@ private slots:
                                 .arg(railWidthBefore).arg(rail->width())
                                 .arg(detailWidthBefore).arg(detail->width())));
 
+        controller.shutdown();
+    }
+
+    void gatewayConnectionModeIsExclusiveAndAppliesExplicitly_data() {
+        QTest::addColumn<bool>("hermes");
+        QTest::newRow("Hermes") << true;
+        QTest::newRow("OpenClaw") << false;
+    }
+
+    // HOST-GATEWAY-MODE-01: click and keyboard selection edit one draft, not two connections.
+    void gatewayConnectionModeIsExclusiveAndAppliesExplicitly() {
+        QFETCH(bool, hermes);
+        QVERIFY(!QStandardPaths::findExecutable("node").isEmpty());
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        writeFixtureBridge(root.path());
+        const QString dataDir = root.filePath("desktop");
+        QDir().mkpath(dataDir);
+        HostController controller(root.path(), dataDir, root.filePath("state"), dataDir, false);
+        controller.m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
+        controller.m_tick.stop();
+        controller.m_credential = "orbis_host_fixture";
+
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("host", &controller);
+        engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(dataDir + "/appearance.ini"));
+        engine.rootContext()->setContextProperty("orbisMotionEnabled", false);
+        engine.rootContext()->setContextProperty("trayAvailable", false);
+        engine.loadFromModule("Orbis.Host", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QTRY_VERIFY(controller.bridgeReady() && !controller.busy() && !controller.agents().isEmpty());
+        const QString localUrl = "ws://127.0.0.1:18789";
+        const QString remoteTarget = hermes ? "ssh.example.test" : "wss://gateway.example.test";
+        if (!hermes) {
+            controller.m_openClaw.insert("url", localUrl);
+            emit controller.openClawChanged();
+        }
+        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, hermes ? QString("hermes") : QString("openclaw"))));
+
+        const QString pickerName = hermes ? "hermesMode" : "openClawMode";
+        auto *picker = findVisualItem(window->contentItem(), pickerName);
+        auto *local = findVisualItem(picker, pickerName + "-0");
+        auto *remote = findVisualItem(picker, pickerName + "-1");
+        auto *remoteField = findVisualItem(window->contentItem(), hermes ? "hermesSshHost" : "openClawUrl");
+        auto *apply = findVisualItem(window->contentItem(), hermes ? "applyHermesRemote" : "applyOpenClaw");
+        QVERIFY(picker && local && remote && remoteField && apply);
+        QTRY_VERIFY(local->isVisible() && local->isEnabled() && local->property("checked").toBool());
+        auto *remoteAccess = QAccessible::queryAccessibleInterface(remote);
+        QVERIFY(remoteAccess);
+        QCOMPARE(remoteAccess->role(), QAccessible::RadioButton);
+        QVERIFY(!remote->property("checked").toBool() && !remoteField->isVisible() && !apply->isEnabled());
+        auto click = [window](QQuickItem *item) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, item->mapToScene(item->boundingRect().center()).toPoint());
+        };
+        auto savedTarget = [&controller, hermes] {
+            return hermes ? controller.hermesRemote().value("host").toString()
+                          : controller.openClaw().value("url").toString();
+        };
+
+        click(remote);
+        QTRY_VERIFY(remote->property("checked").toBool() && remoteField->isVisible());
+        QVERIFY(!local->property("checked").toBool());
+        click(remote); // Clicking the selected radio cannot deselect both modes.
+        QVERIFY(remote->property("checked").toBool() && !local->property("checked").toBool());
+        QVERIFY(!apply->isEnabled()); // No remote target yet.
+        QVERIFY(remoteField->setProperty("text", remoteTarget));
+        QTRY_VERIFY(apply->isEnabled());
+        QCOMPARE(savedTarget(), hermes ? QString() : localUrl);
+        if (hermes) {
+            auto *state = findVisualItem(window->contentItem(), "hermesConnectionState");
+            QVERIFY(state);
+            QCOMPARE(state->property("text").toString(), QString("当前：本机"));
+        }
+        const auto screenshotBase = qEnvironmentVariable("ORBIS_GATEWAY_MODE_SCREENSHOT");
+        if (!screenshotBase.isEmpty()) {
+            QVERIFY(window->grabWindow().save(screenshotBase + (hermes ? "-hermes.png" : "-openclaw.png")));
+        }
+
+        click(apply);
+        QTRY_COMPARE(savedTarget(), remoteTarget);
+        QTRY_VERIFY(!controller.busy() && local->isEnabled() && !apply->isEnabled());
+        QVERIFY(remote->property("checked").toBool() && !local->property("checked").toBool());
+        local->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(local->property("checked").toBool() && !remoteField->isVisible());
+        QVERIFY(!remote->property("checked").toBool() && apply->isEnabled());
+        QCOMPARE(savedTarget(), remoteTarget);
+        click(apply);
+        QTRY_COMPARE(savedTarget(), hermes ? QString() : localUrl);
+        QTRY_VERIFY(!controller.busy() && local->isEnabled() && !apply->isEnabled());
+        QVERIFY(local->property("checked").toBool() && !remote->property("checked").toBool());
+        if (hermes) {
+            controller.m_hermesRemote.insert("source", "environment");
+            controller.m_hermesRemote.insert("host", remoteTarget);
+            emit controller.hermesRemoteChanged();
+        } else {
+            controller.m_openClaw.insert("source", "environment");
+            controller.m_openClaw.insert("url", remoteTarget);
+            emit controller.openClawChanged();
+        }
+        QTRY_VERIFY(remote->property("checked").toBool() && !local->property("checked").toBool());
+        QVERIFY(!remote->isEnabled() && !local->isEnabled() && !apply->isVisible());
         controller.shutdown();
     }
 };

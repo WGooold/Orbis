@@ -48,3 +48,5 @@ macOS 与 Windows 共用 Qt Agent 卡配置本机 Gateway 地址和可选令牌�
 ## OPENCLAW-05｜桌面连接方式显式切换
 
 Agent 卡以“本机／远程”切换连接方式，不再由所填地址推断：本机只填端口（保存为 `ws://127.0.0.1:<端口>`），远程填写 `wss://` 地址（缺省协议按 `wss://` 补全，明文 `ws://` 不可保存）。切换并应用后令牌按新地址重新处理；已保存的配置按其地址回显对应方式。卡片头部的 info 图标说明两种方式含义。Host 配置文件与桥接协议不变。实现：[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)。验证：待在 Qt 环境构建并目视检查；未运行。
+
+连接方式单选、草稿与连接状态的验证见 [HOST-GATEWAY-MODE-01](0087-hermes-agent-gateway-integration.md#host-gateway-mode-01桌面-gateway-连接方式单选)。

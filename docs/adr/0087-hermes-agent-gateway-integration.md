@@ -142,3 +142,11 @@ Host 仅在命令发现、Gateway attach、profile 身份校验与 `runtime.desc
 ### HERMES-REMOTE-02 桌面连接方式显式切换
 
 桌面 Hermes 卡以“本机／SSH 远程”切换连接方式；远程才显示主机、端口与 profile，切回本机并应用即清除远程配置（取代原“恢复本机接入”按钮）。info 图标说明两种方式含义。配置文件与桥接协议不变。实现：[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)。验证：待在 Qt 环境构建并目视检查；未运行。
+
+### HOST-GATEWAY-MODE-01｜桌面 Gateway 连接方式单选
+
+Hermes 与 OpenClaw 共用单选控件，各自只选择一个连接目标。点选方式只更改草稿；状态按当前配置与连接回显，保存后沿用 Host 原有的重连流程。环境变量配置只读，Agent 启用开关独立。
+
+- 实现：[桌面 Host](../../packages/windows-host/src/qml/Main.qml)。
+- 自动验证：[Qt 界面与 Host 重连定向回归](../../.artifacts/host-gateway-mode-20261123/focused/run.log)通过，用例见 [`OverviewRowHoverTest.cpp`](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp) 与 [`HostLiveChangeTest.cpp`](../../packages/windows-host/src/tests/HostLiveChangeTest.cpp)。工作区[合跑](../../.artifacts/host-gateway-mode-20261123/final/run.log)中状态标签截断用例未通过。隔离[提交候选](../../.artifacts/host-gateway-mode-20261123/commit-check/run.log)中两种 Agent 的单选及 Host 生命周期测试通过；概览布局用例在候选和 [提交前基线](../../.artifacts/host-gateway-mode-20261123/baseline-check/run.log)中均未通过。
+- 部署：未发布。用户验收：待用户验证。

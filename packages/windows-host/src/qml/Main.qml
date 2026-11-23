@@ -73,9 +73,12 @@ ApplicationWindow {
         return row !== undefined && row.enabled === true
     }
     readonly property bool openClawReady: window.backendFor("openclaw")?.ready === true && host.desiredRunning
-    readonly property string openClawStateText: host.openClaw.invalid ? "配置无效"
-        : !host.openClaw.url ? "待配置" : host.resumePending ? "正在重新连接"
-        : window.openClawReady ? "已连接" : host.desiredRunning ? "Gateway 未就绪" : "Host 未连接"
+    readonly property string openClawStateText: openClawConnectionState("已连接")
+    function openClawConnectionState(connectedLabel) {
+        return host.openClaw.invalid ? "配置无效"
+            : !host.openClaw.url ? "待配置" : host.resumePending ? "正在重新连接"
+            : window.openClawReady ? connectedLabel : host.desiredRunning ? "Gateway 未就绪" : "Host 未连接"
+    }
     readonly property int setupStep: ["activate", "connect", "pair", "enable", "install"].indexOf(nextStep)
     readonly property bool setupComplete: host.activated && host.devices.length > 0 && overviewAgents.some(agent => agent.installed && !agent.broken)
     readonly property bool connectionError: host.state === "error" && !host.resumePending
@@ -966,26 +969,74 @@ ApplicationWindow {
         ToolTip.visible: hovered && !expanded
         ToolTip.text: Accessible.name
     }
-    // Explicit either-or choice between connection modes; options are short captions.
-    component ModeSwitch: RowLayout {
-        id: modeSwitch
+    // HOST-GATEWAY-MODE-01: one draft choice; only the card's Apply action saves it.
+    component ConnectionModePicker: Control {
+        id: picker
         property var options: []
-        property int index: 0
-        signal picked(int i)
-        spacing: 8
-        Accessible.role: Accessible.RadioButton
-        Repeater {
-            model: modeSwitch.options
-            delegate: ActionButton {
-                required property int index
-                required property string modelData
-                Layout.fillWidth: true; Layout.preferredWidth: 1
-                text: modelData
-                primary: modeSwitch.index === index
-                enabled: modeSwitch.enabled
-                Accessible.checkable: true
-                Accessible.checked: modeSwitch.index === index
-                onClicked: if (modeSwitch.index !== index) modeSwitch.picked(index)
+        property int currentIndex: 0
+        signal picked(int index)
+        padding: 4
+        Accessible.role: Accessible.Grouping
+        Accessible.name: "连接方式"
+        ButtonGroup { id: modeGroup }
+        background: Surface {
+            anchors.fill: parent; anchors.margins: -8; margin: 8
+            cornerRadius: Theme.radiusMd; inset: true; disabled: !picker.enabled
+        }
+        contentItem: RowLayout {
+            spacing: 4
+            Repeater {
+                model: picker.options
+                delegate: RadioButton {
+                    id: option
+                    required property int index
+                    required property string modelData
+                    objectName: picker.objectName + "-" + index
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
+                    implicitHeight: Theme.touchTarget
+                    text: modelData
+                    checked: picker.currentIndex === index
+                    ButtonGroup.group: modeGroup
+                    Accessible.role: Accessible.RadioButton
+                    Accessible.name: option.text
+                    hoverEnabled: true
+                    onClicked: if (picker.currentIndex !== index) picker.picked(index)
+                    indicator: null
+                    contentItem: Item {
+                        implicitWidth: optionLabel.implicitWidth + 24
+                        implicitHeight: optionLabel.implicitHeight
+                        Row {
+                            anchors.centerIn: parent; spacing: 8
+                            Accessible.ignored: true
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 16; height: width; radius: width / 2
+                                color: "transparent"
+                                border.color: !option.enabled ? Theme.inkFaint : option.checked ? Theme.accent : Theme.inkMuted
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: 8; height: width; radius: width / 2
+                                    visible: option.checked
+                                    color: parent.border.color
+                                }
+                            }
+                            Text {
+                                id: optionLabel
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: option.text; font: option.font
+                                color: !option.enabled ? Theme.inkFaint : option.checked ? Theme.accent : Theme.ink
+                            }
+                        }
+                    }
+                    background: Rectangle {
+                        radius: Theme.radiusSm
+                        color: option.checked || option.down ? Theme.accentSoft
+                            : option.enabled && option.hovered ? Theme.surfaceLift : "transparent"
+                        border.width: option.visualFocus ? 1 : 0
+                        border.color: Theme.accent
+                        Behavior on color { enabled: window.motionEnabled; ColorAnimation { duration: Theme.durState } }
+                    }
+                }
             }
         }
     }
@@ -2325,7 +2376,11 @@ ApplicationWindow {
                                                     AgentMark { kind: "openclaw" }
                                                     Heading { text: "OpenClaw"; Layout.fillWidth: true }
                                                     StatusDot { idle: !window.openClawReady; color: window.openClawReady ? Theme.success : host.openClaw.invalid ? Theme.warning : Theme.inkFaint }
-                                                    Hint { objectName: "openClawState"; text: window.openClawStateText }
+                                                    Hint {
+                                                        objectName: "openClawState"
+                                                        text: window.openClawConnectionState(openClawCard.savedMode === "remote" ? "远程已连接" : "本机已连接")
+                                                        color: host.openClaw.invalid || !host.openClaw.url ? Theme.warning : window.openClawReady ? Theme.success : Theme.inkMuted
+                                                    }
                                                     InfoHintButton {
                                                         id: openClawInfoBtn
                                                         objectName: "openClawInfo"
@@ -2336,11 +2391,11 @@ ApplicationWindow {
                                                     visible: openClawInfoBtn.expanded; Layout.fillWidth: true
                                                     text: "本机：连接这台电脑上运行的 Gateway，只需填写端口。\n远程：连接另一台主机上的 Gateway，须使用 wss:// 加密地址，不接受明文 ws://。"
                                                 }
-                                                ModeSwitch {
+                                                ConnectionModePicker {
                                                     objectName: "openClawMode"
                                                     Layout.fillWidth: true
                                                     options: ["本机", "远程"]
-                                                    index: openClawCard.mode === "remote" ? 1 : 0
+                                                    currentIndex: openClawCard.mode === "remote" ? 1 : 0
                                                     enabled: !host.busy && openClawCard.editable
                                                     onPicked: function(i) { openClawCard.mode = i === 1 ? "remote" : "local" }
                                                 }
@@ -2412,7 +2467,13 @@ ApplicationWindow {
                                                     AgentMark { kind: "hermes" }
                                                     Heading { text: "Hermes Agent"; Layout.fillWidth: true }
                                                     StatusDot { idle: window.backendFor("hermes")?.ready !== true; color: window.backendFor("hermes")?.ready === true ? Theme.success : Theme.inkFaint }
-                                                    Hint { text: window.backendFor("hermes")?.ready === true ? "已连接" : hermesRemoteCard.savedMode === "remote" ? "SSH 远程" : "本机 CLI" }
+                                                    Hint {
+                                                        objectName: "hermesConnectionState"
+                                                        readonly property bool ready: window.backendFor("hermes")?.ready === true && host.desiredRunning
+                                                        readonly property string savedLabel: hermesRemoteCard.savedMode === "remote" ? "SSH 远程" : "本机"
+                                                        text: host.resumePending ? "正在重新连接" : ready ? savedLabel + "已连接" : "当前：" + savedLabel
+                                                        color: ready && !host.resumePending ? Theme.success : Theme.inkMuted
+                                                    }
                                                     InfoHintButton {
                                                         id: hermesInfoBtn
                                                         objectName: "hermesRemoteInfo"
@@ -2423,11 +2484,11 @@ ApplicationWindow {
                                                     visible: hermesInfoBtn.expanded; Layout.fillWidth: true
                                                     text: "本机：使用这台电脑上的 Hermes CLI 与 Gateway。\nSSH 远程：通过免密 SSH 连接另一台主机上已运行的 Gateway（需支持 gateway attach，工作目录两端须以相同路径可访问）。"
                                                 }
-                                                ModeSwitch {
+                                                ConnectionModePicker {
                                                     objectName: "hermesMode"
                                                     Layout.fillWidth: true
                                                     options: ["本机", "SSH 远程"]
-                                                    index: hermesRemoteCard.mode === "remote" ? 1 : 0
+                                                    currentIndex: hermesRemoteCard.mode === "remote" ? 1 : 0
                                                     enabled: !host.busy && hermesRemoteCard.editable
                                                     onPicked: function(i) { hermesRemoteCard.mode = i === 1 ? "remote" : "local" }
                                                 }
