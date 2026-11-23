@@ -3,12 +3,14 @@ import QtQuick
 Item {
     id: root
     property color color: Theme.inkFaint
+    property real diameter: 8
     property bool idle: false
     property bool syncing: false
     implicitWidth: 16; implicitHeight: 16
     Rectangle {
+        objectName: "statusDotInk"
         anchors.centerIn: parent
-        width: root.syncing ? 6 : 8; height: width; radius: width / 2
+        width: root.syncing ? 6 : root.diameter; height: width; radius: width / 2
         color: root.idle ? "transparent" : root.color
         border.width: root.idle ? 1.5 : 0; border.color: root.color
     }

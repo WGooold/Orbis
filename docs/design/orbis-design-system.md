@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| 版本 | 1.2 / 2026-11-16 |
+| 版本 | 1.3 / 2026-11-23 |
 | 适用 | Android（Compose）、iOS（SwiftUI）、Windows / macOS Host（Qt/QML）、Relay 官网 |
 | 地位 | 唯一的完整规范。设计系统（tokens、组件、预览）与可点交互稿都由它推导，冲突时以本文为准 |
 | Token | 全部数值在第 12 节逐项列出，与设计系统的 `tokens.json` 同源 |
@@ -954,6 +954,13 @@ Agent 回复里一个可见的步骤——思考、正文或工具——放在�
 
 ### 11.7 反馈与叠加
 
+#### StatusLabel：状态点与文字
+
+- **垂直居中，圆心与文字同高。** 圆点（包括外圈动效槽）的圆心与它所说明的那一行文字的行盒中心等高。不要把点对齐到文字基线、整块多行文字或整个卡片，也不按字形、语言或页面加 `y` 偏移。
+- **紧凑行只显示一行。** 状态词、连接胶囊和「运行中」列表的会话标题均单行，宽度不足时在文字尾部省略；不缩小字号或状态点。后续说明另起一行；确需多行的独立正文，点只对齐第一行。省略只影响显示，完整文本须可由读屏读取；桌面会话标题可悬停查看全文。
+- 默认使用 `dot`（8）与 `dot-ring`（16）固定槽位，槽与文字间距 `space-6`。紧凑胶囊可保留 6 的点径；实心、空心、工作动效与减少动画的切换都不移动槽位或文字。点不重复播报已有的文字状态。
+- 当点有独立操作（如 Host 概览的 CLI 路径入口），保留独立命中区，圆心仍与状态文字等高。图标角标、选中标记和无文字的通知点不套用行内布局。
+
 #### StatusPill
 
 小号凸起胶囊，说明连接或模式：状态点 + 一两个词 + 可选的锁。
@@ -1302,7 +1309,7 @@ Agent 回复里一个可见的步骤——思考、正文或工具——放在�
 | `Checkbox` | `NeumorphCheckbox`、`OrbisSelectionIndicator` | `OrbisCheckbox`、`OrbisSelectionIndicator` | — |
 | `Switch` | 新增（设置布尔项） | 新增 | `softSwitch` |
 | `Segmented` | `AgentChoice`、协议模式按钮组 | 同 | — |
-| `StatusDot` / `StatusPill` | `NeumorphStatusDot`、首页连接胶囊、`StatusRow` 值 | 同名视图 | 状态点 + 标签 |
+| `StatusDot` / `StatusLabel` / `StatusPill` | `NeumorphStatusDot`、首页连接胶囊、`StatusRow` 值 | `OrbisStatusDot`、`RuntimeStatusLabel`、`ConnectionPill` | `StatusDot`、`StatusLabel` |
 | `AgentLabel` | `AgentLabel` / `AgentEmblem` / `AgentIconRecess` / `AgentTheme` | `palette.agent()` + 视图 | — |
 | `Wordmark` | `OrbisWordmark` | 同 | 字标 |
 | `TopBar` | `RemoteTopAppBar`、会话顶栏 | 同 | 页面标题区 |
@@ -1478,3 +1485,4 @@ Android 从 `Icons.Rounded.*`（填充为主）迁到 Material Symbols Rounded �
 | 11-08 | 状态点去掉凸起、高光与呼吸：空闲空心圈、有状态实心点、正在工作时外圈绕行弧；删除 `dur-breath`，`dot-socket` 改为 `dot-ring` | 呼吸光晕质感差、读起来怪 |
 | 11-08 | 圆盘当前配置名由 `display` 28 改为 `title` 20；新增 `opacity-dim`；选中一律"按下去"不加描边；所有可点元素命中区 ≥48 | 全量自查：字号成对、间距落栅格、选中与命中区合规 |
 | 11-16 | 新增「错误与提示的形式和时机」：F0 静默 / F1 原位 / F2 状态 / F3 短反馈 / F4 横幅 / F5 对话框，选层级顺序、时机、位置、文案与读屏；短反馈与横幅分位置，错误按层级而非一律常驻 | 迟到的合法回包被报成协议错误（SC91）；所有错误共用一种常驻形式，噪音与真正需要处理的问题无法区分 |
+| 11-23 | 行内状态点和文字共用一条中线；紧凑行单行省略，由共享组件约束 | Host Agent 详情的长会话标题换行后，绿点落在两行之间（HOST-STATUS-ALIGN-01） |

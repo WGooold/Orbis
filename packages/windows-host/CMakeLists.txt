@@ -61,6 +61,7 @@ set_source_files_properties(src/qml/Motion.js PROPERTIES QT_RESOURCE_ALIAS Motio
 set_source_files_properties(src/qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE QT_RESOURCE_ALIAS Theme.qml)
 set_source_files_properties(src/qml/Surface.qml PROPERTIES QT_RESOURCE_ALIAS Surface.qml)
 set_source_files_properties(src/qml/StatusDot.qml PROPERTIES QT_RESOURCE_ALIAS StatusDot.qml)
+set_source_files_properties(src/qml/StatusLabel.qml PROPERTIES QT_RESOURCE_ALIAS StatusLabel.qml)
 set_source_files_properties(src/qml/ThemePreview.qml PROPERTIES QT_RESOURCE_ALIAS ThemePreview.qml)
 set_source_files_properties(src/qml/SymbolIcon.qml PROPERTIES QT_RESOURCE_ALIAS SymbolIcon.qml)
 set_source_files_properties(src/qml/Symbols.js PROPERTIES QT_RESOURCE_ALIAS Symbols.js QT_QML_SKIP_QMLDIR_ENTRY TRUE)
@@ -68,7 +69,7 @@ set_source_files_properties(src/qml/AgentLatch.qml PROPERTIES QT_RESOURCE_ALIAS 
 set_source_files_properties(src/qml/AgentMark.qml PROPERTIES QT_RESOURCE_ALIAS AgentMark.qml)
 set_source_files_properties(src/qml/AgentMarks.js PROPERTIES QT_RESOURCE_ALIAS AgentMarks.js QT_QML_SKIP_QMLDIR_ENTRY TRUE)
 set(_orbis_host_qml_files
-  src/qml/StatusDot.qml src/qml/ThemePreview.qml src/qml/Theme.qml src/qml/Surface.qml
+  src/qml/StatusDot.qml src/qml/StatusLabel.qml src/qml/ThemePreview.qml src/qml/Theme.qml src/qml/Surface.qml
   src/qml/SymbolIcon.qml src/qml/Symbols.js src/qml/AgentMark.qml src/qml/AgentLatch.qml
   src/qml/AgentMarks.js src/qml/MotionText.qml src/qml/Motion.js src/qml/Main.qml
   src/qml/Card.qml src/qml/ActionButton.qml src/qml/DiagnosticLogView.qml src/qml/ProviderFlow.js)

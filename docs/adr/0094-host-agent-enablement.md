@@ -138,3 +138,10 @@ OpenCode 只在当前启用租约内创建连接监视器和会话适配器。�
 
 - 桌面端：[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)、[`AgentLatch.qml`](../../packages/windows-host/src/qml/AgentLatch.qml)、[`Symbols.js`](../../packages/windows-host/src/qml/Symbols.js)、[`HostController.h`](../../packages/windows-host/src/HostController.h)、[`HostController.cpp`](../../packages/windows-host/src/HostController.cpp)、[`main.cpp`](../../packages/windows-host/src/main.cpp) 及 [`OverviewRowHoverTest.cpp`](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp)（验证 Agent 页双栏点击「供应商配置」零位移、Agent 接入设置就地展示、双生胶囊互跳及 Kimi Smoke 检查）。
 - 移动端：Android [`OrbisSymbols.kt`](../../android/app/src/main/java/com/orbising/orbis/OrbisSymbols.kt)、[`AgentDialState.kt`](../../android/app/src/main/java/com/orbising/orbis/AgentDialState.kt)、[`ProviderDialScreen.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialScreen.kt)、[`AgentDialStateTest.kt`](../../android/app/src/test/java/com/orbising/orbis/AgentDialStateTest.kt)；iOS [`ProviderDialGeometry.swift`](../../ios/Orbis/Orbis/ProviderDialGeometry.swift)、[`StatusViews.swift`](../../ios/Orbis/Orbis/StatusViews.swift)、[`ProviderDialGeometryTests.swift`](../../ios/Orbis/Tests/ProviderDialGeometryTests.swift)。
+
+### HOST-STATUS-ALIGN-01：状态点与文字共用中线（2026-11-23）
+
+Host Agent 详情「运行中」列表的绿点与单行会话标题居中对齐，长标题尾部省略，悬停显示全文。侧栏连接状态、概览设备胶囊、诊断页桌面接入状态和下载菜单更新标签复用 [`StatusLabel.qml`](../../packages/windows-host/src/qml/StatusLabel.qml)；概览 Agent 独立可点的状态区保留原命中区域。Android／iOS 轮盘对应列表已有单行居中，Relay 官网的行内状态使用居中布局。对齐规则见[设计规范 §11.7](../design/orbis-design-system.md#117-反馈与叠加)。
+
+- 自动验证：macOS Qt 离屏 1020／1180 两种宽度的 Agent 详情、侧栏连接、设备胶囊及诊断状态共线断言通过；`OverviewRowHoverTest` 全部通过。单平台 Android 下载菜单的更新标签对齐断言通过；双平台菜单打开的三条断言在本次修改前的对照中同样失败。回归入口为 [`OverviewRowHoverTest.cpp`](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp) 和 [`MobileDownloadLayoutTest.cpp`](../../packages/windows-host/src/tests/MobileDownloadLayoutTest.cpp)，日志和截图见 `.artifacts/host-status-alignment-20261123/`。
+- 未发布安装包，用户验收未进行。

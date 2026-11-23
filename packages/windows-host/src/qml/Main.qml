@@ -1092,10 +1092,13 @@ ApplicationWindow {
                 }
                 Item { Layout.fillHeight: true }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline }
-                RowLayout {
-                    Layout.topMargin: 14; spacing: 9
-                    StatusDot { color: window.hostOnline ? Theme.success : window.hostLinking ? Theme.warning : Theme.inkFaint; idle: host.state === "stopped" && !host.resumePending; syncing: window.hostLinking }
-                    Label { text: stateText(); color: Theme.inkMuted; font.pixelSize: Theme.caption }
+                StatusLabel {
+                    objectName: "hostConnectionStatus"
+                    Layout.topMargin: 14; Layout.fillWidth: true
+                    text: window.stateText(); font.pixelSize: Theme.caption
+                    dotColor: window.hostOnline ? Theme.success : window.hostLinking ? Theme.warning : Theme.inkFaint
+                    idle: host.state === "stopped" && !host.resumePending
+                    syncing: window.hostLinking
                 }
                 Label { text: Qt.platform.os === "osx" ? "macOS v" + host.version : "Windows v" + host.version; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.bottomMargin: 10 }
             }
@@ -1325,11 +1328,11 @@ ApplicationWindow {
                                             contentItem: RowLayout {
                                                 id: chipRow
                                                 anchors.centerIn: parent; spacing: 8
-                                                Rectangle {
-                                                    Layout.preferredWidth: 6; Layout.preferredHeight: 6; radius: 3
-                                                    color: deviceChip.path === "offline" ? Theme.inkFaint : Theme.success
+                                                StatusLabel {
+                                                    objectName: "overviewDeviceStatus"
+                                                    text: deviceChip.modelData.label || "手机"; color: Theme.ink; font.pixelSize: Theme.caption
+                                                    dotDiameter: 6; dotColor: deviceChip.path === "offline" ? Theme.inkFaint : Theme.success
                                                 }
-                                                Label { text: deviceChip.modelData.label || "手机"; color: Theme.ink; font.pixelSize: Theme.caption }
                                                 Label { text: deviceChip.pathLabel; color: Theme.inkMuted; font.pixelSize: Theme.caption }
                                             }
                                         }
@@ -1670,12 +1673,10 @@ ApplicationWindow {
                                                         font.pixelSize: Theme.body; font.weight: Font.Normal
                                                         Layout.fillWidth: true
                                                     }
-                                                    RowLayout {
+                                                    StatusLabel {
                                                         objectName: "androidDownloadUpdateBadge"
                                                         visible: window.androidUpdatesAvailable()
-                                                        spacing: 6
-                                                        Rectangle { width: 8; height: 8; radius: 4; color: Theme.warning }
-                                                        Label { text: "更新"; color: Theme.warning; font.pixelSize: Theme.label; font.weight: Font.Normal }
+                                                        text: "更新"; color: Theme.warning; dotColor: Theme.warning
                                                     }
                                                 }
                                             }
@@ -1904,7 +1905,7 @@ ApplicationWindow {
                                             Hint {
                                                 readonly property int runCount: window.detailPowered ? (window.detailSessions.total || 0) : 0
                                                 readonly property string baseState: window.selectedAgentRow ? window.agentStatus(window.selectedAgentRow).text : ""
-                                                text: (baseState === "运行中" && runCount > 0 ? "已连接" : baseState) + (runCount > 0 ? " · " + runCount + " 个运行中" : "")
+                                                text: (baseState === "运行中" && runCount > 0 ? "已连接" : baseState) + (runCount > 0 ? "，" + runCount + " 个运行中" : "")
                                                 color: window.selectedAgentRow ? window.agentStatus(window.selectedAgentRow).color : Theme.inkMuted
                                             }
                                         }
@@ -2142,7 +2143,7 @@ ApplicationWindow {
                                         }
                                         ColumnLayout {
                                             visible: (window.detailSessions.total || 0) > 0; Layout.fillWidth: true; spacing: 8
-                                            Heading { text: "运行中 · " + (window.detailSessions.total || 0) }
+                                            Heading { text: "运行中（" + window.detailSessions.total + "）" }
                                             Item {
                                                 Layout.fillWidth: true
                                                 implicitHeight: sessionListColumn.implicitHeight + 20
@@ -2155,12 +2156,16 @@ ApplicationWindow {
                                                     x: 12; y: 10; width: parent.width - 24; spacing: 6
                                                     Repeater {
                                                         model: window.detailSessions.sessions || []
-                                                        delegate: RowLayout {
-                                                            id: sessionItem
+                                                        delegate: StatusLabel {
                                                             required property string modelData
-                                                            Layout.fillWidth: true; spacing: 8
-                                                            Rectangle { Layout.preferredWidth: 8; Layout.preferredHeight: 8; radius: 4; color: Theme.success }
-                                                            Hint { text: sessionItem.modelData; Layout.fillWidth: true }
+                                                            required property int index
+                                                            objectName: "agentRunningSession-" + index
+                                                            Layout.fillWidth: true; Layout.preferredWidth: 1
+                                                            text: modelData; dotColor: Theme.success
+                                                            ToolTip.visible: sessionHover.hovered && statusTruncated
+                                                            ToolTip.text: text
+                                                            ToolTip.delay: 500
+                                                            HoverHandler { id: sessionHover }
                                                         }
                                                     }
                                                     Hint { visible: window.detailSessions.total > (window.detailSessions.sessions || []).length; text: "另外 " + (window.detailSessions.total - (window.detailSessions.sessions || []).length) + " 个" }
@@ -2663,10 +2668,13 @@ ApplicationWindow {
                                     Item { Layout.fillWidth: true }
                                     ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders("codex") }
                                 }
-                                RowLayout {
-                                    Layout.fillWidth: true; spacing: 10
-                                    StatusDot { color: window.codexDesktopColor(); idle: window.codexDesktopState() === "closed" }
-                                    Label { objectName: "codexDesktopAttachLabel"; text: window.codexDesktopLabel(); color: window.codexDesktopColor(); font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+                                StatusLabel {
+                                    objectName: "codexDesktopAttachStatus"
+                                    Layout.fillWidth: true
+                                    labelObjectName: "codexDesktopAttachLabel"
+                                    text: window.codexDesktopLabel(); color: dotColor; dotColor: window.codexDesktopColor()
+                                    idle: window.codexDesktopState() === "closed"
+                                    font.pixelSize: Theme.body; font.weight: Font.DemiBold
                                 }
                                 Hint { objectName: "codexDesktopAttachReason"; visible: text.length > 0; text: window.codexDesktopReason(); Layout.fillWidth: true }
                             }
@@ -2678,10 +2686,12 @@ ApplicationWindow {
                             ColumnLayout {
                                 anchors.fill: parent; spacing: 12
                                 Heading { text: "DeepSeek 桌面版接入" }
-                                RowLayout {
-                                    Layout.fillWidth: true; spacing: 10
-                                    StatusDot { color: window.dshDesktopColor(); idle: window.dshDesktopState() === "closed" }
-                                    Label { text: window.dshDesktopLabel(); color: window.dshDesktopColor(); font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+                                StatusLabel {
+                                    objectName: "dshDesktopAttachStatus"
+                                    Layout.fillWidth: true
+                                    text: window.dshDesktopLabel(); color: dotColor; dotColor: window.dshDesktopColor()
+                                    idle: window.dshDesktopState() === "closed"
+                                    font.pixelSize: Theme.body; font.weight: Font.DemiBold
                                 }
                                 Hint { text: window.dshDesktopReason(); Layout.fillWidth: true }
                             }

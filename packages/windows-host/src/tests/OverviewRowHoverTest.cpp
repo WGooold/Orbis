@@ -91,7 +91,9 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
       event: "status",
       runtimeCount: 4,
       devices: [{ deviceId: "phone-1", label: "iPhone", path: "relay", createdAt: 1 }],
-      activeAgentSessions: { codexDesktop: { total: 4 } },
+      activeAgentSessions: { codexDesktop: { total: 4, sessions: [
+        "整理 Sync 状态", "同步和布局回归：" + "核对中英混排、窄窗口、连接途径与状态标签。".repeat(7) + " This is a deliberately long session title"
+      ] } },
       model: {
         domains: [{
           domain: "backends",
@@ -349,6 +351,85 @@ private slots:
                                 .arg(railWidthBefore).arg(rail->width())
                                 .arg(detailWidthBefore).arg(detail->width())));
 
+        controller.shutdown();
+    }
+
+    void runningSessionTitleElidesWithoutMovingDot_data() {
+        QTest::addColumn<int>("windowWidth");
+        QTest::newRow("compact") << 1020;
+        QTest::newRow("default") << 1180;
+    }
+
+    // HOST-STATUS-ALIGN-01: a long running-session title must elide, not push its dot between lines.
+    void runningSessionTitleElidesWithoutMovingDot() {
+        QFETCH(int, windowWidth);
+        QVERIFY(!QStandardPaths::findExecutable("node").isEmpty());
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        writeFixtureBridge(root.path());
+        const QString dataDir = root.filePath("desktop");
+        QDir().mkpath(dataDir);
+        {
+            QSettings appearance(dataDir + "/appearance.ini", QSettings::IniFormat);
+            appearance.beginGroup("Appearance");
+            appearance.setValue("material", "mist");
+            appearance.setValue("mode", "light");
+        }
+        HostController controller(root.path(), dataDir, root.filePath("state"), dataDir, false);
+        controller.m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
+        controller.m_tick.stop();
+        controller.m_credential = "orbis_host_fixture";
+
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("host", &controller);
+        engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(dataDir + "/appearance.ini"));
+        engine.rootContext()->setContextProperty("orbisMotionEnabled", false);
+        engine.rootContext()->setContextProperty("trayAvailable", false);
+        engine.loadFromModule("Orbis.Host", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        window->resize(windowWidth, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QTRY_VERIFY(controller.bridgeReady() && !controller.agents().isEmpty() &&
+                    controller.activeAgentSessions().contains("codexDesktop"));
+        auto *content = window->contentItem();
+        const auto aligned = [](QQuickItem *row, const QString &textName) {
+            auto *dot = findVisualItem(row, "statusDotInk");
+            auto *text = findVisualItem(row, textName);
+            return row && row->isVisible() && dot && text && text->height() > 0 &&
+                   text->property("lineCount").toInt() == 1 &&
+                   qAbs(dot->mapToScene(dot->boundingRect().center()).y() -
+                        text->mapToScene(text->boundingRect().center()).y()) <= 0.5;
+        };
+        QTRY_VERIFY(aligned(findVisualItem(content, "hostConnectionStatus"), "statusText"));
+        QTRY_VERIFY(aligned(findVisualItem(content, "overviewDeviceStatus"), "statusText"));
+
+        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, QString("codexDesktop"))));
+        QTRY_COMPARE(window->property("page").toInt(), 2);
+        QQuickItem *shortRow = nullptr;
+        QQuickItem *longRow = nullptr;
+        QTRY_VERIFY((shortRow = findVisualItem(content, "agentRunningSession-0")) && shortRow->isVisible() &&
+                    (longRow = findVisualItem(content, "agentRunningSession-1")) && longRow->isVisible());
+        QTRY_VERIFY(aligned(shortRow, "statusText") && aligned(longRow, "statusText"));
+        QCOMPARE(shortRow->height(), longRow->height());
+        QVERIFY(!shortRow->property("statusTruncated").toBool());
+        auto *longText = findVisualItem(longRow, "statusText");
+        QVERIFY(longText);
+        QTRY_VERIFY2(longRow->property("statusTruncated").toBool(),
+                     qPrintable(QString("long row %1, label %2, implicit %3, content %4")
+                                    .arg(longRow->width()).arg(longText->width()).arg(longText->implicitWidth())
+                                    .arg(longText->property("contentWidth").toReal())));
+        QVERIFY(longRow->property("text").toString().endsWith("deliberately long session title"));
+
+        const auto screenshotBase = qEnvironmentVariable("ORBIS_HOST_STATUS_ALIGNMENT_SCREENSHOT");
+        if (!screenshotBase.isEmpty()) {
+            QVERIFY(window->grabWindow().save(QString("%1-%2.png").arg(screenshotBase).arg(windowWidth)));
+        }
+
+        QVERIFY(QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 4)));
+        QTRY_VERIFY(aligned(findVisualItem(content, "codexDesktopAttachStatus"), "codexDesktopAttachLabel"));
+        QTRY_VERIFY(aligned(findVisualItem(content, "dshDesktopAttachStatus"), "statusText"));
         controller.shutdown();
     }
 

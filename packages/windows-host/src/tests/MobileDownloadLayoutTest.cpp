@@ -321,6 +321,13 @@ private slots:
         QVERIFY(androidItem && androidBadge && iosItem);
         QTRY_VERIFY(androidItem->isVisible() && androidBadge->isVisible() && !iosItem->isVisible());
 
+        // HOST-STATUS-ALIGN-01: the Android update marker and its text share a centerline in the menu.
+        auto *badgeDot = findVisualItem(androidBadge, "statusDotInk");
+        auto *badgeText = findVisualItem(androidBadge, "statusText");
+        QVERIFY(badgeDot && badgeText && badgeText->property("lineCount").toInt() == 1);
+        QTRY_VERIFY(qAbs(badgeDot->mapToScene(badgeDot->boundingRect().center()).y() -
+                         badgeText->mapToScene(badgeText->boundingRect().center()).y()) <= 0.5);
+
         const auto screenshotBase = qEnvironmentVariable("ORBIS_MOBILE_DOWNLOAD_SCREENSHOT");
         if (!screenshotBase.isEmpty()) {
             QTest::qWait(80);
