@@ -65,6 +65,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     onCancel: () -> Unit = {}, drafts: SessionDraftStore? = null,
     onLoadConfiguration: (String, String) -> Unit = { _, _ -> },
     onSaveConfiguration: (SessionConfigurationValues) -> Unit = {},
+    onReviewPreviousLaunch: (() -> Unit)? = null,
     importMode: Boolean = false,
     onSubmit: (String, String, String, Rect, Rect) -> Boolean) {
     val localStore = rememberSaveable(saver = SessionDraftStore.Saver) { SessionDraftStore() }
@@ -279,6 +280,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     val title = config.launchErrorTitle
                     if (title != null) StatusWithInfo(title, L10n.hostText(error), error = true)
                     else Text(L10n.hostText(error), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+                }
+                if (onReviewPreviousLaunch != null && state.trackedLaunches.any { it.configured && !it.following && (it.failure == null || it.unconfirmed) }) {
+                    NeumorphTextButton(L10n.tr("核对原启动"), onClick = onReviewPreviousLaunch)
                 }
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     NeumorphTextField(fieldValue, { fieldValue = it; text = it.text }, Modifier.weight(1f).testTag("draft-message").focusRequester(focus).onGloballyPositioned { fieldBounds = it.boundsInWindow() }.onPreviewKeyEvent { event ->

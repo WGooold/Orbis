@@ -788,6 +788,9 @@ struct SessionDraftView: View {
             if let error = owner.sessionLaunchError {
                 Text(L10n.hostText(error)).font(.orbisCaption()).foregroundStyle(p.error)
             }
+            if owner.canReviewPreviousLaunch && onImportSubmit == nil {
+                OrbisMotionButton { owner.reviewPreviousLaunch() } label: { Text(L10n.tr("核对原启动")) }.buttonStyle(.plain)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 OrbisDraftEditor(text: $text, focused: Binding(get: { focused }, set: { focused = $0 }),
                     placeholder: !canUseSelectedAgent ? L10n.tr("输入消息") : L10n.tr("让 {0} 做什么？", owner.unifiedCodexHistory && family == "codex" ? "Codex" : agent == "codexDesktop" || agent == "dshDesktop" ? agentVariantTitle(agent) : agentTitle(agent)),
@@ -817,7 +820,8 @@ struct SessionDraftView: View {
                     text = owner.draft(for: draftRuntime)
                     let rememberedPath = owner.draft(for: pathRuntime)
                     if presetCwd == nil && !rememberedPath.isEmpty { path = rememberedPath }
-                    if presetCwd == nil, text.isEmpty, let draft = owner.recoveredLaunchDraft {
+                    let returnedDraft = owner.takeReturnedLaunchDraft()
+                    if presetCwd == nil, text.isEmpty, let draft = returnedDraft {
                         path = draft.cwd
                         if allowed.contains(draft.agentKind) { agent = draft.agentKind }
                         text = draft.text

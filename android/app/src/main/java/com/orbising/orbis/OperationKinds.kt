@@ -402,8 +402,14 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     var sends = pendingSends
     var configurationFailures = configFailures
     var launch = launching
+    var background = backgroundLaunches
     var selected = selectedRuntimeId
-    var draftMove = launchDraftMove
+    var draftMoves = launchDraftMoves
+    fun findLaunch(id: String) = launch?.takeIf { it.requestId == id } ?: background[id]
+    fun saveLaunch(value: LaunchState) {
+        if (launch?.requestId == value.requestId) launch = value
+        else background = background + (value.requestId to value)
+    }
     var activateRequests = sessionActivateRequests
     val archiveRejections = step.events.count { it is LedgerEvent.Rejected && it.operation.payload is LedgerPayload.Archive }
     for (event in step.events) when (event) {
@@ -430,9 +436,9 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
             }
             // 启动失败：在聊天页原位显示原因及“重试”“返回”，草稿保留，不自动退回原页面。
             (event.operation.payload as? LedgerPayload.Launch)?.let { payload ->
-                if (launch?.requestId == payload.requestId) {
+                findLaunch(payload.requestId)?.let { current ->
                     val reason = (event.operation.phase as? LedgerPhase.Rejected)?.rejection?.reason.orEmpty().ifBlank { L10n.tr("启动失败") }
-                    launch = launch?.copy(failure = reason)?.takeIf { it.following }
+                    saveLaunch(current.copy(failure = reason))
                 }
                 activateRequests = activateRequests - payload.requestId
             }
@@ -459,17 +465,18 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
         }
         is LedgerEvent.Verify -> verify = true
         is LedgerEvent.Unconfirmed -> (event.operation.payload as? LedgerPayload.Launch)?.let { payload ->
-            if (launch?.requestId == payload.requestId) launch = launch?.copy(unconfirmed = true)
+            findLaunch(payload.requestId)?.let { saveLaunch(it.copy(unconfirmed = true)) }
             activateRequests = activateRequests - payload.requestId
         }
         is LedgerEvent.Landed -> (event.operation.payload as? LedgerPayload.Launch)?.let { payload ->
             // 启动成功：草稿迁到真实会话（V17），用户仍在启动页时切过去；离开了就不拉回，会话照常出现在首页。
-            val current = launch?.takeIf { it.requestId == payload.requestId } ?: return@let
+            val current = findLaunch(payload.requestId) ?: return@let
             val real = current.sessionId?.let { runtimeForLaunch(current, it) }
-            if (real != null) draftMove = current.runtime() to real
-            if (current.following && selected == current.placeholder && real != null) selected = real.runtimeId
-            else if (selected == current.placeholder) selected = null
-            launch = null
+            if (real != null) draftMoves = draftMoves + (current.runtime() to real)
+            if (launch?.requestId == current.requestId) {
+                if (selected == current.placeholder) selected = real?.runtimeId?.takeIf { current.following }
+                launch = null
+            } else background = background - current.requestId
         } ?: (event.operation.payload as? LedgerPayload.Respond)?.let { respond ->
             // 回答已结算：原位短暂显示结果（约 2.5 秒，V16）。只因请求已不在而结算的显示“已处理”，不声称是本机回答生效。
             outcomes = outcomes + (respond.runtimeId to InteractionOutcome(event.operation.opId,
@@ -479,7 +486,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     }
     return copy(ledger = nextLedger, sessionOperationErrors = objectErrors, conversations = nextConversations, ledgerVerifyWanted = verify, interactionOutcomes = outcomes, pendingSends = sends,
         configFailures = configurationFailures,
-        launching = launch, selectedRuntimeId = selected, launchDraftMove = draftMove, sessionActivateRequests = activateRequests)
+        launching = launch, backgroundLaunches = background, selectedRuntimeId = selected, launchDraftMoves = draftMoves, sessionActivateRequests = activateRequests)
 }
 
 private val LedgerPhase.awaitsVerification get() = this == LedgerPhase.Unknown || this == LedgerPhase.Unconfirmed
@@ -509,12 +516,11 @@ internal fun RemoteState.ledgerBasis(domain: String): Map<String, Int> = mapOf(d
 private fun RemoteState.ledgerEvidence(domain: String): (LedgerOperation<LedgerPayload>) -> LedgerEvidence {
     if (domain == OperationKinds.RUNTIMES_DOMAIN) {
         val ids = runtimes.keys
-        val launch = launching
         return { op ->
             // `launch`：Host 给出的 Session 的 Runtime 已上线即落地。
             val payload = op.payload as? LedgerPayload.Launch
             if (payload == null) OperationKinds.evidence(op, ids)
-            else if (launch?.requestId == payload.requestId && launch.sessionId?.let { runtimeForLaunch(launch, it) } != null) LedgerEvidence.LANDED
+            else if (launch(payload.requestId)?.let { launch -> launch.sessionId?.let { runtimeForLaunch(launch, it) } } != null) LedgerEvidence.LANDED
             else LedgerEvidence.NONE
         }
     }
@@ -571,8 +577,14 @@ private fun RemoteState.stampAuthority(domain: String, read: Int?, complete: Boo
 }
 
 /** 在线列表已应用。 */
-internal fun RemoteState.ledgerRuntimeList(read: Int?, complete: Boolean): RemoteState =
-    ledgerAuthority(OperationKinds.RUNTIMES_DOMAIN, read, complete)
+internal fun RemoteState.ledgerRuntimeList(read: Int?, complete: Boolean): RemoteState {
+    // A full device.ready inventory can also be the first observation of the exact runtime.
+    val bound = trackedLaunches.fold(this) { state, launch ->
+        val runtime = launch.sessionId?.let { state.runtimeForLaunch(launch, it) }
+        if (runtime == null) state else state.bindLaunchPendingSends(launch, runtime)
+    }
+    return bound.ledgerAuthority(OperationKinds.RUNTIMES_DOMAIN, read, complete)
+}
 
 /** 通知快照被接受后：该 Runtime 的通知清单作为权威状态交给账本。 */
 internal fun RemoteState.ledgerNotices(runtimeId: String): RemoteState =
@@ -786,6 +798,7 @@ data class LaunchState(
     val spawnModeOverride: String? = null,
     val codexLaunchMode: String? = null,
     val endingWait: Boolean = false,
+    val configured: Boolean = false,
 ) {
     val status: String get() = if (unconfirmed) "launch_unconfirmed" else if (failure != null) "error" else "starting"
     /** 启动期间聊天页的占位 Runtime：草稿与消息归属它。 */
@@ -797,8 +810,22 @@ data class LaunchState(
 internal val RemoteState.launchPage: LaunchState? get() = launching?.takeIf { it.placeholder == selectedRuntimeId }
 
 /** `launch` 先记入账本（尚未写入），opId 即请求的 requestId；同时立即进入启动页。 */
+internal val RemoteState.trackedLaunches: List<LaunchState> get() = listOfNotNull(launching) + backgroundLaunches.values
+internal fun RemoteState.launch(id: String): LaunchState? = launching?.takeIf { it.requestId == id } ?: backgroundLaunches[id]
+internal fun RemoteState.updateLaunch(launch: LaunchState): RemoteState =
+    if (launching?.requestId == launch.requestId) copy(launching = launch) else copy(backgroundLaunches = backgroundLaunches + (launch.requestId to launch))
+internal fun RemoteState.parkForegroundLaunch(): RemoteState = launching?.let {
+    copy(launching = null, backgroundLaunches = backgroundLaunches + (it.requestId to it.copy(following = false)), activatedSessionToOpen = null)
+} ?: this
+internal fun RemoteState.focusLaunch(id: String): RemoteState {
+    val launch = launch(id) ?: return this
+    val next = if (launching?.requestId == id) this else parkForegroundLaunch()
+    return next.copy(launching = launch.copy(following = true), backgroundLaunches = next.backgroundLaunches - id,
+        selectedRuntimeId = launch.placeholder, selectedOfflineSessionId = null, allowAutomaticLaunchSelection = false)
+}
+
 internal fun RemoteState.createLaunch(
-    requestId: String, target: Map<String, String>, title: String, now: Long, spawnModeOverride: String? = null, codexLaunchMode: String? = null,
+    requestId: String, target: Map<String, String>, title: String, now: Long, spawnModeOverride: String? = null, codexLaunchMode: String? = null, configured: Boolean = false,
 ): Pair<RemoteState, LedgerCreation<LedgerPayload>> {
     val placeholder = "launch:$requestId"
     val (next, creation) = ledger.create(requestId, OperationKinds.LAUNCH, placeholder, policy = OperationKinds.launchPolicy,
@@ -806,27 +833,27 @@ internal fun RemoteState.createLaunch(
     if (creation !is LedgerCreation.Created) return this to creation
     val resumed = target["sessionId"]?.takeIf { target["type"] == "resume" }
     val launch = LaunchState(requestId, placeholder, target, title, target["cwd"] ?: resumed?.let { sessions[it]?.cwd }.orEmpty(),
-        target["agentKind"], resumed, spawnModeOverride = spawnModeOverride, codexLaunchMode = codexLaunchMode)
-    return copy(ledger = next, launching = launch, selectedRuntimeId = placeholder, selectedOfflineSessionId = null) to creation
+        target["agentKind"], resumed, spawnModeOverride = spawnModeOverride, codexLaunchMode = codexLaunchMode, configured = configured)
+    return parkForegroundLaunch().copy(ledger = next, launching = launch, selectedRuntimeId = placeholder, selectedOfflineSessionId = null,
+        allowAutomaticLaunchSelection = false) to creation
 }
 
 /** 同一 requestId 的 session.activated：记下 Host 给出的 Session，占位 Session 下的消息转到真实会话。 */
 internal fun RemoteState.launchActivated(requestId: String, sessionId: String, now: Long): RemoteState {
-    val launch = launching?.takeIf { it.requestId == requestId } ?: return this
+    val launch = launch(requestId) ?: return this
     val provisional = launch.resumed ?: launch.placeholder
-    val acknowledged = copy(launching = launch.copy(sessionId = sessionId),
+    val acknowledged = updateLaunch(launch.copy(sessionId = sessionId, unconfirmed = false, failure = null)).copy(
         launchSessions = launchSessions + (launch.placeholder to sessionId) + (provisional to sessionId))
     val acknowledgedWithSends = acknowledged.bindLaunchSession(launch.copy(sessionId = sessionId), sessionId)
-    val runtime = acknowledgedWithSends.runtimeForLaunch(launch, sessionId)
-    val bound = runtime?.let(acknowledgedWithSends::bindLaunchPendingSends) ?: acknowledgedWithSends
-    return bound
+    return acknowledgedWithSends
         .ledgerReceipt(requestId, LedgerReceipt.Succeeded, now)
         .ledgerRuntimeList(read = null, complete = false)
 }
 
 /** 用户离开了启动页：启动继续，成功后不把用户拉回；失败或未确认的启动随之收起。 */
 internal fun RemoteState.stopFollowingLaunch(): RemoteState {
-    val launch = launching ?: return this
-    return copy(launching = if (launch.failure != null || launch.unconfirmed) null else launch.copy(following = false),
-        activatedSessionToOpen = null)
+    val selected = if (allowAutomaticLaunchSelection) copy(allowAutomaticLaunchSelection = false) else this
+    val launch = launching ?: return selected
+    return if (launch.failure != null || launch.unconfirmed) selected.parkForegroundLaunch()
+    else selected.copy(launching = launch.copy(following = false), activatedSessionToOpen = null)
 }

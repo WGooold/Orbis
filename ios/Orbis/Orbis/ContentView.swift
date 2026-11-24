@@ -208,6 +208,7 @@ private struct NavigationRoot: View, Equatable {
                     case .update: if let url = URL(string: "https://orbising.com/#download") { openURL(url) }
                     case .restoreDraft:
                         LiveActivityCoordinator.shared.cancelQueuedOpen()
+                        store.stopFollowingLaunch()
                         withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
                     }
                 }.orbisNested()
@@ -481,10 +482,12 @@ private struct NavigationRoot: View, Equatable {
             if !navigation.pages.isEmpty {
                 navigation.replace(with: [])
                 selectRoot(.chat)
+                store.stopFollowingLaunch()
                 withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
             } else if newSessionOpen {
                 draftCloseRequest += 1
             } else {
+                store.stopFollowingLaunch()
                 withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
             }
         }, onDraftCancelled: { retained in
@@ -537,6 +540,7 @@ private struct NavigationRoot: View, Equatable {
                           onNewSession: { cwd in
                               navigation.replace(with: [])
                               newSessionCwd = cwd; setDrawer(false); selectRoot(.chat)
+                              store.stopFollowingLaunch()
                               withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
                           }, onAddHost: { setDrawer(false); push(.pairing) },
                           onProviders: { selectRoot(.providers); navigation.replace(with: []); setDrawer(false) },
@@ -549,6 +553,7 @@ private struct NavigationRoot: View, Equatable {
         navigation.replace(with: [])
         selectRoot(.chat)
         newSessionCwd = nil
+        store.stopFollowingLaunch()
         withAnimation(reduceMotion ? nil : .orbisCollapse) { newSessionOpen = true }
     }
     /// A page's own back control runs the same slide as a released swipe and reveals the same source.

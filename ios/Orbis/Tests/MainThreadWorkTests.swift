@@ -39,10 +39,10 @@ struct MainThreadWorkTests {
         let journal = ConfiguredLaunchJournal(url: root.appendingPathComponent("launch.json"), io: HostLocalIO(beforeIO: { gate.work() }))
         #expect(await gate.waitEntered())
         #expect(!journal.loaded)
-        #expect(journal.update(expectedId: nil, value: ["launchId": "too-early"]) == nil)
+        #expect(journal.reserve(["launchId": "too-early"]) == nil)
         gate.release.signal()
         await journal.waitLoaded()
-        #expect(journal.loaded && journal.snapshot == nil)
+        #expect(journal.loaded && journal.pending.isEmpty)
     }
 
     // Accepted mutations update memory immediately, while durable completions
@@ -52,40 +52,39 @@ struct MainThreadWorkTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let journal = ConfiguredLaunchJournal(url: file, io: HostLocalIO(beforeIO: { gate.work() }))
         await journal.waitLoaded(); gate.arm()
-        let first = try #require(journal.update(expectedId: nil, value: ["launchId": "one"]))
+        let first = try #require(journal.reserve(["launchId": "one"]))
         #expect(await gate.waitEntered())
-        #expect(journal.launchId == "one")
-        #expect(journal.update(expectedId: nil, value: ["launchId": "duplicate"]) == nil)
-        let second = try #require(journal.update(expectedId: "one", value: ["launchId": "one", "following": false]))
-        #expect(journal.snapshot?["following"] as? Bool == false)
+        #expect(journal.snapshot("one") != nil)
+        #expect(journal.reserve(["launchId": "one"]) == nil)
+        let second = try #require(journal.update("one", value: ["launchId": "one", "following": false]))
+        #expect(journal.snapshot("one")?["following"] as? Bool == false)
         gate.release.signal()
         #expect(await first.value); #expect(await second.value)
-        let clear = try #require(journal.update(expectedId: "one", value: nil))
-        let next = try #require(journal.update(expectedId: nil, value: ["launchId": "two"]))
-        #expect(journal.update(expectedId: "one", value: nil) == nil)
+        let clear = try #require(journal.update("one", value: nil))
+        let next = try #require(journal.reserve(["launchId": "two"]))
+        #expect(journal.update("one", value: nil) == nil)
         #expect(await clear.value); #expect(await next.value)
         let restored = ConfiguredLaunchJournal(url: file)
         await restored.waitLoaded()
-        #expect(restored.launchId == "two")
+        #expect(restored.snapshot("two") != nil && restored.snapshot("one") == nil)
     }
 
-    // A failed durable write retains its identity for retry instead of authorizing
-    // a second launch. The same record survives a subsequent successful retry.
+    // A failed durable write retains the same identity and never admits a duplicate of it.
     @Test func failedJournalWriteRetainsIdentityForRetry() async throws {
         let root = url(), file = root.appendingPathComponent("launch.json")
         defer { try? FileManager.default.removeItem(at: root) }
         try Data().write(to: root) // A file deliberately blocks creation of its child directory.
         let journal = ConfiguredLaunchJournal(url: file)
         await journal.waitLoaded()
-        let first = try #require(journal.update(expectedId: nil, value: ["launchId": "one"]))
+        let first = try #require(journal.reserve(["launchId": "one"]))
         #expect(await !first.value)
-        #expect(journal.launchId == "one")
-        #expect(journal.update(expectedId: nil, value: ["launchId": "duplicate"]) == nil)
+        #expect(journal.snapshot("one") != nil)
+        #expect(journal.reserve(["launchId": "one"]) == nil)
         try FileManager.default.removeItem(at: root)
-        let retry = try #require(journal.update(expectedId: "one", value: journal.snapshot))
+        let retry = try #require(journal.update("one", value: journal.snapshot("one")))
         #expect(await retry.value)
         let restored = ConfiguredLaunchJournal(url: file)
-        await restored.waitLoaded(); #expect(restored.launchId == "one")
+        await restored.waitLoaded(); #expect(restored.snapshot("one") != nil)
     }
 
     // Decode work suspended on an old Host cannot publish into a replacement

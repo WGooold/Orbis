@@ -64,11 +64,12 @@ struct LaunchLedgerTests {
         return fixture
     }
 
-    private func configured(_ fixture: Fixture, prefersAuto: Bool = false) async throws {
-        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": [], "hostFeatures": prefersAuto ? ["session.spawn.auto"] : []])
-        fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
+    private func configured(_ fixture: Fixture, prefersAuto: Bool = false, agent: String = "codex") async throws {
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": [], "hostFeatures": prefersAuto ? ["session.spawn.auto"] : [],
+            "agents": [agent], "launchableAgents": [agent]])
+        fixture.host.loadSessionConfiguration(agent: agent, cwd: "/repo/app")
         let request = try #require(fixture.transport.sent.last)
-        await fixture.transport.emit(["type": "session.configuration.result", "requestId": request["requestId"]!, "agentKind": "codex", "cwd": "/repo/app",
+        await fixture.transport.emit(["type": "session.configuration.result", "requestId": request["requestId"]!, "agentKind": agent, "cwd": "/repo/app",
             "binding": "fixture", "revision": 0, "values": ["model": "fixture-model", "thinking": "high"],
             "catalog": ["binding": "fixture", "defaults": [:], "models": [["value": "fixture-model", "label": "Fixture", "thinking": [["value": "high", "label": "High"]]]], "permissions": []]])
     }
@@ -178,7 +179,6 @@ struct LaunchLedgerTests {
         #expect(fixture.host.launching?.failure == L10n.tr("无法保存启动恢复记录，请重试"))
         #expect(fixture.host.pendingSends.item(firstId)?.text == "keep my draft")
         #expect(fixture.host.recoveredLaunchDraft == nil)
-        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "invalid duplicate"))
         await fixture.store.waitForPendingEvents()
         #expect(try Data(contentsOf: journal) == original)
 
@@ -250,23 +250,19 @@ struct LaunchLedgerTests {
         #expect(fixture.transport.userMessages.isEmpty)
     }
 
-    // An older Host cannot query the original configured ID. The no-message entry
-    // still blocks while it is uncertain, then consumes the durable draft on a fresh launch.
-    @Test func legacyLaunchCannotBypassAnUncertainConfiguredRecord() async throws {
+    // A Host rollback does not revive or block the earlier configured request.
+    @Test func legacyLaunchCanProceedWithAnUncertainConfiguredRecord() async throws {
         let fixture = Fixture(); try await configured(fixture)
         #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "pending draft"))
         await fixture.store.waitForPendingEvents()
         let id = try #require(fixture.host.launching?.requestId)
         await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "unknown"])
+        fixture.host.stopFollowingLaunch()
         await fixture.transport.ready()
-        fixture.host.createSession(agentKind: "codex", cwd: "/repo/app")
-        #expect(fixture.transport.activations.isEmpty)
-        #expect(await fixture.host.endConfiguredLaunch(id))
-        #expect(fixture.host.recoveredLaunchDraft?.text == "pending draft")
-        fixture.host.createSession(agentKind: "codex", cwd: "/repo/app")
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: ""))
         #expect(fixture.transport.activations.count == 1)
-        #expect(fixture.host.recoveredLaunchDraft == nil)
-        await fixture.store.waitForPendingEvents()
+        #expect(fixture.host.launching?.requestId != id)
+        #expect(fixture.host.pendingSends.items.contains { $0.text == "pending draft" })
         #expect(fixture.transport.userMessages.isEmpty)
     }
 
@@ -351,46 +347,21 @@ struct LaunchLedgerTests {
         #expect(fixture.host.activatingSessionId == nil)
     }
 
-    // SC100: editing can dismiss input validation, but a previous launch still
-    // needs reconciliation. An inadmissible retry cannot erase that explanation.
-    @Test func previousLaunchHintSurvivesEditingAndAnInadmissibleRetry() async throws {
+    // LAUNCH-FIRST-01: the new-session gesture does not read or present the previous request.
+    @Test func laterLaunchDoesNotNavigateToOrReadUnconfirmedLaunch() async throws {
         let fixture = Fixture(); try await configured(fixture)
         #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first"))
         await fixture.store.waitForPendingEvents()
         let id = try #require(fixture.host.launching?.requestId)
-        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id,
-            "phase": "unknown", "error": "launch unavailable"])
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "unknown", "error": "launch unavailable"])
         fixture.host.stopFollowingLaunch()
-        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
+        #expect(fixture.host.canReviewPreviousLaunch)
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
         await fixture.store.waitForPendingEvents()
-        let hint = L10n.tr("请先核对上一次启动及首句结果")
-        #expect(fixture.host.sessionLaunchError == hint)
-        fixture.host.clearSessionLaunchValidationError()
-        #expect(fixture.host.sessionLaunchError == hint)
-        fixture.host.loadSessionConfiguration(agent: "codex", cwd: "/repo/app")
-        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
-        #expect(fixture.host.sessionLaunchError == hint)
-    }
-
-    // SC100: resuming another session is not a new-session launch admission;
-    // the previous launch still needs reconciliation (Android clears only "new").
-    @Test func previousLaunchHintSurvivesResumingAnotherSession() async throws {
-        let fixture = Fixture(); try await configured(fixture)
-        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "first"))
-        await fixture.store.waitForPendingEvents()
-        let id = try #require(fixture.host.launching?.requestId)
-        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id,
-            "phase": "unknown", "error": "launch unavailable"])
-        fixture.host.stopFollowingLaunch()
-        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "second"))
-        await fixture.store.waitForPendingEvents()
-        let hint = L10n.tr("请先核对上一次启动及首句结果")
-        #expect(fixture.host.sessionLaunchError == hint)
-        let activations = fixture.transport.activations.count
-        fixture.host.activate(SessionSummary(sessionId: "s2", name: "另一个", cwd: "/repo/app", firstMessage: nil,
-            createdAt: 1, modifiedAt: 1, messageCount: 1, agentKind: "codex", archived: false))
-        #expect(fixture.transport.activations.count == activations + 1)
-        #expect(fixture.host.sessionLaunchError == hint)
+        #expect(fixture.host.launching?.requestId != id)
+        #expect(fixture.host.sessionLaunchError == nil)
+        #expect(fixture.transport.sent.allSatisfy { $0["type"] as? String != "session.launch.read" })
+        #expect(fixture.transport.userMessages.isEmpty)
     }
 
     // SC102: a not-connected launch hint is resolved by its own condition, the
@@ -443,10 +414,13 @@ struct LaunchLedgerTests {
         #expect(await gate.waitEntered())
         #expect(fixture.host.isLaunchPage && fixture.host.pendingSends.items.count == 1)
         #expect(fixture.transport.sent.allSatisfy { $0["type"] as? String != "session.launch" })
-        #expect(!fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "duplicate"))
+        #expect(fixture.host.createSession(agentKind: "codex", cwd: "/repo/app", firstMessage: "independent input"))
+        #expect(fixture.host.pendingSends.items.count == 2)
+        #expect(fixture.transport.sent.allSatisfy { $0["type"] as? String != "session.launch" })
         gate.release.signal()
         await fixture.store.waitForPendingEvents()
-        #expect(fixture.transport.sent.filter { $0["type"] as? String == "session.launch" }.count == 1)
+        let ids = Set(fixture.transport.sent.filter { $0["type"] as? String == "session.launch" }.compactMap { $0["launchId"] as? String })
+        #expect(ids.count == 2)
     }
 
     // Reconnect cancels only the old send continuation, not its accepted durable
@@ -480,7 +454,8 @@ struct LaunchLedgerTests {
         let request = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.launch" })
         let id = try #require(request["launchId"] as? String)
         let file = try #require(FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("ConfiguredLaunches"), includingPropertiesForKeys: nil).first)
-        let saved = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let envelope = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let saved = try #require((envelope["records"] as? [String: [String: Any]])?[id])
         #expect(saved["firstMessage"] as? String == "first sentence")
         #expect(saved["firstMessageId"] as? String == fixture.host.pendingSends.items.first?.messageId)
         await fixture.transport.online("configured")
@@ -492,6 +467,114 @@ struct LaunchLedgerTests {
         #expect(fixture.host.selectedRuntimeId == "rt-configured")
         await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "ready", "sessionId": "configured"])
         #expect(fixture.transport.userMessages.count == 1)
+    }
+
+    // LAUNCH-FIRST-01: a late Desktop receipt is applied in the background, and
+    // an independently requested launch never waits for the preceding history echo.
+    @Test(arguments: [false, true])
+    func desktopFirstMessageDoesNotRequireAnotherCreate(runtimeInReady: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-desktop-first-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = Fixture(root: root)
+        try await configured(fixture, agent: "codexDesktop")
+        #expect(fixture.host.createSession(agentKind: "codexDesktop", cwd: "/repo/app", firstMessage: "first desktop input"))
+        await fixture.store.waitForPendingEvents()
+        let first = try #require(fixture.host.launching?.requestId)
+        let firstMessage = try #require(fixture.host.pendingSends.items.first?.messageId)
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": first, "phase": "unknown"])
+        fixture.host.stopFollowingLaunch()
+        let revision = fixture.host.activationRevision
+        let firstRuntime = ["runtimeId": "codex-desktop:native-first", "sessionId": "native-first", "agentKind": "codexDesktop",
+                            "status": "idle", "name": "Codex Desktop", "cwd": "/repo/app"]
+        let ready: [String: Any] = ["type": "session.launch.result", "launchId": first, "phase": "ready", "sessionId": "native-first"]
+        if !runtimeInReady { await fixture.transport.emit(["type": "runtime.online", "runtime": firstRuntime]) }
+        #expect(fixture.transport.userMessages.isEmpty)
+        await fixture.transport.emit(ready)
+        if runtimeInReady {
+            await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1,
+                "agents": ["codexDesktop"], "runtimes": [firstRuntime]])
+        }
+        #expect(fixture.host.activationRevision == revision)
+        #expect(fixture.transport.userMessages.map { $0["runtimeId"] as? String } == ["codex-desktop:native-first"])
+        #expect(fixture.host.pendingSends.item(firstMessage)?.runtimeId == "codex-desktop:native-first")
+
+        #expect(fixture.host.createSession(agentKind: "codexDesktop", cwd: "/repo/app", firstMessage: "second desktop input"))
+        await fixture.store.waitForPendingEvents()
+        let second = try #require(fixture.host.launching?.requestId)
+        #expect(first != second)
+        await fixture.transport.emit(ready)
+        #expect(fixture.host.launching?.requestId == second)
+        #expect(fixture.transport.userMessages.count == 1)
+        await fixture.transport.emit(["type": "runtime.online", "runtime": ["runtimeId": "codex-desktop:native-second", "sessionId": "native-second",
+            "agentKind": "codexDesktop", "status": "idle", "name": "Codex Desktop", "cwd": "/repo/app"]])
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": second, "phase": "ready", "sessionId": "native-second"])
+        #expect(fixture.transport.userMessages.map { $0["runtimeId"] as? String } == ["codex-desktop:native-first", "codex-desktop:native-second"])
+        #expect(fixture.host.selectedRuntimeId == "codex-desktop:native-second")
+    }
+
+    // LAUNCH-FIRST-01: B can settle while A is still in native create; a later
+    // acknowledgement of A never changes B's selection or its outbox.
+    @Test(arguments: ["creating", "unknown"])
+    func desktopLaunchesAreIndependentBeforeFirstRuntime(firstPhase: String) async throws {
+        let fixture = Fixture()
+        try await configured(fixture, agent: "codexDesktop")
+        #expect(fixture.host.createSession(agentKind: "codexDesktop", cwd: "/repo/app", firstMessage: "old input"))
+        await fixture.store.waitForPendingEvents()
+        let first = try #require(fixture.host.launching?.requestId)
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": first, "phase": firstPhase])
+        #expect(fixture.host.createSession(agentKind: "codexDesktop", cwd: "/repo/app", firstMessage: "new input"))
+        await fixture.store.waitForPendingEvents()
+        let second = try #require(fixture.host.launching?.requestId)
+        #expect(first != second)
+        #expect(fixture.transport.sent.filter { $0["type"] as? String == "session.launch" }.compactMap { $0["launchId"] as? String } == [first, second])
+        #expect(fixture.transport.sent.allSatisfy { $0["type"] as? String != "session.launch.read" })
+        func ready(_ request: String, _ thread: String) async {
+            await fixture.transport.emit(["type": "runtime.online", "runtime": ["runtimeId": "rt-" + thread, "sessionId": thread,
+                "agentKind": "codexDesktop", "name": "Codex Desktop", "cwd": "/repo/app", "status": "idle"]])
+            await fixture.transport.emit(["type": "session.launch.result", "launchId": request, "phase": "ready", "sessionId": thread])
+        }
+        await ready(second, "second")
+        #expect(fixture.transport.userMessages.map { $0["runtimeId"] as? String } == ["rt-second"])
+        #expect(fixture.host.selectedRuntimeId == "rt-second")
+        let revision = fixture.host.activationRevision
+        await ready(first, "first")
+        #expect(fixture.transport.userMessages.map { $0["runtimeId"] as? String } == ["rt-second", "rt-first"])
+        #expect(fixture.transport.userMessages.compactMap { ($0["command"] as? [String: Any])?["text"] as? String } == ["new input", "old input"])
+        #expect(fixture.host.selectedRuntimeId == "rt-second")
+        #expect(fixture.host.activationRevision == revision)
+    }
+
+    // LAUNCH-FIRST-01: relaunch recovers the prior first sentence under its own
+    // Runtime while another launch is pending; only a matching history echo removes it.
+    @Test func landedDesktopFirstSentenceSurvivesRestartWithoutReplay() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-desktop-restart-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = Fixture(root: root); try await configured(original, agent: "codexDesktop")
+        #expect(original.host.createSession(agentKind: "codexDesktop", cwd: "/repo/app", firstMessage: "recover the original input"))
+        await original.store.waitForPendingEvents()
+        let id = try #require(original.host.launching?.requestId)
+        let firstId = try #require(original.host.pendingSends.items.first?.messageId)
+        let runtime = ["runtimeId": "rt-first", "sessionId": "native-first", "agentKind": "codexDesktop", "status": "idle", "name": "Desktop", "cwd": "/repo/app"]
+        await original.transport.emit(["type": "runtime.online", "runtime": runtime])
+        await original.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "ready", "sessionId": "native-first"])
+        #expect(original.transport.userMessages.count == 1)
+        #expect(original.host.createSession(agentKind: "codexDesktop", cwd: "/repo/app", firstMessage: "a separate input"))
+        await original.store.waitForPendingEvents()
+        let second = try #require(original.host.launching?.requestId)
+
+        let restarted = Fixture(root: root)
+        await restarted.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "agents": ["codexDesktop"], "runtimes": [runtime]])
+        #expect(restarted.host.pendingSends.item(firstId)?.runtimeId == "rt-first")
+        #expect(restarted.host.pendingSends.item(firstId)?.state == .unconfirmed)
+        #expect(restarted.transport.sent.filter { $0["type"] as? String == "session.launch.read" }.compactMap { $0["launchId"] as? String } == [second])
+        #expect(restarted.transport.userMessages.isEmpty)
+        await restarted.transport.emit(["type": "runtime.event", "runtimeId": "rt-first", "sequence": 1, "event": ["type": "message.started", "message": [
+            "messageId": "native-item", "clientMessageId": firstId, "role": "user", "timestamp": 100,
+            "content": [["type": "text", "text": "recover the original input"]],
+        ]]])
+        #expect(restarted.host.pendingSends.item(firstId) == nil)
+        #expect(restarted.host.launching?.requestId == second)
+        #expect(restarted.transport.userMessages.isEmpty)
     }
 
     // OPENCLAW-03: no native defaults are guessed; runtime.online alone cannot release the first sentence.
@@ -546,6 +629,72 @@ struct LaunchLedgerTests {
         await recovered.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "ready", "sessionId": "recovered-native"])
         #expect(recovered.transport.userMessages.isEmpty)
         #expect(recovered.transport.sent.allSatisfy { $0["type"] as? String != "session.launch" })
+    }
+
+    // LAUNCH-FIRST-01: checking one ID can suspend; another ID's new receipt
+    // must not be replaced by the earlier recovery snapshot on resumption.
+    @Test func journalRecoveryKeepsANativeIdentityRecordedWhileCheckingAnotherLaunch() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-launch-recovery-race-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = MainThreadWorkGate()
+        let stores = HostLocalStores(io: HostLocalIO(beforeIO: { gate.work() }))
+        let journal = stores.journal(at: root.appendingPathComponent("ConfiguredLaunches/host%2D1.json"))
+        await journal.waitLoaded()
+        for id in ["older", "newer"] {
+            let write = try #require(journal.reserve(["type": "session.launch", "launchId": id,
+                "agentKind": "codexDesktop", "cwd": "/repo/app", "following": false]))
+            #expect(await write.value)
+        }
+        let fixture = Fixture(root: root, localStores: stores)
+        await fixture.store.waitForPendingEvents()
+        gate.arm()
+        let recovering = Task { await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch",
+            "sessionConfiguration": 1, "runtimes": []]) }
+        let paused = await gate.waitEntered()
+        fixture.transport.receive?(["type": "session.launch.result", "launchId": "older", "phase": "ready", "sessionId": "native-older"], "ctl")
+        for _ in 0..<100 where journal.snapshot("older")?["sessionId"] == nil {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(paused && journal.snapshot("older")?["sessionId"] as? String == "native-older")
+        gate.release.signal()
+        await recovering.value
+        #expect(journal.snapshot("older")?["sessionId"] as? String == "native-older")
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": "older", "phase": "absent"])
+        #expect(fixture.transport.sent.allSatisfy { $0["type"] as? String != "session.launch" })
+    }
+
+    // LAUNCH-FIRST-01: delayed cold hydration may check a saved launch, but
+    // only an explicit review may leave a newly opened draft or another chat.
+    @Test(arguments: ["draft", "live", "cached"])
+    func automaticLaunchRecoveryDoesNotReplaceUserSelection(page: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-launch-selection-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = Fixture(root: root)
+        try await configured(original, agent: "codexDesktop")
+        #expect(original.host.createSession(agentKind: "codexDesktop", cwd: "/repo/app", firstMessage: "old input"))
+        await original.store.waitForPendingEvents()
+        let id = try #require(original.host.launching?.requestId)
+
+        let fixture = Fixture(root: root)
+        let live = ["runtimeId": "rt-open", "sessionId": "open", "agentKind": "codex", "name": "Live", "cwd": "/repo/app", "status": "idle"]
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "runtimes": [live]])
+        switch page {
+        case "draft": fixture.host.stopFollowingLaunch()
+        case "live": fixture.host.selectRuntime("rt-open")
+        default:
+            #expect(fixture.host.openCachedSession(SessionSummary(sessionId: "saved", name: "Cached", cwd: "/repo/app",
+                createdAt: 0, modifiedAt: 0, messageCount: 0, agentKind: "codex")))
+        }
+        let selection = fixture.host.selectedRuntimeId, revision = fixture.host.activationRevision
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": [live]])
+        #expect(fixture.host.selectedRuntimeId == selection)
+        #expect(fixture.host.launching == nil)
+        #expect(fixture.transport.sent.contains { $0["type"] as? String == "session.launch.read" && $0["launchId"] as? String == id })
+        await fixture.transport.emit(["type": "session.launch.result", "launchId": id, "phase": "ready", "sessionId": "native-old"])
+        await fixture.transport.emit(["type": "runtime.online", "runtime": ["runtimeId": "rt-native-old", "sessionId": "native-old",
+            "agentKind": "codexDesktop", "name": "Codex Desktop", "cwd": "/repo/app", "status": "idle"]])
+        #expect(fixture.host.selectedRuntimeId == selection && fixture.host.activationRevision == revision)
+        #expect(fixture.transport.userMessages.isEmpty)
     }
 
     // A final preflight refusal keeps the first sentence recoverable and cannot

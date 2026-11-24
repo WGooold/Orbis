@@ -21,25 +21,24 @@ data class SessionConfigurationState(val agentKind: String = "", val cwd: String
     val model get() = snapshot?.catalog?.models?.firstOrNull { it.value == values.model }
 }
 
-internal enum class ConfiguredLaunchBlock { CONFIGURATION_UNCONFIRMED, JOURNAL_LOADING, PREVIOUS_LAUNCH }
+internal enum class ConfiguredLaunchBlock { CONFIGURATION_UNCONFIRMED, JOURNAL_LOADING }
 
 internal data class ConfiguredLaunchAdmission(val configuration: SessionConfigurationState, val block: ConfiguredLaunchBlock?) {
     val allowed: Boolean get() = block == null
 }
 
-/** LAUNCH-FEEDBACK-01: an unresolved launch owns its warning without invalidating native configuration. */
+/** Admission uses this request's configuration and local storage readiness, never another request's result. */
 internal fun SessionConfigurationState.admitConfiguredLaunch(
-    kind: String, cwd: String, journalLoaded: Boolean, journalPresent: Boolean,
+    kind: String, cwd: String, journalLoaded: Boolean,
 ): ConfiguredLaunchAdmission {
     val block = when {
         snapshot == null || snapshot.agentKind != kind || snapshot.cwd != cwd || error != null -> ConfiguredLaunchBlock.CONFIGURATION_UNCONFIRMED
         !journalLoaded -> ConfiguredLaunchBlock.JOURNAL_LOADING
-        journalPresent -> ConfiguredLaunchBlock.PREVIOUS_LAUNCH
         else -> null
     }
     val failure = when (block) {
         ConfiguredLaunchBlock.CONFIGURATION_UNCONFIRMED -> L10n.tr("请先读取并确认启动配置")
-        ConfiguredLaunchBlock.JOURNAL_LOADING, ConfiguredLaunchBlock.PREVIOUS_LAUNCH -> L10n.tr("请先核对上一次启动及首句结果")
+        ConfiguredLaunchBlock.JOURNAL_LOADING -> L10n.tr("正在确认配置…")
         null -> return ConfiguredLaunchAdmission(copy(launchError = null, waitingForLaunchJournal = false), null)
     }
     val next = if (block == ConfiguredLaunchBlock.CONFIGURATION_UNCONFIRMED) copy(error = failure, launchError = null, waitingForLaunchJournal = false)
@@ -47,13 +46,13 @@ internal fun SessionConfigurationState.admitConfiguredLaunch(
     return ConfiguredLaunchAdmission(next, block)
 }
 
-/** SC104: only a previous launch awaiting reconciliation is headed as unconfirmed; null shows the error text itself. */
+/** SC104: the journal loading warning uses the shared status presentation. */
 internal val SessionConfigurationState.launchErrorTitle: String?
     get() = if (launchError != null && waitingForLaunchJournal) L10n.tr("启动未确认") else null
 
 /** SC100: a settled journal releases only the warning that was waiting on that journal. */
-internal fun SessionConfigurationState.reconcileLaunchJournal(loaded: Boolean, present: Boolean): SessionConfigurationState =
-    if (waitingForLaunchJournal && loaded && !present) copy(launchError = null, waitingForLaunchJournal = false) else this
+internal fun SessionConfigurationState.reconcileLaunchJournal(loaded: Boolean): SessionConfigurationState =
+    if (waitingForLaunchJournal && loaded) copy(launchError = null, waitingForLaunchJournal = false) else this
 
 internal fun SessionConfigurationValues.payload(): JsonObject = buildJsonObject {
     model?.let { put("model", it) }; thinking?.let { put("thinking", it) }
@@ -79,22 +78,40 @@ internal fun RemoteState.configuredSessionLaunchRequest(id: String, config: Sess
 internal fun LaunchState.canAbandonConfiguredLaunch(journalLaunchId: String?): Boolean =
     requestId == journalLaunchId && (failure != null || unconfirmed)
 
-internal fun RemoteState.markConfiguredLaunchUnconfirmed(id: String, reason: String? = null): RemoteState = copy(
-    launching = launching?.let { if (it.requestId == id) it.copy(unconfirmed = true, failure = reason) else it },
-    sessionActivateRequests = sessionActivateRequests - id,
-)
+internal fun RemoteState.markConfiguredLaunchUnconfirmed(id: String, reason: String? = null): RemoteState {
+    val value = launch(id) ?: return this
+    return updateLaunch(value.copy(unconfirmed = true, failure = reason)).copy(sessionActivateRequests = sessionActivateRequests - id)
+}
 
-/** Leaving an uncertain page preserves its ledger identity; reopening must not attempt to create it again. */
-internal fun RemoteState.restoreConfiguredLaunch(id: String, fields: Map<String, String>, now: Long, codexLaunchMode: String? = null): RemoteState {
-    if (launching != null) return this
-    val existing = ledger.operation(id)
-    if (existing == null) {
-        val restored = createLaunch(id, fields, L10n.tr("新会话"), now, codexLaunchMode = codexLaunchMode).first
-        return restored.copy(launching = restored.launching?.copy(unconfirmed = true))
+/** Recreate an unconfirmed overlay; a recovered record never revives its original send operation. */
+internal fun RemoteState.restoreConfiguredLaunch(id: String, fields: Map<String, String>, now: Long,
+    codexLaunchMode: String? = null, following: Boolean = true): RemoteState {
+    if (launch(id) != null) return if (following) focusLaunch(id) else this
+    val placeholder = "launch:$id"
+    val operation = if (ledger.operation(id) != null) ledger else ledger.create(id, OperationKinds.LAUNCH, placeholder,
+        policy = OperationKinds.launchPolicy, basis = ledgerBasis(OperationKinds.RUNTIMES_DOMAIN),
+        payload = LedgerPayload.Launch(id, placeholder), written = true, now = now).first
+    val value = LaunchState(id, placeholder, fields, L10n.tr("新会话"), fields["cwd"].orEmpty(), fields["agentKind"], null,
+        unconfirmed = true, codexLaunchMode = codexLaunchMode, following = false, configured = true)
+    val next = copy(ledger = operation, backgroundLaunches = backgroundLaunches + (id to value))
+    return if (following) next.focusLaunch(id) else next
+}
+
+internal fun RemoteState.restoreConfiguredLaunchRecord(id: String, saved: JsonObject, now: Long, show: Boolean,
+    mayRestoreSelection: Boolean = false): RemoteState {
+    val fields = mapOf("type" to "new", "agentKind" to (saved["agentKind"]?.jsonPrimitive?.contentOrNull ?: return this),
+        "cwd" to (saved["cwd"]?.jsonPrimitive?.contentOrNull ?: return this))
+    val following = show || mayRestoreSelection && allowAutomaticLaunchSelection && launching == null &&
+        selectedOfflineSessionId == null && saved["following"]?.jsonPrimitive?.booleanOrNull != false
+    var next = restoreConfiguredLaunch(id, fields, now, saved["codexLaunchMode"]?.jsonPrimitive?.contentOrNull, following)
+    val text = saved["firstMessage"]?.jsonPrimitive?.contentOrNull.orEmpty()
+    val messageId = saved["firstMessageId"]?.jsonPrimitive?.contentOrNull
+    if (text.isNotBlank() && messageId != null && messageId !in next.pendingSends) {
+        next = next.copy(pendingSends = next.pendingSends + (messageId to PendingSend(messageId,
+            saved["firstCommandId"]?.jsonPrimitive?.contentOrNull ?: messageId, "launch:$id", text, emptyList(), null,
+            now, null, PendingSendState.Unconfirmed, needsDeliveryEvidence = true, runtimeId = "launch:$id")))
     }
-    val launch = LaunchState(id, "launch:$id", fields, L10n.tr("新会话"), fields["cwd"].orEmpty(), fields["agentKind"], null,
-        unconfirmed = true, codexLaunchMode = codexLaunchMode)
-    return copy(launching = launch, selectedRuntimeId = launch.placeholder, selectedOfflineSessionId = null)
+    return next
 }
 
 /** Only explicit abandonment releases an uncertain launch; an unreported native identity is not absence. */
@@ -116,7 +133,7 @@ internal fun RemoteState.retireConfiguredLaunchState(id: String, firstId: String
     val messageIds = abandonedSends.map { (it.payload as LedgerPayload.Send).messageId }.toSet() +
         pendingSends.values.filter { it.sessionId == placeholder || it.runtimeId == placeholder || it.messageId == firstId }.map { it.messageId }
     val remainingLedger = abandonedSends.fold(ledger.remove(id)) { current, op -> current.remove(op.opId) }
-    return copy(launching = launching?.takeUnless { it.requestId == id }, ledger = remainingLedger,
+    return copy(launching = launching?.takeUnless { it.requestId == id }, backgroundLaunches = backgroundLaunches - id, ledger = remainingLedger,
         sessionActivateRequests = sessionActivateRequests - id, pendingSends = pendingSends - messageIds,
         launchSessions = launchSessions - placeholder,
         selectedRuntimeId = selectedRuntimeId.takeUnless { it == placeholder },
@@ -126,7 +143,7 @@ internal fun RemoteState.retireConfiguredLaunchState(id: String, firstId: String
 /** S51: only the matching native configuration confirmation can release the optimistic launch. */
 internal fun RemoteState.withConfiguredLaunchResult(message: JsonObject): RemoteState {
     val id = (message["launchId"] as? JsonPrimitive)?.contentOrNull ?: return this
-    val current = launching?.takeIf { it.requestId == id && !it.endingWait } ?: return this
+    val current = launch(id)?.takeUnless { it.endingWait } ?: return this
     val phase = (message["phase"] as? JsonPrimitive)?.contentOrNull
     val now = System.currentTimeMillis()
     if (phase == "ready") {
@@ -135,16 +152,16 @@ internal fun RemoteState.withConfiguredLaunchResult(message: JsonObject): Remote
         return reduceSessionActivated(ledgerWritten(id, now), buildJsonObject {
             put("type", "session.activated"); put("requestId", id); put("sessionId", session)
             put("agentKind", current.agentKind ?: "codex"); put("spawnMode", (message["spawnMode"] as? JsonPrimitive)?.contentOrNull ?: "tui")
-        })
+        }, confirmedConfiguration = true)
     }
     val error = (message["error"] as? JsonPrimitive)?.contentOrNull
     if (phase == "failed") {
         val failure = error ?: L10n.tr("启动失败")
-        return copy(launching = current.copy(unconfirmed = false, failure = failure), sessionActivateRequests = sessionActivateRequests - id)
+        return updateLaunch(current.copy(unconfirmed = false, failure = failure)).copy(sessionActivateRequests = sessionActivateRequests - id)
             .ledgerWritten(id, now).ledgerReceipt(id, LedgerReceipt.Failed(LedgerRejection("configuration_rejected", failure)), now)
     }
     if (phase == "unknown") return markConfiguredLaunchUnconfirmed(id, error)
-    if (phase == "absent") return copy(launching = current.copy(unconfirmed = true, failure = error))
+    if (phase == "absent") return updateLaunch(current.copy(unconfirmed = true, failure = error))
     return this
 }
 

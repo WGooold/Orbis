@@ -606,10 +606,13 @@ data class RemoteState(
     val configFailures: Map<String, SessionConfigFailure> = emptyMap(),
     /** ADR-0049 §6.8：正在启动的会话（立即进入的聊天页用它的占位身份）。 */
     val launching: LaunchState? = null,
+    val backgroundLaunches: Map<String, LaunchState> = emptyMap(),
+    /** Cold recovery may restore a launch page only before the user chooses where to go. */
+    val allowAutomaticLaunchSelection: Boolean = true,
     /** 启动期间消息的占位 Session → 确认后的 Session。 */
     val launchSessions: Map<String, String> = emptyMap(),
     /** 启动成功后要迁移的草稿：(占位 Runtime, 真实 Runtime)，由 [HostConnection] 写入草稿存储后清除。 */
-    val launchDraftMove: Pair<RuntimeSummary, RuntimeSummary>? = null,
+    val launchDraftMoves: List<Pair<RuntimeSummary, RuntimeSummary>> = emptyList(),
     val capabilities: Map<String, RuntimeCapabilities> = emptyMap(),
     /**
      * 这台电脑支持的 agent 种类（[device.ready] 的 `agents`）。
@@ -758,13 +761,12 @@ internal fun RemoteState.runtimeForLaunch(launch: LaunchState, sessionId: String
 }
 
 internal fun RemoteState.runtimeForLaunch(provisionalId: String, sessionId: String): RuntimeSummary? {
-    val launch = launching?.takeIf { it.placeholder == provisionalId || it.resumed == provisionalId } ?: return null
+    val launch = trackedLaunches.singleOrNull { it.placeholder == provisionalId || it.resumed == provisionalId } ?: return null
     if (launch.sessionId != sessionId) return null
     return runtimeForLaunch(launch, sessionId)
 }
 
-internal fun RemoteState.bindLaunchPendingSends(runtime: RuntimeSummary): RemoteState {
-    val launch = launching ?: return this
+internal fun RemoteState.bindLaunchPendingSends(launch: LaunchState, runtime: RuntimeSummary): RemoteState {
     val sessionId = runtime.sessionId ?: return this
     if (launch.sessionId != sessionId || runtimeForLaunch(launch, sessionId)?.runtimeId != runtime.runtimeId) return this
     val sourceSessionId = launch.resumed ?: launch.placeholder
@@ -901,6 +903,12 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
     )
 }
 
+/** The authenticated directory supplies launch-route identity, not composer business state. */
+private fun RuntimeSummary.withDirectoryRoute(previous: RuntimeSummary?): RuntimeSummary {
+    val sameRoute = previous?.takeIf { it.sessionId == sessionId && it.codexCatalogId == codexCatalogId }
+    return carryingComposerStatus(sameRoute).copy(agentKind = agentKind ?: sameRoute?.agentKind)
+}
+
 /** Any Runtime on this computer is waiting for an answer (shown on the computer switcher). */
 internal fun RemoteState.hasAnyPendingInteraction(): Boolean = runtimes.keys.any(::hasPendingInteraction)
 
@@ -986,36 +994,27 @@ private fun reduceSessionBrowseResult(state: RemoteState, message: JsonObject): 
 }
 
 /** session.activated（spec §8）：只证明进程已拉起；会话真正上线由 runtime.online 对账。 */
-internal fun reduceSessionActivated(state: RemoteState, message: JsonObject): RemoteState {
+internal fun reduceSessionActivated(state: RemoteState, message: JsonObject, confirmedConfiguration: Boolean = false): RemoteState {
     val requestId = message["requestId"]?.jsonPrimitive?.contentOrNull
-    // ADR-0049 §6.8：启动中的会话即使已转为未确认，迟到的同一 requestId 仍可结算。
-    val launch = state.launching?.takeIf { it.requestId == requestId }
-    if (launch?.endingWait == true) return state
+    val launch = requestId?.let(state::launch)
+    if (launch?.endingWait == true || launch?.configured == true && !confirmedConfiguration) return state
     val requested = launch?.resumed ?: requestId?.let(state.sessionActivateTargets::get)
     if (isCodexCatalogId(requested) && (message["codexCatalogId"] as? JsonPrimitive)?.contentOrNull != requested) return state
-    if (launch != null && requestId !in state.sessionActivateRequests) {
-        val acknowledged = message["sessionId"]?.jsonPrimitive?.contentOrNull ?: return state
-        return state.launchActivated(launch.requestId, acknowledged, System.currentTimeMillis())
-    }
-    if (requestId != null && requestId !in state.sessionActivateRequests) return state
-    val agentKind = message["agentKind"]?.jsonPrimitive?.contentOrNull ?: return state
-    val target = requestId?.let(state.sessionActivateTargets::get)
     val acknowledged = message["sessionId"]?.jsonPrimitive?.contentOrNull
-    return state.copy(
+    if (launch == null && requestId != null && requestId !in state.sessionActivateRequests) return state
+    val agentKind = message["agentKind"]?.jsonPrimitive?.contentOrNull ?: return state
+    val visible = launch == null || state.launchPage?.requestId == launch.requestId && launch.following
+    val target = requestId?.let(state.sessionActivateTargets::get)
+    val next = state.copy(
         sessionActivateRequests = requestId?.let { state.sessionActivateRequests - it } ?: state.sessionActivateRequests,
         sessionActivateTargets = requestId?.let { state.sessionActivateTargets - it } ?: state.sessionActivateTargets,
-        // 用户已离开启动页时不再把他带回这个会话。
-        activatedSessionToOpen = target?.takeIf { it == acknowledged && launch?.following != false } ?: state.activatedSessionToOpen,
-        sessionActivation = SessionActivationInfo(
-            requestId = requestId ?: "",
-            agentKind = agentKind,
-            sessionId = message["sessionId"]?.jsonPrimitive?.contentOrNull,
-            spawnMode = message["spawnMode"]?.jsonPrimitive?.contentOrNull ?: "tui",
-        ),
-    ).let { next ->
-        val acknowledged = message["sessionId"]?.jsonPrimitive?.contentOrNull
-        if (launch != null && acknowledged != null) next.launchActivated(launch.requestId, acknowledged, System.currentTimeMillis()) else next
-    }
+        // A tracked launch selects only through exact Runtime evidence. The legacy
+        // raw-ID navigation path is only for activation requests without a launch page.
+        activatedSessionToOpen = target?.takeIf { launch == null && it == acknowledged } ?: state.activatedSessionToOpen,
+        sessionActivation = if (visible) SessionActivationInfo(requestId ?: "", agentKind, acknowledged,
+            message["spawnMode"]?.jsonPrimitive?.contentOrNull ?: "tui") else state.sessionActivation,
+    )
+    return if (launch != null && acknowledged != null) next.launchActivated(launch.requestId, acknowledged, System.currentTimeMillis()) else next
 }
 
 /** A resume acknowledgement and runtime.online may arrive in either order. */
@@ -1432,7 +1431,7 @@ internal fun RemoteState.enabledAgentKinds(): Set<String>? = agentEnablementRevi
 }
 
 internal fun RemoteState.canCreateSessionOn(expectedHostId: String?): Boolean =
-    canOperateSessions && expectedHostId == hostId && sessionActivateRequests.isEmpty()
+    canOperateSessions && expectedHostId == hostId
 
 /**
  * Builds the sidebar tree (`host -> directory -> session`). Online runtimes and offline catalog
@@ -2258,7 +2257,7 @@ class RelayReducer(
                     prefersAutoSessionSpawn = (message["hostFeatures"] as? JsonArray)?.contains(JsonPrimitive("session.spawn.auto")) == true,
                     sessions = sessions,
                     sessionGraphs = state.sessionGraphs,
-                    runtimes = runtimes.mapValues { (id, runtime) -> runtime.carryingComposerStatus(
+                    runtimes = runtimes.mapValues { (id, runtime) -> runtime.withDirectoryRoute(
                         state.runtimes[id].takeIf { state.agentModelEpoch == message.string("modelEpoch") }) },
                     agentModelEpoch = message.string("modelEpoch"),
                     toolInventories = state.toolInventories.takeIf { state.agentModelEpoch == message.string("modelEpoch") }.orEmpty(),
@@ -2401,9 +2400,7 @@ class RelayReducer(
                     // Launch-mode arbitration uses this Host-observed route identity. Keep the
                     // incoming kind (or the same-session last known kind) through the composer
                     // projection; the latter must not erase a fresh explicit Runtime owner.
-                    runtimes = state.runtimes + (runtime.runtimeId to runtime.carryingComposerStatus(previousRuntime).copy(
-                        agentKind = runtime.agentKind ?: previousRuntime?.agentKind,
-                    )),
+                    runtimes = state.runtimes + (runtime.runtimeId to runtime.withDirectoryRoute(previousRuntime)),
                     runtimeSessionViews = runtimeView?.let {
                         val previousView = state.runtimeSessionViews[runtime.runtimeId]
                         val keepPreviousView = previousView != null &&
@@ -2451,7 +2448,7 @@ class RelayReducer(
                     } else {
                         state.sessionSyncRequests - runtime.runtimeId
                     },
-                ).bindLaunchPendingSends(runtime).ledgerRuntimeList(read = null, complete = false)
+                ).ledgerRuntimeList(read = null, complete = false)
             }
             "host.offline" -> {
                 // 电脑端 Host 进程没了（Relay 按 hostId 过滤后才转发到这）。加密通道随之失效，

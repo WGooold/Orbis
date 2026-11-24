@@ -106,6 +106,7 @@ internal data class PendingSendObservation(
  */
 internal fun Map<String, PendingSend>.reconcile(
     now: Long,
+    retainUntilMaterialized: (String) -> Boolean = { false },
     observe: (scope: PendingSendScope) -> PendingSendObservation,
 ): Pair<Map<String, PendingSend>, Set<String>> {
     if (isEmpty()) return this to emptySet()
@@ -153,7 +154,9 @@ internal fun Map<String, PendingSend>.reconcile(
             }
             seen.revision <= started -> next[item.messageId] = item
             // 源端为准：已接受但无法对应的行退场；未确认的行变为可重发的失败。
-            item.state == PendingSendState.Accepted -> Unit
+            item.state == PendingSendState.Accepted -> if (retainUntilMaterialized(item.messageId)) {
+                next[item.messageId] = item.copy(state = PendingSendState.Unconfirmed, needsDeliveryEvidence = true)
+            }
             item.needsDeliveryEvidence -> next[item.messageId] = item
             else -> next[item.messageId] = item.copy(state = PendingSendState.Failed(L10n.tr("未能确认送达，可以重新发送")), settleRevision = null)
         }
@@ -195,10 +198,10 @@ internal fun pendingSendFailureText(status: String?, error: String?): String = w
  * 用当前 [RemoteState] 的源端事实核对本地行。返回新状态，以及兜底核对需要同步的 Runtime。
  * Session 当前没有在线 Runtime 时只能等待它重新上线。
  */
-internal fun RemoteState.reconcilePendingSends(now: Long): Pair<RemoteState, Set<String>> {
+internal fun RemoteState.reconcilePendingSends(now: Long, retainUntilMaterialized: (String) -> Boolean = { false }): Pair<RemoteState, Set<String>> {
     if (pendingSends.isEmpty()) return this to emptySet()
     val connected = e2eReady && connection == RelayConnection.ONLINE
-    val (next, runtimeIds) = pendingSends.reconcile(now) { scope ->
+    val (next, runtimeIds) = pendingSends.reconcile(now, retainUntilMaterialized = retainUntilMaterialized) { scope ->
         val runtimeId = scope.runtimeId ?: runtimes.entries.singleOrNull { it.value.sessionId == scope.sessionId }?.key
         val runtime = runtimeId?.let(runtimes::get)?.takeIf { it.sessionId == scope.sessionId }
         val conversation = runtimeId?.let(conversations::get)
@@ -212,6 +215,26 @@ internal fun RemoteState.reconcilePendingSends(now: Long): Pair<RemoteState, Set
         )
     }
     return (if (next === pendingSends) this else copy(pendingSends = next)) to runtimeIds
+}
+
+/** A recovered first sentence is only overlaid on its exact Runtime, never placed on the send ledger. */
+internal fun RemoteState.reconcileConfiguredFirstMessages(messages: Collection<ConfiguredFirstMessage>): Pair<RemoteState, Set<String>> {
+    if (messages.isEmpty()) return this to emptySet()
+    val sends = pendingSends.toMutableMap()
+    val materialized = mutableSetOf<String>()
+    for (message in messages) {
+        val runtime = runtimes.values.singleOrNull(message::matches) ?: continue
+        val existing = sends[message.messageId]
+        if (conversations[runtime.runtimeId]?.messages?.any { it.materializesClientMessage(message.messageId) } == true) {
+            sends.remove(message.messageId)
+            materialized += message.messageId
+        } else if (existing == null) {
+            sends[message.messageId] = message.pending(runtime)
+        } else if (existing.sessionId == message.sessionId && existing.runtimeId == message.runtimeId && existing.runtimeId != runtime.runtimeId) {
+            sends[message.messageId] = existing.copy(runtimeId = runtime.runtimeId)
+        }
+    }
+    return (if (sends == pendingSends) this else copy(pendingSends = sends)) to materialized
 }
 
 /** 队列面板：Host 队列项，加上带 `delivery` 且仍在提交中的本地行。 */

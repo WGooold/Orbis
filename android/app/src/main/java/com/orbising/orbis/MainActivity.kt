@@ -397,9 +397,10 @@ internal fun RemoteApp(
             model.dismissBrowse()
         }
     }
-    fun openNewSessionDraft() {
+    fun openNewSessionDraft(recoverLaunchId: String? = null) {
+        model.selectRuntime(null)
         val draft = sessionDrafts.draft(state.hostId)
-        model.recoveredLaunchDraft(state.hostId)?.takeIf { draft.text.value.isBlank() }?.let {
+        recoverLaunchId?.let { model.recoveredLaunchDraft(state.hostId, it) }?.takeIf { draft.text.value.isBlank() }?.let {
             draft.agent.value = it.agentKind; draft.cwd.value = it.cwd; draft.text.value = it.text
         }
         newSessionHostId = state.hostId; newSessionCwd = null; newSessionOpen = true
@@ -427,7 +428,8 @@ internal fun RemoteApp(
                 },
                 draftContent = { open -> SessionDraftCard(state, open, newSessionCwd,
                     model::browseSessions, model::browseInto, model::browseUp, onCancel = ::closeSessionDraft, drafts = sessionDrafts,
-                    onLoadConfiguration = model::loadSessionConfiguration, onSaveConfiguration = model::saveSessionConfiguration) { kind, cwd, text, origin, fieldOrigin ->
+                    onLoadConfiguration = model::loadSessionConfiguration, onSaveConfiguration = model::saveSessionConfiguration,
+                    onReviewPreviousLaunch = model::reviewPreviousLaunch) { kind, cwd, text, origin, fieldOrigin ->
                     val submission = model.sendFirstSessionMessage(kind, cwd, text, newSessionHostId)
                     if (submission != null) {
                         draftOrigin = origin
@@ -676,7 +678,7 @@ internal fun RemoteApp(
                                 HomeOverlay.Chat -> AgentTheme(agentBrand(state.runtimes[state.selectedRuntimeId]?.agentKind ?: state.launchPage?.agentKind ?:
                                     state.knownRuntimeSessions[state.selectedRuntimeId]?.let(state.sessions::get)?.agentKind)) {
                                     ChatScreen(state, model, firstDraftSend = firstDraftSend, onFirstDraftSend = { firstDraftSend = null },
-                                        onAbandonLaunch = ::openNewSessionDraft)
+                                        onAbandonLaunch = { openNewSessionDraft(it) })
                                 }
                                 HomeOverlay.Downloads -> HostDownloadsScreen(state, model, onBack = { allDownloadsOpen = false })
                                 null -> Unit
@@ -689,7 +691,7 @@ internal fun RemoteApp(
                             onDismiss = model::dismissToast,
                         ) { action ->
                             when (action) {
-                                FeedbackAction.UNDO -> { homeTab = HomeTab.Chat; newSessionHostId = state.hostId; newSessionOpen = true }
+                                FeedbackAction.UNDO -> { homeTab = HomeTab.Chat; openNewSessionDraft() }
                                 FeedbackAction.REPAIR -> addingHost = true
                                 FeedbackAction.RECHECK -> model.retryFeedbackConnection()
                                 FeedbackAction.SETTINGS -> homeTab = HomeTab.Settings
@@ -1733,7 +1735,7 @@ internal fun ChatScreen(
     executeSlash: (String, String) -> String? = model::executeSlashCommand,
     firstDraftSend: FirstDraftSend? = null,
     onFirstDraftSend: () -> Unit = {},
-    onAbandonLaunch: () -> Unit = {},
+    onAbandonLaunch: (String) -> Unit = {},
 ) {
     val runtimeId = state.selectedRuntimeId ?: return
     val actionHaptic = rememberActionHaptic()
@@ -3054,7 +3056,7 @@ internal fun ChatScreen(
                             {
                                 scope.launch {
                                     if (model.abandonConfiguredLaunch(state.hostId, failedLaunch.requestId) { canReturnToLaunchDraft }) {
-                                        onAbandonLaunch()
+                                        onAbandonLaunch(failedLaunch.requestId)
                                     }
                                 }
                             }

@@ -36,7 +36,7 @@ S52／SC76（r55）：Android Codex 顶栏运行中显示绑定原生 turn ID �
 
 配置和启动操作按身份及参数指纹去重。重复请求读取原结果或继续同一操作；同身份异参拒绝。启动操作持久保存原生会话身份及阶段，回执丢失后按启动身份查询。恢复配置使用原生读取或幂等 setter 对同一会话核对并确认；超时表示未确认，不能自动使用默认值或新建另一个会话。原生创建已执行、返回身份尚未持久记录时若无法精确找回，保留未知并阻止自动重建。
 
-Host 明确报告 `session.launch.result.phase=failed` 后，两端将原记录仅用于恢复新建草稿。启动未确认时，可核对原启动或显式“结束等待”；原会话可能仍会出现，结束等待不会关闭原生会话。LAUNCH-WAIT-02：转换期间暂停旧请求的核对与首句放行；只有草稿落盘成功才放开新建资格。保存失败保留原身份和首句，并允许重试。草稿不会覆盖已有编辑内容，也不会自动发送。释放操作仅清理原启动及其等待发送；迟到结果不能改变新启动，离开启动页或切换电脑后也不自动返回新建。已确认过原生会话的记录遇到 Host 回报 `absent` 时保留未确认，不再创建。
+Host 明确报告 `session.launch.result.phase=failed` 后，两端将原记录仅用于恢复新建草稿。启动未确认时，可核对原启动或显式“结束等待”；原会话可能仍会出现，结束等待不会关闭原生会话。LAUNCH-WAIT-02：转换期间暂停该请求的核对与首句放行；草稿落盘成功后才结束该请求的等待。保存失败保留原身份和首句，并允许重试。草稿不会覆盖已有编辑内容，也不会自动发送。释放操作仅清理原启动及其等待发送；迟到结果不能改变新启动，离开启动页或切换电脑后也不自动返回新建。已确认过原生会话的记录遇到 Host 回报 `absent` 时保留未确认，不再创建。
 
 LAUNCH-QUEUE-01：Host 按资源排队，只有共享资源的操作才互相等待，失败的任务不影响后续任务。
 
@@ -46,6 +46,10 @@ LAUNCH-QUEUE-01：Host 按资源排队，只有共享资源的操作才互相等
 - “结束等待”仍只在 App 生效，不通知 Host，也不中断原生启动。
 
 实现见 `launch-lanes.ts` 与 `host-service.ts` 的会话分发。
+
+LAUNCH-FIRST-01：App 与 Host 共用按启动身份隔离的语义。每次明确新建生成新 ID；之前的启动、未知结果、结束等待和首句历史对账不占用后续启动资格。进入新建编辑即放弃之前启动的页面跟随，新建不读取旧启动、不带入旧首句。核对和结束等待只处理被选择的启动身份。已选择页面后，后台恢复只核对原启动，不改当前页面，也不以旧快照覆盖已确认的会话身份。
+
+首句仍须等同一启动的配置确认，以及精确会话、启动方式与 Runtime 的对应关系。`runtime.online` 和完整 `device.ready` 都可补齐 Runtime，必须先绑定消息再结算启动。启动完成后尚未在原会话历史中对账的首句由独立恢复记录持有，重开只恢复本地待确认行，不重写发送命令；匹配的源端消息才接替。停止等待不会取消电脑端已发起的原生动作，也不会随下一次新建提交保存的草稿。
 
 Claude 配置启动在开窗前按设备与启动记录持久保存预定原生 UUID，通过 `--session-id` 创建。插件继续使用既有 `launchId`／`sessionId` 握手，初次确认与迟到恢复均核对预定 UUID；同进程切换会话、断线或 Host 重启后仍只认原身份。预定身份不代表已创建，不作为就绪结果发送给 App。旧记录若既无已确认身份又无预定身份，则保留未知；已确认的旧记录继续按原会话恢复。实现见 `SessionConfigurationStore`、`ClaudeBackend`、`ClaudeModsBridge`、`TerminalClaudeLauncher`。Host 发起的 Claude 启动按 ADR-0073 无条件跳过 bypass 首次风险提示，通过单次临时 settings 传入 `skipDangerousModePermissionPrompt=true`，权限模式按所选配置执行。
 
@@ -72,6 +76,8 @@ iOS 仅将带有匹配配置请求身份的协议错误归到配置操作；缺�
 Claude 启动准备及 Android 结束等待回归：`claude-startup.test.ts`、`claude-launcher.test.ts`、`agent-backend.test.ts`、`host-service.test.ts`、`LaunchLedgerTest` 与 `OptimisticPresentationInstrumentedTest.uncertainLaunchCanOnlyBeAbandonedAfterConfirmation`。运行终端提示页、自动验证和 APK 审计见 `.artifacts/claude-launch-unresolved-20261112/verification.json`；其中首次风险提示拦截属于历史实现，当前按 ADR-0073 无条件跳过。Host 源码已编译，未替换运行中的 Host；Android 已构建，未安装，待用户验证。
 
 ## 验证与完成状态
+
+LAUNCH-FIRST-01：iOS `LaunchLedgerTests`／`MainThreadWorkTests`，Android `LaunchLedgerTest`／`ConfiguredLaunchJournalTest`。覆盖同一电脑和目录的两次 Codex Desktop 启动、两种回执顺序、第二个启动先就绪、旧启动结束等待写入失败、后台恢复不换页或覆盖原生身份，以及按会话保留首句、重开不重发。实现见双端启动账本与 `ConfiguredLaunchJournal`；Host 与线协议不变。首次复现、定向测试和构建见 `.artifacts/launch-first-20261124/verification.json`；未部署或安装，真实 Codex Desktop 联动待用户验证。
 
 LAUNCH-WAIT-02：回归见 iOS `LaunchLedgerTests` 和 Android `ConfiguredLaunchJournalTest`、`LaunchLedgerTest`。写盘失败首证据见 `.artifacts/session-launch-recovery-review-20261121/ios-review-probes/` 与 `android-review-probe-with-python/`；双端定向回归和构建见同目录的 `ios-main-final/`、`android-main-final/` 与 `ios-app-main-final/`。本轮不改变线协议，不部署或安装，设备交互待用户验证。
 

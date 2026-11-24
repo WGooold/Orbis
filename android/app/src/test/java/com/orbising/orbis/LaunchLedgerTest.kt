@@ -3,6 +3,7 @@
 package com.orbising.orbis
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -111,6 +112,57 @@ class LaunchLedgerTest {
         assertEquals("native-configured", state.pendingSends.getValue("first-message").sessionId)
     }
 
+    // LAUNCH-FIRST-01: a complete readiness inventory can be the first view
+    // of the acknowledged Desktop runtime; bind before the launch ledger lands.
+    @Test fun desktopFirstMessageBindsWhenAnAuthenticatedInventoryArrivesAfterTheReceipt() {
+        var (state, id) = launch(setup(), mapOf("type" to "new", "agentKind" to "codexDesktop", "cwd" to "/repo/app"), codexLaunchMode = "desktop")
+        val placeholder = state.launching!!.placeholder
+        state = state.createWaitingSend("first-command", "first-message", placeholder, placeholder,
+            "first desktop input", null, emptyList(), emptyList(), 1000, listOf(state.ledger.operation(id)!!)).first
+        state = reduce(state, """{"type":"session.launch.result","launchId":"$id","phase":"ready","sessionId":"desktop-thread"}""")
+        assertTrue(state.readySends().isEmpty())
+        state = state.stopFollowingLaunch().copy(selectedRuntimeId = null)
+        state = reduce(state, """{"type":"device.ready","deviceId":"phone-1","modelEpoch":"epoch","sessionConfiguration":1,"runtimes":[
+            {"runtimeId":"terminal","sessionId":"desktop-thread","agentKind":"codex","name":"Codex","cwd":"/repo/app","status":"idle"},
+            {"runtimeId":"desktop","sessionId":"desktop-thread","agentKind":"codexDesktop","name":"Codex Desktop","cwd":"/repo/app","status":"idle"}]}""")
+        assertEquals(setOf("terminal", "desktop"), state.runtimes.keys)
+        assertEquals("codexDesktop", state.runtimes.getValue("desktop").agentKind)
+        assertNull(state.launching)
+        assertNull(state.selectedRuntimeId)
+        assertEquals("desktop", state.pendingSends.getValue("first-message").runtimeId)
+        assertEquals("desktop", (state.readySends().single().payload as LedgerPayload.Send).runtimeId)
+    }
+
+    // LAUNCH-FIRST-01: new starts own disjoint ledgers and only the foreground may select a runtime.
+    @Test fun secondDesktopLaunchCanSettleWhileThePriorLaunchIsUnconfirmed() {
+        val target = mapOf("type" to "new", "agentKind" to "codexDesktop", "cwd" to "/repo/app")
+        var (state, first) = launch(setup(), target, codexLaunchMode = "desktop")
+        val firstPlaceholder = state.launching!!.placeholder
+        state = state.createWaitingSend("first-command", "first-message", firstPlaceholder, firstPlaceholder,
+            "old input", null, emptyList(), emptyList(), 1000, listOf(state.ledger.operation(first)!!)).first
+        // No reply yet: even the acknowledged request set is not an admission gate.
+        assertTrue(state.canCreateSessionOn("host-1"))
+        val (started, second) = launch(state, target, codexLaunchMode = "desktop")
+        val secondPlaceholder = started.launching!!.placeholder
+        state = started.createWaitingSend("second-command", "second-message", secondPlaceholder, secondPlaceholder,
+            "new input", null, emptyList(), emptyList(), 2000, listOf(started.ledger.operation(second)!!)).first
+        state = reduce(state, """{"type":"session.launch.result","launchId":"$first","phase":"unknown"}""")
+        assertEquals(second, state.launching?.requestId)
+        assertFalse(state.launching!!.unconfirmed)
+        fun onlineDesktop(state: RemoteState, thread: String) = reduce(state,
+            """{"type":"runtime.online","runtime":{"runtimeId":"rt-$thread","name":"Desktop","cwd":"/repo/app","status":"idle","sessionId":"$thread","agentKind":"codexDesktop"}}""")
+        fun ready(state: RemoteState, id: String, thread: String) = reduce(state,
+            """{"type":"session.launch.result","launchId":"$id","phase":"ready","sessionId":"$thread"}""")
+        state = ready(onlineDesktop(state, "second"), second, "second")
+        assertEquals("rt-second", state.selectedRuntimeId)
+        assertEquals(listOf("second-command"), state.readySends().map { it.opId })
+        state = onlineDesktop(ready(state, first, "first"), "first")
+        assertEquals("rt-second", state.selectedRuntimeId)
+        assertEquals("rt-first", state.pendingSends.getValue("first-message").runtimeId)
+        assertEquals("rt-second", state.pendingSends.getValue("second-message").runtimeId)
+        assertEquals(setOf("first-command", "second-command"), state.readySends().map { it.opId }.toSet())
+    }
+
     @Test fun unifiedResumeBindsWaitingSendToExactCatalogAndLaunchModeForEitherEventOrder() {
         val selectedCatalog = "codex-history:${"a".repeat(64)}"
         val otherCatalog = "codex-history:${"b".repeat(64)}"
@@ -152,6 +204,29 @@ class LaunchLedgerTest {
             assertEquals(selectedRuntime.runtimeId, state.pendingSends.getValue("resume-message").runtimeId)
             assertEquals("same-thread", state.pendingSends.getValue("resume-message").sessionId)
             assertEquals("same-thread", state.launchSessions[selectedCatalog])
+        }
+    }
+
+    // LAUNCH-FIRST-01: cold hydration can still query its own launch after a
+    // user navigates away; only an explicit review can give it the page back.
+    @Test fun delayedRecoveryCannotTakeTheCurrentPage() {
+        val id = "old-launch"
+        val saved = Json.parseToJsonElement("""{"agentKind":"codexDesktop","cwd":"/repo/app","codexLaunchMode":"desktop",
+            "firstMessage":"old input","firstMessageId":"first"}""").jsonObject
+        val base = online(setup(), "existing")
+        assertEquals(id, base.restoreConfiguredLaunchRecord(id, saved, 1_000, show = false, mayRestoreSelection = true).launchPage?.requestId)
+        for ((runtime, cached) in listOf(null to null, "rt-existing" to null, null to "s1")) {
+            val selected = base.stopFollowingLaunch().copy(selectedRuntimeId = runtime, selectedOfflineSessionId = cached)
+            var state = selected.restoreConfiguredLaunchRecord(id, saved, 2_000, show = false, mayRestoreSelection = true)
+            assertNull(state.launchPage)
+            assertEquals(PendingSendState.Unconfirmed, state.pendingSends.getValue("first").state)
+            assertEquals(id, state.restoreConfiguredLaunchRecord(id, saved, 3_000, show = true).launchPage?.requestId)
+            state = reduce(state, """{"type":"session.launch.result","launchId":"$id","phase":"ready","sessionId":"native-old"}""")
+            state = reduce(state, """{"type":"runtime.online","runtime":{"runtimeId":"rt-old","sessionId":"native-old",
+                "agentKind":"codexDesktop","name":"Old","cwd":"/repo/app","status":"idle"}}""")
+            assertEquals(runtime, state.selectedRuntimeId)
+            assertEquals(cached, state.selectedOfflineSessionId)
+            assertTrue(state.readySends().isEmpty())
         }
     }
 
@@ -270,8 +345,8 @@ class LaunchLedgerTest {
         assertEquals("app", placeholder.name)
         state = online(activated(state, id, "new-1"), "new-1")
         assertEquals("rt-new-1", state.selectedRuntimeId)
-        assertEquals(placeholder.runtimeId, state.launchDraftMove?.first?.runtimeId)
-        assertEquals("rt-new-1", state.launchDraftMove?.second?.runtimeId)
+        assertEquals(placeholder.runtimeId, state.launchDraftMoves.singleOrNull()?.first?.runtimeId)
+        assertEquals("rt-new-1", state.launchDraftMoves.singleOrNull()?.second?.runtimeId)
     }
 
     @Test fun aMessageSentWhileStartingWaitsAndIsSubmittedWhenOnline() {

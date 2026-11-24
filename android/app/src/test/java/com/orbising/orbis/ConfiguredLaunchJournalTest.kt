@@ -34,18 +34,18 @@ class ConfiguredLaunchJournalTest {
         try {
             assertTrue(readStarted.await(5, TimeUnit.SECONDS))
             assertFalse(journal.isLoaded)
-            assertNull(journal.update(null) { record("too-early") })
+            assertNull(journal.reserve(record("too-early")))
             releaseRead.countDown()
             journal.awaitLoaded()
             val initial = record("one")
-            val created = journal.update(null) { initial }!!
+            val created = journal.reserve(initial)!!
             assertTrue(writeStarted.await(5, TimeUnit.SECONDS))
             assertFalse(created.isCompleted)
-            assertEquals(initial, journal.snapshot)
-            assertNull("Double tap cannot reserve another launch", journal.update(null) { record("duplicate") })
+            assertEquals(initial, journal.snapshot("one"))
+            assertNull("Double tap cannot reserve another launch", journal.reserve(record("one")))
             val departed = JsonObject(initial + ("following" to JsonPrimitive(false)))
             val leaving = journal.update("one") { departed }!!
-            assertEquals(departed, journal.snapshot)
+            assertEquals(departed, journal.snapshot("one"))
             assertFalse(leaving.isCompleted)
             journal.close()
             assertNull("Removed connections cannot enqueue new writes", journal.update("one") { null })
@@ -94,16 +94,16 @@ class ConfiguredLaunchJournalTest {
         })
         try {
             journal.awaitLoaded()
-            assertFalse(journal.update(null) { initial }!!.await())
-            assertEquals("one", journal.launchId)
+            assertFalse(journal.reserve(initial)!!.await())
+            assertNotNull(journal.snapshot("one"))
             assertTrue(journal.update("one") { it }!!.await())
             val cleared = journal.update("one") { null }!!
             val next = record("two")
-            val created = journal.update(null) { next }!!
+            val created = journal.reserve(next)!!
             assertNull(journal.update("one") { null })
             assertTrue(cleared.await()); assertTrue(created.await())
             assertEquals(listOf(initial, null, next), persisted)
-            assertEquals(next, journal.snapshot)
+            assertEquals(next, journal.snapshot("two"))
         } finally { scope.cancel() }
     }
 
@@ -116,40 +116,40 @@ class ConfiguredLaunchJournalTest {
         val journal = ConfiguredLaunchJournal(scope, read = { failed }, persist = { true })
         try {
             journal.awaitLoaded()
-            assertNull(journal.pendingId)
-            assertEquals(RecoveredLaunchDraft("claude", "/project", "unsent original input"), journal.snapshot?.recoveredLaunchDraft())
+            assertTrue(journal.pending.isEmpty())
+            assertEquals(RecoveredLaunchDraft("claude", "/project", "unsent original input"), journal.snapshot("failed")?.recoveredLaunchDraft())
             assertTrue(journal.reserve(record("new"))!!.await())
-            assertEquals("new", journal.pendingId)
-            assertNull(journal.update("failed") { null })
-            assertNull(journal.reserve(record("duplicate")))
+            assertTrue(journal.acceptsResult("new"))
+            assertNotNull(journal.snapshot("failed"))
+            assertNull(journal.reserve(record("new")))
         } finally { scope.cancel() }
     }
 
-    @Test fun `an uncertain launch needs explicit abandonment before a fresh attempt`() = runBlocking {
+    @Test fun `an uncertain launch and a fresh attempt keep separate durable identities`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val initial = JsonObject(record("uncertain") + mapOf("agentKind" to JsonPrimitive("codex"), "cwd" to JsonPrimitive("/project")))
         var persisted: JsonObject? = initial
         try {
             val journal = ConfiguredLaunchJournal(scope, read = { persisted }, persist = { persisted = it; true })
             journal.awaitLoaded()
-            assertNull(journal.reserve(record("duplicate")))
+            assertTrue(journal.reserve(record("fresh"))!!.await())
+            assertTrue(journal.acceptsResult("uncertain"))
             assertNull(journal.abandon("stale"))
             assertTrue(journal.abandon("uncertain")!!.await())
             assertFalse(journal.acceptsResult("uncertain"))
             assertNull(journal.updatePending("uncertain") { null })
             val restarted = ConfiguredLaunchJournal(scope, read = { persisted }, persist = { true })
             restarted.awaitLoaded()
-            assertNull(restarted.pendingId)
-            assertEquals("first input", restarted.snapshot?.recoveredLaunchDraft()?.text)
-            assertTrue(restarted.reserve(record("fresh"))!!.await())
-            assertNull(restarted.update("uncertain") { record("wrong-session") })
-            assertEquals("fresh", restarted.pendingId)
+            assertFalse(restarted.acceptsResult("uncertain"))
+            assertEquals("first input", restarted.snapshot("uncertain")?.recoveredLaunchDraft()?.text)
+            assertTrue(restarted.acceptsResult("fresh"))
+            assertNull(restarted.updatePending("uncertain") { record("wrong-session") })
         } finally { scope.cancel() }
     }
 
     // LAUNCH-WAIT-02: IO failure leaves the original recovery identity and text;
-    // only a durable retry may expose a draft and admit the next launch.
-    @Test fun `failed abandonment retains the pending slot and first input through retry`() = runBlocking {
+    // only a durable retry may expose its draft; a different identity may proceed.
+    @Test fun `failed abandonment retains only its own pending identity through a concurrent reservation`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val initial = JsonObject(record("waiting") + mapOf("agentKind" to JsonPrimitive("codex"), "cwd" to JsonPrimitive("/project")))
         var disk = initial
@@ -168,32 +168,35 @@ class ConfiguredLaunchJournalTest {
             journal.awaitLoaded()
             val ending = journal.abandon("waiting")!!
             assertTrue(entered.await(5, TimeUnit.SECONDS))
-            assertEquals(initial, journal.pending)
-            assertNull(journal.snapshot?.recoveredLaunchDraft())
-            assertTrue(journal.blocksNewLaunch)
-            assertNull(journal.reserve(record("duplicate")))
+            assertEquals(initial, journal.snapshot("waiting"))
+            assertNull(journal.snapshot("waiting")?.recoveredLaunchDraft())
+            val other = journal.reserve(record("other"))!!
+            assertTrue(journal.acceptsResult("other"))
             assertNull(journal.abandon("waiting"))
             assertFalse(journal.acceptsResult("waiting"))
             assertNull(journal.updatePending("waiting") { error("A reply must not run during retirement") })
             release.countDown()
             assertFalse(ending.await())
-            assertEquals(initial, disk)
-            assertEquals(initial, journal.pending)
+            assertTrue(other.await())
+            assertEquals(initial, journal.snapshot("waiting"))
             assertTrue(journal.acceptsResult("waiting"))
-            assertNull(journal.reserve(record("still blocked")))
+            val failedRestart = ConfiguredLaunchJournal(scope, read = { disk }, persist = { true })
+            failedRestart.awaitLoaded()
+            assertTrue(failedRestart.acceptsResult("waiting"))
+            assertTrue(failedRestart.acceptsResult("other"))
 
             assertTrue(journal.abandon("waiting")!!.await())
             val restarted = ConfiguredLaunchJournal(scope, read = { disk }, persist = { true })
             restarted.awaitLoaded()
             assertFalse(restarted.acceptsResult("waiting"))
-            assertFalse(restarted.blocksNewLaunch)
-            assertEquals(RecoveredLaunchDraft("codex", "/project", "first input"), restarted.snapshot?.recoveredLaunchDraft())
+            assertTrue(restarted.acceptsResult("other"))
+            assertEquals(RecoveredLaunchDraft("codex", "/project", "first input"), restarted.snapshot("waiting")?.recoveredLaunchDraft())
             assertTrue(restarted.reserve(record("fresh"))!!.await())
         } finally { release.countDown(); scope.cancel() }
     }
 
-    // LAUNCH-WAIT-02: definitive failure also requires a durable draft before releasing admission.
-    @Test fun `failed rejection write cannot publish a draft or unblock launch`() = runBlocking {
+    // LAUNCH-WAIT-02: definitive failure also requires durability before exposing the same draft.
+    @Test fun `failed rejection write cannot publish a draft or retire the original identity`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val original = record("rejected")
         var failNext = true
@@ -201,11 +204,43 @@ class ConfiguredLaunchJournalTest {
             val journal = ConfiguredLaunchJournal(scope, read = { original }, persist = { (!failNext).also { failNext = false } })
             journal.awaitLoaded()
             assertFalse(journal.reject("rejected", "catalog changed")!!.await())
-            assertEquals(original, journal.pending)
-            assertNull(journal.reserve(record("new")))
+            assertEquals(listOf(original), journal.pending)
+            assertTrue(journal.acceptsResult("rejected"))
             assertTrue(journal.reject("rejected", "catalog changed")!!.await())
-            assertTrue(journal.snapshot?.isRejectedLaunch == true)
-            assertNull(journal.pendingId)
+            assertTrue(journal.snapshot("rejected")?.isRejectedLaunch == true)
+            assertTrue(journal.pending.isEmpty())
+        } finally { scope.cancel() }
+    }
+
+    // LAUNCH-FIRST-01: a missing history echo can survive another reservation and restart without becoming a pending launch.
+    @Test fun `landed first sentence survives another launch and restarts without rearming its send`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        var disk: JsonObject? = null
+        try {
+            val journal = ConfiguredLaunchJournal(scope, read = { disk }, persist = { disk = it; true })
+            journal.awaitLoaded()
+            assertTrue(journal.reserve(record("first"))!!.await())
+            val recovery = ConfiguredFirstMessage("message", "command", "keep input", "native", "desktop", "codexDesktop", null, 100)
+            val handedOff = journal.handoff("first", recovery)!!
+            assertTrue(journal.reserve(record("second"))!!.await())
+            assertTrue(handedOff.await())
+            val restarted = ConfiguredLaunchJournal(scope, read = { disk }, persist = { true })
+            restarted.awaitLoaded()
+            assertTrue(restarted.acceptsResult("second"))
+            assertFalse(restarted.acceptsResult("first"))
+            assertEquals(listOf(recovery), restarted.firstMessages)
+            val terminal = RuntimeSummary("other", "Terminal", "/project", "idle", "native", agentKind = "codex")
+            val desktop = terminal.copy(runtimeId = "desktop", agentKind = "codexDesktop")
+            val state = RemoteState(runtimes = mapOf("other" to terminal, "desktop" to desktop))
+            val restored = state.reconcileConfiguredFirstMessages(restarted.firstMessages).first
+            assertEquals("desktop", restored.pendingSends.getValue("message").runtimeId)
+            assertEquals(PendingSendState.Unconfirmed, restored.pendingSends.getValue("message").state)
+            assertTrue(restored.readySends().isEmpty())
+            val row = ChatMessage("native-row", "user", listOf(RemoteContent("text", "keep input")), 200, clientMessageId = "message")
+            val (matched, ids) = restored.copy(conversations = mapOf("desktop" to RuntimeConversation(messages = listOf(row))))
+                .reconcileConfiguredFirstMessages(restarted.firstMessages)
+            assertEquals(setOf("message"), ids)
+            assertTrue(matched.pendingSends.isEmpty())
         } finally { scope.cancel() }
     }
 
@@ -216,7 +251,7 @@ class ConfiguredLaunchJournalTest {
             journal.awaitLoaded()
             assertNull(journal.abandon("different"))
             assertTrue(journal.abandon("ready")!!.await())
-            assertNull(journal.pendingId)
+            assertTrue(journal.pending.isEmpty())
         } finally { scope.cancel() }
     }
 
@@ -226,8 +261,8 @@ class ConfiguredLaunchJournalTest {
         val journal = ConfiguredLaunchJournal(scope, read = { existing }, persist = { true })
         try {
             journal.awaitLoaded()
-            assertEquals(existing, journal.snapshot)
-            assertNull(journal.update(null) { record("duplicate") })
+            assertEquals(existing, journal.snapshot("recovered"))
+            assertNull(journal.reserve(record("recovered")))
             assertTrue(journal.update("recovered") { it }!!.await())
         } finally { scope.cancel() }
     }

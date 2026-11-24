@@ -146,7 +146,7 @@ struct PendingSendOutbox: Equatable {
     /// 用源端事实核对一个 Session 的本地行；返回 true 表示兜底核对需要一次新的权威状态。
     /// `status` 为 nil 表示该 Session 当前没有在线 Runtime。
     mutating func reconcile(runtimeId: String?, sessionId: String, status: String?, queue: [QueuedMessage], revision: Int, connected: Bool,
-                            now: Date = Date(), isMaterialized: (String) -> Bool) -> Bool {
+                            now: Date = Date(), retainUntilMaterialized: (String) -> Bool = { _ in false }, isMaterialized: (String) -> Bool) -> Bool {
         var needsSync = false
         let queued = Dictionary(queue.map { ($0.queueId, $0) }, uniquingKeysWith: { _, last in last })
         items = items.compactMap { original in
@@ -185,7 +185,12 @@ struct PendingSendOutbox: Equatable {
             }
             guard revision > started else { return item }
             // 源端为准：已接受但无法对应的行退场；未确认的行变为可重发的失败。
-            if item.state == .accepted { return nil }
+            if item.state == .accepted {
+                guard retainUntilMaterialized(item.messageId) else { return nil }
+                // A journaled first sentence stays recoverable when history has not echoed its identity.
+                item.state = .unconfirmed; item.needsDeliveryEvidence = true
+                return item
+            }
             if item.needsDeliveryEvidence { return item }
             item.state = .failed(L10n.tr("未能确认送达，可以重新发送")); item.settleRevision = nil
             return item

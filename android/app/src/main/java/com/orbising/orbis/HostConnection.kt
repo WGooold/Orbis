@@ -100,17 +100,17 @@ internal class HostStores(private val application: Application) {
     fun configuredLaunchJournal(hostId: String, scope: CoroutineScope): ConfiguredLaunchJournal = synchronized(launchJournals) {
         launchJournals.getOrPut(hostId) {
             val preferences by lazy { application.getSharedPreferences("orbis_configured_launch", android.content.Context.MODE_PRIVATE) }
+            val key = "v2:$hostId"
             ConfiguredLaunchJournal(scope, read = {
-                synchronized(launchPreferencesLock) { preferences.getString(hostId, null) }?.let { raw ->
+                synchronized(launchPreferencesLock) { preferences.getString(key, null) ?: preferences.getString(hostId, null) }?.let { raw ->
                     runCatching { E2eJson.json.parseToJsonElement(raw).jsonObject }.getOrNull()
                 }
             }, persist = { record -> synchronized(launchPreferencesLock) {
-                fun commit(value: String?) = preferences.edit().putString(hostId, value).commit()
-                val previous = preferences.getString(hostId, null)
-                val saved = commit(record?.toString())
-                // A failed commit may already have changed SharedPreferences' memory. Restore it
-                // before another Host's commit can write that failed transition along with its own.
-                if (!saved) commit(previous)
+                val previous = preferences.getString(key, null)
+                val legacy = preferences.getString(hostId, null)
+                val saved = preferences.edit().putString(key, record?.toString()).remove(hostId).commit()
+                // A failed commit may still change SharedPreferences' memory.
+                if (!saved) preferences.edit().putString(key, previous).putString(hostId, legacy).commit()
                 saved
             } })
         }
@@ -163,7 +163,6 @@ internal class HostConnection(
             state.pendingSends.isNotEmpty() || state.runtimes.values.any { it.status == "running" }
     }
     private val configuredLaunchJournal = stores.configuredLaunchJournal(hostId, scope)
-    private val configuredLaunchId: String? get() = configuredLaunchJournal.pendingId
 
     fun loadSessionConfiguration(kind: String, cwd: String) {
         val current = mutableState.value
@@ -199,63 +198,52 @@ internal class HostConnection(
         }
     }
 
-    private fun recoverConfiguredLaunch(show: Boolean = false) { scope.launch(Dispatchers.IO) { recoverConfiguredLaunchInBackground(show) } }
+    private fun recoverConfiguredLaunch(targetId: String? = null) {
+        scope.launch(Dispatchers.IO) { recoverConfiguredLaunchInBackground(targetId) }
+    }
 
     private fun configuredLaunchAvailable(saved: JsonObject): Boolean =
         saved["agentKind"]?.jsonPrimitive?.contentOrNull != KIMI_CODE_KIND || mutableState.value.kimiCodeSupported
 
-    private suspend fun recoverConfiguredLaunchInBackground(show: Boolean = false) {
+    private suspend fun recoverConfiguredLaunchInBackground(targetId: String?) {
         val connectionGeneration = generation
         configuredLaunchJournal.awaitLoaded()
-        val saved = configuredLaunchJournal.pending ?: return
-        val id = saved["launchId"]?.jsonPrimitive?.contentOrNull ?: return
-        if (!configuredLaunchJournal.acceptsResult(id) || connectionGeneration != generation || !shouldConnect || !show && (!mutableState.value.sessionConfigurationSupported ||
-            !mutableState.value.e2eReady || !configuredLaunchAvailable(saved))) return
-        if (mutableState.value.launching == null && (show || saved["sessionId"]?.jsonPrimitive?.contentOrNull == null ||
-            mutableState.value.pendingSends[saved["firstMessageId"]?.jsonPrimitive?.contentOrNull] == null)) {
-            val fields = mapOf("type" to "new", "agentKind" to (saved["agentKind"]?.jsonPrimitive?.contentOrNull ?: return),
-                "cwd" to (saved["cwd"]?.jsonPrimitive?.contentOrNull ?: return))
+        val ids = configuredLaunchJournal.pending.mapNotNull { it["launchId"]?.jsonPrimitive?.contentOrNull }
+        for ((index, id) in ids.withIndex()) {
+            if (connectionGeneration != generation || !shouldConnect) return
+            if (targetId != null && targetId != id) continue
             updateState { current ->
-                if (connectionGeneration != generation || !configuredLaunchJournal.acceptsResult(id)) return@updateState current
-                val next = current.restoreConfiguredLaunch(id, fields, System.currentTimeMillis(), saved["codexLaunchMode"]?.jsonPrimitive?.contentOrNull)
-                if (!show && saved["following"]?.jsonPrimitive?.booleanOrNull == false) next.copy(selectedRuntimeId = current.selectedRuntimeId,
-                    launching = next.launching?.copy(following = false)) else next
+                val saved = configuredLaunchJournal.snapshot(id) ?: return@updateState current
+                if (!canSendConfiguredLaunch(id, saved, connectionGeneration)) current
+                else current.restoreConfiguredLaunchRecord(id, saved, System.currentTimeMillis(), show = false,
+                    mayRestoreSelection = targetId == null && index == 0)
             }
-            val text = saved["firstMessage"]?.jsonPrimitive?.contentOrNull.orEmpty()
-            val messageId = saved["firstMessageId"]?.jsonPrimitive?.contentOrNull
-            if (text.isNotBlank() && messageId != null) updateState { current ->
-                if (connectionGeneration != generation || !configuredLaunchJournal.acceptsResult(id) || current.pendingSends.containsKey(messageId)) current
-                else current.copy(pendingSends = current.pendingSends + (messageId to PendingSend(
-                    messageId, saved["firstCommandId"]?.jsonPrimitive?.contentOrNull ?: messageId, "launch:$id", text, emptyList(), null,
-                    System.currentTimeMillis(), null, PendingSendState.Unconfirmed, runtimeId = "launch:$id")))
-            }
+            val saved = configuredLaunchJournal.snapshot(id) ?: continue
+            if (!canSendConfiguredLaunch(id, saved, connectionGeneration)) continue
+            val write = configuredLaunchJournal.updatePending(id) { it } ?: continue
+            if (!write.await()) { configuredLaunchPersistenceFailed(id); continue }
+            relay.sendReadyDeviceMessage(buildJsonObject {
+                put("type", "session.launch.read"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id); put("launchId", id)
+            }) { canSendConfiguredLaunch(id, saved, connectionGeneration) }
         }
-        if (show) updateState { current ->
-            val launch = current.launching?.takeIf { it.requestId == id && configuredLaunchJournal.acceptsResult(id) }
-            if (launch == null || connectionGeneration != generation) current
-            else current.copy(selectedRuntimeId = launch.placeholder, selectedOfflineSessionId = null, launching = launch.copy(following = true))
-        }
-        // Recovery reads also require the original launch record to be durable.
-        if (!canSendConfiguredLaunch(id, saved, connectionGeneration)) return
-        val write = configuredLaunchJournal.updatePending(id) { it } ?: return
-        if (!write.await()) { configuredLaunchPersistenceFailed(id); return }
-        relay.sendReadyDeviceMessage(buildJsonObject {
-            put("type", "session.launch.read"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", id); put("launchId", id)
-        }) { canSendConfiguredLaunch(id, saved, connectionGeneration) }
     }
 
-    private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String? = null, firstMessage: String = ""): Boolean {
+    private fun detachConfiguredLaunchSelection(state: RemoteState) {
+        val previous = state.launching?.takeIf { it.following && it.configured } ?: return
+        configuredLaunchJournal.updatePending(previous.requestId) { JsonObject(it + ("following" to JsonPrimitive(false))) }
+    }
+
+    private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String? = null, firstMessage: String = ""): FirstSessionSubmission? {
         val connectionGeneration = generation
         val state = mutableState.value; val config = state.sessionConfiguration; val snapshot = config.snapshot
-        if (!state.allowsAgentSource(kind)) return false
-        if (kind == KIMI_CODE_KIND && (!state.kimiCodeSupported || !state.sessionConfigurationSupported)) return false
-        val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded, configuredLaunchJournal.blocksNewLaunch)
+        if (!state.allowsAgentSource(kind)) return null
+        if (kind == KIMI_CODE_KIND && (!state.kimiCodeSupported || !state.sessionConfigurationSupported)) return null
+        val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded)
         if (!admission.allowed) {
-            if (admission.block == ConfiguredLaunchBlock.PREVIOUS_LAUNCH) recoverConfiguredLaunch(show = true)
             updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(error = admission.configuration.error,
-                launchError = admission.configuration.launchError, waitingForLaunchJournal = admission.configuration.waitingForLaunchJournal)) }; return false
+                launchError = admission.configuration.launchError, waitingForLaunchJournal = admission.configuration.waitingForLaunchJournal)) }; return null
         }
-        val confirmed = snapshot ?: return false
+        val confirmed = snapshot ?: return null
         lastSessionRestorer.cancel()
         val id = UUID.randomUUID().toString()
         val firstId = UUID.randomUUID().toString()
@@ -263,23 +251,18 @@ internal class HostConnection(
         val payload = state.configuredSessionLaunchRequest(id, confirmed, spawnMode)
         // Reserve in memory immediately, then persist off UI before writing to the transport.
         val journal = JsonObject(payload + mapOf("firstMessage" to JsonPrimitive(firstMessage), "firstMessageId" to JsonPrimitive(firstId), "firstCommandId" to JsonPrimitive(firstCommand)))
-        val previousDraft = configuredLaunchJournal.snapshot?.takeIf { it.isLaunchDraft }
-        val persisted = configuredLaunchJournal.reserve(journal) ?: return false
+        val persisted = configuredLaunchJournal.reserve(journal) ?: return null
         val target = mapOf("type" to "new", "agentKind" to kind, "cwd" to cwd)
         // Copy only the admission fields; the remaining configuration may have advanced since it was read.
         updateState { current ->
-            val state = previousDraft?.let { draft ->
-                draft["launchId"]?.jsonPrimitive?.contentOrNull?.let { previous ->
-                    current.retireConfiguredLaunchState(previous, draft["firstMessageId"]?.jsonPrimitive?.contentOrNull)
-                }
-            } ?: current
-            state.copy(sessionActivateRequests = state.sessionActivateRequests + id,
-                sessionConfiguration = state.sessionConfiguration.copy(launchError = null, waitingForLaunchJournal = false))
+            detachConfiguredLaunchSelection(current)
+            current.copy(sessionActivateRequests = current.sessionActivateRequests + id,
+                sessionConfiguration = current.sessionConfiguration.copy(launchError = null, waitingForLaunchJournal = false))
                 .createLaunch(id, target, cwd.substringAfterLast('/'), System.currentTimeMillis(),
-                    codexLaunchMode = payload["codexLaunchMode"]?.jsonPrimitive?.contentOrNull).first
+                    codexLaunchMode = payload["codexLaunchMode"]?.jsonPrimitive?.contentOrNull, configured = true).first
         }
         if (firstMessage.isNotBlank()) {
-            val launch = mutableState.value.launching ?: return false
+            val launch = mutableState.value.launch(id) ?: return null
             sendWhenReady(launch.placeholder, launch.placeholder, firstMessage, null, emptyList(), emptyList(),
                 listOfNotNull(mutableState.value.ledger.operation(id)), firstId, firstCommand)
         }
@@ -287,7 +270,7 @@ internal class HostConnection(
             if (!persisted.await()) { configuredLaunchPersistenceFailed(id); return@launch }
             sendConfiguredLaunchRequest(id, payload, connectionGeneration)
         }
-        return true
+        return FirstSessionSubmission(firstCommand.takeIf { firstMessage.isNotBlank() })
     }
 
     private fun canSendConfiguredLaunch(id: String, payload: JsonObject, connectionGeneration: Int): Boolean =
@@ -312,7 +295,7 @@ internal class HostConnection(
 
     private suspend fun receiveConfiguredLaunchResult(message: JsonObject, connectionGeneration: Int) {
         val id = (message["launchId"] as? JsonPrimitive)?.contentOrNull ?: return
-        val saved = configuredLaunchJournal.pending ?: return
+        val saved = configuredLaunchJournal.snapshot(id) ?: return
         if (!canSendConfiguredLaunch(id, saved, connectionGeneration)) return
         when ((message["phase"] as? JsonPrimitive)?.contentOrNull) {
             "ready" -> {
@@ -321,7 +304,8 @@ internal class HostConnection(
                 val write = configuredLaunchJournal.updatePending(id) { JsonObject(it + ("sessionId" to session)) } ?: return
                 if (!write.await()) { configuredLaunchPersistenceFailed(id); return }
                 updateState { current ->
-                    if (canSendConfiguredLaunch(id, saved, connectionGeneration)) current.withConfiguredLaunchResult(message) else current
+                    if (!canSendConfiguredLaunch(id, saved, connectionGeneration)) current
+                    else current.restoreConfiguredLaunchRecord(id, saved, System.currentTimeMillis(), show = false).withConfiguredLaunchResult(message)
                 }
                 val current = mutableState.value
                 device?.let { scheduleSessionGraphLoad(it, current.sessionSyncRequests.mapNotNull(current.runtimes::get)) }
@@ -334,7 +318,8 @@ internal class HostConnection(
                 }
                 val write = configuredLaunchJournal.updatePending(id) { it } ?: return
                 if (!write.await()) { configuredLaunchPersistenceFailed(id); return }
-                val payload = JsonObject(saved - setOf("firstMessage", "firstMessageId", "firstCommandId", "sessionId", "following"))
+                val wireKeys = setOf("type", "protocolVersion", "requestId", "launchId", "agentKind", "cwd", "binding", "revision", "values", "spawnMode", "codexLaunchMode")
+                val payload = JsonObject(saved.filterKeys(wireKeys::contains))
                 sendConfiguredLaunchRequest(id, payload, connectionGeneration)
             }
             "failed" -> {
@@ -1410,27 +1395,14 @@ internal class HostConnection(
     /** [spawnMode] overrides the Host-negotiated default; the UI-02 capture harness asks for `headless`. */
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String? = null): Boolean {
         if (agentKind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return false
-        if (configuredLaunchJournal.blocksNewLaunch) {
-            if (configuredLaunchJournal.pending != null) recoverConfiguredLaunch(show = true)
-            updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(agentKind = agentKind, cwd = cwd,
-                launchError = L10n.tr("请先核对上一次启动及首句结果"), waitingForLaunchJournal = true)) }; return false
-        }
         if (!validateNewSessionTarget(expectedHostId)) return false
-        if (agentKind in setOf("openclaw", KIMI_CODE_KIND)) return createConfiguredSession(agentKind, cwd, "headless")
-        if (mutableState.value.supportsSessionConfiguration(agentKind) && spawnMode != "headless") return createConfiguredSession(agentKind, cwd, spawnMode)
-        val retired = configuredLaunchJournal.snapshot?.takeIf { it.isLaunchDraft }
-        val sent = activateTarget(buildJsonObject {
+        if (agentKind in setOf("openclaw", KIMI_CODE_KIND)) return createConfiguredSession(agentKind, cwd, "headless") != null
+        if (mutableState.value.supportsSessionConfiguration(agentKind) && spawnMode != "headless") return createConfiguredSession(agentKind, cwd, spawnMode) != null
+        return activateTarget(buildJsonObject {
             put("type", "new")
             put("agentKind", agentKind)
             put("cwd", cwd)
         }, spawnMode)
-        if (sent && retired != null) {
-            val id = retired["launchId"]?.jsonPrimitive?.contentOrNull
-            if (id != null && configuredLaunchJournal.update(id) { null } != null) {
-                updateState { it.retireConfiguredLaunchState(id, retired["firstMessageId"]?.jsonPrimitive?.contentOrNull) }
-            }
-        }
-        return sent
     }
 
     private fun activateTarget(target: JsonObject, spawnMode: String? = null, codexLaunchMode: String? = null): Boolean {
@@ -1447,11 +1419,13 @@ internal class HostConnection(
         val sent = sendSessionPayload(
             requestId = requestId,
             payload = state.sessionActivationRequest(requestId, target, spawnMode, codexLaunchMode),
-            register = { it.copy(
+            register = {
+                detachConfiguredLaunchSelection(it)
+                it.copy(
                 sessionActivateRequests = it.sessionActivateRequests + requestId,
                 sessionActivateTargets = if (target["type"]?.jsonPrimitive?.contentOrNull == "resume") {
-                    target["sessionId"]?.jsonPrimitive?.contentOrNull?.let { id -> mapOf(requestId to id) } ?: emptyMap()
-                } else emptyMap(),
+                    target["sessionId"]?.jsonPrimitive?.contentOrNull?.let { id -> it.sessionActivateTargets + (requestId to id) } ?: it.sessionActivateTargets
+                } else it.sessionActivateTargets,
                 activatedSessionToOpen = null,
                 sessionConfiguration = if (fields["type"] == "new") it.sessionConfiguration.copy(launchError = null, waitingForLaunchJournal = false) else it.sessionConfiguration,
             ).createLaunch(requestId, fields, title, System.currentTimeMillis(), spawnModeOverride = spawnMode, codexLaunchMode = codexLaunchMode).first },
@@ -1473,21 +1447,34 @@ internal class HostConnection(
         return sent
     }
 
-    internal fun recoveredLaunchDraft(): RecoveredLaunchDraft? = configuredLaunchJournal.snapshot?.recoveredLaunchDraft()
+    internal fun recoveredLaunchDraft(id: String): RecoveredLaunchDraft? = configuredLaunchJournal.snapshot(id)?.recoveredLaunchDraft()
 
-    fun canAbandonConfiguredLaunch(requestId: String): Boolean = mutableState.value.launching
-        ?.takeIf { it.requestId == requestId }?.canAbandonConfiguredLaunch(configuredLaunchJournal.launchId) == true
+    fun reviewPreviousLaunch() {
+        var opened: String? = null
+        updateState { current ->
+            val id = configuredLaunchJournal.pending.firstNotNullOfOrNull { record ->
+                record["launchId"]?.jsonPrimitive?.contentOrNull?.takeIf { current.launch(it)?.following != true }
+            } ?: return@updateState current
+            val saved = configuredLaunchJournal.snapshot(id) ?: return@updateState current
+            if (!configuredLaunchJournal.acceptsResult(id)) return@updateState current
+            if (current.launching?.requestId != id) detachConfiguredLaunchSelection(current)
+            opened = id
+            current.restoreConfiguredLaunchRecord(id, saved, System.currentTimeMillis(), show = true)
+        }
+        opened?.let(::recoverConfiguredLaunch)
+    }
 
-    fun isRejectedConfiguredLaunch(requestId: String): Boolean = configuredLaunchJournal.snapshot?.let {
-        it["launchId"]?.jsonPrimitive?.contentOrNull == requestId && it.isRejectedLaunch
-    } == true
+    fun canAbandonConfiguredLaunch(requestId: String): Boolean = mutableState.value.launch(requestId)
+        ?.canAbandonConfiguredLaunch(configuredLaunchJournal.snapshot(requestId)?.get("launchId")?.jsonPrimitive?.contentOrNull) == true
+
+    fun isRejectedConfiguredLaunch(requestId: String): Boolean = configuredLaunchJournal.snapshot(requestId)?.isRejectedLaunch == true
 
     /** Leave a failed launch, or explicitly stop waiting without closing a possible native session. */
     suspend fun abandonConfiguredLaunch(id: String, mayReturnToDraft: () -> Boolean): Boolean {
         val (write, firstId) = synchronized(stateWriterLock) {
             val launch = mutableState.value.launchPage?.takeIf { it.requestId == id } ?: return false
-            val saved = configuredLaunchJournal.snapshot ?: return false
-            if (launch.endingWait || !launch.canAbandonConfiguredLaunch(configuredLaunchJournal.launchId)) return false
+            val saved = configuredLaunchJournal.snapshot(id) ?: return false
+            if (launch.endingWait || !launch.canAbandonConfiguredLaunch(id)) return false
             val write = configuredLaunchJournal.abandon(id) ?: return false
             // The writer lock makes this fence and result reduction mutually exclusive.
             mutableState.value = mutableState.value.copy(launching = launch.copy(endingWait = true))
@@ -1501,9 +1488,9 @@ internal class HostConnection(
                 if (persisted) {
                     navigate = current.launchPage?.let { it.requestId == id && it.following } == true && shouldConnect
                     current.retireConfiguredLaunchState(id, firstId)
-                } else current.copy(launching = current.launching?.let {
-                    if (it.requestId == id) it.copy(endingWait = false, failure = L10n.tr("无法保存启动恢复记录，请重试")) else it
-                })
+                } else current.launch(id)?.let {
+                    current.updateLaunch(it.copy(endingWait = false, failure = L10n.tr("无法保存启动恢复记录，请重试")))
+                } ?: current
             }
             if (persisted && firstId != null) scope.launch(Dispatchers.IO) { draftStore.removeWaiting(firstId) }
             navigate
@@ -1514,8 +1501,8 @@ internal class HostConnection(
     fun retryLaunch() {
         val launch = mutableState.value.launchPage ?: return
         if (launch.failure == null && !launch.unconfirmed) return
-        if (launch.requestId == configuredLaunchJournal.launchId) {
-            if (configuredLaunchJournal.acceptsResult(launch.requestId)) recoverConfiguredLaunch()
+        if (launch.configured) {
+            if (configuredLaunchJournal.acceptsResult(launch.requestId)) recoverConfiguredLaunch(launch.requestId)
             return
         }
         updateState { it.copy(launching = null, sessionActivateRequests = it.sessionActivateRequests - launch.requestId) }
@@ -1722,15 +1709,6 @@ internal class HostConnection(
         var conversation: RuntimeConversation? = null
         var graph: SessionGraph? = null
         var needsSessionRefresh = false
-        // ADR-0049 §6.8：离开启动页不取消启动，成功后也不把用户拉回。
-        if (runtimeId == null && mutableState.value.launchPage != null) {
-            if (mutableState.value.launching?.requestId == configuredLaunchId) {
-                configuredLaunchId?.let { id -> configuredLaunchJournal.updatePending(id) { saved ->
-                    JsonObject(saved + ("following" to JsonPrimitive(false)))
-                } }
-            }
-            updateState { it.stopFollowingLaunch() }
-        }
         updateState { latest ->
             val candidate = runtimeId?.let(latest.runtimes::get)
             val candidateConversation = runtimeId?.let(latest.conversations::get)
@@ -1743,7 +1721,9 @@ internal class HostConnection(
                     latest.runtimeSessionViews[runtimeId]?.leafId != candidate.sessionLeafId ||
                     candidate.sessionLeafId != null && candidateGraph?.hasCompleteEntryChain(candidate.sessionLeafId) != true ||
                     candidateConversation?.sourceEpoch != null && latest.appliedSessionState(candidate.runtimeId) == null)
-            val selected = latest.cancelForegroundSessionSyncs(runtimeId).let {
+            // ADR-0049 §6.8: changing pages revokes the launch's navigation ownership, not its request.
+            detachConfiguredLaunchSelection(latest)
+            val selected = latest.stopFollowingLaunch().cancelForegroundSessionSyncs(runtimeId).let {
                 if (it.selectedRuntimeId != runtimeId) it.clearInteractionOutcome(it.selectedRuntimeId) else it
             }
             selected.copy(
@@ -1876,12 +1856,15 @@ internal class HostConnection(
             updateState { it.sessionFailure(sessionId, L10n.tr("该会话没有可用的本地历史缓存")) }
             return
         }
-        updateState { it.cancelForegroundSessionSyncs(null).copy(
-            sessionActivateTargets = emptyMap(),
-            activatedSessionToOpen = null,
-            selectedRuntimeId = null,
-            selectedOfflineSessionId = sessionId,
-        ) }
+        updateState { latest ->
+            detachConfiguredLaunchSelection(latest)
+            latest.stopFollowingLaunch().cancelForegroundSessionSyncs(null).copy(
+                sessionActivateTargets = emptyMap(),
+                activatedSessionToOpen = null,
+                selectedRuntimeId = null,
+                selectedOfflineSessionId = sessionId,
+            )
+        }
         val pairedDevice = device ?: return
         scope.launch(Dispatchers.IO) {
             loadCachedSessionGraph(pairedDevice, sessionId)
@@ -2230,9 +2213,8 @@ internal class HostConnection(
                 return@synchronized null
             }
             if (mutableState.value.supportsSessionConfiguration(kind)) {
-                if (!validateNewSessionTarget(expectedHost) || !createConfiguredSession(kind, cwd, firstMessage = text)) return@synchronized null
-                val id = configuredLaunchId ?: return@synchronized null
-                return@synchronized FirstSessionSubmission(mutableState.value.pendingSends.values.firstOrNull { it.sessionId == "launch:$id" }?.commandId)
+                if (!validateNewSessionTarget(expectedHost)) return@synchronized null
+                return@synchronized createConfiguredSession(kind, cwd, firstMessage = text)
             }
             if (!createSession(kind, cwd, expectedHost)) return@synchronized null
             FirstSessionSubmission(sendMessage(text))
@@ -2282,7 +2264,7 @@ internal class HostConnection(
         }
         val pairedDevice = device
         val runtime = mutableState.value.runtimes[runtimeId]
-        if (pairedDevice != null && runtime != null && configuredLaunchJournal.snapshot?.get("firstMessageId")?.jsonPrimitive?.contentOrNull != messageId)
+        if (pairedDevice != null && runtime != null && configuredLaunchJournal.launchIdForFirstMessage(messageId) == null)
             draftStore.saveWaiting(pairedDevice, runtime, messageId, text)
         flushReadySends()
         return commandId
@@ -2290,30 +2272,34 @@ internal class HostConnection(
 
     /** 轮到写入通道的等待消息依次写入；写入后账本记录交给 outbox（ADR-0049 §6.2）。 */
     private fun flushReadySends() {
-        if (flushingSends) return
-        flushingSends = true
-        try {
-            while (true) {
-                val state = mutableState.value
-                if (!state.e2eReady) return
-                val (op, send, target) = state.readySends().firstNotNullOfOrNull { op ->
-                    val payload = op.payload as LedgerPayload.Send
-                    val session = state.launchSessions[payload.sessionId] ?: payload.sessionId
-                    val runtime = state.runtimes[payload.runtimeId]?.takeIf { it.sessionId == session }
-                        ?: state.runtimeForLaunch(payload.sessionId, session) ?: return@firstNotNullOfOrNull null
-                    val send = state.pendingSends[payload.messageId]?.takeIf {
-                        it.sessionId == session && (it.runtimeId == payload.runtimeId || it.runtimeId == runtime.runtimeId)
-                    } ?: return@firstNotNullOfOrNull null
-                    val paths = send.uploadIds.mapNotNull { id -> state.uploads[id]?.takeIf { it.status == "completed" }?.remotePath }
-                    if (paths.size != send.uploadIds.size) null else Triple(op, send, paths to runtime.runtimeId)
-                } ?: return
-                val (paths, runtimeId) = target
-                if (relay.sendUserMessage(runtimeId, send.text, send.messageId, send.delivery, paths, op.opId) == null) return
-                draftStore.removeWaiting(send.messageId)
-                updateState { it.waitingWritten(op.opId, send.messageId, runtimeId, paths, System.currentTimeMillis()) }
-            }
-        } finally {
-            flushingSends = false
+        sendFlushRequested.set(true)
+        while (sendFlushRequested.get() && flushingSends.compareAndSet(false, true)) {
+            try {
+                sendFlushRequested.set(false)
+                drainReadySends()
+            } finally { flushingSends.set(false) }
+        }
+    }
+
+    private fun drainReadySends() {
+        while (true) {
+            val state = mutableState.value
+            if (!state.e2eReady) return
+            val (op, send, target) = state.readySends().firstNotNullOfOrNull { op ->
+                val payload = op.payload as LedgerPayload.Send
+                val session = state.launchSessions[payload.sessionId] ?: payload.sessionId
+                val runtime = state.runtimes[payload.runtimeId]?.takeIf { it.sessionId == session }
+                    ?: state.runtimeForLaunch(payload.sessionId, session) ?: return@firstNotNullOfOrNull null
+                val send = state.pendingSends[payload.messageId]?.takeIf {
+                    it.sessionId == session && (it.runtimeId == payload.runtimeId || it.runtimeId == runtime.runtimeId)
+                } ?: return@firstNotNullOfOrNull null
+                val paths = send.uploadIds.mapNotNull { id -> state.uploads[id]?.takeIf { it.status == "completed" }?.remotePath }
+                if (paths.size != send.uploadIds.size) null else Triple(op, send, paths to runtime.runtimeId)
+            } ?: return
+            val (paths, runtimeId) = target
+            if (relay.sendUserMessage(runtimeId, send.text, send.messageId, send.delivery, paths, op.opId) == null) return
+            draftStore.removeWaiting(send.messageId)
+            updateState { it.waitingWritten(op.opId, send.messageId, runtimeId, paths, System.currentTimeMillis()) }
         }
     }
 
@@ -2363,6 +2349,7 @@ internal class HostConnection(
             else -> "followUp"
         }
         val commandId = sendUserMessage(runtimeId, send.text, delivery, send.attachments) ?: return null
+        clearConfiguredFirstMessage(messageId)
         updateState { it.copy(pendingSends = it.pendingSends - messageId) }
         return commandId
     }
@@ -2373,6 +2360,7 @@ internal class HostConnection(
         updateState { state ->
             val send = state.pendingSends[messageId]?.takeIf { it.state is PendingSendState.Failed || it.state == PendingSendState.Unconfirmed }
                 ?: return@updateState state
+            configuredLaunchJournal.forgetFirstMessages(setOf(messageId))
             restored = send
             state.copy(pendingSends = state.pendingSends - messageId)
         }
@@ -2407,16 +2395,12 @@ internal class HostConnection(
     fun uploadsOf(messageId: String): List<String> = mutableState.value.pendingSends[messageId]?.uploadIds.orEmpty()
 
     private fun clearConfiguredFirstMessage(messageId: String, restoring: Boolean = false) {
-        val saved = configuredLaunchJournal.snapshot ?: return
-        if (saved["firstMessageId"]?.jsonPrimitive?.contentOrNull != messageId) return
-        val id = saved["launchId"]?.jsonPrimitive?.contentOrNull ?: return
+        configuredLaunchJournal.forgetFirstMessages(setOf(messageId))
+        if (restoring) return
+        val id = configuredLaunchJournal.launchIdForFirstMessage(messageId) ?: return
         if (configuredLaunchJournal.update(id) { current ->
-            when {
-                current == null || current["firstMessageId"]?.jsonPrimitive?.contentOrNull != messageId -> current
-                current["sessionId"] != null && !current.isLaunchDraft && mutableState.value.launching?.requestId != id -> null
-                restoring -> current // Preserve the launch identity and its draft until the user leaves.
-                else -> JsonObject(current - setOf("firstMessage", "firstMessageId", "firstCommandId"))
-            }
+            if (current["firstMessageId"]?.jsonPrimitive?.contentOrNull != messageId) current
+            else JsonObject(current - setOf("firstMessage", "firstMessageId", "firstCommandId"))
         } != null) updateState { it }
     }
 
@@ -2449,7 +2433,8 @@ internal class HostConnection(
      * 进程级生命周期：App 被杀后任务由持久层标记 paused，重新选文件即续传。
      */
     private val composerAttachments = mutableMapOf<String, MutableSet<String>>()
-    private var flushingSends = false
+    private val flushingSends = AtomicBoolean(false)
+    private val sendFlushRequested = AtomicBoolean(false)
     private var resubmittingConfig = false
 
     fun attachedTaskIds(sessionKey: String): Set<String> =
@@ -3490,7 +3475,7 @@ internal class HostConnection(
                                         return@updateState latest
                                     // Only configured-ready (never a legacy activation receipt) can bind a configured launch.
                                     if (messageType == "session.activated" && message?.get("requestId")?.jsonPrimitive?.contentOrNull
-                                            ?.let { it == configuredLaunchJournal.launchId } == true) return@updateState latest
+                                            ?.let { configuredLaunchJournal.snapshot(it) != null } == true) return@updateState latest
                                     val rebased = if (latest === previous) next
                                         else incomingMessage?.let { reducer.reduce(latest, payload, it, committedBatch, channel = interactiveChannel) }
                                             ?: reducer.reduce(latest, payload, committedBatch, channel = interactiveChannel)
@@ -4152,6 +4137,7 @@ internal class HostConnection(
         var recheck = false
         var capturedName = false
         var retiredViewer: FileChangeViewer? = null
+        var launchDraftMoves: List<Pair<RuntimeSummary, RuntimeSummary>> = emptyList()
         synchronized(stateWriterLock) {
             val current = mutableState.value
             var next = transform(current).openAcknowledgedSession().trackSessionReadDemands(current).reconcileHistoryReads(current)
@@ -4166,17 +4152,25 @@ internal class HostConnection(
             if ((!next.e2eReady || next.connection != RelayConnection.ONLINE) && next.agentProviders.quotaRequestId != null) {
                 next = next.interruptSubscriptionQuery()
             }
-            // ADR-0049：每次状态变化都用源端事实核对本地待确认发送。
-            val (reconciled, syncs) = next.reconcilePendingSends(System.currentTimeMillis())
-            next = reconciled
-            val savedLaunch = configuredLaunchJournal.pending
-            val firstId = savedLaunch?.get("firstMessageId")?.jsonPrimitive?.contentOrNull
-            val savedSession = savedLaunch?.get("sessionId")?.jsonPrimitive?.contentOrNull
-            if (savedSession != null && next.launching == null && (savedLaunch["firstMessage"]?.jsonPrimitive?.contentOrNull.isNullOrBlank() ||
-                firstId != null && current.pendingSends.containsKey(firstId) && !next.pendingSends.containsKey(firstId))) {
-                savedLaunch["launchId"]?.jsonPrimitive?.contentOrNull?.let { id -> configuredLaunchJournal.updatePending(id) { null } }
+            val handoffs = next.launchDraftMoves
+            for ((from, to) in handoffs) {
+                val launchId = from.runtimeId.removePrefix("launch:")
+                val record = configuredLaunchJournal.snapshot(launchId) ?: continue
+                if (record["sessionId"]?.jsonPrimitive?.contentOrNull != to.sessionId) continue
+                val firstId = record["firstMessageId"]?.jsonPrimitive?.contentOrNull
+                configuredLaunchJournal.handoff(launchId, ConfiguredFirstMessage.landed(record, to,
+                    next.pendingSends[firstId]?.createdAt ?: System.currentTimeMillis()))
             }
-            val configuration = next.sessionConfiguration.reconcileLaunchJournal(configuredLaunchJournal.isLoaded, configuredLaunchJournal.blocksNewLaunch)
+            launchDraftMoves = handoffs
+            if (handoffs.isNotEmpty()) next = next.copy(launchDraftMoves = emptyList())
+            val firstMessages = configuredLaunchJournal.firstMessages
+            val (restored, materialized) = next.reconcileConfiguredFirstMessages(firstMessages)
+            configuredLaunchJournal.forgetFirstMessages(materialized)
+            val retained = firstMessages.mapTo(mutableSetOf()) { it.messageId }
+            configuredLaunchJournal.pending.mapNotNullTo(retained) { it["firstMessageId"]?.jsonPrimitive?.contentOrNull }
+            val (reconciled, syncs) = restored.reconcilePendingSends(System.currentTimeMillis(), retained::contains)
+            next = reconciled
+            val configuration = next.sessionConfiguration.reconcileLaunchJournal(configuredLaunchJournal.isLoaded)
             if (configuration !== next.sessionConfiguration) next = next.copy(sessionConfiguration = configuration)
             settlementSyncs = syncs
             recheck = next.pendingSends.values.any { it.state == PendingSendState.Accepted && !it.sawBusy }
@@ -4193,7 +4187,7 @@ internal class HostConnection(
         }
         ledgerRead?.let(::sendLedgerVerify)
         // ADR-0049 §6.8 / V17：启动成功后，启动页的草稿迁到真实会话。
-        mutableState.value.launchDraftMove?.let { (from, to) ->
+        launchDraftMoves.forEach { (from, to) ->
             device?.let { paired ->
                 val text = draftStore.load(paired, from)
                 if (draftIdentity(paired, from) != draftIdentity(paired, to) && text.isNotBlank() && draftStore.load(paired, to).isBlank()) {
@@ -4201,7 +4195,6 @@ internal class HostConnection(
                     draftStore.save(paired, from, "")
                 }
             }
-            updateState { it.copy(launchDraftMove = null) }
         }
         if (mutableState.value.configSelections.isNotEmpty() && !resubmittingConfig) {
             resubmittingConfig = true

@@ -449,6 +449,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun activateSession(sessionId: String) = active()?.activateSession(sessionId)
 
+    fun reviewPreviousLaunch() { active()?.reviewPreviousLaunch() }
+
     internal fun currentLaunchPresentation(): LaunchState? = active()?.state?.value?.launching
 
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String? = null): Boolean =
@@ -526,8 +528,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         val owner = active()?.takeIf { it.hostId == hostId } ?: return false
         return owner.abandonConfiguredLaunch(requestId) { active() === owner && mayReturnToDraft() }
     }
-    internal fun recoveredLaunchDraft(hostId: String?): RecoveredLaunchDraft? = synchronized(lock) {
-        hostId?.takeIf { it == activeHostId.value }?.let(connections::get)?.recoveredLaunchDraft()
+    internal fun recoveredLaunchDraft(hostId: String?, launchId: String): RecoveredLaunchDraft? = synchronized(lock) {
+        hostId?.takeIf { it == activeHostId.value }?.let(connections::get)?.recoveredLaunchDraft(launchId)
     }
 
     fun producesMessage(command: RuntimeSlashCommand, runtime: RuntimeSummary?): Boolean =
