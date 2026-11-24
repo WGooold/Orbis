@@ -200,3 +200,13 @@ iOS 自动验证：[Swift 几何回归 9 项通过](../../.artifacts/agent-dial-
 实现：Android [`ProviderDialScreen.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialScreen.kt)、[`ProviderDialGeometry.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialGeometry.kt)；iOS [`StatusViews.swift`](../../ios/Orbis/Orbis/StatusViews.swift)、[`ProviderDialGeometry.swift`](../../ios/Orbis/Orbis/ProviderDialGeometry.swift)。回归：[`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `pinDuringAgentSettleDisablesTheTappedAgentNotTheFirst`、`swipeLeavingTheGrooveNeverSwitchesAnAgent`。
 
 自动验证（2026-11-24，基于 `24ef5b50` 的工作区）：两项新用例在修改前的[对照运行](../../.artifacts/agent-dial-06-20261124/baseline-instrumentation/instrumentation.log)中均失败，复现停用首个 Agent 与斜划误切换；修复后[`ProviderDialInstrumentedTest` 13 项中 11 项通过](../../.artifacts/agent-dial-06-20261124/fixed-instrumentation/instrumentation.log)，其余 2 项为 AGENT-DIAL-04 已核对的既有失败；Android 单元回归 15 项通过；iOS 无签名模拟器构建成功。特效时长与流畅度未做自动度量，待用户安装验收。
+
+## AGENT-DIAL-08｜插销全程跟手（2026-11-24）
+
+- **问题**：拖动插销时按钮不跟手，像是从起点划到终点直接触发，而不是把按钮拨过去。
+- **根因**：拖动行程被限制在 `HOLD`（72%）以内，后段手指移动时插销停住；拖动位置在组合阶段读取，手指每次移动都重组整个轮盘，插销落后于手指。
+- **修复**：拖动时插销在整条凹槽内跟随手指，只在两端停止（Android `AgentDialPin.drag`、iOS `ProviderDialGeometry.pinPosition`）；过半松手才生效，生效后回到待确认位置，Host 回执前仍显示原有事实。Android 插销位置改在布局阶段读取，拖动不再重组轮盘。
+
+回归：[`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `heldPinFollowsTheFingerAlongTheWholeGroove`（按住向内拉 90% 时插销中心位于手指处）；Android／iOS 几何回归更新为全程跟随。
+
+自动验证（2026-11-24）：新用例在修改前的[对照运行](../../.artifacts/agent-dial-08-20261124/baseline-instrumentation/instrumentation.log)中失败（插销停在 28% 处，落后手指 27px）；修复后[`ProviderDialInstrumentedTest` 14 项中 12 项通过](../../.artifacts/agent-dial-08-20261124/fixed-instrumentation/instrumentation.log)，其余 2 项为既有失败；Android 单元回归 15 项、Swift 几何回归 9 项通过；iOS 无签名模拟器构建成功。拖动手感待用户安装验收。

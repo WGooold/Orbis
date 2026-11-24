@@ -102,7 +102,8 @@ internal object AgentDialPin {
     /** AGENT-DIAL-06: vertical travel (dp) past which a pin edit leaves the groove and is abandoned. */
     const val ESCAPE = 36f
     fun horizontal(dx: Float, dy: Float) = kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.1f
-    fun drag(enabled: Boolean, dx: Float, travel: Float): Float = if (enabled) (1 + dx / travel).coerceIn(1-HOLD, 1f) else (dx / travel).coerceIn(0f, HOLD)
+    /** AGENT-DIAL-08: the pin follows the finger across the whole groove; only its resting place waits for the Host. */
+    fun drag(enabled: Boolean, dx: Float, travel: Float): Float = ((if (enabled) 1f else 0f) + dx / travel).coerceIn(0f, 1f)
     fun armed(enabled: Boolean, position: Float): Boolean = if (enabled) position < 0.5f else position > 0.5f
 
     /** Resting pin travel for any Agent: the socket end is reserved for a Host-confirmed enable. */

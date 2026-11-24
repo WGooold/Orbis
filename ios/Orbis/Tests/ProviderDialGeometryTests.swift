@@ -51,7 +51,10 @@ struct ProviderDialGeometryTests {
         #expect(!ProviderDialGeometry.horizontal(12, -70))
         #expect(ProviderDialGeometry.horizontal(30, 8))
         #expect(!ProviderDialGeometry.pinArmed(enabled: false, position: ProviderDialGeometry.pinPosition(enabled: false, dx: g.pinTravel * 0.4, travel: g.pinTravel)))
-        #expect(ProviderDialGeometry.pinPosition(enabled: false, dx: g.pinTravel * 1.5, travel: g.pinTravel) == ProviderDialGeometry.pinHold)
+        // AGENT-DIAL-08: the pin follows the finger along the whole groove and stops only at its ends.
+        #expect(abs(ProviderDialGeometry.pinPosition(enabled: false, dx: g.pinTravel * 0.9, travel: g.pinTravel) - 0.9) < 0.00001)
+        #expect(ProviderDialGeometry.pinPosition(enabled: false, dx: g.pinTravel * 1.5, travel: g.pinTravel) == 1)
+        #expect(abs(ProviderDialGeometry.pinPosition(enabled: true, dx: -g.pinTravel * 0.9, travel: g.pinTravel) - 0.1) < 0.00001)
         #expect(ProviderDialGeometry.pinArmed(enabled: true, position: ProviderDialGeometry.pinPosition(enabled: true, dx: -g.pinTravel, travel: g.pinTravel)))
     }
 

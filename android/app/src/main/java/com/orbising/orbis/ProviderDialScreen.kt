@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -629,17 +630,21 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                     }
                 }
             }
-            val selectedTravel = (pinDrag ?: (pin.value + nudge.value)).coerceIn(0f, 1f)
             kinds.forEachIndexed { index, agent -> key(agent) {
                 val distance = index - agentPosition
                 val selected = agent == kind
-                val travel = if (!managed) 0f else if (selected) selectedTravel else pinRests[agent] ?: 0f
-                val (x, y) = AgentDialPin.centre(g, distance, travel)
+                val (ringX, ringY) = AgentDialPin.centre(g, distance, 0f)
                 val gate = AgentDialPin.gate(distance)
                 val agentEnabled = if (selected) on else rows[agent]?.enabled == true
                 val agentStatus = statuses[agent] ?: status
-                if (abs(distance) < 3.1f && x >= 12 && y in 20f..(height - 20)) Box(Modifier
-                    .offset(x = (x - 24 + if (selected) recoil.value else 0f).dp, y = (y - 24).dp).size(48.dp)
+                if (abs(distance) < 3.1f && ringX >= 12 && ringY in 20f..(height - 20)) Box(Modifier
+                    // AGENT-DIAL-08: pin travel is read at layout time, so a dragged pin moves with the finger every
+                    // frame without recomposing the dial.
+                    .offset {
+                        val travel = if (!managed) 0f else if (selected) (pinDrag ?: (pin.value + nudge.value)).coerceIn(0f, 1f) else pinRests[agent] ?: 0f
+                        val (x, y) = AgentDialPin.centre(g, distance, travel)
+                        IntOffset((x - 24 + if (selected) recoil.value else 0f).dp.roundToPx(), (y - 24).dp.roundToPx())
+                    }.size(48.dp)
                     .testTag("provider-agent-$agent")
                     .graphicsLayer { alpha = 0.4f + 0.6f * if (grabbed == ProviderDialRing.Profile) AgentDialPin.docked(distance) else gate }
                     .orbisKeyboardFocus().clickable(enabled = active,

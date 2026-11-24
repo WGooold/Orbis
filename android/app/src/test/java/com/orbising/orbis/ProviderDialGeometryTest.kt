@@ -41,7 +41,10 @@ class ProviderDialGeometryTest {
         assertFalse(AgentDialPin.horizontal(12f, -70f))
         assertTrue(AgentDialPin.horizontal(30f, 8f))
         assertFalse(AgentDialPin.armed(false, AgentDialPin.drag(false, layout.pinTravel * 0.4f, layout.pinTravel)))
-        assertEquals(AgentDialPin.HOLD, AgentDialPin.drag(false, layout.pinTravel * 1.5f, layout.pinTravel), 0.00001f)
+        // AGENT-DIAL-08: the pin follows the finger along the whole groove and stops only at its ends.
+        assertEquals(0.9f, AgentDialPin.drag(false, layout.pinTravel * 0.9f, layout.pinTravel), 0.00001f)
+        assertEquals(1f, AgentDialPin.drag(false, layout.pinTravel * 1.5f, layout.pinTravel), 0.00001f)
+        assertEquals(0.1f, AgentDialPin.drag(true, -layout.pinTravel * 0.9f, layout.pinTravel), 0.00001f)
         assertTrue(AgentDialPin.armed(true, AgentDialPin.drag(true, -layout.pinTravel, layout.pinTravel)))
     }
 

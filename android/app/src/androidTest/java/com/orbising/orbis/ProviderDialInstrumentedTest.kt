@@ -110,6 +110,20 @@ class ProviderDialInstrumentedTest {
         compose.runOnIdle { assertEquals(listOf(Triple("openclaw", false, null)), enablementChanges) }
     }
 
+    /** AGENT-DIAL-08: while held, the pin sits under the finger along the whole groove, not at a stop short of it. */
+    @Test fun heldPinFollowsTheFingerAlongTheWholeGroove() {
+        val dial = managedDial(AgentEnablementRow("codex", "Codex CLI", true), AgentEnablementRow("openclaw", "OpenClaw", true))
+        val g = pinGeometry(dial)
+        val socket = with(compose.density) { androidx.compose.ui.geometry.Offset((g.pinStart + g.pinTravel).dp.toPx(), g.cy.dp.toPx()) }
+        val travel = with(compose.density) { g.pinTravel.dp.toPx() }
+        dial.performTouchInput { down(socket); moveTo(socket + androidx.compose.ui.geometry.Offset(-travel * 0.9f, 0f), 250) }
+        val pin = compose.onNodeWithTag("provider-agent-codex").fetchSemanticsNode().boundsInRoot.center.x
+        val expected = with(compose.density) { (g.pinStart + g.pinTravel * 0.1f).dp.toPx() }
+        assertEquals(expected, pin, with(compose.density) { 2.dp.toPx() })
+        dial.performTouchInput { up() }
+        compose.runOnIdle { assertEquals(listOf(Triple("codex", false, null)), enablementChanges) }
+    }
+
     /** AGENT-DIAL-06: a swipe that leaves the groove abandons the pin edit, however far it travelled sideways. */
     @Test fun swipeLeavingTheGrooveNeverSwitchesAnAgent() {
         val dial = managedDial(AgentEnablementRow("codex", "Codex CLI", true), AgentEnablementRow("openclaw", "OpenClaw", true))

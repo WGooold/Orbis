@@ -52,8 +52,9 @@ enum ProviderDialGeometry {
     /// AGENT-DIAL-06: vertical travel past which a pin edit leaves the groove and is abandoned.
     static let pinEscape = 36.0
     static func horizontal(_ dx: Double, _ dy: Double) -> Bool { abs(dx) > abs(dy) * 1.1 }
+    /// AGENT-DIAL-08: the pin follows the finger across the whole groove; only its resting place waits for the Host.
     static func pinPosition(enabled: Bool, dx: Double, travel: Double) -> Double {
-        enabled ? clamp(1 + dx / travel, 1 - pinHold, 1) : clamp(dx / travel, 0, pinHold)
+        clamp((enabled ? 1 : 0) + dx / travel, 0, 1)
     }
     static func pinArmed(enabled: Bool, position: Double) -> Bool { enabled ? position < 0.5 : position > 0.5 }
     /// Resting pin travel for any Agent: the socket end is reserved for a Host-confirmed enable.
