@@ -370,7 +370,7 @@ void HostController::resumeAfterChange() {
 }
 void HostController::clearRunningFacts() {
     // Desktop connections belong to this Host run; their lifecycles report again on the next start.
-    m_backends.clear(); m_activeAgentSessions.clear(); m_runtimeCount = 0; m_codexDesktop.clear(); m_dshDesktop.clear(); m_kimiCodeState.clear();
+    m_backends.clear(); m_activeAgentSessions.clear(); m_runtimeCount = 0; m_codexDesktop.clear(); m_dshDesktop.clear(); m_kimiCodeState.clear(); m_kimiCodeDesktopState.clear();
     // 终端 Codex 与 DeepSeek 后端的准备属于这一次运行：停了就不再有“正在准备”。
     // Claude 插件登记属于 Host 核心本身，暂停连接不影响它。
     m_preparations.remove("codex"); m_preparations.remove("dsh");
@@ -446,6 +446,7 @@ void HostController::receiveLine(const QJsonObject &line) {
             m_backends = backends;
             m_activeAgentSessions = m_state == "connected" ? line.value("activeAgentSessions").toObject().toVariantMap() : QVariantMap{};
             m_kimiCodeState = m_desiredRunning && kimiCodeEnabled() ? line.value("kimiCodeState").toString() : QString();
+            m_kimiCodeDesktopState = m_desiredRunning && agentEnabled("kimiCodeDesktop") ? line.value("kimiCodeDesktopState").toString() : QString();
         }
         // Codex 桌面版 app-server 的接入分档（ADR-0022）：分档真的变了才会到这条事件。
         else if (event == "codexDesktop") { m_codexDesktop = line.value("status").toObject().toVariantMap(); }
@@ -844,6 +845,13 @@ bool HostController::kimiCodeEnabled() const {
     }
     return false;
 }
+bool HostController::agentEnabled(const QString &kind) const {
+    for (const auto &value : m_agentEnablement.value("agents").toList()) {
+        const auto row = value.toMap();
+        if (row.value("kind").toString() == kind) return row.value("enabled").toBool();
+    }
+    return false;
+}
 static QVariantMap agentChoicesIn(const QVariantMap &snapshot) {
     QVariantMap choices;
     for (const auto &entry : snapshot.value("agents").toList()) {
@@ -861,6 +869,7 @@ void HostController::applyAgentEnablement(const QJsonObject &snapshot, bool anno
     const auto previous = announce ? agentChoicesIn(m_agentEnablement) : QVariantMap{};
     m_agentEnablement = snapshot.toVariantMap();
     if (!kimiCodeEnabled()) m_kimiCodeState.clear();
+    if (!agentEnabled("kimiCodeDesktop")) m_kimiCodeDesktopState.clear();
     emit agentEnablementChanged();
     emit changed();
     const auto values = previous.isEmpty() ? QVariantMap{} : agentChoicesIn(m_agentEnablement);
@@ -1277,9 +1286,11 @@ void HostController::restartDshServer() {
 }
 void HostController::openAgent(const QString &kind) {
     if (kind == "pi" || kind == "claude") { openAgentTui(kind); return; }
-    if (kind == "kimiCode" || kind == "opencode" || kind == "hermes" || kind == "openclaw") {
-        if (!m_bridgeReady || busy() || !m_desiredRunning || (kind == "kimiCode" && !kimiCodeEnabled())) return;
-        const auto label = kind == "kimiCode" ? "Kimi Code" : kind == "opencode" ? "OpenCode" : kind == "hermes" ? "Hermes Agent" : "OpenClaw";
+    if (kind == "kimiCode" || kind == "kimiCodeDesktop" || kind == "opencode" || kind == "hermes" || kind == "openclaw") {
+        if (!m_bridgeReady || busy() || !m_desiredRunning ||
+            (kind == "kimiCode" && (!kimiCodeAvailable() || !kimiCodeEnabled())) ||
+            (kind == "kimiCodeDesktop" && (!kimiDesktopSupported() || !agentEnabled(kind)))) return;
+        const auto label = kind == "kimiCode" ? "Kimi Code Web" : kind == "kimiCodeDesktop" ? "Kimi Code 桌面版" : kind == "opencode" ? "OpenCode" : kind == "hermes" ? "Hermes Agent" : "OpenClaw";
         command("openAgent", {{"kind", kind}}, [this, label](const QJsonValue &) { setMessage(QString("%1 已接入").arg(label)); });
         return;
     }

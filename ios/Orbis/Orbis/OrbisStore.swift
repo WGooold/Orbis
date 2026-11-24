@@ -361,6 +361,9 @@ final class HostConnection: ObservableObject {
     @Published private(set) var kimiCodeSupported = false {
         didSet { if oldValue != kimiCodeSupported { directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
     }
+    @Published private(set) var kimiCodeDesktopSupported = false {
+        didSet { if oldValue != kimiCodeDesktopSupported { directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
+    }
     @Published private(set) var openClawNegotiated = false
     // ADR-0090: only an authenticated Host that advertises `session.spawn.auto` changes the legacy default.
     private var defaultSessionSpawnMode = "tui"
@@ -416,7 +419,8 @@ final class HostConnection: ObservableObject {
     var sessionConfigurationValues: SessionConfigurationValues { proposedSessionConfiguration ?? sessionConfiguration?.values ?? SessionConfigurationValues() }
 
     func supportsSessionConfiguration(for agent: String) -> Bool {
-        enabledAgentKinds?.contains(agent) != false && sessionConfigurationSupported && (agent != "openclaw" || openClawNegotiated) && (agent != kimiCodeKind || kimiCodeSupported)
+        enabledAgentKinds?.contains(agent) != false && sessionConfigurationSupported && (agent != "openclaw" || openClawNegotiated) &&
+            supportsKimiCode(kind: agent, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported)
     }
 
     func loadSessionConfiguration(agent: String, cwd: String) {
@@ -439,7 +443,7 @@ final class HostConnection: ObservableObject {
     }
 
     private func canReadConfiguredLaunch(_ agent: String) -> Bool {
-        sessionConfigurationSupported && connection == .secured && (agent != kimiCodeKind || kimiCodeSupported)
+        sessionConfigurationSupported && connection == .secured && supportsKimiCode(kind: agent, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported)
     }
 
     private func recoverConfiguredLaunch(_ targetId: String? = nil) {
@@ -497,7 +501,7 @@ final class HostConnection: ObservableObject {
 
     private func createConfiguredSession(agent: String, cwd: String, firstMessage: String) -> Bool {
         guard enabledAgentKinds?.contains(agent) != false, connection == .secured, let config = sessionConfiguration,
-              config.agentKind == agent, config.cwd == cwd, sessionConfigurationError == nil, agent != kimiCodeKind || kimiCodeSupported else { return false }
+              config.agentKind == agent, config.cwd == cwd, sessionConfigurationError == nil, supportsKimiCode(kind: agent, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported) else { return false }
         let id = UUID().uuidString, placeholder = "launch:" + id
         let creation = ledger.create(opId: id, kind: OperationKinds.launch, target: placeholder, policy: OperationKinds.launchPolicy,
             basis: ledgerBasis(OperationKinds.runtimesDomain), payload: .launch(requestId: id, placeholder: placeholder), written: false, now: Date())
@@ -527,7 +531,7 @@ final class HostConnection: ObservableObject {
         let generation = connectionGeneration
         runAsyncTransaction { [weak self] in
             guard await persisted.value, let self, !Task.isCancelled, generation == self.connectionGeneration,
-                  self.launchJournal.acceptsResult(for: id), self.connection == .secured, agent != kimiCodeKind || self.kimiCodeSupported else { return }
+                  self.launchJournal.acceptsResult(for: id), self.connection == .secured, supportsKimiCode(kind: agent, web: self.kimiCodeSupported, desktop: self.kimiCodeDesktopSupported) else { return }
             if self.transport.send(payload) { self.handleLedger(self.ledger.written(id, now: Date())) }
             else { self.markConfiguredLaunchUnconfirmed(id) }
         }
@@ -689,6 +693,7 @@ final class HostConnection: ObservableObject {
                 let revision = self.directoryInputRevision, metadata = self.directoryMetadataRevision
                 let catalog = await self.directoryWorker.resolve(sessions: self.sessions, runtimes: self.runtimes,
                     messages: self.conversations, archived: OperationKinds.archiveOverrides(self.ledger), kimiCodeSupported: self.kimiCodeSupported,
+                    kimiCodeDesktopSupported: self.kimiCodeDesktopSupported,
                     unifiedCodex: self.unifiedCodexHistory)
                 guard !Task.isCancelled else { break }
                 // Transcript chunks may arrive continuously. A serial, older result may advance
@@ -1212,7 +1217,7 @@ final class HostConnection: ObservableObject {
                     self.committingTranscript = false
                     self.renderedTranscriptIdentity = owner
                     if self.connection == .secured, let runtime = self.selectedRuntime, let session = runtime.sessionId,
-                       let host = self.selectedHost, let kind = self.agentKind(runtime), kind != kimiCodeKind {
+                       let host = self.selectedHost, let kind = self.agentKind(runtime), !isKimiCode(kind: kind, id: runtime.runtimeId) {
                         self.turnFileChanges.observe(runtimeId: runtime.runtimeId,
                             agent: ToolAgent(hostId: host.hostId, agentKind: kind, sessionId: session),
                             entryIds: next.changeEntries, turnIds: next.changeTurns)
@@ -1673,7 +1678,7 @@ final class HostConnection: ObservableObject {
         interactions = [:]; queuedMessages = [:]; interactionOutcomes = [:]
         workingBranches = [:]; dismissPreview()
         actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; composerActionDrafts = [:]; pendingActionIds = []; setActionFeedback(nil)
-        pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil; kimiCodeSupported = false; openCodeAvailability = nil
+        pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil; kimiCodeSupported = false; kimiCodeDesktopSupported = false; openCodeAvailability = nil
         dismissBrowse(); clearActivation()
         clearSyncs()
         transport.connect(pairing: pairing, identity: identity, receive: { [weak self] message, channel in
@@ -1695,7 +1700,7 @@ final class HostConnection: ObservableObject {
             if state != .secured { self.homeDirectoryReceived = false; self.defaultSessionSpawnMode = "tui"; self.filteredReady = nil; self.resetAgentEnablement(); self.importReady = false; self.finishExternalImport(.unconfirmed); self.finishExternalLaunch(.unconfirmed) }
             self.recordConnectionEvent(L10n.tr("连接：{0}", state.rawValue))
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
-            if state != .secured { self.openClawNegotiated = false; self.kimiCodeSupported = false; self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
+            if state != .secured { self.openClawNegotiated = false; self.kimiCodeSupported = false; self.kimiCodeDesktopSupported = false; self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
             if state == .offline || state == .connecting {
                 self.toolContent.close(); self.turnFileChanges.disconnected()
                 self.activePath = nil
@@ -2517,8 +2522,8 @@ final class HostConnection: ObservableObject {
     func activate(_ session: SessionSummary, codexLaunchMode: CodexLaunchMode? = nil) {
         let unified = session.sessionId.hasPrefix("codex-history:")
         guard !unified || unifiedCodexHistory else { return }
-        let kimi = isKimiCode(kind: session.agentKind, id: session.sessionId)
-        guard !kimi || kimiCodeSupported else { return }
+        let kimi = resolvedKimiCodeKind(kind: session.agentKind, id: session.sessionId)
+        guard supportsKimiCode(kind: kimi, id: session.sessionId, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported) else { return }
         if session.agentKind == "openclaw", !openClawNegotiated { return }
         if let mismatch = providerMismatch(session) { sessionOperationErrors[session.sessionId] = mismatch; return }
         if codexLaunchMode == nil, let runtime = runtimes.first(where: { (unified ? $0.codexCatalogId : $0.sessionId) == session.sessionId }) {
@@ -2526,12 +2531,12 @@ final class HostConnection: ObservableObject {
             return
         }
         var target: [String: Any] = ["type": "resume", "sessionId": session.sessionId]
-        let kind = kimi ? kimiCodeKind : session.agentKind
+        let kind = kimi ?? session.agentKind
         if let kind { target["agentKind"] = kind }
         let modes = codexResumeModes(session)
         let mode = codexLaunchMode ?? (modes.count == 1 ? modes.first : nil)
         if unified && (mode == nil || !modes.contains(mode!)) { return }
-        activateTarget(target, sessionId: session.sessionId, spawnMode: kimi ? "headless" : nil, codexLaunchMode: mode)
+        activateTarget(target, sessionId: session.sessionId, spawnMode: kimi != nil ? "headless" : nil, codexLaunchMode: mode)
     }
 
     func codexResumeModes(_ session: SessionSummary) -> [CodexLaunchMode] {
@@ -2548,7 +2553,7 @@ final class HostConnection: ObservableObject {
     func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
         reconcilePendingSends()
         guard !cwd.isEmpty, connection == .secured else { return false }
-        if agentKind == "openclaw" || agentKind == kimiCodeKind {
+        if agentKind == "openclaw" || [kimiCodeKind, kimiCodeDesktopKind].contains(agentKind) {
             guard supportsSessionConfiguration(for: agentKind), (launchableAgents ?? supportedAgents ?? []).contains(agentKind) else { return false }
             if firstMessage.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
                 composerFeedback(L10n.tr("请从命令菜单选择斜杠命令。"), newSession: true); return false
@@ -2578,7 +2583,7 @@ final class HostConnection: ObservableObject {
     #if DEBUG
     func createCaptureSession(agentKind: String, cwd: String) {
         guard !cwd.isEmpty else { return }
-        if agentKind == kimiCodeKind { createSession(agentKind: agentKind, cwd: cwd); return }
+        if [kimiCodeKind, kimiCodeDesktopKind].contains(agentKind) { createSession(agentKind: agentKind, cwd: cwd); return }
         activateTarget(["type": "new", "agentKind": agentKind, "cwd": cwd], sessionId: "new", spawnMode: "headless")
     }
     #endif
@@ -2680,12 +2685,13 @@ final class HostConnection: ObservableObject {
             if launchJournal.acceptsResult(for: launch.requestId) { recoverConfiguredLaunch(launch.requestId) }
             return
         }
-        let kind = isKimiCode(kind: launch.agentKind, id: launch.resumed) ? kimiCodeKind : launch.agentKind
-        guard kind != kimiCodeKind || kimiCodeSupported && launch.resumed != nil else { return }
+        let kind = resolvedKimiCodeKind(kind: launch.agentKind, id: launch.resumed) ?? launch.agentKind
+        guard supportsKimiCode(kind: kind, id: launch.resumed, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported),
+              ![kimiCodeKind, kimiCodeDesktopKind].contains(kind) || launch.resumed != nil else { return }
         var target: [String: Any] = launch.target
         if let kind { target["agentKind"] = kind }
         launching = nil
-        activateTarget(target, sessionId: launch.resumed ?? "new", spawnMode: kind == kimiCodeKind ? "headless" : launch.spawnModeOverride,
+        activateTarget(target, sessionId: launch.resumed ?? "new", spawnMode: [kimiCodeKind, kimiCodeDesktopKind].contains(kind ?? "") ? "headless" : launch.spawnModeOverride,
                        displayTitle: launch.title, codexLaunchMode: launch.codexLaunchMode)
     }
 
@@ -2838,7 +2844,7 @@ final class HostConnection: ObservableObject {
     func archive(_ session: SessionSummary, archived: Bool) {
         guard !session.sessionId.hasPrefix("codex-history:") || unifiedCodexHistory else { return }
         if session.agentKind == "openclaw", !openClawNegotiated { return }
-        guard connection == .secured, let kind = session.agentKind, !isKimiCode(kind: kind, id: session.sessionId) || kimiCodeSupported else { return }
+        guard connection == .secured, let kind = session.agentKind, supportsKimiCode(kind: kind, id: session.sessionId, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported) else { return }
         let requestId = UUID().uuidString
         let creation = ledger.create(opId: requestId, kind: OperationKinds.archive,
                                      target: OperationKinds.archiveTarget(agentKind: kind, sessionId: session.sessionId),
@@ -2856,7 +2862,7 @@ final class HostConnection: ObservableObject {
 
     /// 目录叠加未结算的归档操作：卡片立即出现在目标列表（ADR-0049 §6.4）。
     var visibleSessions: [SessionSummary] {
-        let visible = kimiCodeSupported ? sessions : sessions.filter { !isKimiCode(kind: $0.agentKind, id: $0.sessionId) }
+        let visible = sessions.filter { supportsKimiCode(kind: $0.agentKind, id: $0.sessionId, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported) }
         let overrides = OperationKinds.archiveOverrides(ledger)
         guard !overrides.isEmpty else { return visible }
         return visible.map { session in
@@ -3403,7 +3409,7 @@ final class HostConnection: ObservableObject {
     func sendMessage(_ text: String, delivery: String? = nil, attachmentIds: Set<String> = []) -> Bool {
         guard canSend, let runtime = selectedRuntime, delivery == nil || ["followUp", "steer"].contains(delivery!) else { return false }
         if isKimiCode(kind: agentKind(runtime), id: runtime.runtimeId) {
-            guard kimiCodeSupported, runtime.status != "running", delivery == nil, attachmentIds.isEmpty else { return false }
+            guard supportsKimiCode(kind: agentKind(runtime), id: runtime.runtimeId, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported), runtime.status != "running", delivery == nil, attachmentIds.isEmpty else { return false }
         }
         if agentKind(runtime) == "openclaw", !openClawNegotiated || delivery != nil || !attachmentIds.isEmpty || runtime.status == "running" { return false }
         guard let body = validatedMessageBody(text, attachmentCount: attachmentIds.count) else { return false }
@@ -3994,6 +4000,8 @@ final class HostConnection: ObservableObject {
             let filtered = features.contains("device.features") && (message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw ||
                features.contains(Self.agentEnablementFeature) && !readyAdmitsAgentEnablement(message) ||
                features.contains(agentDialReviewFeature) && !readyAdmitsAgentDialReview(message) ||
+               features.contains("agent.kimiCode") && !(message["deviceFeatures"] as? [String] ?? []).contains("agent.kimiCode") ||
+               features.contains("agent.kimiCodeDesktop") && !(message["deviceFeatures"] as? [String] ?? []).contains("agent.kimiCodeDesktop") ||
                features.contains(codexUnifiedHistoryFeature) && !admittedCodex || features.contains(runtimeCloseFeature) && !admittedClose ||
                features.contains(runtimeViewCloseFeature) && !(message["deviceFeatures"] as? [String] ?? []).contains(runtimeViewCloseFeature))
             if filtered, message["_orbisFilteredFallback"] == nil {
@@ -4088,6 +4096,7 @@ final class HostConnection: ObservableObject {
             launchableAgents = message["launchableAgents"] as? [String]
             sessionConfigurationSupported = message["sessionConfiguration"] as? Int == 1
             kimiCodeSupported = hasNegotiatedKimiCode(message)
+            kimiCodeDesktopSupported = hasNegotiatedKimiCodeDesktop(message)
             defaultSessionSpawnMode = features.contains("session.spawn.auto") ? "auto" : "tui"
             recoverConfiguredLaunch()
             flushReadySends()
@@ -4184,7 +4193,7 @@ final class HostConnection: ObservableObject {
         case "session.launch.result":
             let journal = launchJournal
             guard let id = message["launchId"] as? String, journal.acceptsResult(for: id), let record = journal.snapshot(id),
-                  record["agentKind"] as? String != kimiCodeKind || kimiCodeSupported else { return }
+                  supportsKimiCode(kind: record["agentKind"] as? String, id: record["sessionId"] as? String, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported) else { return }
             if launch(id) == nil { restoreConfiguredLaunch(record, id: id, show: false) }
             switch message["phase"] as? String {
             case "ready":
@@ -4211,7 +4220,7 @@ final class HostConnection: ObservableObject {
                 guard let persisted = writeLaunchJournal(record), await persisted.value,
                       !Task.isCancelled, generation == connectionGeneration, journal.acceptsResult(for: id),
                       journal.snapshot(id)?["sessionId"] == nil else { return }
-                if record["agentKind"] as? String != kimiCodeKind || kimiCodeSupported { _ = transport.send(record.filter { wireKeys.contains($0.key) }) }
+                if supportsKimiCode(kind: record["agentKind"] as? String, id: record["sessionId"] as? String, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported) { _ = transport.send(record.filter { wireKeys.contains($0.key) }) }
             case "failed":
                 let error = message["error"] as? String ?? L10n.tr("配置未确认")
                 guard let write = journal.reject(id, error: error) else { return }

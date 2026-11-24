@@ -10,7 +10,7 @@ import { KimiConversation, kimiObject, type KimiFrame } from "./kimi-conversatio
 import type { AgentBackend, AgentActivateTarget, AgentActivateContext, BackendActivation, CommandDispatch, NativeRunningSession } from "./agent-backend.js";
 import { KimiBusinessError, KimiWebConnector, KimiWebError, assertKimiMayStart, defaultKimiHome, type KimiWebClient, type KimiWebClientOptions } from "./kimi-web-client.js";
 import { createKimiLauncher, type KimiLauncher } from "./kimi-launch.js";
-import { KIMI_KIND, KimiLaunchBlocked, KimiSessions, kimiLocalDirectory, kimiNativeSessionId, kimiSourceKey, type KimiSession } from "./kimi-sessions.js";
+import { KIMI_DESKTOP_KIND, KIMI_KIND, KimiLaunchBlocked, KimiSessions, kimiLocalDirectory, kimiNativeSessionId, kimiSourceKey, type KimiSession } from "./kimi-sessions.js";
 import { ActivationError } from "./spawner.js";
 import { localHostname } from "./sessions.js";
 import { exitViewCapability, matchesViewExit } from "./shared-session-view.js";
@@ -31,7 +31,7 @@ export function createLocalKimiRuntime(options: Omit<KimiOptions, "launcher"> & 
 
 /** Native Kimi session adapter. Passive discovery cannot open the CLI or application. */
 export class KimiRuntime implements AgentBackend {
-  readonly kind = KIMI_KIND;
+  readonly kind: typeof KIMI_KIND | typeof KIMI_DESKTOP_KIND;
   readonly #home: string;
   readonly #desktop: boolean;
   readonly #journal: KimiPromptJournal;
@@ -61,6 +61,7 @@ export class KimiRuntime implements AgentBackend {
   constructor(options: KimiOptions) {
     this.#options = options;
     this.#desktop = options.source === "desktop";
+    this.kind = this.#desktop ? KIMI_DESKTOP_KIND : KIMI_KIND;
     this.#home = options.homeDir ?? defaultKimiHome();
     this.#journal = new KimiPromptJournal(join(options.stateDir, "kimi-prompt-journal.json"));
     this.#connector = new KimiWebConnector({ ...options, homeDir: this.#home,
@@ -230,7 +231,7 @@ export class KimiRuntime implements AgentBackend {
     const key = await this.#sourceKey();
     await this.#journal.load();
     if (this.#connector.client !== client || socket.readyState !== WebSocket.OPEN) return;
-    const connection = { sessions: new KimiSessions(client, key), socket, generation };
+    const connection = { sessions: new KimiSessions(client, key, this.kind), socket, generation };
     this.#connection = connection;
     this.#startFailure = undefined;
     this.onReadyChange?.();
@@ -266,7 +267,8 @@ export class KimiRuntime implements AgentBackend {
     this.onCatalogChange?.();
   }
   #requireConnection(): Connection {
-    if (!this.#connection || !this.isReady()) throw new ActivationError("agent_unsupported", this.reason ?? "Kimi Code Web 尚未连接");
+    if (!this.#connection || !this.isReady()) throw new ActivationError("agent_unsupported", this.reason ??
+      (this.#desktop ? "Kimi Code 桌面版尚未连接" : "Kimi Code Web 尚未连接"));
     return this.#connection;
   }
   #assertConnection(connection: Connection): void {

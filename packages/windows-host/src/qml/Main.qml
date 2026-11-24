@@ -63,12 +63,13 @@ ApplicationWindow {
                 broken: hermes.cliIssue === "unrunnable", cliIssue: hermes.cliIssue, passive: true}]
             : [])
          .concat((host.agentEnablement.agents || []).filter(function(agent) {
-            return agent.enabled && ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "openclaw", "hermes"].indexOf(agent.kind) < 0
+            return agent.enabled && ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "kimiCode", "kimiCodeDesktop", "openclaw", "hermes"].indexOf(agent.kind) < 0
          }).map(function(agent) {
             return {kind: agent.kind, name: agent.label, installed: window.backendFor(agent.kind)?.ready === true, broken: false, passive: true}
          })).filter(row => window.agentEnabled(row.kind)).sort((a, b) => window.agentRows.findIndex(row => row.kind === a.kind) - window.agentRows.findIndex(row => row.kind === b.kind))
     }
     function agentEnabled(kind) {
+        if (kind === "kimiCodeDesktop" && !host.kimiDesktopSupported) return false
         const row = (host.agentEnablement.agents || []).find(function(agent) { return agent.kind === kind })
         return row !== undefined && row.enabled === true
     }
@@ -94,9 +95,13 @@ ApplicationWindow {
     function backendFor(kind) { return host.backends.find(function(backend) { return backend.kind === kind }) }
     readonly property bool kimiStartAvailable: host.kimiCodeAvailable && host.kimiCodeEnabled && host.desiredRunning
         && window.backendFor("kimiCode")?.launchable === true && window.backendFor("kimiCode")?.ready !== true
-    function localServiceAgent(kind) { return kind === "opencode" || kind === "openclaw" || kind === "hermes" }
+    readonly property bool kimiDesktopStartAvailable: host.kimiDesktopSupported && window.agentEnabled("kimiCodeDesktop") && host.desiredRunning
+        && window.backendFor("kimiCodeDesktop")?.launchable === true && window.backendFor("kimiCodeDesktop")?.ready !== true
+    function isKimiKind(kind) { return kind === "kimiCode" || kind === "kimiCodeDesktop" }
+    function localServiceAgent(kind) { return kind === "opencode" || kind === "openclaw" || kind === "hermes" || window.isKimiKind(kind) }
     function startActionVisible(kind) {
         if (kind === "kimiCode") return window.kimiStartAvailable
+        if (kind === "kimiCodeDesktop") return window.kimiDesktopStartAvailable
         if (!window.localServiceAgent(kind) || !host.desiredRunning) return false
         if (kind === "hermes" && (host.hermesRemote.host || host.hermesRemote.invalid)) return false
         if (kind === "openclaw" && (host.openClaw.invalid || !(host.openClaw.url || "").startsWith("ws://127.0.0.1:"))) return false
@@ -104,13 +109,14 @@ ApplicationWindow {
         return backend?.launchable === true && backend.ready !== true
     }
     function startingAgent(kind) {
-        return kind === "kimiCode" ? host.kimiCodeState === "starting" : window.localServiceAgent(kind) && window.backendFor(kind)?.reason === "starting"
+        return kind === "kimiCode" ? host.kimiCodeState === "starting" : kind === "kimiCodeDesktop" ? host.kimiCodeDesktopState === "starting" : window.localServiceAgent(kind) && window.backendFor(kind)?.reason === "starting"
     }
-    function kimiStatusText() {
+    function kimiStatusText(kind) {
         if (!host.desiredRunning) return "未连接"
+        const state = kind === "kimiCodeDesktop" ? host.kimiCodeDesktopState : host.kimiCodeState
         return ({ connected: "已接入", connecting: "正在连接", starting: "正在启动", not_installed: "未安装",
-            not_running: window.kimiStartAvailable ? "可启动" : host.kimiCodeSource === "desktop" ? "桌面版未连接" : "服务未启动",
-            ambiguous: "有多个实例", unauthorized: "认证失败", unsupported: "版本不支持", unsafe: "配置不安全", unavailable: "暂不可用" })[host.kimiCodeState] || "未连接"
+            not_running: window.startActionVisible(kind) ? "可启动" : kind === "kimiCodeDesktop" ? "桌面版未连接" : "服务未启动",
+            ambiguous: "有多个实例", unauthorized: "认证失败", unsupported: "版本不支持", unsafe: "配置不安全", unavailable: "暂不可用" })[state] || "未连接"
     }
     /** Whether a phone can use this Agent through the running Host right now. */
     function agentReachable(agent) {
@@ -142,7 +148,7 @@ ApplicationWindow {
     function agentPhoneState(agent, sessions) {
         if (agent.kind === "codexDesktop" && window.codexDesktopNeedsAttention) return window.codexDesktopLabel()
         if (agent.kind === "openclaw" && !window.agentReachable(agent)) return window.openClawStateText
-        if (agent.kind === "kimiCode" && !window.agentReachable(agent)) return window.kimiStatusText()
+        if (window.isKimiKind(agent.kind) && !window.agentReachable(agent)) return window.kimiStatusText(agent.kind)
         if (window.localServiceAgent(agent.kind) && window.startActionVisible(agent.kind)) return window.startingAgent(agent.kind) ? "正在启动" : "可启动"
         if (agent.passive && !window.agentReachable(agent)) return "未接入"
         // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。Claude 有自己的检测。
@@ -215,7 +221,7 @@ ApplicationWindow {
         else if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
         else host.openAgent(kind)
     }
-    function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek", hermes:"Hermes Agent"})[kind] || kind }
+    function agentName(kind) { return ({pi:"Pi", codex:"Codex", claude:"Claude Code", dsh:"DeepSeek", hermes:"Hermes Agent", kimiCode:"Kimi Code Web", kimiCodeDesktop:"Kimi Code 桌面版"})[kind] || kind }
     // Codex 桌面版接入卡只是把 Host 下发的分档换成人话；文案本身全部来自 Host，
     // 两个客户端不各自拼，免得同一件事在电脑和手机上说法不一。
     function codexDesktopState() { return (host.codexDesktop && host.codexDesktop.state) ? host.codexDesktop.state : "" }
@@ -523,10 +529,11 @@ ApplicationWindow {
         if (window.startActionVisible(row.kind) && window.localServiceAgent(row.kind)) return {text: "可启动", color: Theme.inkMuted, idle: true}
         if (row.kind === "openclaw" && backend?.ready !== true) return {text: window.openClawStateText, color: Theme.inkMuted, idle: true}
         if (row.kind === "hermes" && !!host.hermesRemote.host && backend?.ready !== true) return {text: "等待接入", color: Theme.inkMuted, idle: true}
-        if (row.kind === "kimiCode") {
-            const busy = host.kimiCodeState === "starting" || host.kimiCodeState === "connecting"
-            const blocked = ["not_installed", "ambiguous", "unauthorized", "unsupported", "unsafe", "unavailable"].includes(host.kimiCodeState)
-            return {text: window.kimiStatusText(), color: backend?.ready ? Theme.success : busy || blocked ? Theme.warning : Theme.inkMuted,
+        if (window.isKimiKind(row.kind)) {
+            const state = row.kind === "kimiCodeDesktop" ? host.kimiCodeDesktopState : host.kimiCodeState
+            const busy = state === "starting" || state === "connecting"
+            const blocked = ["not_installed", "ambiguous", "unauthorized", "unsupported", "unsafe", "unavailable"].includes(state)
+            return {text: window.kimiStatusText(row.kind), color: backend?.ready ? Theme.success : busy || blocked ? Theme.warning : Theme.inkMuted,
                 sync: busy, idle: !busy}
         }
         if (agent && !agent.passive && agent.installed === false && !window.agentCliDetecting(row.kind)) return {text: "未安装", color: Theme.warning, idle: true}
@@ -2500,6 +2507,7 @@ ApplicationWindow {
                                                 ["codex", "codexDesktop", "claude", "dsh", "dshDesktop", "opencode"].includes(window.detailKind)
                                                 || (window.detailKind === "pi" && (Qt.platform.os === "osx" || ["installed", "available", "foreign"].includes(window.piAgent().terminalCommand)))
                                                 || (window.detailKind === "kimiCode" && host.kimiCodeAvailable)
+                                                || (window.detailKind === "kimiCodeDesktop" && host.kimiDesktopSupported)
                                                 || (window.detailKind === "openclaw" && host.bridgeReady && !!host.openClaw.source)
                                                 || (window.detailKind === "hermes" && host.bridgeReady && !!host.hermesRemote.source)
                                             visible: hasContent
@@ -2593,38 +2601,15 @@ ApplicationWindow {
                                             }
                                             RowLayout {
                                                 visible: window.detailKind === "kimiCode" && host.kimiCodeAvailable
-                                                Layout.fillWidth: true; spacing: 12
-                                                onVisibleChanged: {
-                                                    if (visible) kimiSource.currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0
-                                                    else kimiInfoBtn.expanded = false
-                                                }
-                                                Label { text: "接入来源"; color: Theme.inkMuted; Layout.fillWidth: true }
-                                                SoftComboBox {
-                                                    id: kimiSource; objectName: "kimiCodeSource"
-                                                    visible: host.kimiDesktopSupported
-                                                    enabled: host.bridgeReady && !host.busy
-                                                    model: [{ label: "Web", value: "web" }, { label: "桌面版", value: "desktop" }]
-                                                    textRole: "label"; valueRole: "value"
-                                                    Accessible.name: "Kimi Code 来源"
-                                                    Component.onCompleted: currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0
-                                                    onActivated: if (currentValue !== host.kimiCodeSource) window.applyAgentSettings({kimiSource: currentValue})
-                                                    Connections { target: host; function onChanged() { kimiSource.currentIndex = host.kimiCodeSource === "desktop" ? 1 : 0 } }
-                                                }
-                                                Hint {
-                                                    objectName: "kimiCodeStatus"
-                                                    visible: host.kimiCodeEnabled && (!host.kimiDesktopSupported || kimiSource.currentValue === host.kimiCodeSource)
-                                                    text: window.kimiStatusText()
-                                                }
-                                                InfoHintButton {
-                                                    id: kimiInfoBtn
-                                                    objectName: "kimiCodeInfo"
-                                                    Accessible.name: "Kimi Code 接入说明"
-                                                }
+                                                Layout.fillWidth: true; spacing: 8
+                                                Label { text: "Web"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                                Hint { objectName: "kimiCodeStatus"; text: window.kimiStatusText("kimiCode") }
                                             }
-                                            Hint {
-                                                visible: window.detailKind === "kimiCode" && host.kimiCodeAvailable && kimiInfoBtn.expanded
-                                                text: "安装后，可在 Host 启动；手机新建或恢复会话时也会按需启动。"
-                                                Layout.fillWidth: true
+                                            RowLayout {
+                                                visible: window.detailKind === "kimiCodeDesktop" && host.kimiDesktopSupported
+                                                Layout.fillWidth: true; spacing: 8
+                                                Label { text: "桌面版"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                                Hint { objectName: "kimiCodeDesktopStatus"; text: window.kimiStatusText("kimiCodeDesktop") }
                                             }
                                             RowLayout {
                                                 visible: Qt.platform.os === "osx" && window.detailKind === "pi"
@@ -2973,7 +2958,7 @@ ApplicationWindow {
                             Field { id: nameField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; maximumLength: 80 }
                             Heading { text: "中继服务器"; Layout.topMargin: 10 }
                             Field { id: relayField; enabled: host.bridgeReady && !host.busy; Layout.fillWidth: true; placeholderText: "wss://服务器地址/relay" }
-                            ActionButton { objectName: "applySettings"; text: settingsPane.reconnects ? "应用并重新连接" : "应用设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, host.codexEnabled, nameField.text, host.dshEnabled, host.dshWebUrl, host.piIntegrationEnabled, host.claudeIntegrationEnabled, host.kimiDesktopSupported ? host.kimiCodeSource : "") }
+                            ActionButton { objectName: "applySettings"; text: settingsPane.reconnects ? "应用并重新连接" : "应用设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, host.codexEnabled, nameField.text, host.dshEnabled, host.dshWebUrl, host.piIntegrationEnabled, host.claudeIntegrationEnabled, "") }
                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
                         }

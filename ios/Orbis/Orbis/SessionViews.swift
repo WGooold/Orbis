@@ -181,7 +181,7 @@ struct SessionDrawerView: View, Equatable {
         guard let selected = state.kind else { return nil }
         let kind = unifiedCodex && selected == "codexDesktop" ? "codex" : selected
         guard enabledAgentKinds?.contains(kind) != false,
-              kind != kimiCodeKind || store.activeConnection.kimiCodeSupported,
+              supportsKimiCode(kind: kind, web: store.activeConnection.kimiCodeSupported, desktop: store.activeConnection.kimiCodeDesktopSupported),
               kind != "openclaw" || store.openClawNegotiated else { return nil }
         return kind
     }
@@ -387,10 +387,10 @@ struct SessionDrawerView: View, Equatable {
 
     private var filterMenuItems: [OrbisMenuItem] {
         [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: filterKind == nil) { selectFilter(nil) }]
-        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind, "hermes", "opencode"].filter { kind in
+        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind, kimiCodeDesktopKind, "hermes", "opencode"].filter { kind in
             guard enabledAgentKinds?.contains(kind) != false, !unifiedCodex || kind != "codexDesktop" else { return false }
             if kind == "opencode", store.activeConnection.openCodeAvailability != nil { return true }
-            if kind == kimiCodeKind { return store.activeConnection.kimiCodeSupported }; if kind == "openclaw", !store.openClawNegotiated { return false }
+            if kind == kimiCodeKind { return store.activeConnection.kimiCodeSupported }; if kind == kimiCodeDesktopKind { return store.activeConnection.kimiCodeDesktopSupported }; if kind == "openclaw", !store.openClawNegotiated { return false }
             return !["dshDesktop", "openclaw", "hermes", "opencode"].contains(kind) || store.supportedAgents?.contains(kind) == true
                 || store.launchableAgents?.contains(kind) == true || catalog.sessions.contains { $0.agentKind == kind }
         }.map { kind in
@@ -610,7 +610,8 @@ private func filterTitle(_ kind: String) -> String {
     case "dshDesktop": return L10n.tr("DeepSeek 桌面版")
     case "hermes": return "Hermes Agent"
     case "claude": return "Claude Code"
-    case kimiCodeKind: return "Kimi Code"
+    case kimiCodeKind: return L10n.tr("Kimi Code Web")
+    case kimiCodeDesktopKind: return L10n.tr("Kimi Code 桌面版")
     case "openclaw": return "OpenClaw"
     default: return "Pi"
     }
@@ -618,10 +619,10 @@ private func filterTitle(_ kind: String) -> String {
 
 /// Agents with a second native entry: the emblem stays one family, the variant is chosen beside it.
 private func agentFamily(_ kind: String) -> String {
-    switch kind { case "codexDesktop": return "codex"; case "dshDesktop": return "dsh"; default: return kind }
+    switch kind { case "codexDesktop": return "codex"; case "dshDesktop": return "dsh"; case kimiCodeDesktopKind: return kimiCodeKind; default: return kind }
 }
 private func agentVariants(_ family: String) -> [String] {
-    switch family { case "codex": return ["codex", "codexDesktop"]; case "dsh": return ["dsh", "dshDesktop"]; default: return [family] }
+    switch family { case "codex": return ["codex", "codexDesktop"]; case "dsh": return ["dsh", "dshDesktop"]; case kimiCodeKind: return [kimiCodeKind, kimiCodeDesktopKind]; default: return [family] }
 }
 private func agentVariantTitle(_ kind: String) -> String {
     switch kind {
@@ -629,6 +630,8 @@ private func agentVariantTitle(_ kind: String) -> String {
     case "codexDesktop": return L10n.tr("Codex 桌面版")
     case "dsh": return L10n.tr("DeepSeek 网页版")
     case "dshDesktop": return L10n.tr("DeepSeek 桌面版")
+    case kimiCodeKind: return L10n.tr("Kimi Code Web")
+    case kimiCodeDesktopKind: return L10n.tr("Kimi Code 桌面版")
     default: return agentTitle(kind)
     }
 }
@@ -674,7 +677,7 @@ struct SessionDraftView: View {
     private var allowed: [String] {
         let enabled = owner.enabledAgentKinds
         let choices = owner.launchableAgents ?? owner.supportedAgents ?? (enabled == nil ? ["pi", "codex"] : [])
-        return choices.filter { enabled?.contains($0) != false }.filter { $0 != kimiCodeKind || owner.kimiCodeSupported }.filter { $0 != "openclaw" || owner.openClawNegotiated }
+        return choices.filter { enabled?.contains($0) != false }.filter { supportsKimiCode(kind: $0, web: owner.kimiCodeSupported, desktop: owner.kimiCodeDesktopSupported) }.filter { $0 != "openclaw" || owner.openClawNegotiated }
     }
     private var family: String { agentFamily(agent) }
     private func launchLabel(_ kind: String) -> String {
@@ -684,7 +687,7 @@ struct SessionDraftView: View {
     private var openCode: OpenCodeAvailability? { owner.connection == .secured && owner.enabledAgentKinds?.contains("opencode") != false ? owner.openCodeAvailability : nil }
     private var showsOpenCode: Bool { openCode != nil || (owner.connection == .secured && allowed.contains("opencode")) }
     private var agentChoices: [String] {
-        let all = ["codex", "claude", "dsh", "pi"] + [kimiCodeKind, "openclaw", "hermes"].filter { allowed.contains($0) } + (showsOpenCode ? ["opencode"] : [])
+        let all = ["codex", "claude", "dsh", "pi"] + [kimiCodeKind, "openclaw", "hermes"].filter { allowed.contains($0) || $0 == kimiCodeKind && agentVariants($0).contains(where: allowed.contains) } + (showsOpenCode ? ["opencode"] : [])
         guard let enabled = owner.enabledAgentKinds else { return all }
         return all.filter { agentVariants($0).contains(where: enabled.contains) }
     }
@@ -698,7 +701,7 @@ struct SessionDraftView: View {
         owner.enabledAgentKinds?.contains(agent) != false && (agent != "opencode" || canChoose("opencode"))
     }
     /// Both native entries of this family can start here, so the variant is a real choice.
-    private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).allSatisfy(allowed.contains) }
+    private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).filter(allowed.contains).count > 1 }
     private var currentPath: String? { path ?? presetCwd ?? (onImportSubmit == nil ? owner.workDirectoryBrowse?.path : nil) }
     private var hasMessage: Bool { onImportSubmit != nil || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var configuration: SessionConfigurationSnapshot? {
@@ -722,7 +725,7 @@ struct SessionDraftView: View {
     private var canStart: Bool {
         currentPath?.isEmpty == false &&
             owner.connection == .secured && owner.activatingSessionId == nil && allowed.contains(agent) && canChoose(family) &&
-            (agent != kimiCodeKind || configuration != nil) && (agent != "openclaw" || configuration != nil && owner.sessionConfigurationError == nil) &&
+            (agentFamily(agent) != kimiCodeKind || configuration != nil) && (agent != "openclaw" || configuration != nil && owner.sessionConfigurationError == nil) &&
             (onImportSubmit == nil || owner.canLaunchExternalImport && configuration != nil && owner.sessionConfigurationRequest == nil && owner.sessionConfigurationError == nil)
     }
     var body: some View {
@@ -758,7 +761,7 @@ struct SessionDraftView: View {
             if !canUseSelectedAgent {
                 // Keep the draft without settings belonging to a retired or unavailable source.
             } else if owner.supportsSessionConfiguration(for: agent) && agent != "openclaw" {
-                if agent != kimiCodeKind {
+                if agentFamily(agent) != kimiCodeKind {
                     // S55 / SC79: the model owns a row; permission text cannot resize either value.
                     VStack(spacing: 8) {
                         configurationButton(L10n.tr("模型"), value: configurationModel?.label ?? L10n.tr(configuration == nil ? "模型" : "电脑端默认"),
@@ -912,7 +915,7 @@ struct SessionDraftView: View {
             OrbisMotionButton { showVariantChoices(family, from: codexLabelFrame) } label: {
                 HStack(spacing: 6) {
                     Text(agentTitle(agent)).font(.orbisLabel(.semibold)).lineLimit(1)
-                    Image(systemName: agent == "codexDesktop" || agent == "dshDesktop" ? "desktopcomputer" : agent == "dsh" ? "globe" : "terminal")
+                    Image(systemName: agent == "codexDesktop" || agent == "dshDesktop" || agent == kimiCodeDesktopKind ? "desktopcomputer" : agent == "dsh" || agent == kimiCodeKind ? "globe" : "terminal")
                         .font(.system(size: 18)).accessibilityHidden(true)
                 }.foregroundStyle(p.agent(agent)).frame(maxWidth: .infinity, minHeight: 48, alignment: .trailing)
                     .contentShape(Rectangle())

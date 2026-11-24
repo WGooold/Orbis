@@ -541,10 +541,10 @@ internal fun RemoteApp(
     // session.activated（spec §8）：只证明进程已拉起；会话真正上线后 runtime.online 会接管 UI。
     LaunchedEffect(state.sessionActivation) {
         state.sessionActivation?.let { activation ->
-            val kind = agentBrand(activation.agentKind).title
+            val kind = agentTitle(activation.agentKind)
             // 桌面版的“无头”是相对终端说的：它本来就有窗口（桌面版 GUI 就是那个窗口）。
             // 对它说“电脑上无窗口”会把人叫去开一个终端，而那正是它不该做的事。
-            val suffix = if (activation.spawnMode == "headless" && !ownsComputerWindow(activation.agentKind) && activation.agentKind != KIMI_CODE_KIND) L10n.tr("，此会话无头（电脑上无窗口）") else ""
+            val suffix = if (activation.spawnMode == "headless" && !ownsComputerWindow(activation.agentKind) && activation.agentKind != KIMI_CODE_KIND && activation.agentKind != KIMI_CODE_DESKTOP_KIND) L10n.tr("，此会话无头（电脑上无窗口）") else ""
             model.showShortFeedback(L10n.tr("会话已启动"), "activation:${activation.sessionId}")
             model.clearActivationNotice()
         }
@@ -1431,7 +1431,7 @@ internal fun RuntimeListScreen(
                                                 Row(Modifier.fillMaxWidth().heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically,
                                                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                                     Text(runtime.model?.let(::modelLabel)?.takeIf(String::isNotBlank)
-                                                        ?: agentBrand(runtime.agentKind).title,
+                                                        ?: agentTitle(runtime.agentKind),
                                                         modifier = Modifier.weight(1f),
                                                         style = MaterialTheme.typography.labelSmall, color = agentBrand(runtime.agentKind).accent(),
                                                         maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)

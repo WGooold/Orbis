@@ -4502,6 +4502,78 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(activate).toHaveBeenCalledTimes(2);
   });
 
+  it("runs Kimi Web and Desktop together while honoring independent feature and enablement gates", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-kimi-sources-e2e-"));
+    relay = await createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(stateDir, "relay-state.json") });
+    const enablement = new AgentEnablementController(new AgentEnablementStore(join(stateDir, "enablement")), () => {});
+    await enablement.read();
+    await enablement.set({ kind: "kimiCode", enabled: true, expectedRevision: 0 });
+    await enablement.set({ kind: "kimiCodeDesktop", enabled: true, expectedRevision: 1 });
+    const web = new KimiRuntime({ stateDir, source: "web" });
+    const desktop = new KimiRuntime({ stateDir, source: "desktop" });
+    const started: string[] = [], stopped: string[] = [];
+    vi.spyOn(KimiRuntime.prototype, "start").mockImplementation(function (this: KimiRuntime) { started.push(this.kind); });
+    vi.spyOn(KimiRuntime.prototype, "stop").mockImplementation(async function (this: KimiRuntime) { stopped.push(this.kind); });
+    vi.spyOn(KimiRuntime.prototype, "canLaunch").mockReturnValue(true);
+    const makeRuntime = vi.fn(async (kind: "kimiCode" | "kimiCodeDesktop") => kind === "kimiCode" ? web : desktop);
+    host = await HostService.create({ relayUrl: relay!.url, ...relayBusinessHostOptions(relay!.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, openClaw: false, agentEnablement: enablement,
+      createKimiCodeRuntime: makeRuntime, kimiCodeDesktopSupported: true });
+    await host.start();
+    await vi.waitFor(() => expect(started).toEqual(expect.arrayContaining(["kimiCode", "kimiCodeDesktop"])));
+    const opened = await host!.openPairingWindow();
+    const connected = await TestDevice.connect({ relayUrl: relay!.url, relayHttpBase: relay!.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Kimi source fixture" });
+    const pskRoot = await connected.device.pair(connected.payload); device = connected.device;
+    const desktopLedger = new SessionConfigurationStore(join(stateDir, "kimi-desktop-session-configuration.json"));
+    const desktopLaunch = { type: "session.launch" as const, requestId: "desktop-receipt", launchId: "desktop-receipt",
+      agentKind: "kimiCodeDesktop" as const, cwd: "/fixture", binding: "kimi-desktop-binding", revision: 0, values: {}, spawnMode: "headless" as const };
+    await desktopLedger.begin(device!.deviceId, desktopLaunch);
+    await desktopLedger.update(device!.deviceId, desktopLaunch.launchId, {
+      phase: "failed", sessionId: "kimi-code-desktop:desktop-source:session_receipt", error: "fixture preflight",
+    });
+    await device!.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+    const receiveReady = async (predicate: (message: Record<string, unknown>) => boolean) => {
+      for (let index = 0; index < 100; index++) {
+        const message = await device!.receiveMessage() as Record<string, unknown>;
+        if (predicate(message)) return message;
+      }
+      throw new Error("Kimi source fixture did not receive device.ready");
+    };
+    await receiveReady(message => message.type === "device.ready");
+    const sendFeatures = (features: string[]) => sendRequest(device!, { type: "device.features", protocolVersion: PROTOCOL_VERSION, features });
+    sendFeatures(["agent.kimiCode", "agent.enablement.v1"]);
+    const webOnly = await receiveReady(message => message.type === "device.ready" && (message.deviceFeatures as string[] | undefined)?.includes("agent.kimiCode") === true);
+    expect(webOnly.deviceFeatures).toContain("agent.kimiCode");
+    expect(webOnly.deviceFeatures).not.toContain("agent.kimiCodeDesktop");
+    expect(webOnly.launchableAgents).toContain("kimiCode");
+    expect(webOnly.launchableAgents).not.toContain("kimiCodeDesktop");
+    sendRequest(device!, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "desktop-receipt-hidden", launchId: desktopLaunch.launchId });
+    expect(await receiveReady(message => message.requestId === "desktop-receipt-hidden")).toMatchObject({ type: "session.launch.result", phase: "absent" });
+    sendRequest(device!, { type: "agent.enablement.read", protocolVersion: PROTOCOL_VERSION, requestId: "enablement-web-view" });
+    const enablementView = await receiveReady(message => message.requestId === "enablement-web-view");
+    expect((enablementView.snapshot as { agents: { kind: string }[] }).agents.map(row => row.kind)).not.toContain("kimiCodeDesktop");
+    sendRequest(device!, { type: "agent.enablement.write", protocolVersion: PROTOCOL_VERSION, requestId: "desktop-write-without-feature",
+      kind: "kimiCodeDesktop", enabled: false, expectedRevision: 2 });
+    expect(await receiveReady(message => message.requestId === "desktop-write-without-feature")).toMatchObject({ type: "protocol.error" });
+    sendFeatures(["agent.kimiCode", "agent.kimiCodeDesktop", "agent.enablement.v1"]);
+    const both = await receiveReady(message => message.type === "device.ready" &&
+      (message.deviceFeatures as string[] | undefined)?.includes("agent.kimiCodeDesktop") === true);
+    expect(both.launchableAgents).toEqual(expect.arrayContaining(["kimiCode", "kimiCodeDesktop"]));
+    sendRequest(device!, { type: "session.launch.read", protocolVersion: PROTOCOL_VERSION, requestId: "desktop-receipt-visible", launchId: desktopLaunch.launchId });
+    expect(await receiveReady(message => message.requestId === "desktop-receipt-visible")).toMatchObject({
+      type: "session.launch.result", agentKind: "kimiCodeDesktop", phase: "failed", sessionId: "kimi-code-desktop:desktop-source:session_receipt",
+    });
+    const result = await enablement.set({ kind: "kimiCode", enabled: false, expectedRevision: 2 });
+    expect(result.snapshot.agents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "kimiCode", enabled: false }),
+      expect.objectContaining({ kind: "kimiCodeDesktop", enabled: true }),
+    ]));
+    await vi.waitFor(() => expect(stopped).toContain("kimiCode"));
+    expect(stopped).not.toContain("kimiCodeDesktop");
+    expect(makeRuntime).toHaveBeenCalledTimes(2);
+  });
+
   // KIMI-09/11: opt-in real Kimi Web/Desktop and released Orbis runtime probes. The fixture owns the isolated native server.
   it.skipIf(!process.env.ORBIS_TEST_KIMI_FIXTURE)("drives real Kimi Web through the encrypted Relay channel", async () => {
     const fixture = JSON.parse(await readFile(process.env.ORBIS_TEST_KIMI_FIXTURE!, "utf8")) as {

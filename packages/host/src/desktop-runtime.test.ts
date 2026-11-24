@@ -135,6 +135,48 @@ describe("desktop Host lifecycle", () => {
     } finally { await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
   });
 
+  it.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("starts Kimi Web and Desktop as independent managed sources", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-kimi-split-"));
+    const credential = "orbis_host_" + "A".repeat(43);
+    const relay = await createRelayServer({ runtimeCredentials: [credential] });
+    const runtime = new DesktopRuntime(() => {}, join(root, "state"));
+    const started: string[] = [], stopped: string[] = [];
+    vi.spyOn(KimiRuntime.prototype, "start").mockImplementation(function (this: KimiRuntime) { started.push(this.kind); });
+    vi.spyOn(KimiRuntime.prototype, "stop").mockImplementation(async function (this: KimiRuntime) { stopped.push(this.kind); });
+    try {
+      const settings = { relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
+        piIntegrationEnabled: false, claudeIntegrationEnabled: false };
+      await runtime.start(settings);
+      await runtime.setAgentEnablement({ kind: "kimiCode", enabled: true, expectedRevision: 0 });
+      await vi.waitFor(() => expect(started).toEqual(["kimiCode"]));
+      await runtime.setAgentEnablement({ kind: "kimiCodeDesktop", enabled: true, expectedRevision: 1 });
+      await vi.waitFor(() => expect(started).toEqual(["kimiCode", "kimiCodeDesktop"]));
+      await runtime.setAgentEnablement({ kind: "kimiCode", enabled: false, expectedRevision: 2 });
+      await vi.waitFor(() => expect(stopped).toContain("kimiCode"));
+      const snapshot = await runtime.readAgentEnablement();
+      expect(snapshot.agents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "kimiCode", enabled: false }),
+        expect.objectContaining({ kind: "kimiCodeDesktop", enabled: true }),
+      ]));
+      expect(stopped).toEqual(["kimiCode"]);
+    } finally { await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("migrates the legacy single Desktop choice without changing the new Web choice afterward", async () => {
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-kimi-migrate-"));
+    const runtime = new DesktopRuntime(() => {}, root);
+    try {
+      await writeFile(join(root, "config.json"), JSON.stringify({ kimiCodeEnabled: true, kimiCodeSource: "desktop" }));
+      await writeFile(join(root, "agent-enablement.json"), JSON.stringify({ version: 1, revision: 7, choices: { kimiCode: true } }));
+      const migrated = await runtime.readAgentEnablement();
+      expect(migrated).toMatchObject({ revision: 8, agents: expect.arrayContaining([
+        expect.objectContaining({ kind: "kimiCode", enabled: false }),
+        expect.objectContaining({ kind: "kimiCodeDesktop", enabled: true }),
+      ]) });
+      expect(await runtime.readAgentEnablement()).toEqual(migrated);
+    } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
   it("recovers an existing DSH bridge with prestart disabled and closes it when paused", async () => {
     const root = await mkdtemp(join(tmpdir(), "orbis-desktop-dsh-recovery-"));
     const credential = "orbis_host_" + "A".repeat(43);

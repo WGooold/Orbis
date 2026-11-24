@@ -38,19 +38,24 @@ internal enum class AgentBrand(val title: String, val icon: Int, val darkIcon: I
 
 internal fun agentBrand(isCodex: Boolean) = if (isCodex) AgentBrand.Codex else AgentBrand.Pi
 internal fun agentBrand(kind: String?) = knownAgentBrand(kind) ?: AgentBrand.Pi
+internal fun agentTitle(kind: String?): String = when (kind) {
+    KIMI_CODE_KIND -> L10n.tr("Kimi Code Web")
+    KIMI_CODE_DESKTOP_KIND -> L10n.tr("Kimi Code 桌面版")
+    else -> agentBrand(kind).title
+}
 internal fun knownAgentBrand(kind: String?): AgentBrand? = when (kind) {
     "pi" -> AgentBrand.Pi
     "codex", "codexDesktop" -> AgentBrand.Codex
     "dsh", "dshDesktop" -> AgentBrand.DeepSeek
     "claude" -> AgentBrand.Claude
-    KIMI_CODE_KIND -> AgentBrand.Kimi
+    KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND -> AgentBrand.Kimi
     "openclaw" -> AgentBrand.OpenClaw
     "hermes" -> AgentBrand.Hermes
     "opencode" -> AgentBrand.OpenCode
     else -> null
 }
 /** Desktop entries are the app window on the computer; "headless" describes only terminal Agents (ADR-0022, ADR-0076). */
-internal fun ownsComputerWindow(kind: String?) = kind == "codexDesktop" || kind == "dshDesktop"
+internal fun ownsComputerWindow(kind: String?) = kind == "codexDesktop" || kind == "dshDesktop" || kind == KIMI_CODE_DESKTOP_KIND
 internal val LocalAgentBrand = staticCompositionLocalOf { AgentBrand.Pi }
 
 @Composable

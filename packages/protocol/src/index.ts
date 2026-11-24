@@ -299,6 +299,8 @@ export const DEVICE_FEATURE_DSH_DESKTOP = "agent.dshDesktop";
 /** ADR-0084: clients advertising this feature can consume normalized rich message blocks. */
 export const DEVICE_FEATURE_MESSAGE_RENDER = "message.content-render.v1";
 export const DEVICE_FEATURE_KIMI_CODE = "agent.kimiCode";
+/** Kimi Code Desktop has its own AgentKind and is hidden from clients that only know Kimi Web. */
+export const DEVICE_FEATURE_KIMI_CODE_DESKTOP = "agent.kimiCodeDesktop";
 export const DEVICE_FEATURE_OPENCLAW = "agent.openclaw";
 export const DEVICE_FEATURE_HERMES = "agent.hermes";
 /** ADR-0064: clients request compact state immediately so Host cancels legacy bootstrap replay timer. */

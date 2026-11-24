@@ -9,7 +9,11 @@ import { ActivationError } from "./spawner.js";
 import type { KimiWebClient } from "./kimi-web-client.js";
 
 export const KIMI_KIND = "kimiCode";
+export const KIMI_DESKTOP_KIND = "kimiCodeDesktop";
+export type KimiKind = typeof KIMI_KIND | typeof KIMI_DESKTOP_KIND;
 export const KIMI_PREFIX = "kimi-code:";
+export const KIMI_DESKTOP_PREFIX = "kimi-code-desktop:";
+const KIMI_LEGACY_DESKTOP_PREFIX = "kimi-code:desktop-";
 const nativeId = z.string().regex(/^session_[A-Za-z0-9_-]{1,70}$/u);
 const date = z.iso.datetime({ offset: true }).transform(value => Date.parse(value));
 const cwd = z.string().min(1).max(4096).refine(value => isAbsolute(value) && !value.includes("\0"));
@@ -33,10 +37,23 @@ const runningSession = KimiSessionSchema.pick({ id: true, archived: true, main_t
 const runningPage = z.object({ items: z.array(z.unknown()).max(PAGE_SIZE), has_more: z.boolean() });
 const recoveryPage = z.object({ items: z.array(KimiSessionSchema).max(PAGE_SIZE), has_more: z.boolean() });
 export class KimiLaunchBlocked extends ActivationError {}
-export function isKimiId(value: unknown): value is `kimi-code:${string}` { return typeof value === "string" && value.startsWith(KIMI_PREFIX); }
+export function kimiKindFromId(value: unknown): typeof KIMI_KIND | typeof KIMI_DESKTOP_KIND | undefined {
+  if (typeof value !== "string") return undefined;
+  if (value.startsWith(KIMI_DESKTOP_PREFIX)) return KIMI_DESKTOP_KIND;
+  // Before Kimi had a separate AgentKind, Desktop sessions used a desktop- source key
+  // under the shared prefix. Keep routing those already-created native sessions to Desktop.
+  if (value.startsWith(KIMI_LEGACY_DESKTOP_PREFIX)) return KIMI_DESKTOP_KIND;
+  if (value.startsWith(KIMI_PREFIX)) return KIMI_KIND;
+  return undefined;
+}
+export function isKimiId(value: unknown): value is `${typeof KIMI_PREFIX | typeof KIMI_DESKTOP_PREFIX}${string}` {
+  return kimiKindFromId(value) !== undefined;
+}
 export const kimiSessionPath = (id: string) => `/api/v1/sessions/${encodeURIComponent(id)}`;
 export function kimiNativeSessionId(publicId: string, key: string): string {
-  const prefix = `${KIMI_PREFIX}${key}:`;
+  const kind = kimiKindFromId(publicId);
+  const prefixes = kind === KIMI_DESKTOP_KIND ? [`${KIMI_DESKTOP_PREFIX}${key}:`, `${KIMI_PREFIX}${key}:`] : [`${KIMI_PREFIX}${key}:`];
+  const prefix = prefixes.find(candidate => publicId.startsWith(candidate)) ?? prefixes[0]!;
   const id = publicId.startsWith(prefix) ? nativeId.safeParse(publicId.slice(prefix.length)) : undefined;
   if (!id?.success) throw new ActivationError("session_not_found", "此会话不属于当前 Kimi Code 数据源");
   return id.data;
@@ -60,9 +77,13 @@ export async function kimiLocalDirectory(path: string): Promise<string> {
 }
 
 export class KimiSessions {
-  constructor(readonly client: Pick<KimiWebClient, "requestJson">, readonly key: string) {}
-  publicId(id: string): string { return `${KIMI_PREFIX}${this.key}:${id}`; }
-  nativeId(publicId: string): string { return kimiNativeSessionId(publicId, this.key); }
+  constructor(readonly client: Pick<KimiWebClient, "requestJson">, readonly key: string,
+    readonly kind: typeof KIMI_KIND | typeof KIMI_DESKTOP_KIND = KIMI_KIND) {}
+  publicId(id: string): string { return `${this.kind === KIMI_DESKTOP_KIND ? KIMI_DESKTOP_PREFIX : KIMI_PREFIX}${this.key}:${id}`; }
+  nativeId(publicId: string): string {
+    if (kimiKindFromId(publicId) !== this.kind) throw new ActivationError("session_not_found", "此会话不属于当前 Kimi Code 数据源");
+    return kimiNativeSessionId(publicId, this.key);
+  }
 
   async read(id: string): Promise<KimiSession> {
     return KimiSessionSchema.parse(await this.client.requestJson(kimiSessionPath(id)));
@@ -110,7 +131,7 @@ export class KimiSessions {
         const page: z.infer<typeof catalogPage> = catalogPage.parse(await this.client.requestJson(`/api/v2/sessions?${params}`, { signal }));
         for (const row of page.items) {
           if (row.meta.archived !== archived || sessions.has(row.id)) return { sessions: [...sessions.values()], complete: false };
-          sessions.set(row.id, { agentKind: KIMI_KIND, sessionId: this.publicId(row.id), cwd: row.workspace.cwd,
+          sessions.set(row.id, { agentKind: this.kind, sessionId: this.publicId(row.id), cwd: row.workspace.cwd,
             hostname: localHostname() ?? "localhost", ...(row.meta.title ? { name: row.meta.title.slice(0, 256) } : {}),
             createdAt: row.meta.created_at, modifiedAt: row.meta.updated_at, archived, messageCount: 0 });
         }

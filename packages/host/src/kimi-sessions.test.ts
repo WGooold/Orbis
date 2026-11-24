@@ -2,7 +2,7 @@ import { mkdtemp, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { KimiSessions, kimiSourceKey } from "./kimi-sessions.js";
+import { KimiSessions, KIMI_DESKTOP_KIND, KIMI_KIND, kimiKindFromId, kimiSourceKey } from "./kimi-sessions.js";
 import { SessionConfigurationStore } from "./session-configuration-store.js";
 
 const id = "session_native_first", other = "session_native_second", workspace = "workspace_a";
@@ -42,6 +42,21 @@ describe("KIMI-02 native session identity", () => {
     expect(await kimiSourceKey(root)).toEqual(await kimiSourceKey(root));
     expect(sessions.nativeId(sessions.publicId(id))).toBe(id);
     expect(() => sessions.nativeId(new KimiSessions({ requestJson: async () => { throw new Error(); } }, "another-root").publicId(id))).toThrow();
+  });
+
+  it("keeps Web and Desktop session namespaces disjoint and recognizes pre-split Desktop IDs", () => {
+    const client = { requestJson: async <T>() => ({} as T) };
+    const web = new KimiSessions(client, "same-root", KIMI_KIND);
+    const desktop = new KimiSessions(client, "same-root", KIMI_DESKTOP_KIND);
+    const webId = web.publicId(id), desktopId = desktop.publicId(id);
+    expect(webId).not.toBe(desktopId);
+    expect(kimiKindFromId(webId)).toBe(KIMI_KIND);
+    expect(kimiKindFromId(desktopId)).toBe(KIMI_DESKTOP_KIND);
+    expect(kimiKindFromId("kimi-code:desktop-old-root:session_native_first")).toBe(KIMI_DESKTOP_KIND);
+    expect(web.nativeId(webId)).toBe(id);
+    expect(desktop.nativeId(desktopId)).toBe(id);
+    expect(() => web.nativeId(desktopId)).toThrow("不属于当前 Kimi Code 数据源");
+    expect(() => desktop.nativeId(webId)).toThrow("不属于当前 Kimi Code 数据源");
   });
 
   it("preserves a valid first page when a later page fails or loops", async () => {

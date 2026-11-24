@@ -152,7 +152,7 @@ internal fun SubscriptionQuotaCoin(
                 flipJob = scope.launch { angle.snapTo(0f); flip() }
             }
         }.semantics(mergeDescendants = true) {
-            contentDescription = L10n.tr("{0} 配额", agentBrand(kind).title)
+            contentDescription = L10n.tr("{0} 配额", agentTitle(kind))
             stateDescription = L10n.tr("{0}，", title) + if (remaining != null) {
                 val remainingDescription = L10n.tr("剩余 {0}", percent)
                 resetCountdown?.let { L10n.tr("{0}，{1}", remainingDescription, it) } ?: remainingDescription

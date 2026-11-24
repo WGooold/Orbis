@@ -16,13 +16,31 @@ class KimiCodeTest {
         val filtered = ready("""{"hostFeatures":["device.features","agent.kimiCode"]}""")
         assertEquals(listOf("agent.dshDesktop", "agent.kimiCode"), deviceAgentFeatures(filtered))
         assertFalse(hasNegotiatedKimiCode(filtered))
-        assertTrue(hasNegotiatedKimiCode(ready("""{"hostFeatures":["device.features","agent.kimiCode"],"dshDesktop":null}""")))
+        assertTrue(hasNegotiatedKimiCode(ready("""{"hostFeatures":["device.features","agent.kimiCode"],"deviceFeatures":["agent.kimiCode"],"dshDesktop":null}""")))
         assertEquals(
             listOf("agent.dshDesktop", "state.compact-bootstrap.v1", "claude.send-now.v1"),
             deviceAgentFeatures(ready("""{"hostFeatures":["device.features","state.compact-bootstrap.v1","claude.send-now.v1"]}""")),
         )
         assertEquals("headless", kimiSpawnMode("kimiCode", "tui"))
         assertEquals("tui", kimiSpawnMode("codex", "tui"))
+    }
+
+    @Test fun `KIMI-08 Web and Desktop use independent features identities and availability`() {
+        val offer = ready("""{"hostFeatures":["device.features","agent.kimiCode","agent.kimiCodeDesktop"]}""")
+        assertEquals(listOf("agent.dshDesktop", "agent.kimiCode", "agent.kimiCodeDesktop"), deviceAgentFeatures(offer))
+        assertTrue("agent.kimiCodeDesktop" in requestedAgentFeatures(offer))
+        assertFalse(hasNegotiatedKimiCodeDesktop(offer))
+        val webOnly = ready("""{"hostFeatures":["device.features","agent.kimiCode","agent.kimiCodeDesktop"],"deviceFeatures":["agent.kimiCode"],"dshDesktop":null}""")
+        assertTrue(hasNegotiatedKimiCode(webOnly))
+        assertFalse(hasNegotiatedKimiCodeDesktop(webOnly))
+        val both = ready("""{"hostFeatures":["device.features","agent.kimiCode","agent.kimiCodeDesktop"],"deviceFeatures":["agent.kimiCode","agent.kimiCodeDesktop"],"dshDesktop":null}""")
+        assertTrue(hasNegotiatedKimiCodeDesktop(both))
+        assertTrue(RemoteState(kimiCodeSupported = true).supportsKimiCode(KIMI_CODE_KIND))
+        assertFalse(RemoteState(kimiCodeSupported = true).supportsKimiCode(KIMI_CODE_DESKTOP_KIND))
+        assertEquals(KIMI_CODE_KIND, RuntimeSummary("kimi-code:fixture:session_web", "Kimi Code", "/repo", "idle", "kimi-code:fixture:session_web").withKimiIdentity().agentKind)
+        assertEquals(KIMI_CODE_DESKTOP_KIND, RuntimeSummary("kimi-code-desktop:fixture:session_native", "Kimi Code Desktop", "/repo", "idle", "kimi-code-desktop:fixture:session_native").withKimiIdentity().agentKind)
+        assertEquals(KIMI_CODE_KIND, agentFamily(KIMI_CODE_DESKTOP_KIND))
+        assertEquals(listOf(KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND), agentVariants(KIMI_CODE_KIND))
     }
 
     @Test fun `Agent settings require an explicit capability echo even with Desktop admitted`() {

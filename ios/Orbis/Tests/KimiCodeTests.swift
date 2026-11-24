@@ -12,9 +12,34 @@ struct KimiCodeTests {
         #expect(!hasNegotiatedKimiCode(old))
         #expect(!hasNegotiatedKimiCode(filtered))
         #expect(deviceAgentFeatures(filtered) == ["agent.dshDesktop", "agent.kimiCode"])
-        #expect(hasNegotiatedKimiCode(filtered.merging(["dshDesktop": NSNull()]) { _, new in new }))
+        #expect(hasNegotiatedKimiCode(filtered.merging(["dshDesktop": NSNull(), "deviceFeatures": ["agent.kimiCode"]]) { _, new in new }))
         #expect(kimiSpawnMode(kimiCodeKind) == "headless")
         #expect(kimiSpawnMode("codex") == "tui")
+    }
+
+    @Test func webAndDesktopAreNegotiatedAndProjectedIndependently() async throws {
+        let ready: [String: Any] = [
+            "hostFeatures": ["device.features", "agent.kimiCode", "agent.kimiCodeDesktop"],
+            "deviceFeatures": ["agent.kimiCode"], "dshDesktop": NSNull(),
+        ]
+        #expect(deviceAgentFeatures(ready).contains("agent.kimiCodeDesktop"))
+        #expect(hasNegotiatedKimiCode(ready))
+        #expect(!hasNegotiatedKimiCodeDesktop(ready))
+        #expect(hasNegotiatedKimiCodeDesktop(ready.merging(["deviceFeatures": ["agent.kimiCode", "agent.kimiCodeDesktop"]]) { _, new in new }))
+        #expect(resolvedKimiCodeKind(kind: nil, id: "kimi-code:source:session_web") == kimiCodeKind)
+        #expect(resolvedKimiCodeKind(kind: nil, id: "kimi-code-desktop:source:session_native") == kimiCodeDesktopKind)
+        #expect(kimiSpawnMode(kimiCodeDesktopKind) == "headless")
+        #expect(supportsKimiCode(kind: kimiCodeKind, web: true, desktop: false))
+        #expect(!supportsKimiCode(kind: kimiCodeDesktopKind, web: true, desktop: false))
+
+        let bytes = Data(#"{"sessions":[{"agentKind":"kimiCode","sessionId":"kimi-code:fixture:session_web","hostname":"fixture","cwd":"/workspace","messageCount":0,"createdAt":1,"modifiedAt":2},{"agentKind":"kimiCodeDesktop","sessionId":"kimi-code-desktop:fixture:session_native","hostname":"fixture","cwd":"/workspace","messageCount":0,"createdAt":1,"modifiedAt":2}],"snapshotId":"snapshot","totalSessions":2,"nextCursor":null,"backends":[],"truncated":false}"#.utf8)
+        let value = try JSONDecoder().decode(HostJSON.self, from: bytes)
+        let domain = HostDomain(domain: "catalog", modelEpoch: "fixture", revision: 1, availability: "ready", completeness: "complete",
+            source: .init(producer: "host", sourceId: "catalog", sourceEpoch: "e", sourceRevision: 1), checkedAt: 1, value: value, projectionComplete: true)
+        let range = try #require(HostCatalogRange(domain: domain))
+        let catalog = await SessionDirectoryCatalogWorker().resolve(sessions: range.sessions, runtimes: [], messages: [:], archived: [:],
+            kimiCodeSupported: true, kimiCodeDesktopSupported: false)
+        #expect(catalog.sessions.map(\.sessionId) == ["kimi-code:fixture:session_web"])
     }
 
     @Test func enablementRequiresAnExplicitHostEcho() {

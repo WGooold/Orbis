@@ -625,6 +625,7 @@ data class RemoteState(
     val launchableAgents: Set<String>? = null,
     val sessionConfigurationSupported: Boolean = false,
     val kimiCodeSupported: Boolean = false,
+    val kimiCodeDesktopSupported: Boolean = false,
     val openClawNegotiated: Boolean = false,
     val prefersAutoSessionSpawn: Boolean = false,
     val sessionConfiguration: SessionConfigurationState = SessionConfigurationState(),
@@ -1465,7 +1466,7 @@ internal fun cachedHistoryRows(
     if (host == null) return emptyList()
     // ADR-0049 §6.4：未结算的归档叠加在目录上，卡片立即出现在目标列表。
     val catalog = state.sessionsWithLedger().filterValues { row ->
-        (state.kimiCodeSupported || !isKimiCode(row.agentKind, row.sessionId)) &&
+        (state.supportsKimiCode(row.agentKind, row.sessionId)) &&
             (row.agentKind !in setOf("codex", "codexDesktop") && !isCodexCatalogId(row.sessionId) ||
                 isCodexCatalogId(row.sessionId) == state.unifiedCodexHistory)
     }
@@ -1915,6 +1916,7 @@ internal fun RemoteState.markReconnecting(): RemoteState {
         connection = RelayConnection.RECONNECTING,
         homeDirectoryReceived = false,
         kimiCodeSupported = false,
+        kimiCodeDesktopSupported = false,
         prefersAutoSessionSpawn = false,
         toolInventories = emptyMap(), pendingToolConversations = emptyMap(),
         turnChanges = turnChanges.mapValues { (_, value) -> value.copy(request = null, queriedEntries = emptySet(), queriedTurns = emptySet(), manifests = value.manifests.mapValues { (_, manifest) -> manifest.copy(requestId = null) }) },
@@ -2183,6 +2185,7 @@ class RelayReducer(
                     ?.takeIf { it !is JsonNull }
                     ?.let { element -> json.decodeFromJsonElement<CodexDesktopAttach>(element) }
                 val kimiCodeSupported = hasNegotiatedKimiCode(message)
+                val kimiCodeDesktopSupported = hasNegotiatedKimiCodeDesktop(message)
                 val sessionChanged = runtimes.keys.associateWith { runtimeId ->
                     val previousRuntime = state.runtimes[runtimeId]
                     val hasPrevious = previousRuntime != null ||
@@ -2259,6 +2262,7 @@ class RelayReducer(
                     homeDirectoryReceived = true,
                     sessionConfigurationSupported = message["sessionConfiguration"]?.jsonPrimitive?.intOrNull == 1,
                     kimiCodeSupported = kimiCodeSupported,
+                    kimiCodeDesktopSupported = kimiCodeDesktopSupported,
                     openClawNegotiated = openClawNegotiated,
                     unifiedCodexHistory = unifiedCodexHistory,
                     runtimeCloseNegotiated = readyAdmitsRuntimeClose(message),
@@ -2470,6 +2474,7 @@ class RelayReducer(
                     agentDial = state.agentDial.disconnected(),
                     homeDirectoryReceived = false,
                     kimiCodeSupported = false,
+                    kimiCodeDesktopSupported = false,
                     prefersAutoSessionSpawn = false,
                     currentProviders = emptyMap(),
                     sessionActivateRequests = emptySet(),
@@ -3908,7 +3913,7 @@ internal fun RemoteState.allowsAgentSource(kind: String): Boolean =
     agentEnablementRevision == null || agentEnablementRows.any { it.kind == kind && it.enabled }
 
 internal fun RemoteState.supportsSessionConfiguration(agentKind: String): Boolean =
-    allowsAgentSource(agentKind) && sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated) && (agentKind != KIMI_CODE_KIND || kimiCodeSupported)
+    allowsAgentSource(agentKind) && sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated) && supportsKimiCode(agentKind)
 
 internal fun RemoteState.canLaunchOpenClaw(): Boolean =
     supportsSessionConfiguration("openclaw") && (launchableAgents ?: supportedAgents)?.contains("openclaw") == true

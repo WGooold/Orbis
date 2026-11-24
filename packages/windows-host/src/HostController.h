@@ -75,6 +75,7 @@ class HostController : public QObject {
     Q_PROPERTY(bool kimiDesktopSupported READ kimiDesktopSupported NOTIFY changed)
     Q_PROPERTY(QString kimiCodeSource READ kimiCodeSource NOTIFY changed)
     Q_PROPERTY(QString kimiCodeState READ kimiCodeState NOTIFY changed)
+    Q_PROPERTY(QString kimiCodeDesktopState READ kimiCodeDesktopState NOTIFY changed)
     Q_PROPERTY(bool dshEnabled READ dshEnabled NOTIFY changed)
     Q_PROPERTY(bool piIntegrationEnabled READ piIntegrationEnabled NOTIFY changed)
     Q_PROPERTY(bool claudeIntegrationEnabled READ claudeIntegrationEnabled NOTIFY changed)
@@ -168,9 +169,11 @@ public:
     bool autoStart() const { return m_settings.value("autoStart", false).toBool(); }
     bool kimiCodeAvailable() const { return !m_qaMode && m_kimiCodeSupported; }
     bool kimiCodeEnabled() const;
+    bool agentEnabled(const QString &kind) const;
     bool kimiDesktopSupported() const { return kimiCodeAvailable() && m_kimiDesktopSupported; }
     QString kimiCodeSource() const { return m_settings.value("kimiCodeSource", m_kimiCodeDefaultSource).toString(); }
     QString kimiCodeState() const { return m_kimiCodeState; }
+    QString kimiCodeDesktopState() const { return m_kimiCodeDesktopState; }
     bool codexEnabled() const { return m_settings.value("codexEnabled", true).toBool(); }
     bool dshEnabled() const { return m_settings.value("dshEnabled", false).toBool(); }
     bool piIntegrationEnabled() const { return m_settings.value("piIntegrationEnabled", true).toBool(); }
@@ -432,6 +435,7 @@ private:
     QVariantMap m_hermesRemote;
     QVariantMap m_codexDesktop, m_dshDesktop;
     QString m_kimiCodeState, m_kimiCodeDefaultSource = "web";
+    QString m_kimiCodeDesktopState;
     bool m_kimiDesktopSupported = false;
     bool m_kimiCodeSupported = false;
     /** 后台准备进度，按 kind 存放（Codex 可能是一次上百 MB 的下载，但都不阻塞中继连接）。 */

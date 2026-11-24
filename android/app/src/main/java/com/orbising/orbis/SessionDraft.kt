@@ -97,7 +97,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         if (open && state.e2eReady && state.supportsSessionConfiguration(kind) && cwd.isNotBlank() && canUseSelectedAgent) onLoadConfiguration(kind, cwd)
     }
     val kinds = listOf("codex", "claude", "dsh", "openclaw", "pi", KIMI_CODE_KIND, "hermes", "opencode").filter {
-        (enabledAgentKinds == null || agentVariants(it).any(enabledAgentKinds::contains)) && when (it) { "opencode" -> showOpenCode; "hermes" -> supported?.contains("hermes") == true; "openclaw" -> state.canLaunchOpenClaw(); KIMI_CODE_KIND -> state.kimiCodeSupported; else -> true }
+        (enabledAgentKinds == null || agentVariants(it).any(enabledAgentKinds::contains)) && when (it) { "opencode" -> showOpenCode; "hermes" -> supported?.contains("hermes") == true; "openclaw" -> state.canLaunchOpenClaw(); KIMI_CODE_KIND -> agentVariants(it).any { variant -> state.supportsKimiCode(variant) && (supported == null || variant in supported) }; else -> true }
     }
     val allDisabled = enabledAgentKinds?.isEmpty() == true
     fun launchLabel(kind: String): String = if (state.unifiedCodexHistory && agentFamily(kind) == "codex") {
@@ -105,7 +105,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     } else agentVariantTitle(kind)
     val canStart = canUseSelectedAgent && cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) &&
         (kind != "openclaw" || state.canLaunchOpenClaw() && config?.snapshot != null && config.error == null) &&
-        (kind != KIMI_CODE_KIND || state.kimiCodeSupported && config?.snapshot != null) &&
+        (agentFamily(kind) != KIMI_CODE_KIND || state.supportsKimiCode(kind) && config?.snapshot != null) &&
         (!importMode || config?.snapshot != null && config.requestId == null && config.error == null)
     val workDirectory = state.sessionBrowse?.takeUnless { it.forDownload }
     fun submit() {
@@ -113,7 +113,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     }
     val family = agentFamily(kind)
     /** Both native entries of a family can start here, so its version is a real choice (Codex terminal / desktop, DeepSeek Web / Desktop). */
-    fun versionsAvailable(of: String) = agentVariants(of).size > 1 && agentVariants(of).all { supported?.contains(it) == true }
+    fun versionsAvailable(of: String) = agentVariants(of).size > 1 && agentVariants(of).count { supported?.contains(it) == true && state.supportsKimiCode(it) } > 1
     LaunchedEffect(open) {
         if (open) {
             pressed = true; appearance.snapTo(0f)
@@ -175,7 +175,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                             if (hasVariants) stateDescription = launchLabel(kind)
                         }, verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)) {
-                        Text(if (family == "codex") "Codex" else agentBrand(kind).title,
+                        Text(if (family == "codex") "Codex" else agentTitle(kind),
                             modifier = Modifier.weight(1f).testTag("draft-agent-name"), style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.End,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -244,7 +244,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                 if (!canUseSelectedAgent) {
                     // Keep the draft, but do not show stale settings for a retired source.
                 } else if (state.supportsSessionConfiguration(kind) && kind != "openclaw") {
-                    if (kind != KIMI_CODE_KIND) {
+                    if (agentFamily(kind) != KIMI_CODE_KIND) {
                         val permissionSummary = config?.snapshot?.catalog?.permissions?.mapNotNull { setting ->
                             setting.options.firstOrNull { it.value == config.values.permissions[setting.id] }?.label
                         }?.takeIf { it.isNotEmpty() }?.joinToString(" · ") { L10n.hostText(it) } ?: L10n.tr("电脑端默认")
@@ -291,7 +291,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                                 !event.nativeKeyEvent.isAltPressed) { submit(); true }
                             else false
                         },
-                        placeholder = { Text(if (canUseSelectedAgent) L10n.tr("让 {0} 做什么？", agentBrand(kind).title) else L10n.tr("输入消息")) }, maxLines = 6,
+                        placeholder = { Text(if (canUseSelectedAgent) L10n.tr("让 {0} 做什么？", agentTitle(kind)) else L10n.tr("输入消息")) }, maxLines = 6,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(onSend = { if (fieldValue.composition == null) submit() }))
                     NeumorphIconButton(onClick = ::submit,
@@ -375,10 +375,11 @@ private fun DraftConfigurationButton(label: String, value: String?, panel: Strin
 }
 
 /** Agents with a second native entry keep one emblem; the entry is a version beside it (ADR-0022, ADR-0076). */
-internal fun agentFamily(kind: String): String = when (kind) { "codexDesktop" -> "codex"; "dshDesktop" -> "dsh"; else -> kind }
+internal fun agentFamily(kind: String): String = when (kind) { "codexDesktop" -> "codex"; "dshDesktop" -> "dsh"; KIMI_CODE_DESKTOP_KIND -> KIMI_CODE_KIND; else -> kind }
 internal fun agentVariants(family: String): List<String> = when (family) {
     "codex" -> listOf("codex", "codexDesktop")
     "dsh" -> listOf("dsh", "dshDesktop")
+    KIMI_CODE_KIND -> listOf(KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND)
     else -> listOf(family)
 }
 internal fun agentVariantTitle(kind: String): String = when (kind) {
@@ -386,6 +387,8 @@ internal fun agentVariantTitle(kind: String): String = when (kind) {
     "codexDesktop" -> L10n.tr("Codex 桌面版")
     "dsh" -> L10n.tr("DeepSeek 网页版")
     "dshDesktop" -> L10n.tr("DeepSeek 桌面版")
+    KIMI_CODE_KIND -> L10n.tr("Kimi Code Web")
+    KIMI_CODE_DESKTOP_KIND -> L10n.tr("Kimi Code 桌面版")
     "openclaw" -> "OpenClaw"
-    else -> agentBrand(kind).title
+    else -> agentTitle(kind)
 }

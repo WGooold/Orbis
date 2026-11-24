@@ -12,7 +12,8 @@ export const agentEnablementCatalog = {
   dsh: { label: "DeepSeek CLI" },
   dshDesktop: { label: "DeepSeek Desktop" },
   pi: { label: "Pi" },
-  kimiCode: { label: "Kimi Code" },
+  kimiCode: { label: "Kimi Code Web" },
+  kimiCodeDesktop: { label: "Kimi Code 桌面版" },
   opencode: { label: "OpenCode" },
   hermes: { label: "Hermes Agent" },
   openclaw: { label: "OpenClaw" },
@@ -74,6 +75,18 @@ export class AgentEnablementStore {
 
   read(): Promise<AgentEnablementSnapshot> {
     return this.#serial(async () => this.#snapshot(await this.#load()));
+  }
+
+  /** One-time compatibility migration for a source that was formerly a single toggle. */
+  migrateChoices(migrate: (choices: Readonly<Record<string, boolean>>) => Record<string, boolean>): Promise<AgentEnablementSnapshot> {
+    return this.#serial(async () => {
+      const data = await this.#load();
+      const choices = migrate(data.choices);
+      if (JSON.stringify(choices) === JSON.stringify(data.choices)) return this.#snapshot(data);
+      const next = fileSchema.parse({ ...data, revision: data.revision + 1, choices });
+      await this.#commit(next);
+      return this.#snapshot(next);
+    });
   }
 
   async set(input: unknown, stillAuthorized = allowed, verifyDisable = noReview, scoped = false): Promise<AgentEnablementResult> {
@@ -215,6 +228,12 @@ export class AgentEnablementController {
 
   async read(): Promise<AgentEnablementSnapshot> {
     const snapshot = await this.#store.read();
+    this.#apply(snapshot);
+    return snapshot;
+  }
+
+  async migrateChoices(migrate: Parameters<AgentEnablementStore["migrateChoices"]>[0]): Promise<AgentEnablementSnapshot> {
+    const snapshot = await this.#store.migrateChoices(migrate);
     this.#apply(snapshot);
     return snapshot;
   }

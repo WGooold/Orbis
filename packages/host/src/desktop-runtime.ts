@@ -26,6 +26,7 @@ import { codexShimStatus, ensureCodexShimWinsPath, installCodexShim, type CodexT
 import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { loadKimiCodeConfig } from "./config.js";
 import type { KimiSource } from "./kimi-web-client.js";
+import { KIMI_DESKTOP_KIND, KIMI_KIND, type KimiKind } from "./kimi-sessions.js";
 import { supportsKimiDesktop } from "./kimi-desktop-owner.js";
 import { createLocalKimiRuntime, type KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
@@ -216,7 +217,8 @@ export class DesktopRuntime {
       const openClaw = await readOpenClawDesktopSettings(this.#stateDir);
       const kimi = await loadKimiCodeConfig(this.#stateDir).catch(() => undefined);
       const keepKimi = this.#legacyKimiEnabled ?? kimi?.kimiCodeEnabled;
-      return { ...(openClaw.url ? { openclaw: true } : {}), ...(keepKimi === undefined ? {} : { kimiCode: keepKimi }), ...(this.#legacyDshEnabled ? { dsh: true } : {}), ...(this.#legacyCodexEnabled ? { codex: true } : {}), ...(this.#legacyPiEnabled ? { pi: true } : {}), ...(this.#legacyClaudeEnabled ? { claude: true } : {}) };
+      const legacyKimiKind = kimi?.kimiCodeSource === "desktop" ? KIMI_DESKTOP_KIND : KIMI_KIND;
+      return { ...(openClaw.url ? { openclaw: true } : {}), ...(keepKimi === undefined ? {} : { [legacyKimiKind]: keepKimi }), ...(this.#legacyDshEnabled ? { dsh: true } : {}), ...(this.#legacyCodexEnabled ? { codex: true } : {}), ...(this.#legacyPiEnabled ? { pi: true } : {}), ...(this.#legacyClaudeEnabled ? { claude: true } : {}) };
     }), snapshot => {
       if (!snapshot.agents.some(row => row.kind === "dshDesktop" && row.enabled)) this.#cancelDshDesktopOpen();
       if (!this.#agentEnablement.allows("claude")) this.#claudeIntegrationAbort?.abort();
@@ -287,6 +289,15 @@ export class DesktopRuntime {
   }
 
   async readAgentEnablement(): Promise<AgentEnablementSnapshot> {
+    if (!this.#qa) {
+      const config = await this.#kimiCodeConfig();
+      await this.#agentEnablement.migrateChoices(choices => {
+        // Only rewrite the old single-toggle Desktop selection. A no-op read must not
+        // advance the shared Agent revision or turn an otherwise-off Host into a write.
+        if (config?.kimiCodeSource !== "desktop" || choices[KIMI_KIND] !== true || Object.hasOwn(choices, KIMI_DESKTOP_KIND)) return { ...choices };
+        return { ...choices, [KIMI_KIND]: false, [KIMI_DESKTOP_KIND]: true };
+      });
+    }
     return await this.#agentEnablement.read();
   }
 
@@ -423,7 +434,7 @@ export class DesktopRuntime {
 
   async detect(settings?: Partial<DesktopSettings>, checkLatest = false): Promise<AgentInstallStatus[]> {
     if (!this.#qa) await adoptWindowsEnvironment();
-    await this.#agentEnablement.read();
+    await this.readAgentEnablement();
     const resolved = await this.#environment(settings);
     this.#publishCodexDesktopRecovery();
     this.#scheduleClaudeDetection();
@@ -766,7 +777,7 @@ export class DesktopRuntime {
     this.#legacyDshEnabled ||= settings.dshEnabled === true;
     this.#legacyCodexEnabled ||= settings.codexEnabled === true;
     this.#legacyKimiEnabled ??= settings.kimiCodeEnabled;
-    await this.#agentEnablement.read();
+    await this.readAgentEnablement();
     await this.#environment(settings);
     this.#claudeIntegrationPreference = settings;
     if (generation !== this.#lifecycleGeneration) return;
@@ -885,15 +896,15 @@ export class DesktopRuntime {
         if (runtime) this.#dshDesktopRuntime = runtime;
         return runtime;
       };
-      const createKimiCodeRuntime = async (): Promise<KimiRuntime> => {
+      const createKimiCodeRuntime = async (kind: KimiKind): Promise<KimiRuntime> => {
         const config = await loadKimiCodeConfig(this.#stateDir);
-        const source = settings.kimiCodeSource ?? config.kimiCodeSource;
+        const source: KimiSource = kind === KIMI_DESKTOP_KIND ? "desktop" : "web";
         return createLocalKimiRuntime({ stateDir: this.#stateDir, homeDir: config.kimiCodeHome, source,
           ...(config.kimiCodeEndpoint === undefined || source !== config.kimiCodeSource ? {} : { endpoint: config.kimiCodeEndpoint }), log: line => this.log(line) });
       };
       let relayAuthenticated = false;
       const service = await HostService.create({
-        ...(this.#qa ? {} : { createKimiCodeRuntime, openClawLauncher: createOpenClawLocalLauncher(),
+        ...(this.#qa ? {} : { createKimiCodeRuntime, kimiCodeDesktopSupported: supportsKimiDesktop, openClawLauncher: createOpenClawLocalLauncher(),
           createOpenCodeConnection: () => new OpenCodeServiceConnection({ launcher: createOpenCodeLocalLauncher() }) }),
         agentEnablement: this.#agentEnablement,
         ...(this.#qa ? { openClaw: false as const, opencodeConnection: false as const } : {}),
@@ -1162,7 +1173,7 @@ export class DesktopRuntime {
     const model = service.readHostState(["backends", "connections", "management", "operations"]);
     const backends = model.domains.find(domain => domain.domain === "backends")?.value as { backends?: { runtimeCount: number }[] } | undefined;
     const status = { event: "status", devices, runtimeCount: backends?.backends?.reduce((sum, backend) => sum + backend.runtimeCount, 0) ?? 0,
-      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, activeAgentSessions: service.runningAgentSessions(), model };
+      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, kimiCodeDesktopState: service.kimiCodeDesktopConnectionState, activeAgentSessions: service.runningAgentSessions(), model };
     const text = JSON.stringify({ ...status, model: { ...model, domains: model.domains.map(domain => ({ ...domain, checkedAt: 0 })) } });
     if (text !== this.#lastStatus) { this.#lastStatus = text; this.#emit(status); }
   }
@@ -1462,7 +1473,7 @@ export class DesktopRuntime {
     if (!["install", "update"].includes(action)) throw new Error("未知安装操作");
     if (this.#desired) throw new Error("请先暂停 Host，再安装或更新 Agent");
     this.#batchCancelled = false;
-    await this.#agentEnablement.read();
+    await this.readAgentEnablement();
     const targets: string[] = (["pi", "codex", "dsh"] as const).flatMap(kind => {
       const status = this.#detected.get(kind);
       if (!this.#agentEnablement.allows(kind)) return [];
@@ -1651,7 +1662,7 @@ export class DesktopRuntime {
   }
 
   async #requireProviderEnabled(kind: AgentKind): Promise<() => void> {
-    await this.#agentEnablement.read();
+    await this.readAgentEnablement();
     const current = this.#providerCurrent(kind);
     const requireCurrent = () => { if (!current()) throw new ProviderError("请先在 Agent 设置中启用此接入"); };
     requireCurrent();
@@ -1659,24 +1670,24 @@ export class DesktopRuntime {
   }
 
   async #requireAgentEnabled(kind: AgentKind): Promise<void> {
-    await this.#agentEnablement.read();
+    await this.readAgentEnablement();
     if (!this.#agentEnablement.allows(kind)) throw new Error("请先在 Agent 设置中启用此接入");
   }
 
   async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {
     const startLocal = kind === "opencode" || kind === "openclaw" || kind === "hermes";
-    if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop" || kind === "kimiCode" || startLocal)) throw new Error("QA Host 不打开正式 Agent 会话");
+    if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop" || kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND || startLocal)) throw new Error("QA Host 不打开正式 Agent 会话");
     const source = AgentKindSchema.safeParse(kind);
     if (source.success) await this.#requireAgentEnabled(source.data);
     const lease = source.success ? this.#agentEnablement.lease(source.data) : undefined;
     const requireCurrent = () => { if (!lease?.isCurrent()) throw new Error("此 Agent 已停用"); };
     if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
-    if (kind === "kimiCode" || startLocal) {
+    if (kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND || startLocal) {
       if (mode !== "setup") throw new Error("未知打开方式");
       requireCurrent();
       const service = this.#service;
       if (!this.#desired || !service) throw new Error("请先启动 Host，再启动 Agent");
-      if (kind === "kimiCode") await service.startKimiCode();
+      if (kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND) await service.startKimiCode(kind);
       else await service.startLocalAgent(kind);
       return;
     }

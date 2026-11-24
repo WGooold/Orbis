@@ -211,7 +211,9 @@ func resolvedAgentKind(runtimeId: String, declared: String?, catalogKind: String
 }
 
 let kimiCodeKind = "kimiCode"
+let kimiCodeDesktopKind = "kimiCodeDesktop"
 private let kimiCodeFeature = "agent.kimiCode"
+private let kimiCodeDesktopFeature = "agent.kimiCodeDesktop"
 
 func readyAdmitsAgentEnablement(_ ready: [String: Any]) -> Bool {
     let feature = "agent.enablement.v1"
@@ -230,6 +232,7 @@ func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
     guard advertised.contains("device.features") else { return [] }
     return ["agent.dshDesktop"] + [
         kimiCodeFeature,
+        kimiCodeDesktopFeature,
         messageRenderFeature,
         "agent.openclaw",
         "agent.hermes",
@@ -260,15 +263,35 @@ func readyAdmitsCodexHistory(_ ready: [String: Any]) -> Bool {
 
 /// A full authenticated ready follows the declaration; a filtered fallback is not an acknowledgment.
 func hasNegotiatedKimiCode(_ ready: [String: Any]) -> Bool {
-    ready["dshDesktop"] != nil && deviceAgentFeatures(ready).contains(kimiCodeFeature)
+    ready["dshDesktop"] != nil && deviceAgentFeatures(ready).contains(kimiCodeFeature) && (ready["deviceFeatures"] as? [String] ?? []).contains(kimiCodeFeature)
+}
+func hasNegotiatedKimiCodeDesktop(_ ready: [String: Any]) -> Bool {
+    ready["dshDesktop"] != nil && deviceAgentFeatures(ready).contains(kimiCodeDesktopFeature) && (ready["deviceFeatures"] as? [String] ?? []).contains(kimiCodeDesktopFeature)
+}
+
+func resolvedKimiCodeKind(kind: String?, id: String?) -> String? {
+    if kind == kimiCodeDesktopKind { return kimiCodeDesktopKind }
+    if id?.hasPrefix("kimi-code-desktop:") == true { return kimiCodeDesktopKind }
+    if kind == kimiCodeKind { return kimiCodeKind }
+    if id?.hasPrefix("kimi-code:desktop-") == true { return kimiCodeDesktopKind }
+    if id?.hasPrefix("kimi-code:") == true { return kimiCodeKind }
+    return nil
+}
+
+func supportsKimiCode(kind: String?, id: String? = nil, web: Bool, desktop: Bool) -> Bool {
+    switch resolvedKimiCodeKind(kind: kind, id: id) {
+    case kimiCodeKind: return web
+    case kimiCodeDesktopKind: return desktop
+    default: return true
+    }
 }
 
 func isKimiCode(kind: String?, id: String?) -> Bool {
-    kind == kimiCodeKind || id?.hasPrefix("kimi-code:") == true
+    resolvedKimiCodeKind(kind: kind, id: id) != nil
 }
 
 func kimiSpawnMode(_ kind: String?, otherwise mode: String = "tui") -> String {
-    kind == kimiCodeKind ? "headless" : mode
+    kind == kimiCodeKind || kind == kimiCodeDesktopKind ? "headless" : mode
 }
 
 func runtimeAgentKind(_ runtimeId: String) -> String? {
@@ -279,7 +302,7 @@ func runtimeAgentKind(_ runtimeId: String) -> String? {
     if runtimeId.hasPrefix("dsh-desktop:") { return "dshDesktop" }
     if runtimeId.hasPrefix("dsh:") { return "dsh" }
     if runtimeId.hasPrefix("claude:") { return "claude" }
-    if isKimiCode(kind: nil, id: runtimeId) { return kimiCodeKind }
+    if let kimi = resolvedKimiCodeKind(kind: nil, id: runtimeId) { return kimi }
     if runtimeId.hasPrefix("openclaw:") { return "openclaw" }
     if runtimeId.hasPrefix("opencode:") { return "opencode" }
     return nil
@@ -1194,9 +1217,9 @@ actor SessionDirectoryCatalogWorker {
     init(beforeRows: (@Sendable () -> Void)? = nil) { self.beforeRows = beforeRows }
 
     func resolve(sessions: [SessionSummary], runtimes: [RuntimeSummary], messages: [String: [ChatMessage]],
-                 archived: [String: Bool], kimiCodeSupported: Bool = false, unifiedCodex: Bool = false) -> SessionDirectoryCatalog {
+                 archived: [String: Bool], kimiCodeSupported: Bool = false, kimiCodeDesktopSupported: Bool = false, unifiedCodex: Bool = false) -> SessionDirectoryCatalog {
         let sessions = sessions.filter { row in
-            guard kimiCodeSupported || !isKimiCode(kind: row.agentKind, id: row.sessionId) else { return false }
+            guard supportsKimiCode(kind: row.agentKind, id: row.sessionId, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported) else { return false }
             if ["codex", "codexDesktop"].contains(row.agentKind ?? "") || row.sessionId.hasPrefix("codex-history:") {
                 return row.sessionId.hasPrefix("codex-history:") == unifiedCodex
             }

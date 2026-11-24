@@ -282,7 +282,7 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
         val fresh = state.hostId == expectedHost && connected && active && !moving && state.canUseProviders(selected.kind) &&
             state.providersForKind(selected.kind).any { it == selected }
         NeumorphDialog(onDismissRequest = { pending = null },
-            title = { Text(L10n.tr("切换 {0} 到 {1}？", agentBrand(selected.kind).title, selected.name)) },
+            title = { Text(L10n.tr("切换 {0} 到 {1}？", agentTitle(selected.kind), selected.name)) },
             text = { Text(L10n.tr("已有会话需要重新打开。")) },
             confirmButton = { NeumorphTextButton(L10n.tr("切换并重载 Agent"), {
                 if (fresh) { pending = null; haptic(); onEnable(selected, expectedHost) }

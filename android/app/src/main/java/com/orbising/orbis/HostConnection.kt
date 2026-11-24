@@ -203,7 +203,7 @@ internal class HostConnection(
     }
 
     private fun configuredLaunchAvailable(saved: JsonObject): Boolean =
-        saved["agentKind"]?.jsonPrimitive?.contentOrNull != KIMI_CODE_KIND || mutableState.value.kimiCodeSupported
+        mutableState.value.supportsKimiCode(saved["agentKind"]?.jsonPrimitive?.contentOrNull, saved["sessionId"]?.jsonPrimitive?.contentOrNull)
 
     private suspend fun recoverConfiguredLaunchInBackground(targetId: String?) {
         val connectionGeneration = generation
@@ -237,7 +237,7 @@ internal class HostConnection(
         val connectionGeneration = generation
         val state = mutableState.value; val config = state.sessionConfiguration; val snapshot = config.snapshot
         if (!state.allowsAgentSource(kind)) return null
-        if (kind == KIMI_CODE_KIND && (!state.kimiCodeSupported || !state.sessionConfigurationSupported)) return null
+        if (!state.supportsKimiCode(kind) || kind in setOf(KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND) && !state.sessionConfigurationSupported) return null
         val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded)
         if (!admission.allowed) {
             updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(error = admission.configuration.error,
@@ -1261,7 +1261,7 @@ internal class HostConnection(
         if (isCodexCatalogId(sessionId) && !state.unifiedCodexHistory) return
         val entry = state.sessions[sessionId] ?: return
         val agentKind = entry.agentKind ?: return
-        if (isKimiCode(agentKind, sessionId) && !state.kimiCodeSupported) return
+        if (!state.supportsKimiCode(agentKind, sessionId)) return
         if (agentKind == "openclaw" && !state.openClawNegotiated) return
         if (state.connection != RelayConnection.ONLINE || state.hostId.isNullOrBlank()) {
             updateState { it.sessionFailure(sessionId, L10n.tr("尚未连接到电脑，连接建立后才能操作会话")) }
@@ -1367,8 +1367,9 @@ internal class HostConnection(
         val modes = if (unified) state.codexResumeModes(sessionId) else emptyList()
         val mode = requestedMode ?: modes.singleOrNull()
         if (unified && mode !in modes) return
-        val kimi = isKimiCode(state.sessions[sessionId]?.agentKind, sessionId)
-        if (kimi && !state.kimiCodeSupported) return
+        val kimiKind = kimiKind(state.sessions[sessionId]?.agentKind, sessionId)
+        val kimi = kimiKind != null
+        if (!state.supportsKimiCode(kimiKind, sessionId)) return
         if (sessionId.startsWith("openclaw:") && !mutableState.value.openClawNegotiated) return
         mutableState.value.codexProviderMismatch(sessionId)?.let { reason ->
             updateState { it.sessionFailure(sessionId, reason) }
@@ -1381,7 +1382,7 @@ internal class HostConnection(
         activateTarget(buildJsonObject {
             put("type", "resume")
             put("sessionId", sessionId)
-            (if (unified) "codex" else if (kimi) KIMI_CODE_KIND else state.sessions[sessionId]?.agentKind)?.let { put("agentKind", it) }
+            (if (unified) "codex" else kimiKind ?: state.sessions[sessionId]?.agentKind)?.let { put("agentKind", it) }
         }, if (unified) "auto" else if (kimi) "headless" else null, mode)
     }
 
@@ -1396,7 +1397,7 @@ internal class HostConnection(
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String? = null): Boolean {
         if (agentKind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return false
         if (!validateNewSessionTarget(expectedHostId)) return false
-        if (agentKind in setOf("openclaw", KIMI_CODE_KIND)) return createConfiguredSession(agentKind, cwd, "headless") != null
+        if (agentKind in setOf("openclaw", KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND)) return createConfiguredSession(agentKind, cwd, "headless") != null
         if (mutableState.value.supportsSessionConfiguration(agentKind) && spawnMode != "headless") return createConfiguredSession(agentKind, cwd, spawnMode) != null
         return activateTarget(buildJsonObject {
             put("type", "new")
@@ -1506,10 +1507,11 @@ internal class HostConnection(
             return
         }
         updateState { it.copy(launching = null, sessionActivateRequests = it.sessionActivateRequests - launch.requestId) }
-        val kind = launch.target["agentKind"] ?: launch.target["sessionId"]?.takeIf { isKimiCode(null, it) }?.let { KIMI_CODE_KIND }
-        if (kind == KIMI_CODE_KIND && (!mutableState.value.kimiCodeSupported || launch.target["type"] == "new")) return
+        val kind = launch.target["agentKind"] ?: launch.target["sessionId"]?.let { kimiKind(null, it) }
+        if (!mutableState.value.supportsKimiCode(kind, launch.target["sessionId"]) && kind != null) return
+        if (kind in setOf(KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND) && launch.target["type"] == "new") return
         activateTarget(buildJsonObject { launch.target.forEach { (key, value) -> put(key, value) } },
-            if (kind == KIMI_CODE_KIND) "headless" else launch.spawnModeOverride, launch.codexLaunchMode)
+            if (kind == KIMI_CODE_KIND || kind == KIMI_CODE_DESKTOP_KIND) "headless" else launch.spawnModeOverride, launch.codexLaunchMode)
     }
 
     fun loadAgentProviders(kind: String) {
@@ -2223,8 +2225,9 @@ internal class HostConnection(
     fun sendMessage(text: String, delivery: String? = null, attachments: List<String> = emptyList(), uploadTaskIds: List<String> = emptyList()): String? {
         val current = mutableState.value
         val runtimeId = current.selectedRuntimeId ?: return null
-        if (isKimiCode(current.runtimes[runtimeId]?.agentKind ?: current.launchPage?.target?.get("agentKind"), runtimeId) &&
-            (!current.kimiCodeSupported || delivery != null || attachments.isNotEmpty() || uploadTaskIds.isNotEmpty() || current.runtimes[runtimeId]?.status == "running")) return null
+        val selectedKind = current.runtimes[runtimeId]?.agentKind ?: current.launchPage?.target?.get("agentKind")
+        if (isKimiCode(selectedKind, runtimeId) &&
+            (!current.supportsKimiCode(selectedKind, runtimeId) || delivery != null || attachments.isNotEmpty() || uploadTaskIds.isNotEmpty() || current.runtimes[runtimeId]?.status == "running")) return null
         if ((current.runtimes[runtimeId]?.agentKind == "openclaw" || runtimeId.startsWith("openclaw:")) && (!current.openClawNegotiated || delivery != null || attachments.isNotEmpty() || uploadTaskIds.isNotEmpty() || current.runtimes[runtimeId]?.status == "running")) return null
         // 只剩附件没正文时也得发出：协议要求 text 非空，而用户确实想把这个文件交给 Pi。
         val attachmentCount = maxOf(attachments.size, uploadTaskIds.size)

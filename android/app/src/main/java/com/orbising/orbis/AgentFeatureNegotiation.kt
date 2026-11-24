@@ -7,6 +7,8 @@ import kotlinx.serialization.json.contentOrNull
 
 internal const val AGENT_ENABLEMENT_FEATURE = "agent.enablement.v1"
 internal const val CODEX_UNIFIED_HISTORY = "codex.history-unified.v1"
+private const val KIMI_CODE_FEATURE = "agent.kimiCode"
+private const val KIMI_CODE_DESKTOP_FEATURE = "agent.kimiCodeDesktop"
 internal fun readyAdmitsCodexHistory(ready: JsonObject): Boolean =
     CODEX_UNIFIED_HISTORY in ready.features("hostFeatures") && CODEX_UNIFIED_HISTORY in ready.features("deviceFeatures")
 internal fun readyAdmitsAgentEnablement(ready: JsonObject): Boolean =
@@ -30,6 +32,8 @@ internal fun requestedAgentFeatures(ready: JsonObject): List<String> {
     if ("dshDesktop" in ready && (!hostSupportsOpenClaw || readyAdmitsOpenClaw(ready)) &&
         (AGENT_ENABLEMENT_FEATURE !in features || readyAdmitsAgentEnablement(ready)) &&
         (AGENT_DIAL_REVIEW_FEATURE !in features || readyAdmitsAgentDialReview(ready)) &&
+        (KIMI_CODE_FEATURE !in features || KIMI_CODE_FEATURE in ready.features("deviceFeatures")) &&
+        (KIMI_CODE_DESKTOP_FEATURE !in features || KIMI_CODE_DESKTOP_FEATURE in ready.features("deviceFeatures")) &&
         (CODEX_UNIFIED_HISTORY !in features || readyAdmitsCodexHistory(ready)) &&
         (RUNTIME_CLOSE_FEATURE !in features || readyAdmitsRuntimeClose(ready)) &&
         (RUNTIME_VIEW_CLOSE_FEATURE !in features || RUNTIME_VIEW_CLOSE_FEATURE in ready.features("deviceFeatures"))) return emptyList()

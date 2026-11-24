@@ -37,6 +37,16 @@ describe("recoverable configured launch", () => {
     await expect(restarted.begin("device", { ...desktopRequest, codexLaunchMode: "terminal" }))
       .rejects.toMatchObject({ code: "launch_id_conflict" });
   });
+  it("reserves a native recovery marker for both Kimi sources", async () => {
+    const { store } = await fixture();
+    for (const [kind, launchId] of [["kimiCode", "kimi-web"], ["kimiCodeDesktop", "kimi-desktop"]] as const) {
+      const kimiRequest: ConfiguredSessionLaunch = { ...request, requestId: launchId, launchId, agentKind: kind,
+        binding: `${kind}:local`, values: {}, spawnMode: "headless" };
+      const begun = await store.begin("device", kimiRequest);
+      expect(begun.record.nativeLaunchMarker).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(await store.launchMarker("device", launchId)).toMatchObject({ marker: begun.record.nativeLaunchMarker, binding: kimiRequest.binding });
+    }
+  });
 
   it("treats reordered permission fields and a lost save receipt as the same selection", async () => {
     const { store } = await fixture();

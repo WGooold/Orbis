@@ -34,6 +34,7 @@ import { createLocalKimiRuntime } from "./kimi-runtime.js";
 import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
 import { createOpenCodeLocalLauncher } from "./opencode-local-launch.js";
 import { OpenCodeServiceConnection } from "./opencode-service-connection.js";
+import { KIMI_DESKTOP_KIND, KIMI_KIND, type KimiKind } from "./kimi-sessions.js";
 import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
@@ -131,8 +132,9 @@ async function runHostUntilShutdown(
 
   if (await isLocalHostAlive(stateDir)) throw new Error("此状态目录已有正在运行的 Host");
   let service: HostService | undefined;
+  const kimiKind = config.kimiCodeSource === "desktop" ? KIMI_DESKTOP_KIND : KIMI_KIND;
   const enablement = cliEnablement(stateDir, { ...(codexEnabled ? { codex: true } : {}), ...(dshEnabled ? { dsh: true } : {}),
-    ...(config.kimiCodeEnabled || kimiCodeFlag ? { kimiCode: true } : {}) });
+    ...(config.kimiCodeEnabled || kimiCodeFlag ? { [kimiKind]: true } : {}) });
   const liveApply = (kind: AgentKind, liveEdit: boolean): boolean => liveEdit && kind === "dsh";
   const providers = new ProviderManager(stateDir, undefined, {
     beforeApply: async (kind, hotSwitch, liveEdit) => { if (!hotSwitch && !liveApply(kind, liveEdit)) await service?.assertProviderSwitchReady(kind); },
@@ -167,11 +169,13 @@ async function runHostUntilShutdown(
   try {
     service = await HostService.create({
       agentEnablement: enablement,
-      createKimiCodeRuntime: async () => {
-        if (config.kimiCodeSource === "desktop" && !profile.launchDesktopAgents) throw new Error("当前平台不支持 Kimi Code 桌面接入");
-        return createLocalKimiRuntime({ stateDir, source: config.kimiCodeSource, homeDir: config.kimiCodeHome,
-        ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }), log });
+      createKimiCodeRuntime: async (kind: KimiKind) => {
+        const source = kind === KIMI_DESKTOP_KIND ? "desktop" : "web";
+        if (source === "desktop" && !profile.launchDesktopAgents) throw new Error("当前平台不支持 Kimi Code 桌面接入");
+        return createLocalKimiRuntime({ stateDir, source, homeDir: config.kimiCodeHome,
+        ...(config.kimiCodeEndpoint === undefined || source !== config.kimiCodeSource ? {} : { endpoint: config.kimiCodeEndpoint }), log });
       },
+      kimiCodeDesktopSupported: profile.launchDesktopAgents,
       providers,
       relayUrl: config.relayUrl,
       relayTransport: config.relayTransport,

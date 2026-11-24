@@ -50,6 +50,7 @@ import {
   DEVICE_FEATURE_MESSAGE_RENDER,
   DEVICE_FEATURE_OPENCODE,
   DEVICE_FEATURE_KIMI_CODE,
+  DEVICE_FEATURE_KIMI_CODE_DESKTOP,
   DEVICE_FEATURE_OPENCLAW,
   DEVICE_FEATURE_HERMES,
   DEVICE_FEATURE_COMPACT_BOOTSTRAP,
@@ -124,7 +125,7 @@ import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentActivateContext, AgentBackend, BackendActivation, NativeRunningSession } from "./agent-backend.js";
 import { AgentLaunchRevoked, ClaudeBackend, PiBackend } from "./agent-backend.js";
 import type { KimiRuntime } from "./kimi-runtime.js";
-import { isKimiId, KIMI_KIND, KimiLaunchBlocked, kimiLocalDirectory } from "./kimi-sessions.js";
+import { isKimiId, kimiKindFromId, KIMI_DESKTOP_KIND, KIMI_KIND, KimiLaunchBlocked, kimiLocalDirectory, type KimiKind } from "./kimi-sessions.js";
 import { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
 import { ClaudeHookBridge } from "./claude-hook-bridge.js";
 import { TerminalClaudeLauncher, type ClaudeLauncher } from "./claude-launcher.js";
@@ -175,6 +176,8 @@ import type { UsageSnapshot } from "./provider-usage-cache.js";
 const CATALOG_TTL_MS = 5_000;
 type DshKind = "dsh" | "dshDesktop";
 const DSH_KINDS: readonly DshKind[] = ["dsh", "dshDesktop"];
+const KIMI_KINDS: readonly KimiKind[] = [KIMI_KIND, KIMI_DESKTOP_KIND];
+const isKimiKind = (kind: AgentKind | undefined): kind is KimiKind => kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND;
 const OPENCLAW_KIND = "openclaw" as const;
 type DshSlot = {
   runtime?: DshRuntime | undefined; starting?: Promise<DshRuntime | undefined> | undefined; startingExistingOnly: boolean;
@@ -186,9 +189,14 @@ const sessionLane = (sessionId: string): string => JSON.stringify(["session", se
 /** The backend a resume addresses, from its explicit kind or namespaced ID; a legacy bare ID stays undefined. */
 function resumeAgentKind(target: { sessionId: string; agentKind?: AgentKind | undefined }): AgentKind | undefined {
   const id = target.sessionId, history = isCodexHistoryId(id as unknown);
-  return target.agentKind ?? (isKimiId(id) ? KIMI_KIND : id.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : id.startsWith("hermes:") ? "hermes"
+  return (kimiKindFromId(id) ?? target.agentKind) ?? (id.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : id.startsWith("hermes:") ? "hermes"
     : history ? "codex" : id.startsWith("codex-desktop:") ? "codexDesktop"
     : id.startsWith("dsh-desktop:") ? "dshDesktop" : id.startsWith("dsh:") ? "dsh" : undefined);
+}
+function legacyKimiLaunchKind(value: { agentKind?: AgentKind | undefined; sessionId?: string | undefined }, binding?: string): KimiKind | undefined {
+  const identity = value.sessionId ? kimiKindFromId(value.sessionId) : undefined;
+  if (identity) return identity;
+  return value.agentKind === KIMI_KIND && binding?.startsWith("kimi-code:desktop-") ? KIMI_DESKTOP_KIND : undefined;
 }
 /**
  * 一条 Host→设备的消息该走哪个 channel（票 07）。
@@ -317,7 +325,8 @@ export type HostServiceOptions = {
   dshDesktopRuntime?: DshRuntime;
   /** Local Kimi Web or Desktop adapter. */
   kimiCodeRuntime?: KimiRuntime;
-  createKimiCodeRuntime?: () => Promise<KimiRuntime>;
+  createKimiCodeRuntime?: (kind: KimiKind) => Promise<KimiRuntime>;
+  kimiCodeDesktopSupported?: boolean;
   /** Open Desktop when closed and attach to the backend it owns; never a substitute Web service. */
   ensureDshDesktopRuntime?: () => Promise<DshRuntime | undefined>;
   /** Reconnect only to the Desktop instance Orbis launched; automatic recovery never opens Desktop. */
@@ -406,29 +415,8 @@ export class HostService {
     codexDesktop: { start: lease => this.#startManagedCodex("codexDesktop", lease), stop: () => this.#stopManagedCodex("codexDesktop") },
     dsh: { start: lease => this.#startManagedDsh("dsh", lease), stop: () => this.#stopManagedDsh("dsh") },
     dshDesktop: { start: lease => this.#startManagedDsh("dshDesktop", lease), stop: () => this.#stopManagedDsh("dshDesktop") },
-    kimiCode: {
-      start: async lease => {
-        if (!this.#options.createKimiCodeRuntime) return;
-        const runtime = await this.#options.createKimiCodeRuntime();
-        if (!lease.isCurrent()) { await runtime.stop(); return; }
-        this.#kimi = runtime;
-        this.#attachKimiBackend(runtime, lease.isCurrent);
-        runtime.start();
-      },
-      stop: async () => {
-        const runtime = this.#kimi;
-        if (!runtime) return;
-        this.#kimi = undefined;
-        this.#backends = this.#backends.filter(item => item !== runtime);
-        for (const entry of runtime.directoryEntries()) {
-          this.#notifications.end(entry.runtimeId);
-          this.#markRuntimeOffline(entry.runtimeId, "agent_disabled");
-        }
-        await runtime.stop();
-        this.#invalidateCatalog();
-        this.#broadcastDeviceReady();
-      },
-    },
+    kimiCode: { start: lease => this.#startManagedKimi(KIMI_KIND, lease), stop: () => this.#stopManagedKimi(KIMI_KIND) },
+    kimiCodeDesktop: { start: lease => this.#startManagedKimi(KIMI_DESKTOP_KIND, lease), stop: () => this.#stopManagedKimi(KIMI_DESKTOP_KIND) },
     hermes: {
       start: async lease => {
         if (!this.#options.hermes || !lease.isCurrent()) return;
@@ -449,7 +437,7 @@ export class HostService {
   #disabledSources = new Set<AgentKind>();
   #unsubscribeEnablement: (() => void) | undefined;
   #hermes: HermesHostConnection | undefined;
-  #kimi: KimiRuntime | undefined;
+  #kimi: Partial<Record<KimiKind, KimiRuntime>> = {};
   /** Keep the per-backend announcement ledger aligned when a viewer detaches. */
   readonly #hermesAnnouncements = new Map<HermesAgentBackend, Set<string>>();
   /** DSH Web and Desktop each own their connection, start and recovery state (ADR-0076 DSH-DESKTOP-03). */
@@ -524,7 +512,7 @@ export class HostService {
 
   #recordAgentDiagnostic(runtimeId: string, category: string, message: string, severity: "info" | "warning" | "error" = "info", operationId?: string): void {
     const scope = this.#agentFacts.scopeOf(runtimeId);
-    this.recordDiagnostic({ scope: scope ? "agent" : "host", agentKind: scope?.kind === "agent" ? scope.key.agentKind : isKimiId(runtimeId) ? KIMI_KIND : null,
+    this.recordDiagnostic({ scope: scope ? "agent" : "host", agentKind: scope?.kind === "agent" ? scope.key.agentKind : kimiKindFromId(runtimeId) ?? null,
       sessionId: scope?.kind === "agent" ? scope.key.sessionId : isKimiId(runtimeId) ? runtimeId : null, category, severity, message,
       ...(operationId === undefined ? {} : { operationId }) });
   }
@@ -732,7 +720,7 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#openCodeBackend ? [OPENCODE_KIND] as const : []), ...(this.#kimi ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#openCodeBackend ? [OPENCODE_KIND] as const : []), ...KIMI_KINDS.filter(kind => this.#kimi[kind] !== undefined || this.#managedPolicy && !this.#disabledSources.has(kind) && (kind !== KIMI_DESKTOP_KIND || this.#options.kimiCodeDesktopSupported === true)), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
     if (this.#hermes?.installed) kinds.push("hermes");
     const openCodeReason = this.#opencodeConnection?.starting ? "starting" : this.#opencodeConnection?.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "event_stream_unavailable";
     facts.backends({ backends: kinds.filter(kind => !this.#disabledSources.has(kind)).map(kind => {
@@ -740,7 +728,7 @@ export class HostService {
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
         reason: backend?.isReady() ? null : kind === OPENCODE_KIND ? openCodeReason : kind === "hermes" && this.#hermes?.starting ? "starting" : backend === undefined ? "backend_not_attached"
-          : kind === KIMI_KIND ? this.#kimi?.reason ?? "backend_not_ready"
+          : isKimiKind(kind) ? this.#kimi[kind]?.reason ?? "backend_not_ready"
           : kind === OPENCLAW_KIND ? this.#openClawStart?.startup.starting ? "starting" : this.#openClaw?.pairingEpoch ? "pairing_required" : "backend_not_ready"
           : "backend_not_ready" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
@@ -878,7 +866,9 @@ export class HostService {
   readonly #desktopOwnedIds = new Set<string>();
   readonly #codexHistory: CodexHistoryCatalog;
   readonly #sessionConfigurations: SessionConfigurationStore;
-  readonly #kimiConfigurations: SessionConfigurationStore;
+  readonly #kimiConfigurations: Record<KimiKind, SessionConfigurationStore>;
+  /** Pre-split shared Kimi ledger; read-only recovery fallback for old mobile launch journals. */
+  readonly #legacyKimiConfigurations: SessionConfigurationStore;
   // Published Hosts strictly decode their launch journal. New Agent records cannot poison it on rollback.
   readonly #openClawLaunches: SessionConfigurationStore;
   readonly #openCodeConfigurations: SessionConfigurationStore;
@@ -895,7 +885,13 @@ export class HostService {
     this.#stateDir = stateDir;
     this.#sessionConfigurations = new SessionConfigurationStore(join(stateDir, "session-configuration.json"));
     // Released Hosts parse every launch entry strictly; never mix new kinds into their file.
-    this.#kimiConfigurations = new SessionConfigurationStore(join(stateDir, "kimi-session-configuration.json"));
+    // Keep the original ledger as the Web store so saved preferences and receipts survive upgrades.
+    const legacyKimiWebLedger = new SessionConfigurationStore(join(stateDir, "kimi-session-configuration.json"));
+    this.#kimiConfigurations = {
+      [KIMI_KIND]: legacyKimiWebLedger,
+      [KIMI_DESKTOP_KIND]: new SessionConfigurationStore(join(stateDir, "kimi-desktop-session-configuration.json")),
+    };
+    this.#legacyKimiConfigurations = legacyKimiWebLedger;
     this.#openClawLaunches = new SessionConfigurationStore(join(stateDir, "openclaw-session-configuration.json"));
     this.#openCodeConfigurations = new SessionConfigurationStore(join(stateDir, "opencode-session-configuration.json"));
     this.#hermesConfigurations = new SessionConfigurationStore(join(stateDir, "hermes-session-configuration.json"));
@@ -1138,11 +1134,37 @@ export class HostService {
     if (options.dshRuntime !== undefined) this.#attachDshBackend(options.dshRuntime);
     if (options.dshDesktopRuntime !== undefined) this.#attachDshBackend(options.dshDesktopRuntime);
     if (!options.agentEnablement && options.kimiCodeRuntime !== undefined) {
-      this.#kimi = options.kimiCodeRuntime;
-      this.#attachKimiBackend(this.#kimi);
+      this.#kimi[options.kimiCodeRuntime.kind] = options.kimiCodeRuntime;
+      this.#attachKimiBackend(options.kimiCodeRuntime);
     }
     if (!options.agentEnablement) this.#startOpenCode(false);
     this.refreshHostFacts();
+  }
+
+  async #startManagedKimi(kind: KimiKind, lease: AgentLifecycleLease): Promise<void> {
+    if (kind === KIMI_DESKTOP_KIND && !this.#options.kimiCodeDesktopSupported && this.#options.kimiCodeRuntime?.kind !== KIMI_DESKTOP_KIND) return;
+    const factory = this.#options.createKimiCodeRuntime;
+    if (!factory) return;
+    const runtime = await factory(kind);
+    if (runtime.kind !== kind) { await runtime.stop(); throw new Error("Kimi Code runtime source does not match its Agent kind"); }
+    if (!lease.isCurrent()) { await runtime.stop(); return; }
+    this.#kimi[kind] = runtime;
+    this.#attachKimiBackend(runtime, lease.isCurrent);
+    runtime.start();
+  }
+
+  async #stopManagedKimi(kind: KimiKind): Promise<void> {
+    const runtime = this.#kimi[kind];
+    if (!runtime) return;
+    delete this.#kimi[kind];
+    this.#backends = this.#backends.filter(item => item !== runtime);
+    for (const entry of runtime.directoryEntries()) {
+      this.#notifications.end(entry.runtimeId);
+      this.#markRuntimeOffline(entry.runtimeId, "agent_disabled");
+    }
+    await runtime.stop();
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady();
   }
 
   #attachKimiBackend(runtime: KimiRuntime, current = (): boolean => true): void {
@@ -1164,7 +1186,7 @@ export class HostService {
     runtime.onArchiveChange = (sessionId, archived) => {
       if (!current()) return;
       this.#invalidateCatalog();
-      this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: KIMI_KIND, sessionId, archived });
+      this.#broadcastDeviceMessage({ type: "session.archive.changed", agentKind: runtime.kind, sessionId, archived });
     };
     runtime.onOffline = (metadata, reason) => {
       if (!current()) return;
@@ -1490,13 +1512,24 @@ export class HostService {
     return this.#pairing;
   }
 
-  get kimiCodeConnectionState() { return this.#kimi?.connectionState ?? (this.#managedPolicy && !this.#disabledSources.has(KIMI_KIND) ? "unavailable" : "disabled"); }
-  async startKimiCode(): Promise<void> {
-    await this.#ensureKimiReady(this.#sourceCurrent(KIMI_KIND));
+  get kimiCodeConnectionState() { return this.#kimi[KIMI_KIND]?.connectionState ?? (this.#managedPolicy && !this.#disabledSources.has(KIMI_KIND) ? "unavailable" : "disabled"); }
+  get kimiCodeDesktopConnectionState() { return this.#kimi[KIMI_DESKTOP_KIND]?.connectionState ?? (this.#managedPolicy && !this.#disabledSources.has(KIMI_DESKTOP_KIND) ? "unavailable" : "disabled"); }
+  async startKimiCode(kind: KimiKind = KIMI_KIND): Promise<void> {
+    await this.#ensureKimiReady(kind, this.#sourceCurrent(kind));
   }
 
   async startLocalAgent(kind: "opencode" | "openclaw" | "hermes"): Promise<void> {
     await this.#ensureSharedAgent(kind, this.#sourceCurrent(kind), true);
+  }
+
+  /** Resolve the newest active native OpenCode session in the exact project chosen for a TUI handoff. */
+  async latestOpenCodeSession(cwd: string): Promise<AgentSessionSummary | undefined> {
+    if (!isAbsolute(cwd)) throw new Error("OpenCode 工作区必须是绝对路径");
+    const backend = this.#openCodeBackend;
+    if (!backend?.isReady() || this.#disabledSources.has(OPENCODE_KIND)) throw new Error("OpenCode 共享服务尚未就绪");
+    const directory = normalize(cwd);
+    const key = (value: string) => process.platform === "win32" ? normalize(value).toLocaleLowerCase("en-US") : normalize(value);
+    return (await backend.catalog(false)).find(session => key(session.cwd) === key(directory));
   }
 
   async #ensureSharedAgent(kind: "opencode" | "openclaw" | "hermes", current: () => boolean, localOnly = false): Promise<void> {
@@ -1523,13 +1556,13 @@ export class HostService {
     } catch (error) { throw new ActivationError("agent_unsupported", describeError(error)); }
   }
 
-  async #ensureKimiReady(current: () => boolean, sessionId?: string): Promise<void> {
+  async #ensureKimiReady(kind: KimiKind, current: () => boolean, sessionId?: string): Promise<void> {
     if (!current()) throw new AgentLaunchRevoked();
-    const runtime = this.#kimi;
-    if (!runtime || this.#disabledSources.has(KIMI_KIND)) throw new ActivationError("agent_unsupported", "请先在 Host 中启用 Kimi Code 接入");
+    const runtime = this.#kimi[kind];
+    if (!runtime || this.#disabledSources.has(kind)) throw new ActivationError("agent_unsupported", "请先在 Host 中启用对应的 Kimi Code 接入");
     if (runtime.isReady()) return;
     if (sessionId !== undefined) await runtime.assertResumeSource(sessionId);
-    try { await runtime.ensureReady(() => current() && this.#kimi === runtime); }
+    try { await runtime.ensureReady(() => current() && this.#kimi[kind] === runtime); }
     catch (error) { throw new ActivationError("agent_unsupported", describeError(error)); }
   }
 
@@ -1677,7 +1710,7 @@ export class HostService {
         if (threadId !== undefined) backend.announce(threadId);
       }
       for (const kind of DSH_KINDS) if (this.#dsh[kind].runtime?.ownsRuntime(runtimeId)) this.#dsh[kind].runtime!.announce();
-      if (this.#kimi?.ownsRuntime(runtimeId)) this.#kimi.announce();
+      for (const runtime of Object.values(this.#kimi)) if (runtime?.ownsRuntime(runtimeId)) runtime.announce();
       if (this.#claudeBackend.ownsRuntime(runtimeId)) this.#claudeBackend.announce(runtimeId);
     }
     if (request.runtimeId && request.domains?.includes("records")) this.#agentFacts.refreshRecords(request.runtimeId);
@@ -1938,7 +1971,7 @@ export class HostService {
     if (this.#managedCodexLaunchable.has("codex") && !agents.includes("codex")) agents.push("codex");
     if ((this.#managedPolicy ? this.#managedCodexLaunchable.has("codexDesktop") : this.#options.codexDesktopLaunchable === true) && !agents.includes("codexDesktop")) agents.push("codexDesktop");
     if ((this.#managedPolicy ? this.#managedDshLaunchable.has("dsh") : this.#options.dshLaunchable === true) && !agents.includes("dsh")) agents.push("dsh");
-    if (this.#kimi?.canLaunch() && !agents.includes(KIMI_KIND)) agents.push(KIMI_KIND);
+    for (const kind of KIMI_KINDS) if (this.#kimi[kind]?.canLaunch() && !agents.includes(kind)) agents.push(kind);
     if (this.#opencodeConnection?.launchable && !agents.includes(OPENCODE_KIND)) agents.push(OPENCODE_KIND);
     if ((this.#openClawStart?.installed || this.#openClawStart?.startup.starting) && !agents.includes(OPENCLAW_KIND)) agents.push(OPENCLAW_KIND);
     // A Desktop whose version cannot be attached is not offered as launchable (DSH-DESKTOP-01).
@@ -2076,11 +2109,12 @@ export class HostService {
         DEVICE_FEATURE_CLAUDE_SEND_NOW,
         RUNTIME_CLOSE_FEATURE,
         RUNTIME_VIEW_CLOSE_FEATURE,
-        ...(this.#kimi || this.#options.createKimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : []),
+        ...(this.#kimi[KIMI_KIND] || this.#options.createKimiCodeRuntime ? [DEVICE_FEATURE_KIMI_CODE] : []),
+        ...(this.#kimi[KIMI_DESKTOP_KIND] || this.#options.createKimiCodeRuntime && this.#options.kimiCodeDesktopSupported === true ? [DEVICE_FEATURE_KIMI_CODE_DESKTOP] : []),
         ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : []),
       ],
       sessionConfiguration: 1,
-      ...(features && (features.has(DEVICE_FEATURE_OPENCLAW) || features.has(RUNTIME_CLOSE_FEATURE) || this.#unifiedCodex(deviceId) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
+        ...(features && (features.has(DEVICE_FEATURE_OPENCLAW) || features.has(DEVICE_FEATURE_KIMI_CODE) || features.has(DEVICE_FEATURE_KIMI_CODE_DESKTOP) || features.has(RUNTIME_CLOSE_FEATURE) || this.#unifiedCodex(deviceId) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
     };
   }
 
@@ -2271,7 +2305,7 @@ export class HostService {
 
     await relay.start();
     this.#modelLifecycle = "running";
-    this.#kimi?.start();
+    for (const runtime of Object.values(this.#kimi)) runtime?.start();
     if (this.#managedPolicy) void this.#managedAgents.reconcile(this.#managedPolicy, true);
     else {
       void this.#startOpenClaw();
@@ -2477,8 +2511,16 @@ export class HostService {
       void this.refreshProviderFacts();
     }
     for (const [id, features] of this.#deviceFeatures) {
-      if (features.has(AGENT_ENABLEMENT_FEATURE)) this.#sendToDevice(id, { type: "agent.enablement.snapshot", snapshot: { ...next, agents: [...next.agents] } });
+      if (features.has(AGENT_ENABLEMENT_FEATURE)) this.#sendToDevice(id, { type: "agent.enablement.snapshot", snapshot: this.#enablementForDevice(id, next) });
     }
+  }
+
+  #enablementForDevice(deviceId: string, snapshot: AgentEnablementSnapshot) {
+    const features = this.#deviceFeatures.get(deviceId);
+    return { ...snapshot, agents: snapshot.agents.filter(row => {
+      const feature = negotiatedAgentFeature(row.kind);
+      return feature === undefined || features?.has(feature) === true;
+    }) };
   }
 
   async #handleAgentEnablement(deviceId: string, message: Extract<DeviceE2ePayload, { type: "agent.enablement.read" | "agent.enablement.write" }>): Promise<void> {
@@ -2494,16 +2536,18 @@ export class HostService {
     try {
       if (message.type === "agent.enablement.read") {
         const snapshot = await controller.read();
-        if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.snapshot", requestId, snapshot: { ...snapshot, agents: [...snapshot.agents] } });
+        if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.snapshot", requestId, snapshot: this.#enablementForDevice(deviceId, snapshot) });
         return;
       }
       const { kind, enabled, expectedRevision, confirmDisable, review } = message;
       if (!this.#managedPolicy.agents.some(row => row.kind === kind)) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
+      const kindFeature = kind === KIMI_KIND ? DEVICE_FEATURE_KIMI_CODE : kind === KIMI_DESKTOP_KIND ? DEVICE_FEATURE_KIMI_CODE_DESKTOP : undefined;
+      if (kindFeature !== undefined && !features.has(kindFeature)) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
       if (review !== undefined && !scoped) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
       const result = await controller.set({ kind, enabled, expectedRevision, ...(confirmDisable ? { confirmDisable } : {}), ...(review ? { review } : {}) },
         active, (source, revision, token) => this.verifyAgentDisable(source, revision, token, `paired:${deviceId}`), scoped);
       const snapshot = result.snapshot;
-      if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.result", requestId, status: result.status, snapshot: { ...snapshot, agents: [...snapshot.agents] } });
+      if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.result", requestId, status: result.status, snapshot: this.#enablementForDevice(deviceId, snapshot) });
     } catch (error) {
       if (active() && scoped && error instanceof AgentDisableConfirmationRequired) {
         this.#sendToDevice(deviceId, { type: "agent.enablement.review", requestId, review: error.review });
@@ -2601,7 +2645,7 @@ export class HostService {
     if (this.#managedPolicy) await this.#managedAgents.reconcile(this.#managedPolicy, false);
     else await this.#stopManagedOpenClaw();
     await stoppedOpenCode;
-    if (!this.#managedPolicy) await this.#kimi?.stop();
+    if (!this.#managedPolicy) await Promise.all(Object.values(this.#kimi).map(runtime => runtime?.stop()));
     if (!this.#managedPolicy) await this.#hermes?.close().catch(() => undefined);
     await this.#liveActivities.close();
     for (const kind of DSH_KINDS) { clearTimeout(this.#dsh[kind].recoveryTimer); this.#dsh[kind].recoveryTimer = undefined; }
@@ -2853,7 +2897,9 @@ export class HostService {
       const managementChanged = !!this.#managedPolicy && (!!previous?.has(AGENT_ENABLEMENT_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_FEATURE) ||
         !!previous?.has(AGENT_ENABLEMENT_REVIEW_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_REVIEW_FEATURE) ||
         !!previous?.has(DEVICE_FEATURE_OPENCLAW) !== message.features.includes(DEVICE_FEATURE_OPENCLAW));
-      this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature => feature !== DEVICE_FEATURE_KIMI_CODE || this.#kimi !== undefined || this.#options.createKimiCodeRuntime !== undefined)));
+      this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature =>
+        (feature !== DEVICE_FEATURE_KIMI_CODE || this.#kimi[KIMI_KIND] !== undefined || this.#options.createKimiCodeRuntime !== undefined) &&
+        (feature !== DEVICE_FEATURE_KIMI_CODE_DESKTOP || this.#kimi[KIMI_DESKTOP_KIND] !== undefined || this.#options.createKimiCodeRuntime !== undefined && this.#options.kimiCodeDesktopSupported === true))));
       const hadClaudeSendNow = previous?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ?? false;
       if (message.features.includes(DEVICE_FEATURE_COMPACT_BOOTSTRAP)) this.#cancelBootstrapReplay(deviceId);
       const after = this.#agentView(deviceId);
@@ -2867,7 +2913,7 @@ export class HostService {
         }
       }
       if (allowsAgent(after, DSH_DESKTOP_KIND)) this.#dsh.dshDesktop.runtime?.announce();
-      if (allowsAgent(after, KIMI_KIND)) this.#kimi?.announce();
+      for (const kind of KIMI_KINDS) if (allowsAgent(after, kind)) this.#kimi[kind]?.announce();
       return;
     }
     if (message.type === "agent.enablement.read" || message.type === "agent.enablement.write") {
@@ -3208,7 +3254,8 @@ export class HostService {
       if (sessionId !== undefined) {
         // A configured launch may publish runtime.online before native settings are confirmed.
         const epoch = this.#deviceViewEpochs.get(deviceId);
-        void (isKimiId(sessionId) ? this.#kimiConfigurations : sessionId.startsWith(OPENCLAW_PREFIX) ? this.#openClawLaunches
+      const kimiKind = kimiKindFromId(sessionId);
+      void (kimiKind ? this.#kimiConfigurations[kimiKind] : sessionId.startsWith(OPENCLAW_PREFIX) ? this.#openClawLaunches
           : runtimeId.startsWith(OPENCODE_RUNTIME_PREFIX) ? this.#openCodeConfigurations : this.#sessionConfigurations).blocks(sessionId).then(async blocked => {
           const attachmentsVerified = !importTarget || blocked || await this.#uploads.ownsImportAttachments(deviceId, importTarget, command.attachments ?? []);
           if (epoch !== this.#deviceViewEpochs.get(deviceId) || !allowsRuntime(this.#agentView(deviceId), runtimeId)) return;
@@ -3574,6 +3621,7 @@ export class HostService {
       throw new SessionConfigurationError("configuration_unavailable", "Hermes Gateway 未连接");
     }
     let backend = this.#backends.find(item => item.kind === kind);
+    if (isKimiKind(kind) && !backend?.isReady()) await this.#ensureKimiReady(kind, current);
     if ((kind === "dsh" || kind === "dshDesktop") && !backend?.isReady()) await this.#ensureDshRuntime(false, kind);
     if ((kind === "codex" || kind === "codexDesktop") && !backend?.isReady()) await this.#ensureManagedCodex(kind);
     if (!current()) throw new AgentLaunchRevoked();
@@ -3594,7 +3642,7 @@ export class HostService {
     const sourceCurrent = kind === undefined ? () => true : this.#sourceCurrent(kind);
     const current = () => sourceCurrent() && link?.active !== undefined && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId);
     if (!current() || !allowsAgentRequest(this.#agentView(deviceId), message)) { this.#rejectAgentFeature(deviceId, message); return; }
-    let ledger = kind === KIMI_KIND ? this.#kimiConfigurations : kind === OPENCLAW_KIND ? this.#openClawLaunches
+    let ledger = isKimiKind(kind) ? this.#kimiConfigurations[kind] : kind === OPENCLAW_KIND ? this.#openClawLaunches
       : kind === "hermes" ? this.#hermesConfigurations : kind === OPENCODE_KIND ? this.#openCodeConfigurations : this.#sessionConfigurations;
     const sendLaunch = async (launchId: string) => {
       const observed = await ledger.result(deviceId, launchId, message.requestId);
@@ -3606,9 +3654,23 @@ export class HostService {
     let releaseProvider: (() => void) | undefined;
     try {
       if (message.type === "session.launch.read") {
-        // The caller's launch lane orders this read after the original create, so it never reports a queued create as absent.
-        if (allowsAgent(this.#agentView(deviceId), KIMI_KIND) &&
-            !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#kimiConfigurations;
+        // The caller's launch lane orders this read after the original create. Search each
+        // negotiated Kimi ledger before choosing an empty fallback; Web and Desktop can both
+        // be enabled, so selecting the first source is not sufficient.
+        let fallbackKimiLedger: SessionConfigurationStore | undefined;
+        let matchedKimiLedger = false;
+        for (const kimiKind of KIMI_KINDS) {
+          if (!allowsAgent(this.#agentView(deviceId), kimiKind)) continue;
+          const candidate = this.#kimiConfigurations[kimiKind];
+          fallbackKimiLedger ??= candidate;
+          if (await candidate.result(deviceId, message.launchId, message.requestId)) { ledger = candidate; matchedKimiLedger = true; break; }
+        }
+        if (!matchedKimiLedger && fallbackKimiLedger) ledger = fallbackKimiLedger;
+        if (!matchedKimiLedger && !(await ledger.result(deviceId, message.launchId, message.requestId))) {
+          const legacy = await this.#legacyKimiConfigurations.result(deviceId, message.launchId, message.requestId);
+          const legacyKind = legacy?.sessionId ? kimiKindFromId(legacy.sessionId) : undefined;
+          if (legacy && legacyKind && allowsAgent(this.#agentView(deviceId), legacyKind)) ledger = this.#legacyKimiConfigurations;
+        }
         if (allowsAgent(this.#agentView(deviceId), OPENCLAW_KIND) && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#openClawLaunches;
         if (!current()) return;
         if (allowsAgent(this.#agentView(deviceId), "hermes") && !(await ledger.result(deviceId, message.launchId, message.requestId))) ledger = this.#hermesConfigurations;
@@ -3619,9 +3681,11 @@ export class HostService {
         await sendLaunch(message.launchId); return;
       }
       if (message.type === "session.launch") {
-        if (allowsAgent(this.#agentView(deviceId), KIMI_KIND)) {
-          const other = ledger === this.#kimiConfigurations ? this.#sessionConfigurations : this.#kimiConfigurations;
-          if (await other.result(deviceId, message.launchId, message.requestId)) {
+        if (isKimiKind(kind)) {
+          const otherKinds = KIMI_KINDS.filter(otherKind => otherKind !== kind);
+          const conflict = await Promise.all([...otherKinds.map(otherKind => this.#kimiConfigurations[otherKind]), this.#sessionConfigurations, this.#legacyKimiConfigurations]
+            .map(other => other.result(deviceId, message.launchId, message.requestId)));
+          if (conflict.some(Boolean)) {
             this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId,
               code: "launch_id_conflict", message: "启动身份与已有配置冲突，请先核对原启动" }); return;
           }
@@ -3637,10 +3701,10 @@ export class HostService {
         // LAUNCH-QUEUE-01: held until native creation settles, so a provider change cannot rewrite its settings mid-start.
         releaseProvider = await this.#providerGate.enter(providerGroup(message.agentKind));
       }
-      if (kind === KIMI_KIND && message.type !== "session.configuration.save" && !this.#kimi?.isReady()) {
-        // A selected draft or explicit new session may start Kimi; passive catalog and recovery reads may not.
+        if (isKimiKind(kind) && message.type !== "session.configuration.save" && !this.#kimi[kind]?.isReady()) {
+        // A selected draft or explicit new session may start its Kimi source; passive reads may not.
         await kimiLocalDirectory(message.cwd);
-        try { await this.#ensureKimiReady(current); }
+        try { await this.#ensureKimiReady(kind, current); }
         catch (error) { throw new SessionConfigurationError("configuration_unavailable", describeError(error)); }
       }
       if ((kind === OPENCODE_KIND || kind === OPENCLAW_KIND || kind === "hermes") && message.type !== "session.configuration.save" &&
@@ -3690,7 +3754,7 @@ export class HostService {
         const requireCurrent = () => { if (!current()) throw new AgentLaunchRevoked(); };
         requireCurrent();
         const activated = await backend.activate({ type: "new", cwd: message.cwd }, {
-          deviceId, launchId: message.launchId, requireCurrent, spawnMode: backend.kind === OPENCLAW_KIND ? "headless" : message.spawnMode ?? (backend.kind === "kimiCode" ? "auto" : "tui"), configuration: message.values,
+          deviceId, launchId: message.launchId, requireCurrent, spawnMode: backend.kind === OPENCLAW_KIND ? "headless" : message.spawnMode ?? (isKimiKind(backend.kind) ? "auto" : "tui"), configuration: message.values,
           legacyCodexSpawn: message.spawnMode === undefined || !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_EXPLICIT_TUI),
           ...(begun.record.nativeLaunchMarker === undefined ? {} : { nativeLaunchMarker: begun.record.nativeLaunchMarker }),
           ...(begun.record.expectedSessionId === undefined ? {} : { expectedSessionId: begun.record.expectedSessionId }),
@@ -3731,7 +3795,12 @@ export class HostService {
   }
 
   async #recoverSessionLaunch(ledger: SessionConfigurationStore, deviceId: string, launchId: string, current: () => boolean): Promise<void> {
-    const prior = await ledger.result(deviceId, launchId, launchId);
+    let prior = await ledger.result(deviceId, launchId, launchId);
+    if (prior && isKimiKind(prior.agentKind)) {
+      const launch = await ledger.launchMarker(deviceId, launchId);
+      const legacyKind = legacyKimiLaunchKind(prior, launch?.binding);
+      if (legacyKind) prior = { ...prior, agentKind: legacyKind };
+    }
     if (!current() || !prior || !allowsAgentIdentity(this.#agentView(deviceId), prior)) return;
     // LAUNCH-QUEUE-01: recovery may reopen the session with this provider group's settings.
     const release = prior.agentKind === undefined ? undefined : await this.#providerGate.enter(providerGroup(prior.agentKind));
@@ -3743,7 +3812,7 @@ export class HostService {
     if (prior.phase === "unknown" && !prior.sessionId && prior.agentKind) {
       const sourceCurrent = this.#sourceCurrent(prior.agentKind);
       const admitted = () => sourceCurrent() && current();
-      if (prior.agentKind === "kimiCode") {
+      if (isKimiKind(prior.agentKind)) {
         try {
           const backend = await this.#configuredBackend(prior.agentKind, admitted);
           const launch = await ledger.launchMarker(deviceId, launchId);
@@ -3765,7 +3834,12 @@ export class HostService {
           { sessionId: found.sessionId, phase: "configuring", spawnMode: "tui" });
       }
     }
-    const record = await ledger.recover(deviceId, launchId);
+    let record = await ledger.recover(deviceId, launchId);
+    if (record && isKimiKind(record.agentKind)) {
+      const launch = await ledger.launchMarker(deviceId, launchId);
+      const legacyKind = legacyKimiLaunchKind(record, launch?.binding);
+      if (legacyKind) record = { ...record, agentKind: legacyKind };
+    }
     if (!current() || !record?.sessionId) return;
     try {
       const sourceCurrent = this.#sourceCurrent(record.agentKind);
@@ -3860,7 +3934,7 @@ export class HostService {
     const receipted = message.type === "session.archive" || message.type === "session.activate";
     const operationRuntimeId = message.type === "session.archive" ? message.sessionId : message.type === "session.activate"
       ? message.target.type === "resume" ? message.target.sessionId : message.target.agentKind === DSH_DESKTOP_KIND ? "dsh-desktop:launch"
-        : message.target.agentKind === KIMI_KIND ? "kimi-code:launch" : message.target.agentKind === OPENCLAW_KIND ? "openclaw:launch" : message.target.agentKind === "hermes" ? "hermes:launch"
+        : isKimiKind(message.target.agentKind) ? `kimi-code:${message.target.agentKind}:launch` : message.target.agentKind === OPENCLAW_KIND ? "openclaw:launch" : message.target.agentKind === "hermes" ? "hermes:launch"
         : message.target.agentKind === OPENCODE_KIND ? `${OPENCODE_RUNTIME_PREFIX}launch` : this.#identity.hostId
       : this.#identity.hostId;
     // Scope receipts for gated runtimes before a device reconnects with an older build.
@@ -3979,8 +4053,10 @@ export class HostService {
         const sourceCurrent = this.#sourceCurrent(kind);
         return () => { if (!sourceCurrent() || !link?.active || link !== this.#links.get(deviceId) || epoch !== this.#deviceViewEpochs.get(deviceId)) throw new AgentLaunchRevoked(); };
       };
-      if (target.type === "new" && target.agentKind === KIMI_KIND) throw new ActivationError("agent_unsupported", "请使用可恢复的 Kimi Code 启动请求");
-      if (target.type === "resume" && isKimiId(target.sessionId) && target.agentKind !== undefined && target.agentKind !== KIMI_KIND)
+      if (target.type === "new" && isKimiKind(target.agentKind)) throw new ActivationError("agent_unsupported", "请使用可恢复的 Kimi Code 启动请求");
+      const legacyDesktopId = target.type === "resume" && target.sessionId.startsWith("kimi-code:desktop-");
+      if (target.type === "resume" && isKimiId(target.sessionId) && target.agentKind !== undefined && target.agentKind !== kimiKindFromId(target.sessionId)
+        && !(legacyDesktopId && target.agentKind === KIMI_KIND))
         throw new ActivationError("session_not_found", "会话与 Agent 类型不一致");
       const context = {
         deviceId,
@@ -4045,9 +4121,9 @@ export class HostService {
         return;
       }
       const resumeKind = resumeAgentKind(target);
-      if (resumeKind === KIMI_KIND && !this.#kimi?.isReady()) {
-        const current = this.#sourceCurrent(KIMI_KIND);
-        await this.#ensureKimiReady(() => current() && link?.active !== undefined && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId), target.sessionId);
+      if (isKimiKind(resumeKind) && !this.#kimi[resumeKind]?.isReady()) {
+        const current = this.#sourceCurrent(resumeKind);
+        await this.#ensureKimiReady(resumeKind, () => current() && link?.active !== undefined && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId), target.sessionId);
       }
       if ((resumeKind === "hermes" || resumeKind === OPENCODE_KIND || resumeKind === OPENCLAW_KIND) &&
           !this.#backends.some(backend => backend.kind === resumeKind && backend.isReady())) {
@@ -4076,7 +4152,7 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady() || !allowsAgent(this.#agentView(deviceId), backend.kind)) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || backend.kind === KIMI_KIND || backend.kind === OPENCLAW_KIND || backend.kind === "hermes" || backend.kind === OPENCODE_KIND)) continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || isKimiKind(backend.kind) || backend.kind === OPENCLAW_KIND || backend.kind === "hermes" || backend.kind === OPENCODE_KIND)) continue;
         try {
           const requireCurrent = requireLaunch(backend.kind);
           requireCurrent();
@@ -4248,7 +4324,7 @@ export class HostService {
       type.includes(".page") || event?.range === "history" || event?.range === "catchup" ? "range" :
         event?.selection === "snapshot" ? "recovery" : Array.isArray(object.unchanged) && object.unchanged.length ? "reconcile" :
           type.includes("snapshot") || type.includes("result") ? "read" : "producer";
-    this.#fieldTraffic.record(payload, { backend: runtime?.kind === "agent" ? runtime.key.agentKind : isKimiId(object.runtimeId) ? KIMI_KIND : "host", messageType: type, reason });
+    this.#fieldTraffic.record(payload, { backend: runtime?.kind === "agent" ? runtime.key.agentKind : kimiKindFromId(object.runtimeId) ?? "host", messageType: type, reason });
   }
 
   #sendToDevice(deviceId: string, message: RelayToDeviceMessage): void {

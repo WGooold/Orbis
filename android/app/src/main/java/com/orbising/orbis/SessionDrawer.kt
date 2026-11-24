@@ -98,12 +98,14 @@ internal enum class DrawerAgentFilter(
     DeepSeek("dsh", "DeepSeek", "dsh"),
     DeepSeekDesktop("dshDesktop", "DeepSeek 桌面版", "dshDesktop"),
     Claude("claude", "Claude Code", "claude"),
-    Kimi(KIMI_CODE_KIND, "Kimi Code", KIMI_CODE_KIND),
+    Kimi(KIMI_CODE_KIND, "Kimi Code Web", KIMI_CODE_KIND),
+    KimiDesktop(KIMI_CODE_DESKTOP_KIND, "Kimi Code 桌面版", KIMI_CODE_DESKTOP_KIND),
     OpenClaw("openclaw", "OpenClaw", "openclaw"),
     Hermes("hermes", "Hermes Agent", "hermes"),
     OpenCode("opencode", "OpenCode", "opencode");
 
-    fun matches(row: CachedSessionRow): Boolean = kind == null || row.agentKind == kind
+    fun matches(row: CachedSessionRow): Boolean = kind == null ||
+        if (kind == KIMI_CODE_KIND || kind == KIMI_CODE_DESKTOP_KIND) kimiKind(row.agentKind, row.sessionId) == kind else row.agentKind == kind
     val label: String get() = L10n.tr(labelKey)
     val hasProviderFilter: Boolean get() = this == Codex || this == CodexDesktop
 }
@@ -121,6 +123,7 @@ private fun DrawerAgentFilterMenu(
     onRequestProviders: () -> Unit,
     desktopDeepSeek: Boolean = false,
     kimiCode: Boolean = false,
+    desktopKimi: Boolean = false,
     openClaw: Boolean = false,
     hermes: Boolean = false,
     openCode: Boolean = false,
@@ -170,6 +173,7 @@ private fun DrawerAgentFilterMenu(
                 when (filter) {
                     DrawerAgentFilter.DeepSeekDesktop -> desktopDeepSeek || filter == selected
                     DrawerAgentFilter.Kimi -> kimiCode
+                    DrawerAgentFilter.KimiDesktop -> desktopKimi || filter == selected
                     DrawerAgentFilter.Hermes -> hermes || filter == selected
                     DrawerAgentFilter.OpenClaw -> openClaw
                     DrawerAgentFilter.OpenCode -> openCode || filter == selected
@@ -251,8 +255,8 @@ internal fun SessionDrawer(
     }
     val selection = if (unifiedCodex && savedAgentFilterKey == "codexDesktop") "codex" else savedAgentFilterKey
     val agentFilterKey = selection.takeUnless {
-        it != DrawerAgentFilter.All.key && enabledAgentKinds?.contains(it) == false ||
-            it == KIMI_CODE_KIND && !state.kimiCodeSupported || it == "openclaw" && !state.openClawNegotiated
+            it != DrawerAgentFilter.All.key && enabledAgentKinds?.contains(it) == false ||
+            it == KIMI_CODE_KIND && !state.kimiCodeSupported || it == KIMI_CODE_DESKTOP_KIND && !state.kimiCodeDesktopSupported || it == "openclaw" && !state.openClawNegotiated
     } ?: DrawerAgentFilter.All.key
     val agentFilter = drawerAgentFilter(agentFilterKey)
     val agentLabel = if (unifiedCodex && agentFilter == DrawerAgentFilter.Codex) "Codex" else agentFilter.label
@@ -441,6 +445,7 @@ internal fun SessionDrawer(
                         onRequestProviders = onRequestProviders,
                         // Same rule as iOS: the Host offers DeepSeek Desktop, or this computer already has its sessions.
                         kimiCode = state.kimiCodeSupported,
+                        desktopKimi = state.kimiCodeDesktopSupported,
                         enabledAgentKinds = enabledAgentKinds,
                         unifiedCodex = unifiedCodex,
                         desktopDeepSeek = listOfNotNull(state.launchableAgents, state.supportedAgents).any { "dshDesktop" in it } ||

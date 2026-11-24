@@ -5,11 +5,23 @@ import { CompactStateModel } from "./compact-state-model.js";
 import { agentViews, allowsAgent, allowsAgentRequest, deviceAgentView, hiddenKinds, policyAgentViews, projectAgentMessage } from "./device-agent-visibility.js";
 import { HostStateFacts } from "./host-state-facts.js";
 
-const kinds = ["pi", "dshDesktop", "kimiCode", "openclaw", "hermes"] as const;
+const kinds = ["pi", "dshDesktop", "kimiCode", "kimiCodeDesktop", "openclaw", "hermes"] as const;
 const row = (index: number): AgentSessionSummary => ({ agentKind: kinds[index % kinds.length]!, sessionId: `s${index}`,
   cwd: `/isolated/${index % 6}`, hostname: "fixture", createdAt: 1, modifiedAt: 200 - index, messageCount: 0, firstMessage: "a".repeat(900) });
 
 describe("KIMI-06 negotiated device projections", () => {
+  it("isolates Kimi Web and Desktop sessions and requests by their declared features", () => {
+    const webOnly = deviceAgentView(new Set(["agent.kimiCode"]));
+    const both = deviceAgentView(new Set(["agent.kimiCode", "agent.kimiCodeDesktop"]));
+    const web = { agentKind: "kimiCode", runtimeId: "kimi-code:web-root:session_one", sessionId: "kimi-code:web-root:session_one" };
+    const desktop = { agentKind: "kimiCodeDesktop", runtimeId: "kimi-code-desktop:desktop-root:session_one", sessionId: "kimi-code-desktop:desktop-root:session_one" };
+    expect(allowsAgentRequest(webOnly, { type: "session.activate", target: { type: "resume", ...web } })).toBe(true);
+    expect(allowsAgentRequest(webOnly, { type: "session.activate", target: { type: "resume", ...desktop } })).toBe(false);
+    expect(allowsAgentRequest(both, { type: "session.activate", target: { type: "resume", ...desktop } })).toBe(true);
+    expect(projectAgentMessage(webOnly, { type: "runtime.online", runtime: desktop })).toBeUndefined();
+    expect(projectAgentMessage(both, { type: "runtime.online", runtime: desktop })).toEqual({ type: "runtime.online", runtime: desktop });
+  });
+
   it("keeps negotiated snapshot projections, compact baselines, query totals and continuation cursors separate", () => {
     const scope = { kind: "host" } as const;
     const registry = new AgentStateRegistry();

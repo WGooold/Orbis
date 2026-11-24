@@ -97,7 +97,7 @@ internal fun AgentStatusProviderCard(
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(agentBrand(kind).title, modifier = Modifier.weight(1f, fill = false),
+                        Text(agentTitle(kind), modifier = Modifier.weight(1f, fill = false),
                             style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         if (hasQuota) SubscriptionRefreshGlyph(loading, pending = quota == null, tint = accent)
@@ -118,7 +118,7 @@ internal fun AgentStatusProviderCard(
                         .heightIn(min = 48.dp).widthIn(min = 64.dp)
                         .alpha(if (!available) 0.4f else if (pressed) 0.55f else 1f)
                         .clickable(interactionSource = interactions, indication = null, enabled = available, role = Role.Button) { glyphActivation++; menuOpen = true }
-                        .semantics { contentDescription = L10n.tr("切换 {0} 供应商", agentBrand(kind).title) },
+                        .semantics { contentDescription = L10n.tr("切换 {0} 供应商", agentTitle(kind)) },
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally)) {
                         Icon(OrbisSymbols.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp).actionGlyphMotion(glyphActivation), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(L10n.tr("切换"), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -121,7 +121,7 @@ export class SessionConfigurationStore {
         cwd: request.cwd, binding: request.binding, revision, values: request.values, phase: "preparing",
         ...(request.codexLaunchMode === undefined ? {} : { codexLaunchMode: request.codexLaunchMode }),
         ...(request.agentKind === "claude" ? { expectedSessionId: randomUUID() } : {}),
-        ...(request.agentKind === "kimiCode" ? { nativeLaunchMarker: randomUUID() } : {}) };
+        ...(request.agentKind === "kimiCode" || request.agentKind === "kimiCodeDesktop" ? { nativeLaunchMarker: randomUUID() } : {}) };
       data.launches[key] = record; await this.#commit(data); this.#active.add(key);
       return { record, execute: true };
     });
