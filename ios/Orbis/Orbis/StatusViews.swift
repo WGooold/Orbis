@@ -467,32 +467,29 @@ struct AgentProvidersView: View {
     private var providerControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             let activeSessions = online && powered ? owner.runtimes.filter { $0.agentKind == kind } : []
-            if !activeSessions.isEmpty && !(provider?.subscriptionSupported == true && provider?.enabled == true) {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(activeSessions.prefix(2)), id: \.runtimeId) { runtime in
-                        let title = (runtime.sessionName?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
-                            ?? (runtime.name.isEmpty ? runtime.runtimeId : runtime.name)
-                        HStack(spacing: 8) {
-                            Circle().fill(palette.success).frame(width: 8, height: 8)
-                            Text(title).font(.orbisCaption()).foregroundStyle(palette.text).lineLimit(1)
+            let quotaReady = provider?.subscriptionSupported == true && provider?.enabled == true
+            // AGENT-DIAL-05: the facts slot, the action and the position line hold the same place for every Agent;
+            // the slot shows one fact at a time and prompts only follow, so switching never moves the action.
+            ZStack(alignment: .topLeading) {
+                if !activeSessions.isEmpty && !quotaReady {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(activeSessions.prefix(2)), id: \.runtimeId) { runtime in
+                            let title = (runtime.sessionName?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+                                ?? (runtime.name.isEmpty ? runtime.runtimeId : runtime.name)
+                            HStack(spacing: 8) {
+                                Circle().fill(palette.success).frame(width: 8, height: 8)
+                                Text(title).font(.orbisCaption()).foregroundStyle(palette.text).lineLimit(1)
+                            }
                         }
-                    }
-                    let remaining = activeSessions.count - 2
-                    Text(remaining > 0 ? L10n.tr("另外 {0} 个", remaining) : L10n.tr("{0} 个会话", activeSessions.count))
-                        .font(.orbisCaption()).foregroundStyle(palette.success)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12).padding(.vertical, 10)
-                    .neuSurface(inset: true, radius: 12, intensity: 0.35, concentric: false)
-                    .accessibilityIdentifier("provider-running-sessions")
-            }
-            if powered && group != nil && (provider != nil || !managed) { quotaPanel }
-            if powered, let group, let problem = host.providerCatalogProblem(for: group) {
-                Label(problem, systemImage: "exclamationmark.circle").font(.orbisCaption())
-                    .foregroundStyle(online ? palette.error : palette.secondary).accessibilityIdentifier("provider-catalog-problem")
-            }
-            if kind == "codexDesktop", powered, online, let reason = owner.codexDesktop?.reason, sourceStatus.1 == palette.error {
-                Text(reason).font(.orbisCaption()).foregroundStyle(palette.error)
-            }
+                        let remaining = activeSessions.count - 2
+                        Text(remaining > 0 ? L10n.tr("另外 {0} 个", remaining) : L10n.tr("{0} 个会话", activeSessions.count))
+                            .font(.orbisCaption()).foregroundStyle(palette.success)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .neuSurface(inset: true, radius: 12, intensity: 0.35, concentric: false)
+                        .accessibilityIdentifier("provider-running-sessions")
+                } else if powered && group != nil && (provider != nil || !managed) { quotaPanel }
+            }.frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
             if let write {
                 OrbisActionButton(title: L10n.tr(write.target ? "正在启用" : "正在停用"), symbol: "clock") {}.disabled(true)
             } else if managed && row == nil {
@@ -508,18 +505,36 @@ struct AgentProvidersView: View {
             } else {
                 OrbisActionButton(title: L10n.tr(managed && group == nil ? "已启用" : host.providersLoading ? "正在读取供应商" : "当前没有可用供应商"), symbol: managed && group == nil ? "checkmark" : nil) {}.disabled(true)
             }
-            if !profiles.isEmpty || !managed {
-                Text("\(profiles.isEmpty ? 0 : selectedIndex + 1) / \(profiles.count)")
-                    .accessibilityLabel(L10n.tr("配置 {0} / {1}", profiles.isEmpty ? 0 : selectedIndex + 1, profiles.count))
-                    .accessibilityIdentifier("provider-position")
-                    .frame(maxWidth: .infinity, alignment: .trailing).font(.orbisCaption()).foregroundStyle(palette.secondary)
-            }
-            if !online {
-                Text(owner.agentDialLastSync.map { L10n.tr("等待电脑连接 · 上次同步 {0}", $0.formatted(date: .omitted, time: .shortened)) } ?? L10n.tr("等待电脑连接"))
-                    .font(.orbisCaption()).foregroundStyle(palette.warning)
-            }
-            if powered, group == host.providerKind, let notice = host.providerNotice { OrbisNotice(text: notice).accessibilityIdentifier("provider-notice") }
-            if let feedback = displayedNotice { feedbackRow(feedback) }
+            // Prompts share the line under the action with the position, so the first one stays in view
+            // and any more only grow downward; nothing above the action ever moves for them.
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    if powered, let group, let problem = host.providerCatalogProblem(for: group) {
+                        Label(problem, systemImage: "exclamationmark.circle").font(.orbisCaption())
+                            .foregroundStyle(online ? palette.error : palette.secondary).accessibilityIdentifier("provider-catalog-problem")
+                    }
+                    if powered && group != nil, let provider, provider.enabled && provider.subscriptionSupported, let error = host.subscriptionQuota(for: provider)?.error {
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .font(.orbisCaption()).foregroundStyle(palette.error)
+                            .accessibilityIdentifier("provider-quota-error")
+                    }
+                    if kind == "codexDesktop", powered, online, let reason = owner.codexDesktop?.reason, sourceStatus.1 == palette.error {
+                        Text(reason).font(.orbisCaption()).foregroundStyle(palette.error)
+                    }
+                    if !online {
+                        Text(owner.agentDialLastSync.map { L10n.tr("等待电脑连接 · 上次同步 {0}", $0.formatted(date: .omitted, time: .shortened)) } ?? L10n.tr("等待电脑连接"))
+                            .font(.orbisCaption()).foregroundStyle(palette.warning)
+                    }
+                    if powered, group == host.providerKind, let notice = host.providerNotice { OrbisNotice(text: notice).accessibilityIdentifier("provider-notice") }
+                    if let feedback = displayedNotice { feedbackRow(feedback) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                if !profiles.isEmpty || !managed {
+                    Text("\(profiles.isEmpty ? 0 : selectedIndex + 1) / \(profiles.count)")
+                        .accessibilityLabel(L10n.tr("配置 {0} / {1}", profiles.isEmpty ? 0 : selectedIndex + 1, profiles.count))
+                        .accessibilityIdentifier("provider-position")
+                        .font(.orbisCaption()).foregroundStyle(palette.secondary)
+                }
+            }.frame(minHeight: 20, alignment: .top)
         }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 16)
     }
     private func feedbackRow(_ feedback: HostConnection.AgentDialNotice) -> some View {
@@ -554,12 +569,6 @@ struct AgentProvidersView: View {
                         if let key = host.hostKey { host.querySubscription(provider, expectedHostKey: key) }
                     // Same precondition as querySubscription: an enabled refresh always sends a fresh read.
                     }.disabled(!host.canChangeProvider(for: provider.kind)).accessibilityIdentifier("provider-quota-refresh")
-                }
-                if let error = snapshot?.error {
-                    Label(error, systemImage: "exclamationmark.circle")
-                        .font(.orbisCaption()).foregroundStyle(palette.error)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("provider-quota-error")
                 }
             } else {
                 OrbisStatusWithInfo(title: L10n.tr("配额不可用"), message: L10n.tr("这个配置不提供配额查询"))

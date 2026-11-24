@@ -175,3 +175,12 @@ Android 自动验证（2026-11-24，基于 `f5b1dd54` 的工作区）：[单元�
 iOS 自动验证：[Swift 几何回归 9 项通过](../../.artifacts/agent-dial-03-20261124/ios-swift-test/run.log)；[无签名模拟器构建成功](../../.artifacts/agent-dial-03-20261124/ios-app-build/run.log)；共享模拟器上 5 项轮盘界面用例中 2 项通过（目录错误不覆盖轮盘、配额双窗口）。另 3 项（反复拖动 Agent 后外环、硬件键浏览、合屏横屏滚动）失败，同机对 `f5b1dd54` 的[基线运行](../../.artifacts/agent-dial-03-20261124/ios-baseline-ui-tests/command.log)以相同断言和数值失败，属既有问题，原断言保留未改。界面用例的预览 Host 未协商启用管理，覆盖旧端轮盘路径。
 
 未部署，未登记 QA（需先推送候选分支）；拖动手感与视觉待用户在 Android 与 iOS 上安装验收。
+
+## AGENT-DIAL-05｜移动端轮盘下方信息区固定版位（2026-11-24）
+
+- **固定版位**：轮盘下方依次为事实位、主操作按钮、提示行，三者位置对所有 Agent 一致。事实位最小高度 112，一次只展示一项：配额可查时显示配额，否则有运行会话时显示会话列表，否则显示「配额不可用」说明；未启用或无供应商分组的 Agent 留空但保留高度。切换 Agent 时主操作按钮不再上下跳动。
+- **提示行**：供应商切换错误、目录错误、配额读取错误、Codex Desktop 接入错误、等待电脑连接、同步提示及「撤销」「刷新」动作统一放在主操作下方第一行，与右侧「n / m」同行，首条始终在可见区内；多条或长文本只向下延伸，不推动上方内容。配额错误从配额格内部移入提示行。
+
+实现：Android [`ProviderDialScreen.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialScreen.kt)（`Controls`、`ProviderQuotaError`）；iOS [`StatusViews.swift`](../../ios/Orbis/Orbis/StatusViews.swift)（`providerControls`）。回归：Android [`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `actionHoldsItsPlaceAcrossAgentsWithDifferentFacts`（配额、运行会话、未启用留空与目录错误四种 Agent 间主操作位置一致，首条提示在主操作下方且在可见区内）；iOS 沿用 `testProviderCatalogProblemAndQuotaErrorNeverOverlapDialOrQuotaCells`、`testProviderQuotaShowsBothWindowsAndRefreshIsIndependent`。
+
+自动验证（2026-11-24，基于 `175a9eb6` 的工作区）：Android [单元回归 9 项通过](../../.artifacts/agent-dial-05-20261124/apks/build.log)；共享模拟器上 [`ProviderDialInstrumentedTest` 11 项中 9 项通过](../../.artifacts/agent-dial-05-20261124/instrumentation/instrumentation.log)，含新增用例，另 2 项为 AGENT-DIAL-04 已核对的既有失败。iOS 测试构建成功，[2 项界面用例通过](../../.artifacts/agent-dial-05-20261124/ios-ui-tests/command.log)，截图确认配额错误与目录错误位于主操作下方首行且在可见区内。未部署，界面切换手感待用户安装验收。

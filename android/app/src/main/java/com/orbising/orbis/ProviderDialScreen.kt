@@ -158,28 +158,28 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
             val content: @Composable () -> Unit = {
                 Column(modifier.padding(horizontal = 20.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     val activeSessions = if (connected && on) state.runtimes.values.filter { it.agentKind == kind } else emptyList()
-                    if (activeSessions.isNotEmpty() && (preview?.subscriptionSupported != true || !preview.enabled)) {
-                        NeumorphSurface(Modifier.fillMaxWidth().testTag("provider-running-sessions"), RoundedCornerShape(12.dp), NeumorphStyle.Pressed, shadowScale = 0.35f) {
-                            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                activeSessions.take(2).forEach { runtime ->
-                                    val sessionTitle = runtime.sessionName?.takeIf { it.isNotBlank() } ?: runtime.name.ifBlank { runtime.runtimeId }
-                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Box(Modifier.size(8.dp).background(LocalOrbisPalette.current.success, CircleShape))
-                                        Text(sessionTitle, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val quotaReady = preview?.let { it.enabled && it.official && it.subscriptionSupported } == true
+                    // AGENT-DIAL-05: the facts slot, the action and the position line hold the same place for every
+                    // Agent; the slot shows one fact at a time and prompts only follow, so switching never moves the action.
+                    Box(Modifier.fillMaxWidth().heightIn(min = 112.dp).testTag("provider-facts"), contentAlignment = Alignment.CenterStart) {
+                        if (activeSessions.isNotEmpty() && !quotaReady) {
+                            NeumorphSurface(Modifier.fillMaxWidth().testTag("provider-running-sessions"), RoundedCornerShape(12.dp), NeumorphStyle.Pressed, shadowScale = 0.35f) {
+                                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    activeSessions.take(2).forEach { runtime ->
+                                        val sessionTitle = runtime.sessionName?.takeIf { it.isNotBlank() } ?: runtime.name.ifBlank { runtime.runtimeId }
+                                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Box(Modifier.size(8.dp).background(LocalOrbisPalette.current.success, CircleShape))
+                                            Text(sessionTitle, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
                                     }
+                                    val remaining = activeSessions.size - 2
+                                    Text(if (remaining > 0) L10n.tr("另外 {0} 个", remaining) else L10n.tr("{0} 个会话", activeSessions.size),
+                                        style = MaterialTheme.typography.labelSmall, color = LocalOrbisPalette.current.success)
                                 }
-                                val remaining = activeSessions.size - 2
-                                Text(if (remaining > 0) L10n.tr("另外 {0} 个", remaining) else L10n.tr("{0} 个会话", activeSessions.size),
-                                    style = MaterialTheme.typography.labelSmall, color = LocalOrbisPalette.current.success)
                             }
-                        }
-                    }
-                    if (on && group != null && (preview != null || !managed))
-                        ProviderQuotaPair(state, group, preview, canQuery = canUse, onQuery = { onQuerySubscription(it, hostId) })
-                    if (on && group != null) {
-                        operation?.error?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error) }
-                        state.providerCatalogProblems[group]?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("provider-catalog-problem")) }
+                        } else if (on && group != null && (preview != null || !managed))
+                            ProviderQuotaPair(state, group, preview, canQuery = canUse, onQuery = { onQuerySubscription(it, hostId) })
                     }
                     val title = when {
                         write != null -> L10n.tr(if (write.target) "正在启用" else "正在停用")
@@ -204,29 +204,40 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                                 else pending = hostId to selected
                             }
                         })
-                    if (providers.isNotEmpty() || !managed) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Text(if (providers.isEmpty()) "0 / 0" else "${currentIndex + 1} / ${providers.size}",
-                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    if (!connected) Text(syncLabel?.let { L10n.tr("等待电脑连接 · 上次同步 {0}", it) } ?: L10n.tr("等待电脑连接"),
-                        style = MaterialTheme.typography.labelMedium, color = LocalOrbisPalette.current.warning)
-                    visibleNotice?.let { feedback ->
-                        val name = rows.firstOrNull { it.kind == feedback.kind }?.label ?: label
-                        val text = when (feedback.status) {
-                            "disabled" -> L10n.tr("已停用 {0}", name)
-                            "externalOn" -> L10n.tr("{0} 已在其他设备启用", name)
-                            "externalOff" -> L10n.tr("{0} 已在其他设备停用", name)
-                            "conflict" -> L10n.tr("Agent 设置已在其他设备更新，请确认后重试")
-                            "interrupted" -> L10n.tr(if (state.agentDial.synchronized) "已按电脑同步" else "未确认，等待电脑同步")
-                            else -> L10n.tr("无法读取或保存 Agent 设置")
+                    // Prompts share the line under the action with the position, so the first one stays in view
+                    // and any more only grow downward; nothing above the action ever moves for them.
+                    Row(Modifier.fillMaxWidth().heightIn(min = 20.dp).testTag("provider-prompts"), verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (on && group != null) {
+                                operation?.error?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error) }
+                                state.providerCatalogProblems[group]?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("provider-catalog-problem")) }
+                                ProviderQuotaError(state, group, preview)
+                            }
+                            if (!connected) Text(syncLabel?.let { L10n.tr("等待电脑连接 · 上次同步 {0}", it) } ?: L10n.tr("等待电脑连接"),
+                                style = MaterialTheme.typography.labelMedium, color = LocalOrbisPalette.current.warning)
+                            visibleNotice?.let { feedback ->
+                                val name = rows.firstOrNull { it.kind == feedback.kind }?.label ?: label
+                                val text = when (feedback.status) {
+                                    "disabled" -> L10n.tr("已停用 {0}", name)
+                                    "externalOn" -> L10n.tr("{0} 已在其他设备启用", name)
+                                    "externalOff" -> L10n.tr("{0} 已在其他设备停用", name)
+                                    "conflict" -> L10n.tr("Agent 设置已在其他设备更新，请确认后重试")
+                                    "interrupted" -> L10n.tr(if (state.agentDial.synchronized) "已按电脑同步" else "未确认，等待电脑同步")
+                                    else -> L10n.tr("无法读取或保存 Agent 设置")
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(text, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+                                    if (feedback.status == "disabled" && canEdit && feedback.revision == state.agentEnablementRevision)
+                                        TextButton(onClick = { feedback.kind?.let { onAgentEnabled(hostId, it, true, null, feedback.revision) }; visibleNotice = null }) { Text(L10n.tr("撤销")) }
+                                    if (feedback.status == "readFailed" && connected)
+                                        TextButton(onClick = { onAgentRefresh(hostId) }) { Text(L10n.tr("刷新")) }
+                                }
+                            }
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(text, Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-                            if (feedback.status == "disabled" && canEdit && feedback.revision == state.agentEnablementRevision)
-                                TextButton(onClick = { feedback.kind?.let { onAgentEnabled(hostId, it, true, null, feedback.revision) }; visibleNotice = null }) { Text(L10n.tr("撤销")) }
-                            if (feedback.status == "readFailed" && connected)
-                                TextButton(onClick = { onAgentRefresh(hostId) }) { Text(L10n.tr("刷新")) }
-                        }
+                        if (providers.isNotEmpty() || !managed)
+                            Text(if (providers.isEmpty()) "0 / 0" else "${currentIndex + 1} / ${providers.size}",
+                                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -788,46 +799,53 @@ private fun ProviderQuotaPair(state: RemoteState, kind: String, provider: AgentP
     LaunchedEffect(canQuery, provider?.id, available) {
         if (canQuery && available && !queried && snapshot == null && !loading) { queried = true; provider?.let(onQuery) }
     }
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Box(Modifier.fillMaxWidth().heightIn(min = 112.dp).testTag("provider-quota-pair"), contentAlignment = Alignment.CenterStart) {
-            if (!available) StatusWithInfo(L10n.tr("配额不可用"),
-                if (provider?.subscriptionSupported == true) L10n.tr("启用后可查询配额") else L10n.tr("这个配置不提供配额查询"))
-            else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                listOf("five_hour", "seven_day").forEach { name ->
-                    val window = snapshot?.quota?.windows?.firstOrNull { it.name == name }
-                    val resetCountdown = subscriptionQuotaResetCountdownLabel(window?.resetsAt)
-                    val percent = window?.remainingPercent
-                    val low = percent != null && percent <= 20
-                    val color = if (low) LocalOrbisPalette.current.danger else MaterialTheme.colorScheme.primary
-                    val progress by animateFloatAsState(((percent ?: 0.0) / 100).toFloat(),
-                        tween(InteractionMotion.duration(InteractionMotion.State)), label = "quota-progress")
-                    Column(Modifier.weight(1f).testTag("provider-quota-$name"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(if (name == "five_hour") L10n.tr("5 小时") else L10n.tr("7 天"),
-                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (low) { Icon(OrbisSymbols.Warning, null, Modifier.size(12.dp), tint = color)
-                                Text(L10n.tr("即将用完"), style = MaterialTheme.typography.labelSmall, color = color) }
-                        }
-                        MotionText(percent?.let { String.format(L10n.locale, "%.0f%%", it) } ?: "—",
-                            style = MaterialTheme.typography.displaySmall, color = if (low) color else MaterialTheme.colorScheme.onSurface)
-                        NeumorphSurface(Modifier.fillMaxWidth().height(6.dp), CircleShape, NeumorphStyle.Pressed, shadowScale = 0.4f) {
-                            Box(Modifier.fillMaxWidth().height(6.dp)) {
-                                Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp).background(color, CircleShape))
-                            }
-                        }
-                        // A manual refresh keeps the last reading visible, so the caption carries the in-flight state.
-                        Text(if (loading) L10n.tr("查询中") else resetCountdown
-                            ?: L10n.tr("暂不可用"), style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth())
+    Box(Modifier.fillMaxWidth().heightIn(min = 112.dp).testTag("provider-quota-pair"), contentAlignment = Alignment.CenterStart) {
+        if (!available) StatusWithInfo(L10n.tr("配额不可用"),
+            if (provider?.subscriptionSupported == true) L10n.tr("启用后可查询配额") else L10n.tr("这个配置不提供配额查询"))
+        else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+            listOf("five_hour", "seven_day").forEach { name ->
+                val window = snapshot?.quota?.windows?.firstOrNull { it.name == name }
+                val resetCountdown = subscriptionQuotaResetCountdownLabel(window?.resetsAt)
+                val percent = window?.remainingPercent
+                val low = percent != null && percent <= 20
+                val color = if (low) LocalOrbisPalette.current.danger else MaterialTheme.colorScheme.primary
+                val progress by animateFloatAsState(((percent ?: 0.0) / 100).toFloat(),
+                    tween(InteractionMotion.duration(InteractionMotion.State)), label = "quota-progress")
+                Column(Modifier.weight(1f).testTag("provider-quota-$name"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(if (name == "five_hour") L10n.tr("5 小时") else L10n.tr("7 天"),
+                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (low) { Icon(OrbisSymbols.Warning, null, Modifier.size(12.dp), tint = color)
+                            Text(L10n.tr("即将用完"), style = MaterialTheme.typography.labelSmall, color = color) }
                     }
+                    MotionText(percent?.let { String.format(L10n.locale, "%.0f%%", it) } ?: "—",
+                        style = MaterialTheme.typography.displaySmall, color = if (low) color else MaterialTheme.colorScheme.onSurface)
+                    NeumorphSurface(Modifier.fillMaxWidth().height(6.dp), CircleShape, NeumorphStyle.Pressed, shadowScale = 0.4f) {
+                        Box(Modifier.fillMaxWidth().height(6.dp)) {
+                            Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).height(6.dp).background(color, CircleShape))
+                        }
+                    }
+                    // A manual refresh keeps the last reading visible, so the caption carries the in-flight state.
+                    Text(if (loading) L10n.tr("查询中") else resetCountdown
+                        ?: L10n.tr("暂不可用"), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth())
                 }
-                // Always present: every tap after the automatic first query is a fresh subscription read.
-                NeumorphIconButton({ provider?.let(onQuery) }, OrbisSymbols.Refresh,
-                    L10n.tr("刷新配额"), enabled = canQuery && !loading, modifier = Modifier.testTag("provider-query"))
             }
+            // Always present: every tap after the automatic first query is a fresh subscription read.
+            NeumorphIconButton({ provider?.let(onQuery) }, OrbisSymbols.Refresh,
+                L10n.tr("刷新配额"), enabled = canQuery && !loading, modifier = Modifier.testTag("provider-query"))
         }
-        if (available && !loading) snapshot?.error?.let { error ->
-            InlineFeedbackError(error, Modifier.testTag("provider-quota-error"))
-        }
+    }
+}
+
+/** AGENT-DIAL-05: a failed quota read is a prompt below the action, never extra height inside the facts slot. */
+@Composable
+private fun ProviderQuotaError(state: RemoteState, kind: String, provider: AgentProvider?) {
+    val snapshot = provider?.let { state.subscriptionQuotas[kind]?.takeIf { q -> q.providerId == it.id } }
+    val operation = state.agentProviders
+    val loading = operation.quotaRequestId != null && operation.quotaProviderId == provider?.id && operation.quotaKind == kind
+    val available = provider?.let { it.enabled && it.official && it.subscriptionSupported } == true
+    if (available && !loading) snapshot?.error?.let { error ->
+        InlineFeedbackError(error, Modifier.testTag("provider-quota-error"))
     }
 }

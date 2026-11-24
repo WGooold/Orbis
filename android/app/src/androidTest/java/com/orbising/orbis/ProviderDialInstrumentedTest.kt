@@ -73,6 +73,32 @@ class ProviderDialInstrumentedTest {
         compose.onNodeWithTag("provider-catalog-problem").assertExists()
         assertEquals(before, compose.onNodeWithTag("provider-dual-dial").fetchSemanticsNode().boundsInRoot)
     }
+    /** AGENT-DIAL-05: quota, running sessions, an empty disabled slot and error prompts never move the action between Agents. */
+    @Test fun actionHoldsItsPlaceAcrossAgentsWithDifferentFacts() {
+        val revision = 3L
+        val rows = listOf(AgentEnablementRow("codex", "Codex CLI", true), AgentEnablementRow("claude", "Claude Code", true),
+            AgentEnablementRow("dsh", "DeepSeek", false), AgentEnablementRow("pi", "Pi", true))
+        val session = RuntimeSummary("claude-run", "Claude", "/repo", "idle", sessionId = "claude-session", agentKind = "claude", sessionName = "Refactor")
+        show(mutableStateOf(ready().copy(agentEnablementAvailable = true, agentEnablementRevision = revision, agentEnablementRows = rows,
+            agentDial = AgentDialSync(cached = AgentDialSnapshot(revision, rows), synchronized = true),
+            runtimes = mapOf(session.runtimeId to session), providerCatalogProblems = mapOf("pi" to "无法读取供应商目录"))))
+        fun actionTop(index: Int): Float {
+            progress("provider-agent-reel", index.toFloat())
+            return compose.onNodeWithTag("provider-apply").fetchSemanticsNode().boundsInRoot.top
+        }
+        val codex = actionTop(0)
+        compose.onNodeWithTag("provider-quota-five_hour").assertExists()
+        assertEquals(codex, actionTop(1), 0.5f)
+        compose.onNodeWithTag("provider-running-sessions").assertExists()
+        assertEquals(codex, actionTop(2), 0.5f)
+        compose.onNodeWithText("启用 DeepSeek").assertExists()
+        assertEquals(codex, actionTop(3), 0.5f)
+        // The first prompt sits on the line under the action and stays in view without scrolling.
+        val action = compose.onNodeWithTag("provider-apply").fetchSemanticsNode().boundsInRoot
+        val problem = compose.onNodeWithTag("provider-catalog-problem").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue(problem.top >= action.bottom)
+        assertTrue(problem.bottom <= compose.onRoot().fetchSemanticsNode().boundsInRoot.bottom)
+    }
     /** S36 / SC57: refresh is not hidden once a reading exists; each tap reaches a new query and failures stay visible. */
     @Test fun quotaRefreshStaysAvailableAfterTheFirstReading() {
         val provider = profiles("codex").first()
