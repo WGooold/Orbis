@@ -387,12 +387,10 @@ struct AgentProvidersView: View {
                             .accessibilityIdentifier("provider-controls-scroll")
                     }
                 } else {
+                    // AGENT-DIAL-04: the facts below scroll inside their own share; they never resize the dial.
                     VStack(spacing: 0) {
-                        providerDial.frame(minHeight: min(200, geometry.size.height * 0.54), maxHeight: .infinity)
-                        ViewThatFits(in: .vertical) {
-                            providerControls
-                            ScrollView { providerControls }.frame(maxHeight: max(88, geometry.size.height * 0.42))
-                        }
+                        providerDial.frame(height: ProviderDialGeometry.stackedHeight(width: geometry.size.width, height: geometry.size.height))
+                        ScrollView { providerControls }.scrollBounceBehavior(.basedOnSize).frame(maxHeight: .infinity)
                     }
                 }
             }
@@ -447,9 +445,12 @@ struct AgentProvidersView: View {
             s == "externalOn" ? "其他设备已启用" : "其他设备已停用"
         } else { nil }
         let errorReason: String? = kind == "codexDesktop" && powered && online && sourceStatus.1 == palette.error ? owner.codexDesktop?.reason : nil
+        let pinRests = Dictionary(uniqueKeysWithValues: kinds.map { k in
+            (k, ProviderDialGeometry.pinRest(pendingTarget: owner.agentDialChoice(k)?.target, enabled: rows.first { $0.id == k }?.enabled == true))
+        })
         return ProviderDialView(kinds: kinds, kind: kind, providers: visualOn && !powered ? previousProfiles : profiles, selected: selectedIndex,
             onKind: choose, onSelect: { if profiles.indices.contains($0) { selectedId = profiles[$0].id } }, onMoving: { moving = $0 },
-            rows: rows, statuses: statuses, label: label, status: sourceStatus.0, statusColor: sourceStatus.1, managed: managed, powered: visualOn,
+            rows: rows, statuses: statuses, pinRests: pinRests, label: label, status: sourceStatus.0, statusColor: sourceStatus.1, managed: managed, powered: visualOn,
             offline: !online, editable: editable, pending: write, queued: queued,
             activeSessionCount: activeSessionCount, externalSubtitle: externalSubtitle, errorReason: errorReason,
             autoNudge: editable && !rows.isEmpty && rows.allSatisfy { !$0.enabled },
@@ -636,6 +637,7 @@ private struct ProviderDialView: View {
     let onMoving: (Bool) -> Void
     let rows: [HostConnection.AgentEnablementRow]
     let statuses: [String: (String, Color)]
+    let pinRests: [String: Double]
     let label: String
     let status: String
     let statusColor: Color
@@ -675,9 +677,13 @@ private struct ProviderDialView: View {
     @State private var moved = false
     @State private var agentPulse = 0
     @State private var profilePulse = 0
+    /// The selected Agent's resting pin travel, animated only while the same Agent stays selected.
+    @State private var restTravel = 0.0
     private var groupIndex: Int { kinds.firstIndex(of: kind) ?? 0 }
     private var actualPower: Bool { !managed || ringLit }
-    private var pinFraction: Double { pinDrag ?? ((pending.map { $0.target ? ProviderDialGeometry.pinHold : 1 - ProviderDialGeometry.pinHold } ?? (powered ? 1 : 0)) + nudge) }
+    private var pinRest: Double { ProviderDialGeometry.pinRest(pendingTarget: pending?.target, enabled: powered) }
+    private var selectedTravel: Double { pinDrag ?? (restTravel + nudge) }
+    private struct PinRestKey: Equatable { let kind: String; let rest: Double }
     private var pinColor: Color { conflictID != nil ? palette.error : offline || !powered && pending == nil ? palette.faint : palette.agent(kind) }
     private var palette: OrbisPalette { OrbisPalette(scheme) }
     var body: some View {
@@ -715,7 +721,17 @@ private struct ProviderDialView: View {
                     Circle().fill(palette.faint.opacity(0.5)).frame(width: 3, height: 3)
                         .position(x: g.centerX + (g.hubRadius - 8) * cos(angle), y: g.centerY + (g.hubRadius - 8) * sin(angle))
                 }
-                agentScale(g).opacity(handle == .profile ? 0.4 : 1)
+                // AGENT-DIAL-04: the groove is fixed hardware at the gate and never leaves; each Agent is
+                // drawn once and its pin retracts or extends along the groove as the ring docks it.
+                if managed && !kind.isEmpty { pinGroove(g) }
+                if !managed {
+                    Color.clear.frame(width: 36, height: 36).neuSurface(inset: true, radius: 18, intensity: 0.4, concentric: false)
+                        .modifier(OrbisDialPulse(trigger: agentPulse, peak: 1.08))
+                        .position(x: g.centerX + g.agentRadius, y: g.centerY)
+                }
+                DialAgentRing(position: groupPosition, travel: selectedTravel, g: g, kinds: kinds, kind: kind, managed: managed,
+                    dimmed: handle == .profile, rests: pinRests, palette: palette, conflict: conflictID != nil, recoil: recoil,
+                    offline: offline, enabled: agentEnabled, onTap: settleAgent) { agent, gate in agentBead(agent, gate: gate) }
                 disc(radius: g.holeRadius, inset: true, intensity: 0.65).position(x: g.centerX, y: g.centerY)
                 Circle().fill(!managed ? palette.agent(kind) : actualPower && !offline && status == "已连接" ? statusColor : .clear)
                     .overlay { if managed && (!actualPower || offline || status != "已连接") { Circle().strokeBorder(actualPower && !offline ? statusColor : palette.faint, lineWidth: 1.1) } }
@@ -736,7 +752,7 @@ private struct ProviderDialView: View {
                         }.stroke(palette.agent(kind).opacity(0.55), lineWidth: 2)
                     }.allowsHitTesting(false)
                 }
-                if managed && handle != .agent && !kind.isEmpty { pinView(g) }
+                if managed && !kind.isEmpty { pinAccessibility(g) }
                 if managed && profilesHidden && !kind.isEmpty { nameplate(g) }
             }.frame(width: proxy.size.width, height: proxy.size.height).clipped()
                 .contentShape(Rectangle()).gesture(gesture(g))
@@ -758,7 +774,7 @@ private struct ProviderDialView: View {
                     settleProfile(next)
                 }
         }.onAppear {
-            groupPosition = Double(groupIndex); profilePosition = Double(selected); ringLit = powered
+            groupPosition = Double(groupIndex); profilePosition = Double(selected); ringLit = powered; restTravel = pinRest
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--preview-provider-keyboard") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { keyboardHandle = .profile }
@@ -812,35 +828,32 @@ private struct ProviderDialView: View {
                 withAnimation(reduced ? nil : InteractionMotion.state) { profilePosition = Double(selected) }
             }
             .onChange(of: selected) { _, index in if handle == nil { profilePosition = Double(index) } }
+            // A newly selected Agent starts from its own rest, never mid-way from the previous Agent's pin.
+            .onChange(of: PinRestKey(kind: kind, rest: pinRest)) { old, new in
+                if old.kind == new.kind && !reduced { withAnimation(.easeOut(duration: 0.17)) { restTravel = new.rest } }
+                else { restTravel = new.rest }
+            }
     }
     private func disc(radius: Double, inset: Bool = false, intensity: CGFloat) -> some View {
         Circle().fill(.clear).frame(width: radius * 2, height: radius * 2)
             .neuSurface(inset: inset, radius: radius, intensity: intensity, concentric: false)
             .environment(\.orbisSurface, nil)
     }
-    private func agentScale(_ g: ProviderDialGeometry.Layout) -> some View {
-        ZStack {
-            if !managed {
-                Color.clear.frame(width: 36, height: 36).neuSurface(inset: true, radius: 18, intensity: 0.4, concentric: false)
-                    .modifier(OrbisDialPulse(trigger: agentPulse, peak: 1.08))
-                    .position(x: g.centerX + g.agentRadius, y: g.centerY)
-            }
-            ForEach(Array(kinds.enumerated()), id: \.offset) { index, agent in
-                let angle = (Double(index) - groupPosition) * g.agentStep * .pi / 180
-                let x = g.centerX + g.agentRadius * cos(angle)
-                let agentEnabled = agent == kind ? powered : rows.first { $0.id == agent }?.enabled == true
-                let agentStatus = statuses[agent] ?? (status, statusColor)
-                if abs(Double(index) - groupPosition) < 3.1 && x >= 20 && (!managed || index != groupIndex || handle == .agent) {
-                    dialMark(agent, muted: offline || !agentEnabled || index != groupIndex)
-                        .frame(width: 44, height: 44)
-                        .overlay {
-                            if managed { dialBadges(agent, showStatusDot: agentEnabled && !offline, statusLabel: agentStatus.0, statusTone: agentStatus.1) }
-                        }
-                        .contentShape(Rectangle()).opacity(index == groupIndex ? 1 : 0.66)
-                        .position(x: x, y: g.centerY + g.agentRadius * sin(angle))
-                        .onTapGesture { settleAgent(index) }
+    private func agentEnabled(_ agent: String) -> Bool { agent == kind ? powered : rows.first { $0.id == agent }?.enabled == true }
+    /// One Agent's face on the ring; the selected Agent shows its pending write in place of its mark.
+    @ViewBuilder private func agentBead(_ agent: String, gate: Double) -> some View {
+        if managed && agent == kind && pending != nil {
+            if queued { Circle().strokeBorder(pinColor, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])).padding(7) }
+            else if reduced { Circle().trim(from: 0, to: 0.72).stroke(pinColor, style: StrokeStyle(lineWidth: 1.5, lineCap: .round)).padding(7) }
+            else { ProgressView().tint(pinColor) }
+        } else {
+            let enabled = agentEnabled(agent)
+            let agentStatus = statuses[agent] ?? (status, statusColor)
+            dialMark(agent, muted: offline || !enabled, emphasis: gate)
+                .frame(width: 44, height: 44)
+                .overlay {
+                    if managed { dialBadges(agent, showStatusDot: enabled && !offline, statusLabel: agentStatus.0, statusTone: agentStatus.1) }
                 }
-            }
         }
     }
     @ViewBuilder private func dialBadges(_ id: String, showStatusDot: Bool, statusLabel: String, statusTone: Color) -> some View {
@@ -925,8 +938,8 @@ private struct ProviderDialView: View {
         }.opacity(handle == .agent ? 0.4 : 1)
     }
     private var profilesHidden: Bool { !actualPower || providers.isEmpty }
-    @ViewBuilder private func dialMark(_ id: String, muted: Bool) -> some View {
-        if AgentIdentity(kind: id) != nil { AgentEmblem(kind: id, size: 20, recessed: false).saturation(muted ? 0 : 1).opacity(muted ? 0.66 : 1) }
+    @ViewBuilder private func dialMark(_ id: String, muted: Bool, emphasis: Double = 1) -> some View {
+        if AgentIdentity(kind: id) != nil { AgentEmblem(kind: id, size: 20, recessed: false).saturation(muted ? 0 : emphasis).opacity(muted ? 0.66 : 0.66 + 0.34 * emphasis) }
         else { Image(systemName: "terminal").font(.system(size: 18, weight: .semibold)).foregroundStyle(palette.faint) }
     }
     private func nameplate(_ g: ProviderDialGeometry.Layout) -> some View {
@@ -951,30 +964,16 @@ private struct ProviderDialView: View {
             }
         }.frame(width: width, alignment: .leading).position(x: x + width / 2, y: g.centerY - 4)
     }
-    private func pinView(_ g: ProviderDialGeometry.Layout) -> some View {
-        let socketColor: Color = conflictID != nil ? palette.error.opacity(0.75) : (powered && !offline ? palette.agent(kind).opacity(0.85) : palette.faint.opacity(0.50))
-        let socketWidth: CGFloat = (powered && !offline || conflictID != nil) ? 1.5 : 1.0
-        return ZStack {
-            Capsule().fill(.clear).frame(width: g.pinTravel + 44, height: 44)
-                .neuSurface(inset: true, radius: 22, intensity: 0.55, concentric: false).environment(\.orbisSurface, nil)
-                .overlay {
-                    if pinArmed { Capsule().strokeBorder(palette.agent(kind).opacity(0.8), lineWidth: 2) }
-                }
-                .position(x: g.pinStart + g.pinTravel / 2, y: g.centerY)
-            Circle().strokeBorder(socketColor, lineWidth: socketWidth).frame(width: 36, height: 36)
-                .position(x: g.pinStart + g.pinTravel, y: g.centerY)
-            ZStack {
-                Circle().fill(.clear).neuSurface(radius: 20, intensity: powered ? 0.6 : 0.28, concentric: false).environment(\.orbisSurface, nil)
-                if pending == nil {
-                    dialMark(kind, muted: !powered || offline)
-                    dialBadges(kind, showStatusDot: powered && !offline, statusLabel: status, statusTone: statusColor)
-                }
-                else if queued { Circle().strokeBorder(pinColor, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])).padding(5) }
-                else if reduced { Circle().trim(from: 0, to: 0.72).stroke(pinColor, style: StrokeStyle(lineWidth: 1.5, lineCap: .round)).padding(5) }
-                else { ProgressView().tint(pinColor) }
-            }.frame(width: 40, height: 40)
-                .position(x: g.pinStart + g.pinTravel * ProviderDialGeometry.clamp(pinFraction, 0, 1) + recoil, y: g.centerY)
-                .animation(reduced || pinDrag != nil ? nil : .easeOut(duration: 0.17), value: pinFraction)
+    private func pinGroove(_ g: ProviderDialGeometry.Layout) -> some View {
+        Capsule().fill(.clear).frame(width: g.pinTravel + 44, height: 44)
+            .neuSurface(inset: true, radius: 22, intensity: 0.55, concentric: false).environment(\.orbisSurface, nil)
+            .overlay {
+                if pinArmed { Capsule().strokeBorder(palette.agent(kind).opacity(0.8), lineWidth: 2) }
+            }
+            .position(x: g.pinStart + g.pinTravel / 2, y: g.centerY).allowsHitTesting(false)
+    }
+    private func pinAccessibility(_ g: ProviderDialGeometry.Layout) -> some View {
+        ZStack {
             Color.clear.frame(width: g.pinTravel + 48, height: 48)
                 .position(x: g.pinStart + g.pinTravel / 2, y: g.centerY)
                 .accessibilityElement().accessibilityLabel(label).accessibilityValue(L10n.tr(hint ?? status))
@@ -989,10 +988,10 @@ private struct ProviderDialView: View {
         guard editable, pending == nil else { return }
         hintTask?.cancel()
         hint = powered ? "向内拉停用" : "向外推启用"
-        if !reduced { nudge = powered ? -0.16 : 0.16 }
+        if !reduced { withAnimation(.easeOut(duration: 0.17)) { nudge = powered ? -0.16 : 0.16 } }
         hintTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300)); guard !Task.isCancelled else { return }
-            nudge = 0
+            withAnimation(reduced ? nil : .easeOut(duration: 0.22)) { nudge = 0 }
             try? await Task.sleep(for: .milliseconds(1050)); if !Task.isCancelled { hint = nil }
         }
     }
@@ -1039,7 +1038,9 @@ private struct ProviderDialView: View {
             let captured = handle; handle = nil; gestureStarted = false
             if pinOwner != nil {
                 let apply = editable && pinArmed && pinOwner == kind && pinStartChoice == pending && pinStartEnabled == (pending?.target ?? powered)
-                pinOwner = nil; pinDrag = nil; pinArmed = false; hint = nil
+                // The released pin travels on from where the finger left it, back to rest or on to the Host hold.
+                pinOwner = nil; pinArmed = false; hint = nil
+                withAnimation(reduced ? nil : .easeOut(duration: 0.22)) { pinDrag = nil }
                 if apply { onToggle(!pinStartEnabled) }; return
             }
             if !moved && pinTouched { nudgePin(); return }
@@ -1076,7 +1077,12 @@ private struct ProviderDialView: View {
         guard kinds.indices.contains(index) else { onMoving(false); return }
         onMoving(true)
         if kinds[index] != kind { OrbisHaptics.commit(); onKind(kinds[index]) }
-        withAnimation(reduced ? nil : InteractionMotion.state) { groupPosition = Double(index) } completion: { onMoving(false) }
+        // A docked Agent leaves gently so its pin visibly retracts before the ring turns; a released drag is already moving.
+        let departing = abs(groupPosition - groupPosition.rounded()) < 0.01 && Double(index) != groupPosition
+        let motion: Animation = departing
+            ? .timingCurve(0.65, 0, 0.35, 1, duration: ProviderDialGeometry.settleDuration(distance: Double(index) - groupPosition) + 0.06)
+            : InteractionMotion.state
+        withAnimation(reduced ? nil : motion) { groupPosition = Double(index) } completion: { onMoving(false) }
     }
     private func settleProfile(_ index: Int) {
         guard providers.indices.contains(index) else { onMoving(false); return }
@@ -1087,6 +1093,72 @@ private struct ProviderDialView: View {
     }
     private func adjustAgent(_ direction: AccessibilityAdjustmentDirection) {
         settleAgent(max(0, min(kinds.count - 1, groupIndex + (direction == .increment ? 1 : -1))))
+    }
+}
+
+/// AGENT-DIAL-04: the Agent ring and the socket it lights. Body is re-evaluated on every animation
+/// frame, so a settling ring carries a docked pin along the groove instead of interpolating a chord.
+private struct DialAgentRing<Bead: View>: View, Animatable {
+    var position: Double
+    var travel: Double
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(position, travel) }
+        set { position = newValue.first; travel = newValue.second }
+    }
+    let g: ProviderDialGeometry.Layout
+    let kinds: [String]
+    let kind: String
+    let managed: Bool
+    let dimmed: Bool
+    let rests: [String: Double]
+    let palette: OrbisPalette
+    let conflict: Bool
+    let recoil: Double
+    let offline: Bool
+    let enabled: (String) -> Bool
+    let onTap: (Int) -> Void
+    @ViewBuilder let bead: (String, Double) -> Bead
+    var body: some View {
+        ZStack {
+            if managed && !kind.isEmpty { socket }
+            ForEach(Array(kinds.enumerated()), id: \.element) { index, agent in
+                let distance = Double(index) - position
+                let selected = agent == kind
+                let centre = g.pinCentre(distance: distance, travel: managed ? (selected ? travel : rests[agent] ?? 0) : 0)
+                let gate = ProviderDialGeometry.gate(distance)
+                if abs(distance) < 3.1 && centre.x >= 20 {
+                    ZStack {
+                        // The raised cap belongs to whichever Agent is docking, rising and sinking with ring position.
+                        if managed && gate > 0.01 {
+                            Circle().fill(.clear).neuSurface(radius: 20, intensity: enabled(agent) ? 0.6 : 0.28, concentric: false)
+                                .environment(\.orbisSurface, nil).frame(width: 40, height: 40).opacity(gate)
+                        }
+                        bead(agent, gate)
+                    }.frame(width: 44, height: 44).contentShape(Rectangle())
+                        .opacity((0.66 + 0.34 * gate) * (dimmed ? 0.4 + 0.6 * ProviderDialGeometry.docked(distance) : 1))
+                        .position(x: centre.x + (selected ? recoil : 0), y: centre.y)
+                        .onTapGesture { onTap(index) }
+                        // A tap on the managed pin belongs to the dial gesture, which answers with the pin hint.
+                        .allowsHitTesting(!(managed && selected))
+                }
+            }
+        }
+    }
+    private var socket: some View {
+        var lit = 0.0, nearest = Double.infinity, gateKind = kind
+        for (index, agent) in kinds.enumerated() {
+            let distance = abs(Double(index) - position)
+            if distance < nearest { nearest = distance; gateKind = agent }
+            if enabled(agent) && !offline { lit += ProviderDialGeometry.seated(distance) }
+        }
+        lit = min(1, lit)
+        return ZStack {
+            if conflict { Circle().strokeBorder(palette.error.opacity(0.75), lineWidth: 1.5) }
+            else {
+                Circle().strokeBorder(palette.faint.opacity(0.50), lineWidth: 1 + 0.5 * lit).opacity(1 - lit)
+                Circle().strokeBorder(palette.agent(gateKind).opacity(0.85), lineWidth: 1 + 0.5 * lit).opacity(lit)
+            }
+        }.frame(width: 36, height: 36).position(x: g.pinStart + g.pinTravel, y: g.centerY).allowsHitTesting(false)
     }
 }
 

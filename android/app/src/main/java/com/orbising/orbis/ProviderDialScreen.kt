@@ -30,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import kotlinx.coroutines.CoroutineStart
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
@@ -139,7 +141,10 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
             val externalSubtitle = visibleNotice?.takeIf { it.kind == kind && (it.status == "externalOn" || it.status == "externalOff") }
                 ?.let { if (it.status == "externalOn") "其他设备已启用" else "其他设备已停用" }
             val errorReason = if (kind == "codexDesktop" && on && connected && sourceStatus.tone == "error") state.codexDesktop?.reason else null
-            DualProviderDial(kinds, rows.associateBy { it.kind }, statuses, kind, label, dialProfiles, currentIndex, hostId, active,
+            val pinRests = remember(kinds, rows, state.agentDial) {
+                kinds.associateWith { k -> AgentDialPin.rest(state.agentDial.pending(k), rows.firstOrNull { it.kind == k }?.enabled == true) }
+            }
+            DualProviderDial(kinds, rows.associateBy { it.kind }, statuses, pinRests, kind, label, dialProfiles, currentIndex, hostId, active,
                 managed, visualOn, canEdit && row != null && (write == null || queued), write, queued, sourceStatus, !connected,
                 activeSessionCount = activeSessionCount, externalSubtitle = externalSubtitle, errorReason = errorReason,
                 autoNudge = canEdit && rows.isNotEmpty() && rows.none { it.enabled },
@@ -232,7 +237,9 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
             if (width >= 560.dp && height < 500.dp) Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
                 Dial(Modifier.weight(1f).fillMaxHeight()); Controls(Modifier.width(minOf(340.dp, width * 0.44f)).verticalScroll(rememberScrollState()))
             } else Column(Modifier.fillMaxSize()) {
-                Dial(Modifier.weight(1f).fillMaxWidth()); Controls(Modifier.fillMaxWidth().heightIn(max = (height - 204.dp).coerceAtLeast(90.dp)).verticalScroll(rememberScrollState()))
+                // AGENT-DIAL-04: the facts below scroll inside their own share; they never resize the dial.
+                Dial(Modifier.fillMaxWidth().height(DualDialGeometry.stackedHeight(width.value, height.value).dp))
+                Controls(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()))
             }
         }
     }
@@ -266,7 +273,7 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
 /** The neutral moat and hollow never claim a gesture; the starting ring owns it until release. */
 @Composable
 private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablementRow>, statuses: Map<String, AgentDialStatus>,
-    kind: String, label: String,
+    pinRests: Map<String, Float>, kind: String, label: String,
     providers: List<AgentProvider>, selectedIndex: Int, hostId: String?, active: Boolean, managed: Boolean, on: Boolean,
     canEdit: Boolean, pending: AgentDialChoice?, queued: Boolean, status: AgentDialStatus, offline: Boolean,
     activeSessionCount: Int, externalSubtitle: String?, errorReason: String?,
@@ -318,8 +325,15 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
             delay(1050); hint = null
         }
     }
-    val target = when { pending?.target == true -> AgentDialPin.HOLD; pending?.target == false -> 1f - AgentDialPin.HOLD; on -> 1f; else -> 0f }
-    val pin by animateFloatAsState(target, tween(InteractionMotion.duration(170)), label = "agent-pin")
+    val pinRest = AgentDialPin.rest(pending, on)
+    // Keyed by Agent: a newly docked Agent starts from its own rest, never mid-way from the previous Agent's pin.
+    val pin = remember(hostId, kind) { Animatable(pinRest) }
+    LaunchedEffect(pin, pinRest) { pin.animateTo(pinRest, tween(InteractionMotion.duration(170), easing = InteractionMotion.Easing)) }
+    val currentPin by rememberUpdatedState(pin)
+    val currentPinRest by rememberUpdatedState(pinRest)
+    val pendingSpin = rememberInfiniteTransition(label = "agent-pin-pending")
+    val spin by if (managed && pending != null && !queued && ValueAnimator.areAnimatorsEnabled()) pendingSpin.animateFloat(0f, 360f,
+        infiniteRepeatable(tween(1100, easing = LinearEasing)), label = "agent-pin-spin") else rememberUpdatedState(0f)
     var ringLit by remember(hostId, kind) { mutableStateOf(on) }
     val sweep = remember(hostId, kind) { Animatable(1f) }
     val dimSweep = remember(hostId, kind) { Animatable(0f) }
@@ -372,10 +386,13 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
         val maxIndex = if (ring == ProviderDialRing.Agent) currentKinds.lastIndex.coerceAtLeast(0) else currentProviders.lastIndex.coerceAtLeast(0)
         val end = target.coerceIn(0, maxIndex)
         val from = if (ring == ProviderDialRing.Agent) agentPosition else itemPosition.floatValue
+        // A docked Agent leaves gently so its pin visibly retracts before the ring turns; a released drag is already moving.
+        val departing = ring == ProviderDialRing.Agent && abs(from - from.roundToInt()) < 0.01f && end.toFloat() != from
         currentOnMoving(true)
         settleJob = scope.launch {
             animate(from, end.toFloat(), animationSpec = tween(InteractionMotion.duration(
-                InteractionMotion.Panel + min(240, (abs(end - from) * 90).roundToInt())), easing = Easing { 1 - (1-it).pow(3) })) { value, _ ->
+                InteractionMotion.Panel + min(240, (abs(end - from) * 90).roundToInt())),
+                easing = if (departing) Easing { if (it < 0.5f) 4 * it * it * it else 1 - (2 - 2 * it).pow(3) / 2 } else Easing { 1 - (1-it).pow(3) })) { value, _ ->
                 if (ring == ProviderDialRing.Agent) agentPosition = value else itemPosition.floatValue = value
             }
             if (ring == ProviderDialRing.Agent) currentKinds.getOrNull(end)?.let(currentOnKind) else currentOnBrowse(end)
@@ -448,7 +465,14 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                     }
                 } finally {
                     if (vertical) { grabbed = null; currentOnMoving(false) }
-                    if (radial) { pinDrag = null; pinArmed = false; hint = null }
+                    if (radial) {
+                        // The released pin travels on from where the finger left it, back to rest or on to the Host hold.
+                        pinDrag?.let { from -> scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                            currentPin.snapTo(from)
+                            currentPin.animateTo(currentPinRest, tween(InteractionMotion.duration(InteractionMotion.Panel), easing = InteractionMotion.Easing))
+                        } }
+                        pinDrag = null; pinArmed = false; hint = null
+                    }
                 }
                 if (radial && released && armed && currentEdit && currentKind == startKind && currentOn == startEnabled && currentPending == startPending)
                     toggle(!(startPending?.target ?: startEnabled))
@@ -530,21 +554,68 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                 if (hollow) drawCircle(if (offline || !on) palette.faint else pinColor, 3.5.dp.toPx(), pointer, style = Stroke(1.dp.toPx()))
                 else drawCircle(pinColor, 3.dp.toPx() * pointerPop.value, pointer)
             }
-            kinds.forEachIndexed { index, agent ->
-                val angle = Math.toRadians(((index - agentPosition) * g.agentStep).toDouble())
-                val x = g.cx + g.agentRadius * cos(angle).toFloat()
-                val y = g.cy + g.agentRadius * sin(angle).toFloat()
-                val agentEnabled = if (agent == kind) on else rows[agent]?.enabled == true
-                val agentStatus = statuses[agent] ?: status
-                if (abs(index - agentPosition) < 3.1f && x >= 12 && y in 20f..(height - 20) && !(managed && agent == kind && grabbed != ProviderDialRing.Agent)) Box(Modifier.offset(x = (x-24).dp, y = (y-24).dp).size(48.dp)
-                    .testTag("provider-agent-$agent")
-                    .graphicsLayer { alpha = if (grabbed == ProviderDialRing.Profile || agent != kind) 0.4f else 1f }
-                    .orbisKeyboardFocus().clickable(enabled = active,
-                        interactionSource = remember { MutableInteractionSource() }, indication = null) { tick(); settle(ProviderDialRing.Agent, index) }, contentAlignment = Alignment.Center) {
-                    DialAgentMark(agent, offline || !agentEnabled)
-                    if (managed) DialAgentBadges(agent, agentEnabled && !offline, agentStatus)
+            // AGENT-DIAL-04: the groove is fixed hardware at the gate and never leaves; each Agent is
+            // drawn once, and its pin retracts or extends along the groove as the ring docks it.
+            if (managed && kind.isNotEmpty()) {
+                var socketLit = 0f
+                var gateKind = kind
+                var nearest = Float.MAX_VALUE
+                kinds.forEachIndexed { index, agent ->
+                    val distance = abs(index - agentPosition)
+                    if (distance < nearest) { nearest = distance; gateKind = agent }
+                    val agentEnabled = if (agent == kind) on else rows[agent]?.enabled == true
+                    if (agentEnabled && !offline) socketLit += AgentDialPin.seated(distance)
+                }
+                val gateAccent = knownAgentBrand(gateKind)?.accent() ?: MaterialTheme.colorScheme.primary
+                NeumorphSurface(Modifier.offset((g.pinStart - 22).dp, (g.cy - 22).dp).size((g.pinTravel + 44).dp, 44.dp),
+                    RoundedCornerShape(22.dp), NeumorphStyle.Pressed, shadowScale = 0.55f) {}
+                Canvas(Modifier.fillMaxSize()) {
+                    val lit = socketLit.coerceIn(0f, 1f)
+                    val socketColor = if (conflictId != null) palette.danger.copy(alpha = 0.75f)
+                        else lerp(palette.faint.copy(alpha = 0.50f), gateAccent.copy(alpha = 0.85f), lit)
+                    val socketStroke = if (conflictId != null) 1.5.dp.toPx() else (1f + 0.5f * lit).dp.toPx()
+                    drawCircle(socketColor, 18.dp.toPx(), Offset((g.pinStart + g.pinTravel) * px, g.cy * px), style = Stroke(socketStroke))
+                    if (pinArmed) {
+                        drawRoundRect(
+                            color = accent.copy(alpha = 0.8f),
+                            topLeft = Offset((g.pinStart - 22) * px, (g.cy - 22) * px),
+                            size = androidx.compose.ui.geometry.Size((g.pinTravel + 44) * px, 44 * px),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(22 * px, 22 * px),
+                            style = Stroke(2.dp.toPx())
+                        )
+                    }
                 }
             }
+            val selectedTravel = (pinDrag ?: (pin.value + nudge.value)).coerceIn(0f, 1f)
+            kinds.forEachIndexed { index, agent -> key(agent) {
+                val distance = index - agentPosition
+                val selected = agent == kind
+                val travel = if (!managed) 0f else if (selected) selectedTravel else pinRests[agent] ?: 0f
+                val (x, y) = AgentDialPin.centre(g, distance, travel)
+                val gate = AgentDialPin.gate(distance)
+                val agentEnabled = if (selected) on else rows[agent]?.enabled == true
+                val agentStatus = statuses[agent] ?: status
+                if (abs(distance) < 3.1f && x >= 12 && y in 20f..(height - 20)) Box(Modifier
+                    .offset(x = (x - 24 + if (selected) recoil.value else 0f).dp, y = (y - 24).dp).size(48.dp)
+                    .testTag("provider-agent-$agent")
+                    .graphicsLayer { alpha = 0.4f + 0.6f * if (grabbed == ProviderDialRing.Profile) AgentDialPin.docked(distance) else gate }
+                    .orbisKeyboardFocus().clickable(enabled = active,
+                        interactionSource = remember { MutableInteractionSource() }, indication = null) { tick(); settle(ProviderDialRing.Agent, index) }, contentAlignment = Alignment.Center) {
+                    // The raised cap belongs to whichever Agent is docking, rising and sinking with ring position.
+                    if (managed && gate > 0.01f) NeumorphSurface(Modifier.size(40.dp).graphicsLayer { alpha = gate }, CircleShape,
+                        shadowScale = if (agentEnabled) 0.6f else 0.28f) {}
+                    if (managed && selected && pending != null) {
+                        val color = if (conflictId != null) palette.danger else accent
+                        Canvas(Modifier.size(29.dp)) {
+                            if (queued) drawCircle(color, style = Stroke(1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx()))))
+                            else drawArc(color, spin, 260f, useCenter = false, style = Stroke(1.5.dp.toPx()))
+                        }
+                    } else {
+                        DialAgentMark(agent, offline || !agentEnabled)
+                        if (managed) DialAgentBadges(agent, agentEnabled && !offline, agentStatus)
+                    }
+                }
+            } }
             val infoHint = agentDialInfoHint(status.label)
             val subtitleText = externalSubtitle ?: errorReason ?: if (on && !offline && activeSessionCount > 0) L10n.tr("{0} 个运行中", activeSessionCount) else null
             val subtitleColor = when {
@@ -643,45 +714,8 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                     0f..providers.lastIndex.coerceAtLeast(0).toFloat(), (providers.size - 2).coerceAtLeast(0))
                 setProgress { target -> if (!active || providers.isEmpty()) false else { settle(ProviderDialRing.Profile, target.roundToInt()); true } }
             })
-            if (managed && label.isNotEmpty() && grabbed != ProviderDialRing.Agent) {
+            if (managed && label.isNotEmpty()) {
                 val x = g.pinStart
-                val fraction = (pinDrag ?: (pin + nudge.value)).coerceIn(0f, 1f)
-                val color = if (conflictId != null) palette.danger else if (offline || !on && pending == null) palette.faint else accent
-                val progress = rememberInfiniteTransition(label = "agent-pin-pending")
-                val spin by if (pending != null && !queued && ValueAnimator.areAnimatorsEnabled()) progress.animateFloat(0f, 360f,
-                    infiniteRepeatable(tween(1100, easing = LinearEasing)), label = "agent-pin-spin") else rememberUpdatedState(0f)
-                NeumorphSurface(Modifier.offset((x - 22).dp, (g.cy - 22).dp).size((g.pinTravel + 44).dp, 44.dp),
-                    RoundedCornerShape(22.dp), NeumorphStyle.Pressed, shadowScale = 0.55f) {}
-                Canvas(Modifier.fillMaxSize()) {
-                    val socketColor = when {
-                        conflictId != null -> palette.danger.copy(alpha = 0.75f)
-                        on && !offline -> accent.copy(alpha = 0.85f)
-                        else -> palette.faint.copy(alpha = 0.50f)
-                    }
-                    val socketStroke = if (on && !offline || conflictId != null) 1.5.dp.toPx() else 1.dp.toPx()
-                    drawCircle(socketColor, 18.dp.toPx(), Offset((x + g.pinTravel) * px, g.cy * px), style = Stroke(socketStroke))
-                    if (pinArmed) {
-                        drawRoundRect(
-                            color = accent.copy(alpha = 0.8f),
-                            topLeft = Offset((x - 22) * px, (g.cy - 22) * px),
-                            size = androidx.compose.ui.geometry.Size((g.pinTravel + 44) * px, 44 * px),
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(22 * px, 22 * px),
-                            style = Stroke(2.dp.toPx())
-                        )
-                    }
-                }
-                NeumorphSurface(Modifier.offset((x + g.pinTravel * fraction - 20 + recoil.value).dp, (g.cy - 20).dp).size(40.dp),
-                    CircleShape, shadowScale = if (on) 0.6f else 0.28f) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        if (pending == null) {
-                            DialAgentMark(kind, !on || offline)
-                            DialAgentBadges(kind, on && !offline, status)
-                        } else Canvas(Modifier.size(29.dp)) {
-                            if (queued) drawCircle(color, style = Stroke(1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 3.dp.toPx()))))
-                            else drawArc(color, spin, 260f, useCenter = false, style = Stroke(1.5.dp.toPx()))
-                        }
-                    }
-                }
                 Box(Modifier.offset((x - 24).dp, (g.cy - 24).dp).size((g.pinTravel + 48).dp, 48.dp)
                     .testTag("agent-enablement-$kind").orbisKeyboardFocus().onPreviewKeyEvent { event ->
                         if (event.type != KeyEventType.KeyDown || !canEdit) false else {

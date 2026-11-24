@@ -55,6 +55,35 @@ struct ProviderDialGeometryTests {
         #expect(ProviderDialGeometry.pinArmed(enabled: true, position: ProviderDialGeometry.pinPosition(enabled: true, dx: -g.pinTravel, travel: g.pinTravel)))
     }
 
+    // AGENT-DIAL-04: the stacked dial is sized by the page alone, at the disc's full width-bound size,
+    // so quota, session or notice rows below can only scroll, not move or shrink the disc.
+    @Test func stackedDialKeepsItsFullDiscIndependentOfTheFactsBelow() {
+        for (width, height) in [(360.0, 560.0), (393.0, 600.0), (430.0, 700.0)] {
+            let dial = ProviderDialGeometry.stackedHeight(width: width, height: height)
+            #expect(ProviderDialGeometry.Layout(width: width, height: dial).radius == ProviderDialGeometry.Layout(width: width, height: 4000).radius)
+            #expect(height - dial >= 200)
+        }
+        #expect(ProviderDialGeometry.stackedHeight(width: 393, height: 300) == 204)
+    }
+
+    // AGENT-DIAL-04: a docked pin is one continuous path — slot, groove, socket — with no jump between
+    // the ring and the groove, and an extended pin never leaves the groove's centre line.
+    @Test func dockedPinRetractsAlongTheFixedGrooveWithoutJumping() {
+        let g = ProviderDialGeometry.Layout(width: 393, height: ProviderDialGeometry.stackedHeight(width: 393, height: 600))
+        #expect(abs(g.pinCentre(distance: 0, travel: 1).x - (g.pinStart + g.pinTravel)) < 0.001)
+        #expect(abs(g.pinCentre(distance: 0, travel: 0).x - g.pinStart) < 0.001)
+        #expect(abs(g.pinCentre(distance: 0, travel: 1).y - g.centerY) < 0.001)
+        #expect(g.pinCentre(distance: ProviderDialGeometry.seatWindow, travel: 0) == g.pinCentre(distance: ProviderDialGeometry.seatWindow, travel: 1))
+        var previous = g.pinCentre(distance: -0.6, travel: 1)
+        for i in -599...600 {
+            let distance = Double(i) / 1000
+            let centre = g.pinCentre(distance: distance, travel: 1)
+            #expect(hypot(centre.x - previous.x, centre.y - previous.y) < 1, "jump at \(distance)")
+            if centre.x - g.pinCentre(distance: distance, travel: 0).x > 0.5 { #expect(abs(centre.y - g.centerY) <= 3, "off groove at \(distance)") }
+            previous = centre
+        }
+    }
+
     @Test func variantBadgesInfoHintsAndActiveSessionPinReleaseHintsMatchDialSpec() {
         #expect(ProviderDialGeometry.variant(for: "codex") == "terminal")
         #expect(ProviderDialGeometry.variant(for: "dsh") == "terminal")

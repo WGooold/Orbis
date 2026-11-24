@@ -62,6 +62,14 @@ internal data class DualDialGeometry(val cx: Float, val cy: Float, val radius: F
         return when { r < holeRadius -> null; r < hubRadius -> ProviderDialRing.Agent; r < seamRadius -> null; else -> ProviderDialRing.Profile }
     }
     companion object {
+        /**
+         * AGENT-DIAL-04: the stacked dial height depends only on the page, never on the facts listed
+         * below it, so the disc keeps its centre and radius while sessions, quotas or notices change.
+         */
+        fun stackedHeight(width: Float, height: Float): Float {
+            val natural = 2 * (maxOf(140f, minOf(kotlin.math.round(width * 0.52f), width - 240)) + 28)
+            return maxOf(height - 320, minOf(natural, height - 200)).coerceAtLeast(minOf(height, 204f))
+        }
         fun measure(width: Float, height: Float): DualDialGeometry {
             val r0 = maxOf(140f, minOf(kotlin.math.round(width * 0.52f), kotlin.math.floor(height / 2)-28, width-240))
             val rimX = r0 + kotlin.math.round((r0 * 0.15f).coerceIn(22f, 30f)) + 24
@@ -94,4 +102,36 @@ internal object AgentDialPin {
     fun horizontal(dx: Float, dy: Float) = kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.1f
     fun drag(enabled: Boolean, dx: Float, travel: Float): Float = if (enabled) (1 + dx / travel).coerceIn(1-HOLD, 1f) else (dx / travel).coerceIn(0f, HOLD)
     fun armed(enabled: Boolean, position: Float): Boolean = if (enabled) position < 0.5f else position > 0.5f
+
+    /** Resting pin travel for any Agent: the socket end is reserved for a Host-confirmed enable. */
+    fun rest(pending: AgentDialChoice?, enabled: Boolean): Float = when (pending?.target) {
+        true -> HOLD; false -> 1 - HOLD; null -> if (enabled) 1f else 0f
+    }
+
+    /**
+     * AGENT-DIAL-04: the groove is fixed at the gate; an Agent's pin may only ride it while that
+     * Agent is docked. Docking is a function of ring position alone, so dragging, settling and
+     * reversing all retract and extend the pin continuously instead of swapping elements.
+     */
+    const val DOCK = 0.2f
+    /** Pins leave the ring only inside a narrower window, after the Agent is already held on the groove line. */
+    const val SEAT = 0.1f
+    fun docked(distance: Float): Float = 1 - smooth(kotlin.math.abs(distance) / DOCK)
+    fun seated(distance: Float): Float = 1 - smooth(kotlin.math.abs(distance) / SEAT)
+    /** The raised cap emerges over a wider window, so it never belongs to two Agents at once. */
+    fun gate(distance: Float): Float = 1 - smooth(kotlin.math.abs(distance) / 0.5f)
+    private fun smooth(t: Float): Float { val x = t.coerceIn(0f, 1f); return x * x * (3 - 2 * x) }
+
+    /**
+     * Pin centre in dp for an Agent [distance] slots from the gate. A docked pin stays on the
+     * groove's centre line; an undocked one follows the ring.
+     */
+    fun centre(g: DualDialGeometry, distance: Float, travel: Float): Pair<Float, Float> {
+        val angle = Math.toRadians((distance * g.agentStep).toDouble())
+        val dock = docked(distance)
+        val radius = g.agentRadius + travel.coerceIn(0f, 1f) * seated(distance) * g.pinTravel
+        val x = g.cx + radius * kotlin.math.cos(angle).toFloat()
+        val y = g.cy + radius * kotlin.math.sin(angle).toFloat() * (1 - dock)
+        return x to y
+    }
 }

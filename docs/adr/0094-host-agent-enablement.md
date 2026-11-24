@@ -161,3 +161,17 @@ Host Agent 开关的移动钮使用轻量场景图圆形与明暗偏移层表达
 配额查询改为无文字刷新图标，保留「刷新配额」辅助名称及提示；未启用状态与启用动作在详情内容区共用水平中线，状态文字内部也显式居中。Host Agent 页面将 `dsh` 的展示名映射为 DeepSeek Web；共享设置快照的标签和稳定协议 kind 保持不变，以免改变旧移动端目录显示。
 
 实现与验证：[`AgentLatch.qml`](../../packages/windows-host/src/qml/AgentLatch.qml)、[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)、Host 目录 [`agent-enablement.ts`](../../packages/host/src/agent-enablement.ts)；[Qt 页面／开关回归](../../.artifacts/agent-page-feedback-20261124/host-qt-test.log)、[开关等待异步回执时的渲染帧样本](../../.artifacts/agent-page-feedback-20261124/agent-latch-frame-sample.log)、[详情截图](../../.artifacts/agent-page-feedback-20261124/agent-inactive.png)、[目录定向测试](../../.artifacts/agent-page-feedback-20261124/agent-enablement-test.log)及[类型检查](../../.artifacts/agent-page-feedback-20261124/typecheck.log)。软件渲染测试在 Host 模拟写入等待期间观测到 82 ms 内 7 个 `afterRendering` 帧，拨杆从 x=3 移至 x≈19；这说明动画在等待期间持续推进，不证明目标机器整页无掉帧。未发布或安装，完整页面性能及用户验收待实际安装验证。
+
+## AGENT-DIAL-04｜移动端轮盘稳定框架与插销连续入槽（2026-11-24）
+
+- **框架稳定**：竖排布局中轮盘高度只由页面宽高决定（Android `DualDialGeometry.stackedHeight`、iOS `ProviderDialGeometry.stackedHeight`），下方事实区在剩余空间内滚动；会话、配额、错误或提示增减不再改变圆盘的圆心与半径。
+- **凹槽固定**：插销槽是 3 点钟方向的固定构件，内环转动时也始终显示；插孔亮度和品牌色取自正在入槽的 Agent，随转动连续变化。
+- **插销连续入槽**：每个 Agent 只绘制一次。凸起栓帽在接近槽口时浮现、离开时下沉；只有进入槽口窗口后，已启用的插销才沿槽伸出，离开前先沿槽退回内环（Android `AgentDialPin.centre`／`docked`／`seated`，iOS `Layout.pinCentre`）。伸出量只由环位置决定，拖动、回弹、反向和点按切换共用同一路径；点按或键盘从静止切换时采用缓入缓出，让插销先退回再转动。横向拨插销松手后从手指位置回到原位或停在待确认位置。写入、复核与回执语义不变。
+
+实现：Android [`ProviderDialScreen.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialScreen.kt)、[`ProviderDialGeometry.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialGeometry.kt)；iOS [`StatusViews.swift`](../../ios/Orbis/Orbis/StatusViews.swift)（`DialAgentRing` 逐帧重算环位置与插销行程，结算动画沿凹槽而非弦线插值）、[`ProviderDialGeometry.swift`](../../ios/Orbis/Orbis/ProviderDialGeometry.swift)。回归：Android [`ProviderDialGeometryTest.kt`](../../android/app/src/test/java/com/orbising/orbis/ProviderDialGeometryTest.kt)、iOS [`ProviderDialGeometryTests.swift`](../../ios/Orbis/Tests/ProviderDialGeometryTests.swift)（轮盘尺寸与内容无关、插销轨迹连续且不离槽）；Android [`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `dialKeepsItsFrameWhenTheFactsBelowGrow`。
+
+Android 自动验证（2026-11-24，基于 `f5b1dd54` 的工作区）：[单元回归 15 项通过](../../.artifacts/agent-dial-03-20261124/unit/build.log)（`ProviderDialGeometryTest`、`DesignAlignmentTest`、`AgentDialStateTest`）；共享 API 35 模拟器上 [`ProviderDialInstrumentedTest` 10 项中 8 项通过](../../.artifacts/agent-dial-03-20261124/instrumentation/instrumentation.log)，含新增框架稳定用例。另 2 项失败（`browsing…` 断言页面标题「供应商」，`pinRequires…` 前后断言选中 Agent 互相矛盾），同机同工具对 `f5b1dd54` 的[基线运行](../../.artifacts/agent-dial-03-20261124/baseline-instrumentation/instrumentation.log)以相同断言失败，属既有问题，原断言保留未改。交付包：[ARM64 Release](../../.artifacts/agent-dial-03-20261124/release/)（签名与既有安装一致，映射随包保留）。
+
+iOS 自动验证：[Swift 几何回归 9 项通过](../../.artifacts/agent-dial-03-20261124/ios-swift-test/run.log)；[无签名模拟器构建成功](../../.artifacts/agent-dial-03-20261124/ios-app-build/run.log)；共享模拟器上 5 项轮盘界面用例中 2 项通过（目录错误不覆盖轮盘、配额双窗口）。另 3 项（反复拖动 Agent 后外环、硬件键浏览、合屏横屏滚动）失败，同机对 `f5b1dd54` 的[基线运行](../../.artifacts/agent-dial-03-20261124/ios-baseline-ui-tests/command.log)以相同断言和数值失败，属既有问题，原断言保留未改。界面用例的预览 Host 未协商启用管理，覆盖旧端轮盘路径。
+
+未部署，未登记 QA（需先推送候选分支）；拖动手感与视觉待用户在 Android 与 iOS 上安装验收。

@@ -63,6 +63,16 @@ class ProviderDialInstrumentedTest {
         compose.runOnIdle { assertEquals(listOf(profiles("codex")[1] to "dial-host"),changes) }
         capture("light")
     }
+    /** AGENT-DIAL-04: facts growing below the dial scroll in their own share; the disc never moves or resizes. */
+    @Test fun dialKeepsItsFrameWhenTheFactsBelowGrow() {
+        val state = mutableStateOf(ready())
+        show(state)
+        val before = compose.onNodeWithTag("provider-dual-dial").fetchSemanticsNode().boundsInRoot
+        compose.runOnIdle { state.value = state.value.copy(providerCatalogProblems = mapOf("codex" to
+            List(12) { "无法读取供应商目录" }.joinToString("，"))) }
+        compose.onNodeWithTag("provider-catalog-problem").assertExists()
+        assertEquals(before, compose.onNodeWithTag("provider-dual-dial").fetchSemanticsNode().boundsInRoot)
+    }
     /** S36 / SC57: refresh is not hidden once a reading exists; each tap reaches a new query and failures stay visible. */
     @Test fun quotaRefreshStaysAvailableAfterTheFirstReading() {
         val provider = profiles("codex").first()

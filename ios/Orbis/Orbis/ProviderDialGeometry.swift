@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// SC57: the two handles are separated by a 24pt inactive moat. Hit testing is
@@ -29,6 +30,14 @@ enum ProviderDialGeometry {
         }
         var pinStart: Double { centerX + agentRadius }
         var pinTravel: Double { hubRadius + 24 - agentRadius }
+        /// AGENT-DIAL-04: centre of an Agent `distance` slots from the gate. A docked pin stays on the
+        /// fixed groove's centre line; an undocked one follows the ring.
+        func pinCentre(distance: Double, travel: Double) -> CGPoint {
+            let angle = distance * agentStep * .pi / 180
+            let dock = ProviderDialGeometry.docked(distance)
+            let radius = agentRadius + clamp(travel, 0, 1) * ProviderDialGeometry.seated(distance) * pinTravel
+            return CGPoint(x: centerX + radius * cos(angle), y: centerY + radius * sin(angle) * (1 - dock))
+        }
         func pinContains(x: Double, y: Double) -> Bool { (pinStart - 22...pinStart + pinTravel + 22).contains(x) && abs(y - centerY) <= 26 }
         func handle(x: Double, y: Double) -> Handle? {
             guard x >= 20 else { return nil }
@@ -45,6 +54,24 @@ enum ProviderDialGeometry {
         enabled ? clamp(1 + dx / travel, 1 - pinHold, 1) : clamp(dx / travel, 0, pinHold)
     }
     static func pinArmed(enabled: Bool, position: Double) -> Bool { enabled ? position < 0.5 : position > 0.5 }
+    /// Resting pin travel for any Agent: the socket end is reserved for a Host-confirmed enable.
+    static func pinRest(pendingTarget: Bool?, enabled: Bool) -> Double {
+        switch pendingTarget { case true?: pinHold; case false?: 1 - pinHold; case nil: enabled ? 1 : 0 }
+    }
+    /// AGENT-DIAL-04: docking is a function of ring position alone. An Agent is held on the groove line
+    /// inside `dockWindow`; its pin may leave the ring only inside the narrower `seatWindow`.
+    static let dockWindow = 0.2
+    static let seatWindow = 0.1
+    static func docked(_ distance: Double) -> Double { 1 - smooth(abs(distance) / dockWindow) }
+    static func seated(_ distance: Double) -> Double { 1 - smooth(abs(distance) / seatWindow) }
+    /// The raised cap emerges over a wider window, so it never belongs to two Agents at once.
+    static func gate(_ distance: Double) -> Double { 1 - smooth(abs(distance) / 0.5) }
+    private static func smooth(_ t: Double) -> Double { let x = clamp(t, 0, 1); return x * x * (3 - 2 * x) }
+    /// AGENT-DIAL-04: the stacked dial height depends only on the page, never on the facts below it.
+    static func stackedHeight(width: Double, height: Double) -> Double {
+        let natural = 2 * (max(140, min((width * 0.52).rounded(), width - 240)) + 28)
+        return max(max(height - 320, min(natural, height - 200)), min(height, 204))
+    }
     static func settleDuration(distance: Double) -> Double { min(0.46, 0.22 + abs(distance) * 0.06) }
     static func clamp(_ value: Double, _ lower: Double, _ upper: Double) -> Double { min(max(value, lower), upper) }
     static func softened(_ value: Double, count: Int) -> Double {
