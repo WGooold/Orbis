@@ -41,7 +41,7 @@ type OpenClawBackendCallbacks = {
   log?: (message: string) => void;
 };
 /** The deliberately small seam used by transport tests. Production uses the official SDK. */
-export type OpenClawConnection = Pick<OpenClawGateway, "request" | "ready" | "start" | "stop">;
+export type OpenClawConnection = Pick<OpenClawGateway, "request" | "ready" | "start" | "stop"> & Partial<Pick<OpenClawGateway, "pairingEpoch" | "retryLocal">>;
 
 export class OpenClawBackend implements AgentBackend {
   readonly kind = "openclaw";
@@ -67,7 +67,7 @@ export class OpenClawBackend implements AgentBackend {
     return backend;
   }
 
-  private constructor(url: string, hostId: string, readonly callbacks: OpenClawBackendCallbacks) {
+  private constructor(readonly url: string, hostId: string, readonly callbacks: OpenClawBackendCallbacks) {
     this.#namespace = `${OPENCLAW_PREFIX}${clawHash(url).slice(0, 16)}:`;
     this.#runPrefix = `orbis-${clawHash(hostId).slice(0, 16)}:`;
   }
@@ -78,6 +78,9 @@ export class OpenClawBackend implements AgentBackend {
     await this.#transport.stop();
   }
   isReady(): boolean { return this.#ready && this.#transport.ready && !this.#stopped; }
+  get pairingEpoch(): number { return this.#transport.pairingEpoch ?? 0; }
+  async retryLocal(current: () => void): Promise<void> { await this.#transport.retryLocal?.(current); }
+  matchesSessionSource(id: string): boolean { return id.startsWith(this.#namespace) && /^[A-Za-z0-9_-]{43}$/u.test(id.slice(this.#namespace.length)); }
   ownsRuntime(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   catalogComplete(): boolean { return this.#coverage.get(false) === true && this.#coverage.get(true) === true; }
 

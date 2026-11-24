@@ -31,6 +31,9 @@ import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
 import { resolveDshCommand } from "./dsh-client.js";
 import { HostService } from "./host-service.js";
 import { createLocalKimiRuntime } from "./kimi-runtime.js";
+import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
+import { createOpenCodeLocalLauncher } from "./opencode-local-launch.js";
+import { OpenCodeServiceConnection } from "./opencode-service-connection.js";
 import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
@@ -220,7 +223,9 @@ async function runHostUntilShutdown(
       codexDesktopStatus: () => codexDesktop?.status,
       ensureDshRuntime: () => connectDsh(false),
       recoverDshRuntime: () => connectDsh(true),
-      ...(sessionsRoot === undefined ? { hermes: { getRemoteGateway: () => loadHermesRemoteGatewayConfig(stateDir) } } : { openClaw: false as const }),
+      ...(sessionsRoot === undefined ? { hermes: { getRemoteGateway: () => loadHermesRemoteGatewayConfig(stateDir) },
+        openClawLauncher: createOpenClawLocalLauncher(), createOpenCodeConnection: () => new OpenCodeServiceConnection({ launcher: createOpenCodeLocalLauncher() }) }
+        : { openClaw: false as const, opencodeConnection: false as const }),
       prepareManagedDsh: async (kind, lease) => {
         if (kind === "dsh") {
           const env = await providers.environment("dsh");

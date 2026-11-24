@@ -10,7 +10,7 @@ Status: accepted（接入已实现；已通过隔离的 Windows 原生服务测�
 
 Orbis 需要通过 Host 查看并操作 OpenCode 会话。OpenCode V2 默认由同一用户级共享服务持有会话、配置、权限和工具执行；本地 CLI 客户端连接该服务。OpenCode 也提供 `--standalone` 私有服务和 ACP 入口，但 ACP 当前实现会启动自己的 standalone 服务。若 Orbis 再启动一套 OpenCode 服务并连接同一默认数据库，可能出现两个服务同时驱动同一会话；没有证据证明这种方式具备 session 级单写者互斥。[F01–F04]
 
-采用**共享服务接入**：新增独立 `agentKind: "opencode"`，Host 通过官方 `@opencode/client` Promise 网络客户端发现并连接当前用户已经运行的共享服务；只调用固定 `@opencode/client` 版本暴露的标准 API；首版明确接受官方文档标注为 experimental 的 `/api/event` 实时事件订阅，并按预览功能管理。除此之外不调用 `client.experimental.*`。Host 不启动、停止或重启 OpenCode 服务，不运行 `opencode acp`，不直接读写 OpenCode 数据库。共享服务不存在、版本不兼容或认证失败时，backend 报告不可用，不另起进程或回退到独立数据库。[F01–F06]
+采用**共享服务接入**：新增独立 `agentKind: "opencode"`，Host 通过官方 `@opencode/client` Promise 网络客户端发现并连接当前用户的共享服务；只调用固定 `@opencode/client` 版本暴露的标准 API，并接受 experimental 的 `/api/event` 实时事件订阅。除此之外不调用 `client.experimental.*`。Host 不运行 `opencode acp`，不直接读写 OpenCode 数据库，不替换不兼容或认证失败的已有服务。首版只接入已经运行的服务；HOST-AGENT-START-01 补充显式的本机启动。[F01–F06]
 
 Host 将 OpenCode API 事件与按需读取的 session/message 数据映射到既有 Agent state；OpenCode 原生存储仍是历史和执行权威，手机只消费 Orbis 协议。OpenCode 事件流是 volatile 的；断线或溢出后，Host 必须重新读取会话状态并恢复订阅，不能把事件流当作可重放日志。[F05]
 
@@ -35,11 +35,11 @@ Host 将 OpenCode API 事件与按需读取的 session/message 数据映射到�
 
 新增 `agentKind: "opencode"`，runtime 身份使用可判定归属的 `opencode:` 前缀。该 kind 表示 Host 通过 OpenCode 官方共享服务 API 管理的 OpenCode session，不表示桌面 UI 的专用 attachment，也不增加 `opencodeDesktop`。
 
-### 2. 只连接已运行的共享服务
+### 2. 只接入官方本机共享服务
 
 Host 使用 `@opencode/client` 发布的 Node Promise client，并使用 SDK 公开的 `fallback()`、`Info` 和 `Service.headers()` 读取服务注册、生成认证头。`2.3.2` 的 `Service.discover()` 在向调用者返回 URL 之前就对文件中的 URL 发送带认证头的请求，且未禁止 HTTP 重定向。为保证校验早于网络请求，Host 只读 `Info` 的 `url`、`pid`、`version` 和 `password`，先校验 loopback，再调用 `server.info` 核对 PID 和版本。SDK 请求禁止重定向。Host 不记录、写入或向手机发送注册文件密码。
 
-首版只做只读发现与连接：不得调用会启动、替换、停止服务的 `ensure` / `stop` helper，不启动 `opencode serve` 或 `opencode acp`，不安装或更新 OpenCode。没有可用共享服务时，OpenCode backend 标记 unavailable，并给出用户可自行执行的启动说明；Host 启动和 OpenCode backend 激活均不得中断已有 OpenCode 会话。
+被动发现、Host 启动以及目录或回执读取只连接已有服务。不得调用会替换或停止服务的 `ensure` / `stop` helper，不运行 `opencode acp`，不安装或更新 OpenCode。HOST-AGENT-START-01 允许显式启动同一用户级共享服务，不得中断已有会话。
 
 ### 3. OpenCode 数据与执行仍由其共享服务拥有
 
@@ -104,3 +104,9 @@ try {
 ```
 
 待验收：原生服务上的权限批准／拒绝和事件流溢出恢复（目前仅模拟测试通过）、iOS 编译、Android／iOS 与隔离 Host 的设备联调及真实旧版 App 兼容性。现阶段仍是预览候选，不加入正式支持清单，也不扩大 `2.3.2` 版本范围。
+
+## HOST-AGENT-START-01：按需启动本机共享服务
+
+已启用时，桌面 Host 的「启动」与已协商手机请求新建配置或恢复会话，先复用已验证的注册实例；只有没有可用登记且本机配置允许时，才用兼容 CLI 的 `serve --service --hostname 127.0.0.1`。保留原生共享端口和默认数据源，不使用随机端口、standalone 或 ACP；无效登记、认证失败、版本不符、禁用、非回环绑定或远程配置不触发备用进程。一个 Host 内并发启动合并；不停止来自其他启动者或已经交付的服务。`launchableAgents` 与 `backends[].launchable` 公告可发起启动，`agents` 与 `ready` 仍要求验证 SDK 和事件流。移动端使用已有字段兼容旧 Host；未协商的设备看不到该来源。
+
+实现见 [`opencode-local-launch.ts`](../../packages/host/src/opencode-local-launch.ts) 和 [`opencode-service-connection.ts`](../../packages/host/src/opencode-service-connection.ts)，真实隔离 CLI 验证见 [`opencode-native.test.ts`](../../packages/host/src/opencode-native.test.ts)；Qt、加密传输和两端状态回归的证据索引见 [本地验证](../../.artifacts/agent-demand-launch-20261124/verification.json)。未发布，未安装至用户设备。

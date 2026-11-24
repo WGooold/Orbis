@@ -71,6 +71,7 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
   const url = `ws://127.0.0.1:${address.port}`;
   const connects: Array<{ deviceId: string; token: string; valid: boolean }> = [];
   let scopes = ["operator.read", "operator.write"];
+  let needsPairing = false;
   server.on("connection", socket => {
     const nonce = `nonce-${connects.length}`;
     const ts = Date.now();
@@ -89,6 +90,11 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
       connects.push({ deviceId: device.id, token: auth.deviceToken ?? auth.token,
         valid: device.nonce === nonce && device.signedAt === ts && createHash("sha256").update(raw).digest("hex") === device.id &&
           verify(null, Buffer.from(signed), key, Buffer.from(device.signature, "base64url")) });
+      if (needsPairing) {
+        socket.send(JSON.stringify({ type: "res", id: frame.id, ok: false, error: { code: "NOT_PAIRED", message: "fixture approval required",
+          details: { code: "PAIRING_REQUIRED", reason: "not-paired", requestId: "fixture-pairing" } } }));
+        return;
+      }
       socket.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { type: "hello-ok", protocol: 4,
         server: { version: "fixture", connId: "fixture" }, features: { methods: ["sessions.list", "sessions.create", "sessions.subscribe",
           "sessions.messages.subscribe", "sessions.messages.unsubscribe", "sessions.patch", "chat.history", "chat.send", "chat.abort"], events: [] },
@@ -112,6 +118,16 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
   expect(connects).toEqual([{ deviceId: connects[0]?.deviceId, token: "bootstrap-token", valid: true },
     { deviceId: connects[0]?.deviceId, token: "paired-token", valid: true }]);
   await second.stop();
+  // HOST-AGENT-START-01: after native approval, retry only the transport and keep the same Orbis identity.
+  needsPairing = true;
+  const pending = await start();
+  await vi.waitFor(() => expect(pending.pairingEpoch).toBeGreaterThan(0));
+  expect(pending.ready).toBe(false);
+  needsPairing = false;
+  await pending.retryLocal(() => {});
+  await vi.waitFor(() => expect(pending.ready).toBe(true));
+  expect(connects.at(-1)?.deviceId).toBe(connects[0]?.deviceId);
+  await pending.stop();
   scopes = ["operator.read"];
   const third = await start("bootstrap-token");
   await vi.waitFor(() => expect(events.log).toHaveBeenCalledWith(expect.stringContaining("required operator scopes")));

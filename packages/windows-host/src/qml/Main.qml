@@ -77,7 +77,9 @@ ApplicationWindow {
     function openClawConnectionState(connectedLabel) {
         return host.openClaw.invalid ? "配置无效"
             : !host.openClaw.url ? "待配置" : host.resumePending ? "正在重新连接"
-            : window.openClawReady ? connectedLabel : host.desiredRunning ? "Gateway 未就绪" : "Host 未连接"
+            : window.openClawReady ? connectedLabel : !host.desiredRunning ? "Host 未连接"
+            : window.backendFor("openclaw")?.reason === "pairing_required" ? "待批准"
+            : window.startingAgent("openclaw") ? "正在启动" : window.startActionVisible("openclaw") ? "可启动" : "Gateway 未就绪"
     }
     readonly property int setupStep: ["activate", "connect", "pair", "enable", "install"].indexOf(nextStep)
     readonly property bool setupComplete: host.activated && host.devices.length > 0 && overviewAgents.some(agent => agent.installed && !agent.broken)
@@ -92,6 +94,18 @@ ApplicationWindow {
     function backendFor(kind) { return host.backends.find(function(backend) { return backend.kind === kind }) }
     readonly property bool kimiStartAvailable: host.kimiCodeAvailable && host.kimiCodeEnabled && host.desiredRunning
         && window.backendFor("kimiCode")?.launchable === true && window.backendFor("kimiCode")?.ready !== true
+    function localServiceAgent(kind) { return kind === "opencode" || kind === "openclaw" || kind === "hermes" }
+    function startActionVisible(kind) {
+        if (kind === "kimiCode") return window.kimiStartAvailable
+        if (!window.localServiceAgent(kind) || !host.desiredRunning) return false
+        if (kind === "hermes" && (host.hermesRemote.host || host.hermesRemote.invalid)) return false
+        if (kind === "openclaw" && (host.openClaw.invalid || !(host.openClaw.url || "").startsWith("ws://127.0.0.1:"))) return false
+        const backend = window.backendFor(kind)
+        return backend?.launchable === true && backend.ready !== true
+    }
+    function startingAgent(kind) {
+        return kind === "kimiCode" ? host.kimiCodeState === "starting" : window.localServiceAgent(kind) && window.backendFor(kind)?.reason === "starting"
+    }
     function kimiStatusText() {
         if (!host.desiredRunning) return "未连接"
         return ({ connected: "已接入", connecting: "正在连接", starting: "正在启动", not_installed: "未安装",
@@ -129,6 +143,7 @@ ApplicationWindow {
         if (agent.kind === "codexDesktop" && window.codexDesktopNeedsAttention) return window.codexDesktopLabel()
         if (agent.kind === "openclaw" && !window.agentReachable(agent)) return window.openClawStateText
         if (agent.kind === "kimiCode" && !window.agentReachable(agent)) return window.kimiStatusText()
+        if (window.localServiceAgent(agent.kind) && window.startActionVisible(agent.kind)) return window.startingAgent(agent.kind) ? "正在启动" : "可启动"
         if (agent.passive && !window.agentReachable(agent)) return "未接入"
         // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。Claude 有自己的检测。
         if (!host.bridgeReady || window.agentCliDetecting(agent.kind)) return "检测中"
@@ -155,15 +170,15 @@ ApplicationWindow {
     }
     // Unknown installation is not an install verdict: keep the action descriptive but disabled until detection settles.
     function overviewAgentActionText(agent, installable) {
+        if (window.startActionVisible(agent.kind)) return window.startingAgent(agent.kind) ? "正在启动" : "启动"
         if (agent.kind === "openclaw") return "配置"
-        if (agent.kind === "kimiCode") return host.kimiCodeState === "starting" ? "正在启动" : "启动"
         if (agent.installed === false) return installable ? (agent.broken ? "修复" : "安装") : "打开"
         if (agent.installed === true && agent.broken && installable && agent.opensToFix !== true) return "修复"
         if (agent.installed === true) return "打开"
         return window.agentPhoneState(agent, 0)
     }
     function overviewAgentActionEnabled(agent, installable) {
-        if (agent.kind === "kimiCode") return host.bridgeReady && !host.busy && window.kimiStartAvailable && host.kimiCodeState !== "starting"
+        if (window.startActionVisible(agent.kind)) return host.bridgeReady && !host.busy && !window.startingAgent(agent.kind)
         return host.bridgeReady && !host.busy && (agent.installed === true || (agent.installed === false && installable))
     }
     function overviewAgentActionPrimary(agent, installable) {
@@ -196,7 +211,7 @@ ApplicationWindow {
         return host.claudeVersion ? "需升级" : "版本未确认"
     }
     function openOverviewAgent(kind) {
-        if (kind === "openclaw") window.goAgent(kind)
+        if (kind === "openclaw" && !window.startActionVisible(kind)) window.goAgent(kind)
         else if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
         else host.openAgent(kind)
     }
@@ -503,6 +518,11 @@ ApplicationWindow {
         if (row.kind === "dshDesktop" && window.dshDesktopBlocked()) return {text: window.dshDesktopShortState(), color: Theme.warning}
         // A confirmed running turn outranks a local CLI detection result (the backend can be remote).
         if (window.runningSessionsFor(row.kind).total > 0) return {text: "已连接", color: Theme.success}
+        if (window.localServiceAgent(row.kind) && window.startingAgent(row.kind)) return {text: "正在启动", color: Theme.warning, sync: true}
+        if (row.kind === "openclaw" && backend?.reason === "pairing_required") return {text: "待批准", color: Theme.warning, idle: true}
+        if (window.startActionVisible(row.kind) && window.localServiceAgent(row.kind)) return {text: "可启动", color: Theme.inkMuted, idle: true}
+        if (row.kind === "openclaw" && backend?.ready !== true) return {text: window.openClawStateText, color: Theme.inkMuted, idle: true}
+        if (row.kind === "hermes" && !!host.hermesRemote.host && backend?.ready !== true) return {text: "等待接入", color: Theme.inkMuted, idle: true}
         if (row.kind === "kimiCode") {
             const busy = host.kimiCodeState === "starting" || host.kimiCodeState === "connecting"
             const blocked = ["not_installed", "ambiguous", "unauthorized", "unsupported", "unsafe", "unavailable"].includes(host.kimiCodeState)
@@ -1702,14 +1722,14 @@ ApplicationWindow {
                                             ActionButton {
                                                 id: overviewAgentAction
                                                 objectName: "overviewAgent-" + agentRow.modelData.kind
-                                                visible: agentRow.modelData.passive !== true || agentRow.modelData.kind === "kimiCode" && window.kimiStartAvailable
+                                                visible: agentRow.modelData.passive !== true || window.startActionVisible(agentRow.modelData.kind)
                                                 Layout.preferredWidth: 112
                                                 text: window.overviewAgentActionText(agentRow.modelData, agentRow.installable)
                                                 primary: window.overviewAgentActionPrimary(agentRow.modelData, agentRow.installable)
                                                 enabled: window.overviewAgentActionEnabled(agentRow.modelData, agentRow.installable)
                                                 loading: host.agentInstalling && host.agentInstallKind === agentRow.modelData.kind
                                                     || agentRow.modelData.kind === "dshDesktop" && host.dshDesktopOpen !== "idle"
-                                                    || agentRow.modelData.kind === "kimiCode" && host.kimiCodeState === "starting"
+                                                    || window.startingAgent(agentRow.modelData.kind)
                                                 Accessible.name: text + " " + agentRow.modelData.name
                                                 onClicked: {
                                                     if (agentRow.installable && (agentRow.modelData.installed === false || agentRow.modelData.broken)) window.showAgentInstaller(agentRow.modelData.data)
@@ -2189,7 +2209,8 @@ ApplicationWindow {
                                         Flow {
                                             id: detailActionBar
                                             objectName: "agentDetailActions"
-                                            readonly property bool hasOpenAction: window.detailKind === "kimiCode" ? window.kimiStartAvailable
+                                            readonly property bool localStart: window.startActionVisible(window.detailKind)
+                                            readonly property bool hasOpenAction: window.detailKind === "kimiCode" || window.localServiceAgent(window.detailKind) ? localStart
                                                 : !!window.detailFacts && !window.detailFacts.passive && window.detailKind !== "openclaw"
                                             readonly property bool hasEntryAction: !!window.detailFacts && (!!window.agentCliHint(window.detailFacts) || !!host.agentEntryOverrides[window.detailKind])
                                             visible: window.detailUpdateAction.visible || hasOpenAction || window.detailKind === "dsh" || hasEntryAction
@@ -2207,11 +2228,11 @@ ApplicationWindow {
                                             ActionButton {
                                                 id: detailOpenBtn
                                                 objectName: "agentDetailOpen"
-                                                text: window.detailKind !== "kimiCode" ? "打开" : host.kimiCodeState === "starting" ? "正在启动" : "启动"
+                                                text: !detailActionBar.localStart ? "打开" : window.startingAgent(window.detailKind) ? "正在启动" : "启动"
                                                 visible: detailActionBar.hasOpenAction
-                                                enabled: window.canEditAgent && !!window.detailFacts && (window.detailKind === "kimiCode"
-                                                    ? window.overviewAgentActionEnabled(window.detailFacts, false) : window.detailFacts.installed === true)
-                                                loading: window.detailKind === "kimiCode" && host.kimiCodeState === "starting"
+                                                enabled: window.canEditAgent && !!window.detailFacts && (detailActionBar.localStart
+                                                    ? !window.startingAgent(window.detailKind) : window.detailFacts.installed === true)
+                                                loading: window.startingAgent(window.detailKind)
                                                 onClicked: window.openOverviewAgent(window.detailKind)
                                             }
                                             ActionButton {

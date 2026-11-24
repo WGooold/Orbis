@@ -86,7 +86,18 @@ import { ProviderManager } from "./provider-manager.js";
 import { SessionConfigurationStore } from "./session-configuration-store.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
 import { OpenCodeServiceConnection, type OpenCodeClient } from "./opencode-service-connection.js";
+import { OpenClawBackend, type OpenClawConnection } from "./openclaw-backend.js";
 import { relayBusinessDeviceURL, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
+
+// HERMES-COMPAT-01 / HOST-AGENT-START-01: optional independent release builds with their own dependencies.
+const hermesCompatReleaseRoot = process.env.ORBIS_HERMES_COMPAT_RELEASE_ROOT;
+const agentStartCompatReleaseRoot = process.env.ORBIS_AGENT_START_COMPAT_RELEASE_ROOT;
+async function startAgentCompatRelay(dir: string, releaseRoot: string | undefined): Promise<RelayServer> {
+  const startRelay = releaseRoot
+    ? (await import(pathToFileURL(join(releaseRoot, "packages/relay/dist/index.js")).href) as typeof import("@orbis/relay")).createRelayServer
+    : createRelayServer;
+  return startRelay({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret", stateFile: join(dir, "relay-state.json") });
+}
 
 type EnvelopeFrame = { type?: unknown; envelope?: unknown };
 
@@ -3289,9 +3300,70 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     device.sendPayload(Buffer.from(JSON.stringify(message), "utf8"));
   };
 
+  // HOST-AGENT-START-01: Host and phone use one local start and keep the original Gateway session identity.
+  it("starts OpenClaw only for admitted operations and resumes the original Gateway session", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-openclaw-start-"));
+    relay = await startAgentCompatRelay(stateDir, agentStartCompatReleaseRoot);
+    let online = false, reconnect: () => void = () => {};
+    const native = { key: "agent:main:fixture", sessionId: "native-fixture", agentId: "main", workspaceDir: stateDir,
+      archived: false, updatedAt: 10, displayName: "Original session" };
+    const config = { url: "ws://127.0.0.1:18789" };
+    const realCreate = OpenClawBackend.create.bind(OpenClawBackend);
+    const create = vi.spyOn(OpenClawBackend, "create").mockImplementation((claw, dir, id, callbacks) => realCreate(claw, dir, id, callbacks, async events => {
+      reconnect = () => { online = true; events.online(); };
+      const request = (async (method: string, args: { archived?: boolean }) => {
+        if (method === "sessions.list") return { hasMore: false, sessions: args.archived ? [] : [native] };
+        if (method === "sessions.subscribe" || method === "sessions.messages.subscribe") return { subscribed: true, key: native.key };
+        if (method === "chat.history") return { sessionKey: native.key, sessionId: native.sessionId, messages: [], hasMore: false, sessionInfo: { hasActiveRun: false } };
+        throw new Error("unexpected fixture method");
+      }) as OpenClawConnection["request"];
+      return { get ready() { return online; }, request, start() {}, async stop() { online = false; } };
+    }));
+    try {
+      const start = vi.fn(async (_url: string, guard: { check: () => void }, backend: { ready: () => boolean }) => {
+        guard.check(); reconnect(); await vi.waitFor(() => expect(backend.ready()).toBe(true));
+      });
+      host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret",
+        stateDir, sessionsRoot: join(stateDir, "sessions"), reconnect: false, lan: false, openClaw: config, openClawLauncher: { available: async () => true, start } });
+      await host.start();
+      device = await readyDevice({ host, relay });
+      const until = async (predicate: (m: Record<string, unknown>) => boolean) => {
+        for (let i = 0; i < 100; i++) {
+          const row = await device!.receiveMessage(true);
+          if (predicate(row)) return row;
+        }
+        throw new Error("OpenClaw E2E response missing");
+      };
+      const send = (message: Record<string, unknown>) => sendRequest(device!, { protocolVersion: PROTOCOL_VERSION, ...message });
+      const configuration = { type: "session.configuration.read", agentKind: "openclaw", cwd: stateDir };
+      send({ ...configuration, requestId: "claw-hidden" });
+      expect(await until(row => row.requestId === "claw-hidden")).toMatchObject({ code: "agent_feature_required" });
+      expect(start).not.toHaveBeenCalled();
+      send({ type: "device.features", features: ["agent.openclaw"] });
+      const available = await until(row => row.type === "device.ready" && (row.launchableAgents as string[]).includes("openclaw"));
+      expect(available.agents).not.toContain("openclaw");
+      send({ type: "session.activate", requestId: "claw-wrong-source", target: { type: "resume", agentKind: "openclaw", sessionId: "openclaw:other:session" } });
+      expect(await until(row => row.requestId === "claw-wrong-source")).toMatchObject({ code: "session_not_found" });
+      expect(start).not.toHaveBeenCalled();
+      send({ ...configuration, requestId: "claw-cold-draft" });
+      const hostStart = host.startLocalAgent("openclaw");
+      expect(await until(row => row.requestId === "claw-cold-draft")).toMatchObject({ type: "session.configuration.result", agentKind: "openclaw" });
+      await hostStart;
+      expect(start).toHaveBeenCalledOnce();
+      send({ type: "session.list", requestId: "claw-existing" });
+      const listed = await until(row => row.requestId === "claw-existing");
+      const sessionId = (listed.sessions as Array<{ agentKind: string; sessionId: string }>).find(row => row.agentKind === "openclaw")?.sessionId;
+      expect(sessionId).toMatch(/^openclaw:/u);
+      send({ type: "session.activate", requestId: "claw-resume", target: { type: "resume", sessionId, agentKind: "openclaw" } });
+      expect(await until(row => row.requestId === "claw-resume")).toMatchObject({ type: "session.activated", sessionId });
+      expect(start).toHaveBeenCalledOnce();
+    } finally { create.mockRestore(); }
+  });
+
+  // HOST-AGENT-START-01: a negotiated draft starts the shared service, without loosening receipt visibility.
   it("gates OpenCode by device feature and keeps deduplicated command receipts private", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-host-opencode-feature-"));
-    relay = await startRelayLocal(stateDir);
+    relay = await startAgentCompatRelay(stateDir, agentStartCompatReleaseRoot);
     const info = { id: "oc-session", title: "OpenCode fixture", location: { directory: stateDir }, time: { created: 1000, updated: 2000 } };
     const selected = { providerID: "fixture-provider", id: "fixture-model" };
     const newId = "oc-configured";
@@ -3313,9 +3385,15 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       model: { list: async () => ({ data: [{ ...selected, enabled: true, name: "Fixture model", variants: [] }] }),
         default: async () => ({ data: selected }) }, agent: { list: async () => ({ data: [] }) },
     };
-    const discover = vi.fn(async () => ({ url: "http://127.0.0.1:4096" }));
+    let serviceRunning = false;
+    const discover = vi.fn(async () => serviceRunning ? { url: "http://127.0.0.1:4096" } : undefined);
+    const startService = vi.fn(async (_guard: unknown, shouldStart: () => Promise<boolean>, confirm: (child: { pid: number; failed(): boolean; exited(): boolean }) => Promise<boolean>) => {
+      expect(await shouldStart()).toBe(true);
+      serviceRunning = true;
+      expect(await confirm({ pid: 1, failed: () => false, exited: () => false })).toBe(true);
+    });
     const createOpenCodeConnection = vi.fn(() => new OpenCodeServiceConnection({ discover,
-      createClient: () => client as unknown as OpenCodeClient }));
+      launcher: { available: async () => true, start: startService }, createClient: () => client as unknown as OpenCodeClient }));
     const policy = new AgentEnablementController(new AgentEnablementStore(stateDir), () => {});
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
       adminToken: "owner-secret", stateDir, sessionsRoot: join(stateDir, "sessions"), reconnect: false, lan: false, agentEnablement: policy, createOpenCodeConnection });
@@ -3324,7 +3402,9 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     expect(discover).not.toHaveBeenCalled();
     await policy.set({ kind: "pi", enabled: true, expectedRevision: 0 });
     await policy.set({ kind: "opencode", enabled: true, expectedRevision: 1 });
-    await vi.waitFor(() => expect(host!.opencodeServiceStatus.state).toBe("ready"));
+    await vi.waitFor(() => expect(host!.readHostState(["backends"]).domains).toContainEqual(expect.objectContaining({ domain: "backends",
+      value: expect.objectContaining({ launchableAgents: expect.arrayContaining(["opencode"]) }) })));
+    expect(host.opencodeServiceStatus.state).toBe("unavailable");
     device = await readyDevice({ host, relay });
     const owner = device;
     const other = await readyDevice({ host, relay });
@@ -3364,12 +3444,15 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       await expect(until(owner, message => message.commandId === input.commandId)).resolves.toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
       expect(get).not.toHaveBeenCalled();
       expect(prompt).not.toHaveBeenCalled();
+      expect(startService).not.toHaveBeenCalled();
 
       request(owner, { type: "device.features", features: ["agent.opencode"] });
-      await until(owner, message => message.type === "device.ready");
+      const cold = await until(owner, message => message.type === "device.ready" && (message.launchableAgents as string[]).includes("opencode"));
+      expect(cold.agents).not.toContain("opencode");
       request(owner, { type: "session.configuration.read", requestId: "config-visible", ...kind });
       const config = await reply(owner, "config-visible");
       expect(config).toMatchObject({ type: "session.configuration.result", agentKind: "opencode" });
+      expect(startService).toHaveBeenCalledTimes(1);
       request(owner, { type: "session.launch", requestId: "launch-visible", launchId: "stable-opencode-launch", ...kind,
         binding: config.binding, revision: config.revision, values: config.values });
       const unknown = await until(owner, message => message.requestId === "launch-visible" && message.phase === "unknown");
@@ -4721,20 +4804,10 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     } finally { await webRuntime.stop(); await desktopRuntime.stop(); }
   });
 
-  // HERMES-COMPAT-01: run the same encrypted fixture against the candidate or a separately built release Relay.
-  // ORBIS_HERMES_COMPAT_RELEASE_ROOT points to a compiled, isolated checkout of the comparison tag.
-  const releaseRoot = process.env.ORBIS_HERMES_COMPAT_RELEASE_ROOT;
-  const startHermesCompatRelay = async (dir: string): Promise<RelayServer> => {
-    if (!releaseRoot) return startRelayLocal(dir);
-    const released = await import(pathToFileURL(join(releaseRoot, "packages/relay/dist/index.js")).href) as typeof import("@orbis/relay");
-    return released.createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret",
-      stateFile: join(dir, "relay-state.json") });
-  };
-
   // HERMES-GATEWAY-01: exercise the real E2E Host/Relay router without touching a user Gateway.
   it("connects Hermes only for negotiated requests and resets its visibility on rehandshake", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-hermes-host-"));
-    relay = await startHermesCompatRelay(stateDir);
+    relay = await startAgentCompatRelay(stateDir, agentStartCompatReleaseRoot ?? hermesCompatReleaseRoot);
     const profile_id = join(stateDir, "fixture-hermes");
     const sessionId = "hermes-private-id";
     const endpoint = { profile_id, instance_id: "fixture", authority_epoch: 1, runtime_protocol: 1,
@@ -4793,6 +4866,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     send({ type: "session.catalog.capabilities.request", requestId: "capabilities" });
     await next(row => row.requestId === "capabilities");
     expect(await lookup("hermes-catalog", "hermes")).toMatchObject({ type: "session.catalog.page", page: { sessions: [{ sessionId, agentKind: "hermes" }] } });
+    expect(connectHermes).toHaveBeenCalledWith(expect.objectContaining({ existingOnly: true }));
     send({ type: "session.activate", requestId: "resume", target: { type: "resume", sessionId, agentKind: "hermes" } });
     let runtimeId = "";
     expect(await next(row => row.requestId === "resume", row => {
@@ -4828,9 +4902,13 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
   });
 
   // A current device declaration remains legal against a pre-Hermes Host; a reconnect receives its normal catalog.
-  it.skipIf(!releaseRoot)("preserves current device negotiation and fallback on the released Host and Relay", async () => {
+  for (const { releaseRoot, label, hostFeatures, extraKinds } of [
+    { releaseRoot: hermesCompatReleaseRoot, label: "the released Host and Relay", hostFeatures: ["device.features"], extraKinds: [] },
+    { releaseRoot: agentStartCompatReleaseRoot, label: "the v0.1.24 Host and Relay",
+      hostFeatures: ["device.features", "message.content-render.v1"], extraKinds: ["opencode", "openclaw"] },
+  ]) it.skipIf(!releaseRoot)(`preserves current device negotiation and fallback on ${label}`, async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-hermes-fallback-"));
-    relay = await startHermesCompatRelay(stateDir);
+    relay = await startAgentCompatRelay(stateDir, releaseRoot);
     const released = await import(pathToFileURL(join(releaseRoot!, "packages/host/dist/host-service.js")).href) as { HostService: typeof HostService };
     const oldHost = await released.HostService.create({ relayUrl: relay.url, credential: "runtime-secret", adminToken: "owner-secret",
       stateDir, sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false });
@@ -4851,12 +4929,17 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     for (const requestId of ["fallback-one", "fallback-reconnected"]) {
       await device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
       const ready = await next(row => row.type === "device.ready");
-      expect(ready.hostFeatures).toEqual(["device.features"]);
+      expect(ready.hostFeatures).toEqual(hostFeatures);
       expect(ready.launchableAgents).not.toContain("hermes");
-      sendRequest(device, { type: "device.features", protocolVersion: PROTOCOL_VERSION, features: ["agent.dshDesktop", "agent.hermes"] });
+      sendRequest(device, { type: "device.features", protocolVersion: PROTOCOL_VERSION, features: ["agent.dshDesktop", "agent.hermes", ...extraKinds.map(kind => `agent.${kind}`)] });
       const negotiated = await next(row => row.type === "device.ready");
       expect(negotiated).toHaveProperty("dshDesktop", null);
       expect(negotiated.launchableAgents).not.toContain("hermes");
+      for (const kind of extraKinds) {
+        expect(ready.launchableAgents).not.toContain(kind);
+        expect(negotiated.launchableAgents).not.toContain(kind);
+        expect(negotiated.agents).not.toContain(kind);
+      }
       sendRequest(device, { type: "session.list", protocolVersion: PROTOCOL_VERSION, requestId });
       expect(await next(row => row.requestId === requestId)).toMatchObject({ type: "session.list.result", sessions: [] });
     }

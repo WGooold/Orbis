@@ -90,7 +90,7 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         ?: enabledAgentKinds?.let { emptySet() }
     val openCode = state.openCodeAvailability.takeIf { state.e2eReady && enabledAgentKinds?.contains("opencode") != false }
     val showOpenCode = openCode != null || (state.e2eReady && supported?.contains("opencode") == true)
-    val canChooseOpenCode = state.e2eReady && openCode?.ready != false && supported?.contains("opencode") == true
+    val canChooseOpenCode = state.e2eReady && openCode?.canStart != false && supported?.contains("opencode") == true
     val canUseSelectedAgent = supported?.contains(kind) != false && (kind != "opencode" || canChooseOpenCode)
     val config = state.sessionConfiguration.takeIf { it.agentKind == kind && it.cwd == cwd }
     LaunchedEffect(open, kind, cwd, state.e2eReady, state.supportsSessionConfiguration(kind), canUseSelectedAgent) {

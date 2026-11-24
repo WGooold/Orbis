@@ -12,6 +12,20 @@ function fixture(profile_id = "/fixture") {
   return { client, attachment, closeTunnel };
 }
 
+// HOST-AGENT-START-01: only local mode can admit a Host start; browsing uses the existing-only bootstrap.
+it("does not start a remote profile from the local Host action", async () => {
+  const { attachment } = fixture();
+  const remote = { host: "fixture.example", port: 22 };
+  const connect = vi.fn<(options?: HermesGatewayBootstrapOptions) => Promise<HermesGatewayAttachment>>(async () => attachment);
+  const host = new HermesHostConnection({ connect, getRemoteGateway: async () => remote }, "host", vi.fn());
+  try {
+    await expect(host.ensure(() => true, true)).rejects.toThrow("远程 Hermes Gateway 只接入已有服务");
+    expect(connect).not.toHaveBeenCalled();
+    await host.attachExisting();
+    expect(connect).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ existingOnly: true, remoteGateway: remote }));
+  } finally { await host.close(); }
+});
+
 // HERMES-GATEWAY-01: a failed attach is local, and a replacement must prove the same profile.
 it("coalesces concurrent attach, retires dead sockets, and refuses a different profile", async () => {
   const first = fixture(), replacement = fixture("/other-profile");

@@ -3,6 +3,7 @@ import { connectHermesGateway, resolveHermesGatewayCommand, type HermesGatewayBo
 import type { HermesRemoteGatewayConfig } from "./hermes-remote-gateway.js";
 
 type Slot = { backend: HermesAgentBackend; close: () => Promise<void> };
+const alwaysCurrent = () => true;
 
 export type HermesHostOptions = Pick<HermesGatewayBootstrapOptions, "env" | "command" | "platform"> & {
   getRemoteGateway?: () => Promise<HermesRemoteGatewayConfig | undefined>;
@@ -19,19 +20,24 @@ export class HermesHostConnection {
   #connectionScope: string | undefined;
   #closed = false;
   #installed = false;
+  #local = false;
+  readonly #startRequests = new Set<() => boolean>();
   readonly #env: NodeJS.ProcessEnv;
   readonly #modelFences = new Map<string, UnconfirmedHermesModel>();
 
   constructor(readonly options: HermesHostOptions, readonly hostId: string,
-    readonly changed: (backend: HermesAgentBackend | undefined, retired?: HermesAgentBackend) => void) {
+    readonly changed: (backend: HermesAgentBackend | undefined, retired?: HermesAgentBackend) => void,
+    readonly progress: () => void = () => {}) {
     this.#env = { ...(options.env ?? process.env) };
   }
 
   get installed(): boolean { return this.#installed; }
+  get starting(): boolean { return this.#connecting !== undefined; }
   get backend(): HermesAgentBackend | undefined { return this.#slot?.backend; }
 
   async discover(): Promise<void> {
     const remote = await this.options.getRemoteGateway?.();
+    this.#local = remote === undefined;
     if (remote && !this.#closed && !this.#installed) {
       this.#installed = true;
       this.changed(this.backend);
@@ -44,16 +50,31 @@ export class HermesHostConnection {
     }
   }
 
-  ensure(): Promise<HermesAgentBackend> {
-    if (this.#closed) return Promise.reject(new Error("Host 已停止"));
+  ensure(current = alwaysCurrent, localOnly = false): Promise<HermesAgentBackend> {
+    if (this.#closed || !current()) return Promise.reject(new Error("Hermes 接入已取消"));
+    if (localOnly && !this.#local && (this.#slot || this.#connecting || this.#attaching))
+      return Promise.reject(new Error("远程 Hermes Gateway 只接入已有服务"));
     if (this.backend?.isReady()) return Promise.resolve(this.backend);
-    if (this.#connecting) return this.#connecting;
-    if (this.#attaching) return this.#attaching.catch(() => this.ensure());
-    if (this.#slot) this.#retire(this.#slot);
-    const attempt = this.#open(false);
-    this.#connecting = attempt;
-    void attempt.then(() => { this.#connecting = undefined; }, () => { this.#connecting = undefined; });
-    return attempt;
+    if (!this.#connecting && this.#attaching) return this.#attaching.then(backend => {
+      if (!current()) throw new Error("Hermes 接入已取消");
+      return backend;
+    }, () => this.ensure(current, localOnly));
+    const request = () => current();
+    this.#startRequests.add(request);
+    if (!this.#connecting) {
+      if (this.#slot) this.#retire(this.#slot);
+      this.#connecting = this.#open(false, localOnly).finally(() => {
+        this.#connecting = undefined;
+        this.#startRequests.clear();
+        if (!this.#closed) this.progress();
+      });
+      this.progress();
+    }
+    if (current === alwaysCurrent) return this.#connecting;
+    return this.#connecting.then(backend => {
+      if (!current()) throw new Error("Hermes 接入已取消");
+      return backend;
+    }).finally(() => { this.#startRequests.delete(request); });
   }
 
   attachExisting(): Promise<HermesAgentBackend> {
@@ -68,16 +89,22 @@ export class HermesHostConnection {
     return attempt;
   }
 
-  async #open(existingOnly: boolean): Promise<HermesAgentBackend> {
+  async #open(existingOnly: boolean, localOnly = false): Promise<HermesAgentBackend> {
     let slot: Slot | undefined;
     const { connect = connectHermesGateway, getRemoteGateway, ...options } = this.options;
-    const remoteGateway = await getRemoteGateway?.();
+    const remoteGateway = getRemoteGateway ? await getRemoteGateway() : undefined;
+    if (localOnly && remoteGateway) throw new Error("远程 Hermes Gateway 只接入已有服务");
+    this.#local = remoteGateway === undefined;
+    const requireCurrent = () => {
+      if (this.#closed || !existingOnly && ![...this.#startRequests].some(valid => valid())) throw new Error("Hermes 接入已取消");
+    };
+    requireCurrent();
     const scope = remoteGateway
       ? JSON.stringify(["ssh", remoteGateway.host, remoteGateway.port, remoteGateway.profile ?? ""])
       : "local";
     if (this.#connectionScope !== undefined && this.#connectionScope !== scope) this.#profileId = undefined;
     this.#connectionScope = scope;
-    const attachment = await connect({ ...options, env: this.#env, existingOnly, ...(remoteGateway ? { remoteGateway } : {}),
+    const attachment = await connect({ ...options, env: this.#env, existingOnly, requireCurrent, ...(remoteGateway ? { remoteGateway } : {}),
       ...(this.#profileId === undefined ? {} : { expectedProfileId: this.#profileId }),
       onEvent: event => { if (slot && slot === this.#slot) void slot.backend.handleGatewayEvent(event); },
       onTransportError: () => { if (slot?.backend.isReady() === false) this.#retire(slot); },

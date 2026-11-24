@@ -61,6 +61,7 @@ export type HermesGatewayBootstrapOptions = {
   expectedProfileId?: string;
   remoteGateway?: HermesRemoteGatewayConfig;
   existingOnly?: boolean;
+  requireCurrent?: () => void;
   runAttach?: typeof runHermesGatewayAttach;
   runEnsure?: HermesEnsureRunner;
   requestTicket?: typeof requestHermesGatewayTicket;
@@ -92,6 +93,7 @@ export async function connectHermesGateway(options: HermesGatewayBootstrapOption
   let protocols: string[];
   let closeRemote: (() => Promise<void>) | undefined;
   if (options.remoteGateway) {
+    options.requireCurrent?.();
     const remote = await (options.attachRemote ?? attachRemoteHermesGateway)(options.remoteGateway);
     endpoint = remote.endpoint;
     url = remote.url;
@@ -99,12 +101,14 @@ export async function connectHermesGateway(options: HermesGatewayBootstrapOption
     closeRemote = remote.close;
   } else if (options.existingOnly) {
     const command = options.command ?? await resolveHermesGatewayCommand(env, platform);
+    options.requireCurrent?.();
     const attached = parseHermesRemoteAttachResult(await (options.runAttach ?? runHermesGatewayAttach)(command, env, platform));
     ({ endpoint, url, protocols } = attached);
   } else {
     const command = options.command ?? await resolveHermesGatewayCommand(env, platform);
     const timeoutSeconds = options.timeoutSeconds ?? ENSURE_TIMEOUT_SECONDS;
     const runEnsure = options.runEnsure ?? runHermesGatewayEnsure;
+    options.requireCurrent?.();
     const result = await runEnsure(command, timeoutSeconds * 1000, env, platform);
     const ensured = parseHermesGatewayEnsureResult(result.stdout, result.stderr, result.exitCode);
     endpoint = ensured.endpoint;

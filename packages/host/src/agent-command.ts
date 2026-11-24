@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { promisify } from "node:util";
 import { agentInstallRoot } from "./agent-root.js";
 
-export type ExternalAgentKind = "pi" | "codex" | "dsh" | "claude" | "hermes" | "kimi";
+export type ExternalAgentKind = "pi" | "codex" | "dsh" | "claude" | "hermes" | "kimi" | "opencode" | "openclaw";
 export type AgentCommand = {
   command: string;
   prefixArgs: string[];
@@ -29,8 +29,9 @@ export function agentTerminalEnvironment(env: NodeJS.ProcessEnv): Record<string,
 const packages: Record<ExternalAgentKind, string[]> = {
   pi: ["@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"],
   codex: ["@openai/codex"], dsh: ["@deepseek-ai/dsh"], claude: ["@anthropic-ai/claude-code"], hermes: [], kimi: ["@moonshot-ai/kimi-code"],
+  opencode: ["@opencode/cli"], openclaw: ["openclaw"],
 };
-const legacyBins: Record<ExternalAgentKind, string> = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", dsh: "lib/bin.js", claude: "cli.js", hermes: "", kimi: "dist/main.mjs" };
+const legacyBins: Record<ExternalAgentKind, string> = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", dsh: "lib/bin.js", claude: "cli.js", hermes: "", kimi: "dist/main.mjs", opencode: "bin/opencode.exe", openclaw: "openclaw.mjs" };
 const execute = promisify(execFile);
 
 export function cliPathDirs(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string[] {
@@ -69,6 +70,7 @@ export function cliSearchDirs(kind: ExternalAgentKind, env: NodeJS.ProcessEnv, p
   }
   if (kind === "claude") add(home, ".claude", "local");
   if (kind === "kimi") add(env.KIMI_INSTALL_DIR || join(home, ".kimi-code"), "bin");
+  if (kind === "opencode") add(home, ".opencode", "bin");
   for (const dir of [env.PNPM_HOME, env.NVM_SYMLINK, env.FNM_MULTISHELL_PATH, env.PIPX_BIN_DIR, env.GOBIN]) add(dir);
   add(env.VOLTA_HOME || join(home, ".volta"), "bin");
   add(env.BUN_INSTALL || join(home, ".bun"), "bin");
@@ -104,10 +106,11 @@ export function cliSearchDirs(kind: ExternalAgentKind, env: NodeJS.ProcessEnv, p
 }
 
 function cliNames(kind: ExternalAgentKind, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
-  if (platform !== "win32") return [kind];
+  if (platform !== "win32") return kind === "opencode" ? ["opencode", "opencode2"] : [kind];
   const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").toLowerCase().split(";").map(value => value.trim())
     .filter(value => [".com", ".exe", ".bat", ".cmd", ".ps1"].includes(value));
-  return [...new Set([...extensions, ".exe", ".cmd", ".bat", ".ps1"])].map(extension => kind + extension);
+  const commandNames = kind === "opencode" ? ["opencode", "opencode2"] : [kind];
+  return commandNames.flatMap(name => [...new Set([...extensions, ".exe", ".cmd", ".bat", ".ps1"])].map(extension => name + extension));
 }
 
 async function header(path: string): Promise<string> {
@@ -166,7 +169,8 @@ export async function resolveAgentPackage(kind: ExternalAgentKind, entry: string
   const text = await header(entry);
   // npm/pnpm wrappers name their target relative to the wrapper. Read literals only;
   // never evaluate a shell script or guess a different installation from PATH.
-  for (const match of text.matchAll(/(?:%~dp0|%dp0%|\$\{basedir\}|\$basedir)[/\\]?([^"'\r\n`]+?\.(?:c|m)?js)(?=["'\s]|$)/gu)) {
+  for (const match of text.matchAll(/(?:%~dp0|%dp0%|\$\{basedir\}|\$basedir)[/\\]?([^"'\r\n`]+?\.(?:[cm]?js|exe))(?=["'\s]|$)/giu)) {
+    if (kind !== "opencode" && /\.exe$/iu.test(match[1]!)) continue;
     const target = resolve(dirname(entry), match[1]!.replaceAll("\\", "/"));
     const found = await owningPackage(kind, target);
     if (found) return found;
@@ -222,7 +226,8 @@ export async function findExternalAgentEntries(kind: ExternalAgentKind, env: Nod
       launcher = candidate;
       const bin = await resolveAgentPackage(kind, launcher, env, platform);
       // Use the real npm bin on Windows so a persistent server is not owned by a cmd shim.
-      const entry = (kind === "codex" || kind === "kimi") && platform === "win32" && bin && /\.[cm]?js$/iu.test(bin.entry) ? bin.entry : launcher;
+      const entry = platform === "win32" && bin && ((kind === "codex" || kind === "kimi" || kind === "openclaw") && /\.[cm]?js$/iu.test(bin.entry)
+        || kind === "opencode" && /\.exe$/iu.test(bin.entry)) ? bin.entry : launcher;
       await add({ entry, ...(bin?.version === undefined ? {} : { version: bin.version }) }, bin?.entry);
       break;
     }

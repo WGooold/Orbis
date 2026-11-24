@@ -1277,9 +1277,10 @@ void HostController::restartDshServer() {
 }
 void HostController::openAgent(const QString &kind) {
     if (kind == "pi" || kind == "claude") { openAgentTui(kind); return; }
-    if (kind == "kimiCode") {
-        if (!m_bridgeReady || busy() || !m_desiredRunning || !kimiCodeEnabled()) return;
-        command("openAgent", {{"kind", kind}}, [this](const QJsonValue &) { setMessage("Kimi Code 已接入"); });
+    if (kind == "kimiCode" || kind == "opencode" || kind == "hermes" || kind == "openclaw") {
+        if (!m_bridgeReady || busy() || !m_desiredRunning || (kind == "kimiCode" && !kimiCodeEnabled())) return;
+        const auto label = kind == "kimiCode" ? "Kimi Code" : kind == "opencode" ? "OpenCode" : kind == "hermes" ? "Hermes Agent" : "OpenClaw";
+        command("openAgent", {{"kind", kind}}, [this, label](const QJsonValue &) { setMessage(QString("%1 已接入").arg(label)); });
         return;
     }
     command("openAgent", {{"kind", kind}});

@@ -1,14 +1,55 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { RuntimeEventSchema, type RuntimeCommand, type RuntimeEvent } from "@orbis/protocol";
 import { expect, it, vi } from "vitest";
 import { OpenCodeBackend } from "./opencode-backend.js";
+import { createOpenCodeLocalLauncher } from "./opencode-local-launch.js";
 import { OPENCODE_CLIENT_VERSION, OpenCodeServiceConnection } from "./opencode-service-connection.js";
 
 const binary = process.env.ORBIS_OPENCODE_TEST_BINARY;
 const version = OPENCODE_CLIENT_VERSION;
+
+// HOST-AGENT-START-01: startup uses the released CLI's shared service and leaves that exact service usable after Host detach.
+it.skipIf(!binary)("cold starts the native OpenCode service once and reuses it after Host detach", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orbis-opencode-start-native-"));
+  const home = join(root, "home"), registrationPath = join(root, "state", "opencode", "service.json");
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(path|systemroot|windir|comspec|pathext)$/i.test(key)));
+  const env = { ...inherited, HOME: home, USERPROFILE: home, OPENCODE_TEST_HOME: home, XDG_STATE_HOME: join(root, "state"),
+    XDG_DATA_HOME: join(root, "data"), XDG_CONFIG_HOME: join(root, "config"), XDG_CACHE_HOME: join(root, "cache"),
+    OPENCODE_SIMULATE: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", PATH: [dirname(resolve(binary!)), process.env.PATH].join(delimiter) };
+  // Reserve a fixture port in the native service config; the launch itself never substitutes a random endpoint.
+  const testServer = (await import("node:net")).createServer();
+  await new Promise<void>(resolveListen => testServer.listen(0, "127.0.0.1", resolveListen));
+  const { port } = testServer.address() as import("node:net").AddressInfo;
+  await new Promise<void>((resolveClose, reject) => testServer.close(error => error ? reject(error) : resolveClose()));
+  await mkdir(join(env.XDG_CONFIG_HOME, "opencode"), { recursive: true });
+  await mkdir(home, { recursive: true });
+  await writeFile(join(env.XDG_CONFIG_HOME, "opencode", "service.json"), JSON.stringify({ port }), { mode: 0o600 });
+  const connection = new OpenCodeServiceConnection({ registrationPath, launcher: createOpenCodeLocalLauncher(env) });
+  const existing = new OpenCodeServiceConnection({ registrationPath });
+  let pid: number | undefined;
+  try {
+    await connection.refresh();
+    expect(connection.launchable).toBe(true);
+    expect(connection.isReady).toBe(false);
+    await Promise.all([connection.ensure(() => true, () => connection.isReady), connection.ensure(() => true, () => connection.isReady)]);
+    const info = await connection.client!.server.info();
+    expect(info.version).toBe(version);
+    pid = info.pid;
+    connection.close();
+    await existing.refresh();
+    expect((await existing.client!.server.info()).pid).toBe(pid);
+  } finally {
+    connection.close(); await connection.drainStartup(); existing.close();
+    if (pid !== undefined) {
+      process.kill(pid, "SIGTERM");
+      await vi.waitFor(() => expect(() => process.kill(pid!, 0)).toThrow(), { timeout: 10_000 });
+    }
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}, 30_000);
 
 it.skipIf(!binary)(`validates the native OpenCode ${version} shared service in isolation`, async () => {
   const temporary = resolve(tmpdir());

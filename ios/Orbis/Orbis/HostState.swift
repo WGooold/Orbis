@@ -46,16 +46,19 @@ indirect enum HostJSON: Codable, Equatable {
 struct OpenCodeAvailability: Equatable {
     let ready: Bool
     let reason: String?
+    let launchable: Bool
+    var canStart: Bool { ready || launchable }
 
     init?(backends: HostJSON) {
         guard let row = backends.array.first(where: { $0["kind"].string == "opencode" }),
               let ready = row["ready"].bool else { return nil }
         self.ready = ready
         reason = row["reason"].string
+        launchable = row["launchable"].bool == true
     }
 
     var message: String? {
-        guard !ready else { return nil }
+        guard !canStart else { return nil }
         switch reason {
         case "service_not_found": return L10n.tr("OpenCode 共享服务未运行。请在电脑上启动 OpenCode。")
         case "unsupported_version": return L10n.tr("OpenCode 版本不兼容。请在电脑上使用 Host 支持的版本。")

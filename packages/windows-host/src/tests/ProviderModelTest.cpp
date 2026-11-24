@@ -37,6 +37,7 @@ Item {
     property var host: ({bridgeReady: true, busy: false})
     property bool connectionError: false
     property string nextStep: "install"
+    function startActionVisible(kind) { return false }
     function agentPhoneState(agent, sessions) { return agent.installed === undefined ? "等待检测" : "未安装" }
     %1
     %2

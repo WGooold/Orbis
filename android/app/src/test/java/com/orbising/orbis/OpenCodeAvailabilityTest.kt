@@ -13,6 +13,15 @@ class OpenCodeAvailabilityTest {
         assertNull(availability("""{"kind":"opencode","ready":"true"}"""))
     }
 
+    // HOST-AGENT-START-01: a launchable shared service is selectable, not reported as connected.
+    @Test fun acceptsColdOpenCodeOnlyWithHostLaunchability() {
+        val cold = availability("""{"kind":"opencode","ready":false,"launchable":true,"reason":"service_not_found"}""")!!
+        assertTrue(cold.canStart)
+        assertFalse(cold.ready)
+        assertNull(cold.draftNotice("opencode"))
+        assertFalse(availability("""{"kind":"opencode","ready":false,"launchable":"true"}""")!!.canStart)
+    }
+
     @Test fun distinguishesReadyFromMissingServiceAndVersionMismatch() {
         val ready = availability("""{"kind":"opencode","ready":true,"reason":null}""")!!
         assertTrue(ready.ready)

@@ -10,7 +10,7 @@
  * 会话目录聚合、进程激活能力（`browse` / L1 / L2）见 `sessions.ts` / `spawner.ts`（spec §8）。
  */
 import { homedir, hostname } from "node:os";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, rename, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, normalize } from "node:path";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -140,6 +140,8 @@ import { DSH_DESKTOP_KIND, OPENCODE_KIND, OPENCODE_RUNTIME_PREFIX, policyAgentVi
   hiddenKinds, negotiatedAgentFeature, projectAgentMessage, projectBackendDomain, type AgentView } from "./device-agent-visibility.js";
 import { OpenClawBackend } from "./openclaw-backend.js";
 import { loadOpenClawConfig, type OpenClawConfig } from "./openclaw-gateway.js";
+import { localOpenClawPort, type OpenClawLocalLauncher } from "./openclaw-local-launch.js";
+import { LocalAgentStart } from "./local-agent-start.js";
 import { OPENCLAW_PREFIX } from "./openclaw-history.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
@@ -285,7 +287,7 @@ export type HostServiceOptions = {
    */
   codexRuntime?: CodexRuntime;
   codexDesktopRuntime?: CodexRuntime;
-  /** Read-only connection monitor for the already-running OpenCode shared service. */
+  /** Connection monitor; a production launcher is injected only when local startup is permitted. */
   opencodeConnection?: OpenCodeServiceConnection | false;
   createOpenCodeConnection?: () => OpenCodeServiceConnection;
   /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
@@ -333,6 +335,7 @@ export type HostServiceOptions = {
   claude?: { configDir?: string; launcher?: ClaudeLauncher };
   /** Explicit isolated fixture, or false to prevent QA from inheriting a user's opt-in. */
   openClaw?: OpenClawConfig | false;
+  openClawLauncher?: OpenClawLocalLauncher;
   /** Staged composition: only sources with a registered lifecycle can be edited by paired clients. */
   agentEnablement?: AgentEnablementController;
   prepareLocalAgent?: (kind: "pi" | "claude", lease: AgentLifecycleLease) => Promise<void>;
@@ -384,6 +387,7 @@ export class HostService {
    */
   #backends: AgentBackend[];
   #openClaw: OpenClawBackend | undefined;
+  #openClawStart: { startup: LocalAgentStart; installed: boolean } | undefined;
   readonly #managedDshLaunchable = new Set<DshKind>();
   readonly #managedCodexLaunchable = new Set<"codex" | "codexDesktop">();
   readonly #managedAgents = new AgentLifecycleRegistry({
@@ -730,13 +734,15 @@ export class HostService {
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
     const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#openCodeBackend ? [OPENCODE_KIND] as const : []), ...(this.#kimi ? [KIMI_KIND] as const : []), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
     if (this.#hermes?.installed) kinds.push("hermes");
-    const openCodeReason = this.#opencodeConnection?.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "event_stream_unavailable";
+    const openCodeReason = this.#opencodeConnection?.starting ? "starting" : this.#opencodeConnection?.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "event_stream_unavailable";
     facts.backends({ backends: kinds.filter(kind => !this.#disabledSources.has(kind)).map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
       return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
-        reason: kind === OPENCODE_KIND ? (backend?.isReady() ? null : openCodeReason) : backend === undefined ? "backend_not_attached" : backend.isReady() ? null
-          : kind === KIMI_KIND ? this.#kimi?.reason ?? "backend_not_ready" : "backend_not_ready" };
+        reason: backend?.isReady() ? null : kind === OPENCODE_KIND ? openCodeReason : kind === "hermes" && this.#hermes?.starting ? "starting" : backend === undefined ? "backend_not_attached"
+          : kind === KIMI_KIND ? this.#kimi?.reason ?? "backend_not_ready"
+          : kind === OPENCLAW_KIND ? this.#openClawStart?.startup.starting ? "starting" : this.#openClaw?.pairingEpoch ? "pairing_required" : "backend_not_ready"
+          : "backend_not_ready" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
     const catalog = this.#hostStateFacts.read();
     const candidates = [...(this.#catalogCache?.sessions ?? []), ...runtimes];
@@ -1180,7 +1186,7 @@ export class HostService {
     } };
     return new HermesHostConnection(scopedOptions, this.hostId, (backend, retired) => {
       if (current()) this.#updateHermesBackend(backend, retired);
-    });
+    }, () => { if (current()) this.refreshHostFacts(); });
   }
 
   /** Wire a Codex runtime once. Desktop runtimes can be attached after relay startup. */
@@ -1213,12 +1219,13 @@ export class HostService {
     this.#broadcastDeviceReady();
   }
 
-  async #ensureHermes(): Promise<HermesAgentBackend> {
+  async #ensureHermes(current = this.#sourceCurrent("hermes"), localOnly = false): Promise<HermesAgentBackend> {
     try {
       const connection = this.#hermes;
-      if (connection && !this.#disabledSources.has("hermes")) {
-        const backend = await connection.ensure();
-        if (!this.#disabledSources.has("hermes") && this.#hermes === connection) return backend;
+      const admitted = () => current() && !this.#disabledSources.has("hermes") && this.#hermes === connection;
+      if (connection && admitted()) {
+        const backend = await connection.ensure(admitted, localOnly);
+        if (admitted()) return backend;
       }
     } catch { /* Native details may contain private paths; do not relay them. */ }
     throw new ActivationError("agent_unsupported", "Hermes Gateway 不可用，请核对本机 CLI，或远程 SSH 配置与 Gateway 状态");
@@ -1309,9 +1316,13 @@ export class HostService {
     const connection = this.#options.createOpenCodeConnection?.() ?? this.#options.opencodeConnection ?? new OpenCodeServiceConnection();
     this.#opencodeConnection = connection;
     const admitted = () => current() && this.#opencodeConnection === connection && !this.#providerFactsClosing;
+    let launchable = connection.launchable;
     this.#unsubscribeOpenCodeStatus = connection.subscribe(() => {
       if (!admitted()) return;
-      this.refreshHostFacts();
+      if (launchable !== connection.launchable) {
+        launchable = connection.launchable;
+        this.#broadcastDeviceReady(OPENCODE_KIND);
+      } else this.refreshHostFacts();
       this.#invalidateCatalog();
     });
     const backend = this.#openCodeBackend = new OpenCodeBackend({
@@ -1321,13 +1332,13 @@ export class HostService {
       onRuntimeOffline: (runtimeId, reason) => this.#unregisterOpenCodeRuntime(runtimeId, reason),
       onEvent: (runtimeId, event) => { if (admitted()) this.#publishRuntimeEvent(runtimeId, event); },
       onCatalogChange: () => { if (admitted()) this.#invalidateCatalog(); },
-      onAvailabilityChange: () => { if (admitted()) this.#broadcastDeviceReady(); },
+      onAvailabilityChange: () => { if (admitted()) this.#broadcastDeviceReady(OPENCODE_KIND); },
     });
     this.#backends.push(backend);
     if (start) { backend.start(); void connection.start(); }
   }
 
-  #stopOpenCode(): void {
+  async #stopOpenCode(): Promise<void> {
     const backend = this.#openCodeBackend, connection = this.#opencodeConnection;
     this.#openCodeBackend = this.#opencodeConnection = undefined;
     this.#unsubscribeOpenCodeStatus?.(); this.#unsubscribeOpenCodeStatus = undefined;
@@ -1335,6 +1346,7 @@ export class HostService {
     backend?.close();
     connection?.close();
     this.#invalidateCatalog();
+    await connection?.drainStartup();
   }
 
   #registerOpenCodeRuntime(runtime: RuntimeMetadata): void {
@@ -1481,6 +1493,34 @@ export class HostService {
   get kimiCodeConnectionState() { return this.#kimi?.connectionState ?? (this.#managedPolicy && !this.#disabledSources.has(KIMI_KIND) ? "unavailable" : "disabled"); }
   async startKimiCode(): Promise<void> {
     await this.#ensureKimiReady(this.#sourceCurrent(KIMI_KIND));
+  }
+
+  async startLocalAgent(kind: "opencode" | "openclaw" | "hermes"): Promise<void> {
+    await this.#ensureSharedAgent(kind, this.#sourceCurrent(kind), true);
+  }
+
+  async #ensureSharedAgent(kind: "opencode" | "openclaw" | "hermes", current: () => boolean, localOnly = false): Promise<void> {
+    if (!current() || this.#disabledSources.has(kind)) throw new AgentLaunchRevoked();
+    try {
+      if (kind === "hermes") { await this.#ensureHermes(current, localOnly); return; }
+      if (kind === OPENCODE_KIND) {
+        const connection = this.#opencodeConnection, backend = this.#openCodeBackend;
+        if (!connection || !backend) throw new Error("请先在 Host 中启用 OpenCode 接入");
+        await connection.ensure(() => current() && this.#opencodeConnection === connection, () => backend.isReady());
+        return;
+      }
+      const backend = this.#openClaw, startup = this.#openClawStart?.startup, launcher = this.#options.openClawLauncher;
+      if (!backend) throw new Error("请先在 Host 中配置 OpenClaw Gateway");
+      if (localOnly && localOpenClawPort(backend.url) === undefined) throw new Error("远程 OpenClaw Gateway 只接入已有服务");
+      if (backend.isReady()) return;
+      if (!launcher || !startup) throw new Error("OpenClaw Gateway 未连接，请检查已配置的地址和认证");
+      const admitted = () => current() && this.#openClaw === backend && !this.#disabledSources.has(kind);
+      await startup.run(admitted, () => { if (this.#openClaw === backend) this.#broadcastDeviceReady(); }, async guard => {
+        await launcher.start(backend.url, guard, { ready: () => backend.isReady(), pairingEpoch: () => backend.pairingEpoch,
+          retry: () => backend.retryLocal(guard.check) });
+        if (!backend.isReady()) throw new Error("OpenClaw Gateway 尚未完成接入");
+      });
+    } catch (error) { throw new ActivationError("agent_unsupported", describeError(error)); }
   }
 
   async #ensureKimiReady(current: () => boolean, sessionId?: string): Promise<void> {
@@ -1899,6 +1939,8 @@ export class HostService {
     if ((this.#managedPolicy ? this.#managedCodexLaunchable.has("codexDesktop") : this.#options.codexDesktopLaunchable === true) && !agents.includes("codexDesktop")) agents.push("codexDesktop");
     if ((this.#managedPolicy ? this.#managedDshLaunchable.has("dsh") : this.#options.dshLaunchable === true) && !agents.includes("dsh")) agents.push("dsh");
     if (this.#kimi?.canLaunch() && !agents.includes(KIMI_KIND)) agents.push(KIMI_KIND);
+    if (this.#opencodeConnection?.launchable && !agents.includes(OPENCODE_KIND)) agents.push(OPENCODE_KIND);
+    if ((this.#openClawStart?.installed || this.#openClawStart?.startup.starting) && !agents.includes(OPENCLAW_KIND)) agents.push(OPENCLAW_KIND);
     // A Desktop whose version cannot be attached is not offered as launchable (DSH-DESKTOP-01).
     if (this.#hermes?.installed && !agents.includes("hermes")) agents.push("hermes");
     const desktop = this.#dshDesktopSnapshot()?.state;
@@ -1991,9 +2033,10 @@ export class HostService {
   }
 
   /** Re-send the authoritative capability list after a desktop GUI state change. */
-  #broadcastDeviceReady(): void {
+  #broadcastDeviceReady(kind?: AgentKind): void {
     this.refreshHostFacts();
     for (const deviceId of this.#links.keys()) {
+      if (kind !== undefined && !allowsAgent(this.#agentView(deviceId), kind)) continue;
       this.#sendToDevice(deviceId, { type: "device.ready", ...this.#deviceReadyPayload(deviceId) });
     }
   }
@@ -2474,6 +2517,9 @@ export class HostService {
 
   async #stopManagedOpenClaw(): Promise<void> {
     const backend = this.#openClaw;
+    const startup = this.#openClawStart?.startup;
+    startup?.cancel();
+    this.#openClawStart = undefined;
     if (!backend) return;
     this.#openClaw = undefined;
     this.#backends = this.#backends.filter(item => item !== backend);
@@ -2481,7 +2527,7 @@ export class HostService {
       this.#notifications.end(runtime.runtimeId);
       this.#markRuntimeOffline(runtime.runtimeId, "agent_disabled");
     }
-    try { await backend.stop(); }
+    try { await Promise.all([backend.stop(), startup?.close()]); }
     finally { this.#invalidateCatalog(); this.#broadcastDeviceReady(); }
   }
 
@@ -2514,6 +2560,16 @@ export class HostService {
       this.#openClaw = backend;
       this.#backends.push(backend);
       backend.start();
+      const launcher = this.#options.openClawLauncher;
+      if (launcher && localOpenClawPort(config.url) !== undefined) {
+        const launch: { startup: LocalAgentStart; installed: boolean } = { startup: new LocalAgentStart(), installed: false };
+        this.#openClawStart = launch;
+        void launcher.available(config.url).then(installed => {
+          if (!current() || this.#openClawStart !== launch || this.#providerFactsClosing) return;
+          launch.installed = installed;
+          this.#broadcastDeviceReady();
+        }).catch(() => undefined);
+      }
     } catch {
       this.#options.log?.("OpenClaw Gateway setup failed; check Orbis state file permissions and the configured loopback endpoint");
     }
@@ -2536,14 +2592,15 @@ export class HostService {
     // Close publication gates before the first await: pending provider reads can
     // settle while file-change captures and comparisons are being drained.
     this.#providerFactsClosing = true;
-    if (!this.#managedPolicy) this.#stopOpenCode();
+    const stoppedOpenCode = !this.#managedPolicy ? this.#stopOpenCode() : undefined;
     clearTimeout(this.#catalogRefreshTimer); this.#catalogRefreshTimer = undefined;
     this.#providerFactsGeneration++;
     this.#modelLifecycle = "stopping";
     this.#unsubscribeEnablement?.();
     this.#unsubscribeEnablement = undefined;
     if (this.#managedPolicy) await this.#managedAgents.reconcile(this.#managedPolicy, false);
-    else await this.#openClaw?.stop();
+    else await this.#stopManagedOpenClaw();
+    await stoppedOpenCode;
     if (!this.#managedPolicy) await this.#kimi?.stop();
     if (!this.#managedPolicy) await this.#hermes?.close().catch(() => undefined);
     await this.#liveActivities.close();
@@ -2849,7 +2906,7 @@ export class HostService {
       if (!this.#catalogQueryDevices.has(deviceId)) return;
       const link = this.#links.get(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
       void (message.cursor ? Promise.resolve() : (async () => {
-        if (message.query.agentKind === "hermes") await this.#ensureHermes();
+        if (message.query.agentKind === "hermes") await this.#hermes?.attachExisting().catch(() => undefined);
         await this.#catalogWithCache();
       })()).then(() => {
         if (this.#serviceClosed || this.#links.get(deviceId) !== link || !link?.active || epoch !== this.#deviceViewEpochs.get(deviceId)) return;
@@ -3511,9 +3568,10 @@ export class HostService {
   async #configuredBackend(kind: AgentKind, current = this.#sourceCurrent(kind)): Promise<AgentBackend> {
     if (!current()) throw new AgentLaunchRevoked();
     if (kind === "hermes") {
-      const backend = await this.#ensureHermes();
+      const backend = await this.#hermes?.attachExisting().catch(() => undefined);
       if (!current()) throw new AgentLaunchRevoked();
-      return backend;
+      if (backend?.isReady()) return backend;
+      throw new SessionConfigurationError("configuration_unavailable", "Hermes Gateway 未连接");
     }
     let backend = this.#backends.find(item => item.kind === kind);
     if ((kind === "dsh" || kind === "dshDesktop") && !backend?.isReady()) await this.#ensureDshRuntime(false, kind);
@@ -3583,6 +3641,13 @@ export class HostService {
         // A selected draft or explicit new session may start Kimi; passive catalog and recovery reads may not.
         await kimiLocalDirectory(message.cwd);
         try { await this.#ensureKimiReady(current); }
+        catch (error) { throw new SessionConfigurationError("configuration_unavailable", describeError(error)); }
+      }
+      if ((kind === OPENCODE_KIND || kind === OPENCLAW_KIND || kind === "hermes") && message.type !== "session.configuration.save" &&
+          !this.#backends.some(backend => backend.kind === kind && backend.isReady())) {
+        if (!isAbsolute(message.cwd) || !await stat(message.cwd).then(info => info.isDirectory(), () => false))
+          throw new SessionConfigurationError("configuration_unavailable", "请选择电脑上存在的绝对工作目录");
+        try { await this.#ensureSharedAgent(kind, current); }
         catch (error) { throw new SessionConfigurationError("configuration_unavailable", describeError(error)); }
       }
       const backend = await this.#configuredBackend(message.agentKind, current);
@@ -3931,7 +3996,12 @@ export class HostService {
         const requireCurrent = requireLaunch(target.agentKind);
         requireCurrent();
         if (target.agentKind === OPENCLAW_KIND) throw new ActivationError("agent_unsupported", "请使用支持可恢复启动的 App 创建 OpenClaw 会话");
-        let backend = target.agentKind === "hermes" ? await this.#ensureHermes() : this.#backends.find((candidate) => candidate.kind === target.agentKind);
+        if ((target.agentKind === "hermes" || target.agentKind === OPENCODE_KIND) && !this.#backends.some(backend => backend.kind === target.agentKind && backend.isReady())) {
+          if (!isAbsolute(target.cwd) || !await stat(target.cwd).then(info => info.isDirectory(), () => false)) throw new ActivationError("cwd_missing", "请选择电脑上存在的绝对工作目录");
+          const current = this.#sourceCurrent(target.agentKind);
+          await this.#ensureSharedAgent(target.agentKind, () => current() && !!link?.active && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId));
+        }
+        let backend = this.#backends.find((candidate) => candidate.kind === target.agentKind);
         if ((backend === undefined || !backend.isReady()) && target.agentKind === "codex") backend = await this.#ensureManagedCodex("codex");
         if ((backend === undefined || !backend.isReady()) && target.agentKind === "codexDesktop") {
           try {
@@ -3979,7 +4049,13 @@ export class HostService {
         const current = this.#sourceCurrent(KIMI_KIND);
         await this.#ensureKimiReady(() => current() && link?.active !== undefined && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId), target.sessionId);
       }
-      if (resumeKind === "hermes") await this.#ensureHermes();
+      if ((resumeKind === "hermes" || resumeKind === OPENCODE_KIND || resumeKind === OPENCLAW_KIND) &&
+          !this.#backends.some(backend => backend.kind === resumeKind && backend.isReady())) {
+        if (resumeKind === OPENCLAW_KIND && this.#openClaw && !this.#openClaw.matchesSessionSource(target.sessionId))
+          throw new ActivationError("session_not_found", "此会话不属于当前 OpenClaw Gateway");
+        const current = this.#sourceCurrent(resumeKind);
+        await this.#ensureSharedAgent(resumeKind, () => current() && !!link?.active && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId));
+      }
       if (resumeKind === "codex" && this.#backends.every(backend => backend.kind !== "codex" || !backend.isReady())) await this.#ensureManagedCodex("codex");
       if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {
         try {

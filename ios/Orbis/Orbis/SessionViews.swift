@@ -689,7 +689,7 @@ struct SessionDraftView: View {
         return all.filter { agentVariants($0).contains(where: enabled.contains) }
     }
     private func canChoose(_ kind: String) -> Bool {
-        (kind != "opencode" || (owner.connection == .secured && openCode?.ready != false)) && agentVariants(kind).contains(where: allowed.contains)
+        (kind != "opencode" || (owner.connection == .secured && openCode?.canStart != false)) && agentVariants(kind).contains(where: allowed.contains)
     }
     private func canSelect(_ kind: String) -> Bool {
         canChoose(kind) || (kind == "opencode" && showsOpenCode)

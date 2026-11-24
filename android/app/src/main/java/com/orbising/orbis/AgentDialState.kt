@@ -172,7 +172,7 @@ internal fun RemoteState.dialSourceStatus(kind: String, row: AgentEnablementRow?
         if (desktop?.state in listOf("notInstalled", "not_installed")) return AgentDialStatus("未安装", "warning")
         if (desktop?.state in listOf("failed", "error", "incompatible")) return AgentDialStatus("接入失败", "error")
     }
-    if (kind == "opencode" && openCodeAvailability?.ready == false) return AgentDialStatus("等待接入", "warning")
+    if (kind == "opencode" && openCodeAvailability?.canStart == false) return AgentDialStatus("等待接入", "warning")
     if (kind in supportedAgents.orEmpty()) return AgentDialStatus("已连接", "success")
     if (kind in launchableAgents.orEmpty()) return AgentDialStatus("可启动")
     return AgentDialStatus("等待接入")

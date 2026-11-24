@@ -69,6 +69,8 @@ test("maps Gateway chat and older anchored pages to the common recoverable sourc
   });
   try {
     const [entry] = await f.backend.catalog(); expect(entry).toMatchObject({ agentKind: "openclaw", cwd });
+    expect(f.backend.matchesSessionSource(entry!.sessionId)).toBe(true);
+    expect(f.backend.matchesSessionSource(entry!.sessionId.replace(/^openclaw:[^:]+:/u, "openclaw:other:"))).toBe(false);
     await f.backend.activate({ type: "resume", sessionId: entry!.sessionId });
     const { runtimeId, sessionId } = f.runtimes[0]!;
     const sync = (range: "history" | "preview", syncId: string, beforeEntryId?: string, targetLeafId?: string) => {

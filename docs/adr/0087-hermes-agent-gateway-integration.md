@@ -150,3 +150,7 @@ Hermes 与 OpenClaw 共用单选控件，各自只选择一个连接目标。点
 - 实现：[桌面 Host](../../packages/windows-host/src/qml/Main.qml)。
 - 自动验证：[Qt 界面与 Host 重连定向回归](../../.artifacts/host-gateway-mode-20261123/focused/run.log)通过，用例见 [`OverviewRowHoverTest.cpp`](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp) 与 [`HostLiveChangeTest.cpp`](../../packages/windows-host/src/tests/HostLiveChangeTest.cpp)。工作区[合跑](../../.artifacts/host-gateway-mode-20261123/final/run.log)中状态标签截断用例未通过。隔离[提交候选](../../.artifacts/host-gateway-mode-20261123/commit-check/run.log)中两种 Agent 的单选及 Host 生命周期测试通过；概览布局用例在候选和 [提交前基线](../../.artifacts/host-gateway-mode-20261123/baseline-check/run.log)中均未通过。
 - 部署：未发布。用户验收：待用户验证。
+
+### HOST-AGENT-START-01｜本机启动入口
+
+本机 Hermes 在 Host Agent 卡提供「启动」，与手机新建、恢复共用既有的 `gateway ensure`、profile 和单次连接。目录与历史启动回执回读只尝试附着已有 Gateway；停用或请求失效不再授权迟到的启动。SSH 仍按已配置目标只接入既有 Gateway，不显示本机启动动作、不回退到本机 profile。验证见 [`hermes-host-connection.test.ts`](../../packages/host/src/hermes-host-connection.test.ts) 与 [证据索引](../../.artifacts/agent-demand-launch-20261124/verification.json)。加密互通对照使用独立构建的 `v0.1.24`，根目录以 `ORBIS_AGENT_START_COMPAT_RELEASE_ROOT` 传给 `host-service.test.ts`。未发布，未安装至用户设备。

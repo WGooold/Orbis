@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { GatewayClient, type DeviceAuthTokenRecord, type DeviceIdentity, type GatewayClientRequestOptions } from "@openclaw/gateway-client";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "@openclaw/gateway-protocol/client-info";
+import { readPairingConnectErrorDetails } from "@openclaw/gateway-protocol/connect-error-details";
 import type { EventFrame } from "@openclaw/gateway-protocol/frame-guards";
 import { PROTOCOL_VERSION } from "@openclaw/gateway-protocol/version";
 
@@ -136,7 +137,10 @@ async function loadIdentity(dir: string): Promise<DeviceIdentity> {
 
 export class OpenClawGateway {
   readonly url: string;
-  readonly #client: GatewayClient;
+  #client: GatewayClient;
+  readonly #makeClient: () => GatewayClient;
+  #connectionGeneration = 0;
+  #pairingEpoch = 0;
   #ready = false;
   #stopped = false;
 
@@ -165,44 +169,68 @@ export class OpenClawGateway {
       tokenWrites = next.catch(() => events.log?.("OpenClaw pairing token could not be saved"));
       return next;
     };
-    this.#client = new GatewayClient({ url: config.url, ...(config.token ? { token: config.token } : {}),
-      clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT, clientDisplayName: "Orbis Host", mode: GATEWAY_CLIENT_MODES.BACKEND,
-      role: "operator", scopes: SCOPES, deviceIdentity: identity, requestTimeoutMs: 10_000,
-      minProtocol: PROTOCOL_VERSION, maxProtocol: PROTOCOL_VERSION,
-      hostDeps: {
-        publicKeyRawBase64UrlFromPem: pem => rawKey(createPublicKey(pem)).toString("base64url"),
-        signDevicePayload: (pem, payload) => sign(null, Buffer.from(payload), createPrivateKey(pem)).toString("base64url"),
-        loadDeviceAuthToken: () => stored(),
-        storeDeviceAuthToken: ({ token, scopes, expectedToken }) => updateStored(expectedToken, () => writePrivate(tokenFile, JSON.stringify({ token, scopes }))),
-        clearDeviceAuthToken: ({ expectedToken }) => updateStored(expectedToken, () => unlink(tokenFile).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-        })),
-      },
-      onHelloOk: hello => {
-        if (this.#stopped) return;
-        if (hello.protocol !== PROTOCOL_VERSION || hello.auth.role !== "operator" || !SCOPES.every(scope => hello.auth.scopes.includes(scope)) ||
-            !METHODS.every(method => hello.features.methods.includes(method))) {
-          events.log?.("OpenClaw Gateway did not grant the required operator scopes or chat methods");
-          this.#client.stop(); return;
-        }
-        this.#ready = true;
-        events.online();
-      },
-      onConnectError: error => {
-        // Never print the upstream error or close reason: those are server-controlled.
-        const details = openClawRecord(openClawRecord(error)?.details);
-        const id = details?.requestId;
-        events.log?.(typeof id === "string" && /^[\w-]{1,128}$/.test(id) ? `OpenClaw device approval required: ${id}` : "OpenClaw Gateway connection failed");
-      },
-      onClose: () => { if (this.#ready) { this.#ready = false; if (!this.#stopped) events.offline(); } },
-      onGap: () => { if (this.ready) events.gap(); },
-      onEvent: event => { if (this.ready) events.event(event); },
-    });
+    this.#makeClient = () => {
+      const generation = this.#connectionGeneration;
+      const current = () => !this.#stopped && generation === this.#connectionGeneration;
+      return new GatewayClient({ url: config.url, ...(config.token ? { token: config.token } : {}),
+        clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT, clientDisplayName: "Orbis Host", mode: GATEWAY_CLIENT_MODES.BACKEND,
+        role: "operator", scopes: SCOPES, deviceIdentity: identity, requestTimeoutMs: 10_000,
+        minProtocol: PROTOCOL_VERSION, maxProtocol: PROTOCOL_VERSION,
+        hostDeps: {
+          publicKeyRawBase64UrlFromPem: pem => rawKey(createPublicKey(pem)).toString("base64url"),
+          signDevicePayload: (pem, payload) => sign(null, Buffer.from(payload), createPrivateKey(pem)).toString("base64url"),
+          loadDeviceAuthToken: () => stored(),
+          storeDeviceAuthToken: ({ token, scopes, expectedToken }) => updateStored(expectedToken, () => writePrivate(tokenFile, JSON.stringify({ token, scopes }))),
+          clearDeviceAuthToken: ({ expectedToken }) => updateStored(expectedToken, () => unlink(tokenFile).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") throw error;
+          })),
+        },
+        onHelloOk: hello => {
+          if (!current()) return;
+          if (hello.protocol !== PROTOCOL_VERSION || hello.auth.role !== "operator" || !SCOPES.every(scope => hello.auth.scopes.includes(scope)) ||
+              !METHODS.every(method => hello.features.methods.includes(method))) {
+            events.log?.("OpenClaw Gateway did not grant the required operator scopes or chat methods");
+            this.#client.stop(); return;
+          }
+          this.#ready = true;
+          events.online();
+        },
+        onConnectError: error => {
+          if (!current()) return;
+          // Never print the upstream error or close reason: those are server-controlled.
+          const pairing = readPairingConnectErrorDetails(openClawRecord(error)?.details);
+          const id = pairing?.requestId;
+          if (pairing) {
+            this.#pairingEpoch++;
+            events.log?.(typeof id === "string" && /^[\w-]{1,128}$/.test(id) ? `OpenClaw device approval required: ${id}` : "OpenClaw device approval required");
+          } else events.log?.("OpenClaw Gateway connection failed");
+        },
+        onClose: () => { if (current() && this.#ready) { this.#ready = false; events.offline(); } },
+        onGap: () => { if (current() && this.ready) events.gap(); },
+        onEvent: event => { if (current() && this.ready) events.event(event); },
+      });
+    };
+    this.#client = this.#makeClient();
     this.#drainTokenWrites = () => tokenWrites;
   }
   readonly #drainTokenWrites: () => Promise<void>;
   get ready(): boolean { return this.#ready && !this.#stopped && this.#client.connected; }
+  get pairingEpoch(): number { return this.#pairingEpoch; }
   start(): void { if (!this.#stopped) this.#client.start(); }
+  /** Explicit local startup can wake a disconnected SDK client out of its reconnect backoff. */
+  async retryLocal(current: () => void): Promise<void> {
+    if (this.#stopped || this.ready) return;
+    const generation = ++this.#connectionGeneration;
+    try { await this.#client.stopAndWait(); }
+    finally {
+      if (!this.#stopped && generation === this.#connectionGeneration) {
+        this.#ready = false;
+        this.#client = this.#makeClient();
+        this.#client.start(); // Restore passive attachment even if the caller has since disconnected.
+      }
+    }
+    current();
+  }
   async stop(): Promise<void> {
     this.#stopped = true; this.#ready = false;
     await this.#client.stopAndWait();

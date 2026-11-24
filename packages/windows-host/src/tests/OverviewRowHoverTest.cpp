@@ -75,8 +75,8 @@ const agents = [
   { kind: "openclaw", label: "OpenClaw", enabled: true }
 ];
 let currentAgents = agents;
-const kimiStatus = (state, ready) => ({ event: "status", kimiCodeState: state, model: { domains: [{ domain: "backends", value: {
-  backends: [{ kind: "kimiCode", ready, launchable: true, runtimeCount: 0 }]
+const launchStatus = (kind, state, ready) => ({ event: "status", ...(kind === "kimiCode" ? { kimiCodeState: state } : {}), model: { domains: [{ domain: "backends", value: {
+  backends: [{ kind, ready, launchable: true, runtimeCount: 0, reason: state }]
 } }] } });
 require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
   const { id, method, params } = JSON.parse(line);
@@ -149,9 +149,9 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     setTimeout(() => out({ id, result: { status: "applied", snapshot } }), 320);
     return;
   }
-  if (method === "openAgent" && params.kind === "kimiCode") {
-    out(kimiStatus("starting", false));
-    setTimeout(() => { out(kimiStatus("connected", true)); out({ id, result: {} }); }, 360);
+  if (method === "openAgent" && ["kimiCode", "opencode", "hermes", "openclaw"].includes(params.kind)) {
+    out(launchStatus(params.kind, "starting", false));
+    setTimeout(() => { out(launchStatus(params.kind, "connected", true)); out({ id, result: {} }); }, 360);
     return;
   }
   if (method === "provider.list") {
@@ -214,8 +214,14 @@ private slots:
         qmlRegisterType<NeuSurface>("Orbis.Host", 1, 0, "NeuSurface");
     }
 
-    // KIMI-12: the Host shows its explicit start action only while the configured source can start.
-    void kimiStartsFromHostWithoutAnExternalManualStep() {
+    void startsLocalAgentFromHost_data() {
+        QTest::addColumn<QString>("kind");
+        for (const auto *kind : {"kimiCode", "opencode", "hermes", "openclaw"}) QTest::newRow(kind) << QString(kind);
+    }
+
+    // KIMI-12 / HOST-AGENT-START-01: shared start UI reflects process status; configured remote gateways cannot be started here.
+    void startsLocalAgentFromHost() {
+        QFETCH(QString, kind);
         QVERIFY(!QStandardPaths::findExecutable("node").isEmpty());
         QTemporaryDir root;
         QVERIFY(root.isValid());
@@ -237,18 +243,36 @@ private slots:
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
         QVERIFY(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.bridgeReady() && !controller.busy() && controller.kimiCodeState() == "not_running", 10000);
-        auto *overview = findVisualItem(window->contentItem(), "overviewAgent-kimiCode");
+        if (kind != "kimiCode") {
+            if (kind == "openclaw") controller.m_openClaw.insert("url", "ws://127.0.0.1:18789");
+            controller.receiveLine({{"event", "status"}, {"model", QJsonObject{{"domains", QJsonArray{
+                QJsonObject{{"domain", "backends"}, {"value", QJsonObject{{"backends", QJsonArray{
+                    QJsonObject{{"kind", kind}, {"ready", false}, {"launchable", true}, {"runtimeCount", 0}}
+                }}}}}
+            }}}}});
+        }
+        auto *overview = findVisualItem(window->contentItem(), "overviewAgent-" + kind);
         QVERIFY(overview && overview->isVisible() && overview->isEnabled());
         QCOMPARE(overview->property("text").toString(), QString("启动"));
-        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, QString("kimiCode"))));
+        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, kind)));
         auto *detail = findVisualItem(window->contentItem(), "agentDetailOpen");
-        auto *status = findVisualItem(window->contentItem(), "kimiCodeStatus");
+        auto *status = findVisualItem(window->contentItem(), kind == "kimiCode" ? "kimiCodeStatus" : "agentDetailState");
         QTRY_VERIFY(detail && status && detail->isVisible() && detail->isEnabled() && status->isVisible());
         QCOMPARE(status->property("text").toString(), QString("可启动"));
+        if (kind == "hermes" || kind == "openclaw") {
+            if (kind == "hermes") controller.m_hermesRemote.insert("host", "fixture.example");
+            else controller.m_openClaw.insert("url", "wss://fixture.example");
+            emit controller.changed();
+            QTRY_VERIFY(!detail->isVisible());
+            if (kind == "hermes") controller.m_hermesRemote.remove("host");
+            else controller.m_openClaw.insert("url", "ws://127.0.0.1:18789");
+            emit controller.changed();
+            QTRY_VERIFY(detail->isVisible() && detail->isEnabled());
+        }
         QVERIFY(QMetaObject::invokeMethod(detail, "clicked"));
         QTRY_COMPARE(status->property("text").toString(), QString("正在启动"));
         QVERIFY(!detail->isEnabled());
-        QTRY_COMPARE(status->property("text").toString(), QString("已接入"));
+        QTRY_COMPARE(status->property("text").toString(), QString(kind == "kimiCode" ? "已接入" : "可用"));
         QVERIFY(!detail->isVisible());
         controller.shutdown();
     }

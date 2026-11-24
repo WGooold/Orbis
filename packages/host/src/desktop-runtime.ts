@@ -11,6 +11,9 @@ import { AgentEnablementChoiceSchema, AgentKindSchema, hostRecoveryProof, type A
 import { AgentBatchConfirmationRequired, AgentDisableConfirmationRequired, AgentEnablementController, AgentEnablementStore, type AgentEnablementResult, type AgentEnablementSnapshot } from "./agent-enablement.js";
 import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
+import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
+import { createOpenCodeLocalLauncher } from "./opencode-local-launch.js";
+import { OpenCodeServiceConnection } from "./opencode-service-connection.js";
 import { loadHermesRemoteGatewayConfig, readHermesRemoteGatewaySettings, saveHermesRemoteGatewaySettings } from "./hermes-remote-gateway.js";
 import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
@@ -890,7 +893,8 @@ export class DesktopRuntime {
       };
       let relayAuthenticated = false;
       const service = await HostService.create({
-        ...(this.#qa ? {} : { createKimiCodeRuntime }),
+        ...(this.#qa ? {} : { createKimiCodeRuntime, openClawLauncher: createOpenClawLocalLauncher(),
+          createOpenCodeConnection: () => new OpenCodeServiceConnection({ launcher: createOpenCodeLocalLauncher() }) }),
         agentEnablement: this.#agentEnablement,
         ...(this.#qa ? { openClaw: false as const, opencodeConnection: false as const } : {}),
         providers: this.#providers,
@@ -1660,18 +1664,20 @@ export class DesktopRuntime {
   }
 
   async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {
-    if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop" || kind === "kimiCode")) throw new Error("QA Host 不打开正式桌面会话");
+    const startLocal = kind === "opencode" || kind === "openclaw" || kind === "hermes";
+    if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop" || kind === "kimiCode" || startLocal)) throw new Error("QA Host 不打开正式 Agent 会话");
     const source = AgentKindSchema.safeParse(kind);
     if (source.success) await this.#requireAgentEnabled(source.data);
     const lease = source.success ? this.#agentEnablement.lease(source.data) : undefined;
     const requireCurrent = () => { if (!lease?.isCurrent()) throw new Error("此 Agent 已停用"); };
     if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
-    if (kind === "kimiCode") {
+    if (kind === "kimiCode" || startLocal) {
       if (mode !== "setup") throw new Error("未知打开方式");
       requireCurrent();
       const service = this.#service;
-      if (!this.#desired || !service) throw new Error("请先启动 Host，再启动 Kimi Code");
-      await service.startKimiCode();
+      if (!this.#desired || !service) throw new Error("请先启动 Host，再启动 Agent");
+      if (kind === "kimiCode") await service.startKimiCode();
+      else await service.startLocalAgent(kind);
       return;
     }
     if (kind === "dsh") {

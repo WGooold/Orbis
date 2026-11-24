@@ -107,6 +107,16 @@ struct LocalizationTests {
 
 @Suite
 struct OpenCodeAvailabilityTests {
+    // HOST-AGENT-START-01: launchability enables a draft without implying a live connection.
+    @Test func coldOpenCodeUsesTheExistingLaunchableBit() {
+        let cold = OpenCodeAvailability(backends: .array([.object([
+            "kind": .string("opencode"), "ready": .bool(false), "launchable": .bool(true), "reason": .string("service_not_found"),
+        ])]))
+        #expect(cold?.canStart == true)
+        #expect(cold?.ready == false)
+        #expect(OpenCodeAvailability.draftNotice(selectedAgent: "opencode", availability: cold) == nil)
+    }
+
     @Test func backendAvailabilityIsAdvertisedAndNotInferred() {
         #expect(OpenCodeAvailability(backends: .array([.object(["kind": .string("pi"), "ready": .bool(true)])])) == nil)
         #expect(OpenCodeAvailability(backends: .array([.object(["kind": .string("opencode"), "ready": .string("true")])])) == nil)
