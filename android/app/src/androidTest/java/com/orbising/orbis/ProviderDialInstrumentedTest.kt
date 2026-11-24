@@ -124,6 +124,25 @@ class ProviderDialInstrumentedTest {
         compose.runOnIdle { assertEquals(listOf(Triple("codex", false, null)), enablementChanges) }
     }
 
+    /** AGENT-DIAL-09: a touch on the pin grabs it, even when the thumb first moves more down than across. */
+    @Test fun pinGrabbedOnTheKnobFollowsEvenWhenTheSwipeStartsDiagonally() {
+        val dial = managedDial(AgentEnablementRow("codex", "Codex CLI", true), AgentEnablementRow("openclaw", "OpenClaw", true))
+        val g = pinGeometry(dial)
+        val socket = with(compose.density) { androidx.compose.ui.geometry.Offset((g.pinStart + g.pinTravel).dp.toPx(), g.cy.dp.toPx()) }
+        val (travel, drift) = with(compose.density) { g.pinTravel.dp.toPx() to 12.dp.toPx() }
+        dial.performTouchInput {
+            down(socket)
+            moveTo(socket + androidx.compose.ui.geometry.Offset(-drift * 0.5f, drift), 80)
+            moveTo(socket + androidx.compose.ui.geometry.Offset(-travel * 0.9f, drift * 2), 250)
+        }
+        val pin = compose.onNodeWithTag("provider-agent-codex").fetchSemanticsNode().boundsInRoot.center.x
+        assertEquals(with(compose.density) { (g.pinStart + g.pinTravel * 0.1f).dp.toPx() }, pin, with(compose.density) { 2.dp.toPx() })
+        dial.performTouchInput { up() }
+        compose.runOnIdle { assertEquals(listOf(Triple("codex", false, null)), enablementChanges) }
+        compose.onNodeWithTag("provider-agent-reel")
+            .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Codex CLI"))
+    }
+
     /** AGENT-DIAL-06: a swipe that leaves the groove abandons the pin edit, however far it travelled sideways. */
     @Test fun swipeLeavingTheGrooveNeverSwitchesAnAgent() {
         val dial = managedDial(AgentEnablementRow("codex", "Codex CLI", true), AgentEnablementRow("openclaw", "OpenClaw", true))

@@ -466,9 +466,15 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                 val velocity = VelocityTracker()
                 velocity.addPosition(down.uptimeMillis, down.position)
                 var locked = false; var radial = false; var armed = false; var released = false
-                var vertical = false
+                var vertical = false; var lastDy = 0f
                 // Only the Agent resting in the gate owns the pin; the ring must not be between detents.
                 val docked = abs(agentPosition - currentKinds.indexOf(startKind)) < 0.01f
+                // AGENT-DIAL-09: a touch on the pin itself grabs it at once — no direction lock and no dead zone — so the
+                // pin moves with the finger from the first pixel. Turning the ring starts anywhere else on the hub.
+                val knobX = gestureGeometry.pinStart + gestureGeometry.pinTravel * currentPinRest
+                val onKnob = inChannel && docked && hypot(x - knobX, y - gestureGeometry.cy) <= AgentDialPin.GRAB
+                if (onKnob) { locked = true; radial = currentEdit }
+                var shookLocked = false
                 fun releasePin() {
                     // The released pin travels on from where the finger left it, back to rest or on to the Host hold.
                     pinDrag?.let { from -> scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -493,11 +499,11 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                             if (vertical) { grabbed = ring; currentOnMoving(true) }
                             if (horizontal && inChannel) change.consume()
                         }
+                        if (onKnob && !radial && !shookLocked && hypot(dx, dy) >= AgentDialPin.LOCK) { shookLocked = true; shakePin() }
                         if (locked && inChannel && !vertical && !radial) { change.consume() }
                         if (radial) {
                             if (!currentEdit || currentKind != startKind || currentOn != startEnabled || currentPending != startPending) { radial = false; armed = false; pinArmed = false; pinDrag = null; hint = null; break }
-                            // Leaving the groove abandons the edit: a diagonal swipe can never switch an Agent.
-                            if (abs(dy) > AgentDialPin.ESCAPE) { releasePin(); radial = false; armed = false; change.consume(); continue }
+                            lastDy = dy
                             val effective = startPending?.target ?: startEnabled
                             val value = AgentDialPin.drag(effective, dx, gestureGeometry.pinTravel)
                             pinDrag = value
@@ -525,7 +531,8 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                     if (vertical) { grabbed = null; currentOnMoving(false) }
                     if (radial) releasePin()
                 }
-                if (radial && released && armed && currentEdit && currentKind == startKind && currentOn == startEnabled && currentPending == startPending)
+                // Releasing far from the groove is a deliberate "never mind": the pin returns and nothing is sent.
+                if (radial && released && armed && abs(lastDy) <= AgentDialPin.ESCAPE && currentEdit && currentKind == startKind && currentOn == startEnabled && currentPending == startPending)
                     toggle(startKind, !(startPending?.target ?: startEnabled))
                 // An interrupted drag still lands on a detent; only a real release carries fling velocity.
                 if (vertical) {

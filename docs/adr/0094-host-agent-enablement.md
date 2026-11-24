@@ -210,3 +210,13 @@ iOS 自动验证：[Swift 几何回归 9 项通过](../../.artifacts/agent-dial-
 回归：[`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `heldPinFollowsTheFingerAlongTheWholeGroove`（按住向内拉 90% 时插销中心位于手指处）；Android／iOS 几何回归更新为全程跟随。
 
 自动验证（2026-11-24）：新用例在修改前的[对照运行](../../.artifacts/agent-dial-08-20261124/baseline-instrumentation/instrumentation.log)中失败（插销停在 28% 处，落后手指 27px）；修复后[`ProviderDialInstrumentedTest` 14 项中 12 项通过](../../.artifacts/agent-dial-08-20261124/fixed-instrumentation/instrumentation.log)，其余 2 项为既有失败；Android 单元回归 15 项、Swift 几何回归 9 项通过；iOS 无签名模拟器构建成功。拖动手感待用户安装验收。
+
+## AGENT-DIAL-09｜按住插销即抓住插销（2026-11-24）
+
+- **问题**：AGENT-DIAL-08 后拖动插销仍不能随意滑动。
+- **根因**：凹槽内的触摸需先移动 8dp 再判定横向或竖向，判定前插销不动，起手偏竖时整次触摸被当作转动内环；AGENT-DIAL-06 的离槽作废在拇指弧线滑动时会中途弹回插销。
+- **修复**：触点距插销中心 `GRAB`（26dp）以内即抓住插销，从第一个移动点起跟随手指，不判方向、无死区，中途不作废；松手时过半生效，只有松手位置偏离凹槽超过 `ESCAPE`（72dp）才视为取消。转动内环从插销以外的内环区域开始；未移动的轻点仍显示拨动提示。iOS 同步（`ProviderDialGeometry.pinGrab`／`pinEscape`）。
+
+回归：[`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `pinGrabbedOnTheKnobFollowsEvenWhenTheSwipeStartsDiagonally`；`swipeLeavingTheGrooveNeverSwitchesAnAgent` 改为在远离凹槽处松手。
+
+自动验证（2026-11-24）：新用例在修改前的[对照运行](../../.artifacts/agent-dial-09-20261124/baseline-instrumentation/instrumentation.log)中失败（起手偏竖时插销留在原位）；修复后[`ProviderDialInstrumentedTest` 15 项中 13 项通过](../../.artifacts/agent-dial-09-20261124/fixed-instrumentation/instrumentation.log)，其余 2 项为既有失败；Android 单元回归 15 项、Swift 几何回归 9 项通过；iOS 无签名模拟器构建成功。拖动手感待用户安装验收。

@@ -49,8 +49,10 @@ enum ProviderDialGeometry {
         }
     }
     static let pinHold = 0.72
-    /// AGENT-DIAL-06: vertical travel past which a pin edit leaves the groove and is abandoned.
-    static let pinEscape = 36.0
+    /// AGENT-DIAL-09: a release this far above or below the groove cancels the edit; the drag itself never stops.
+    static let pinEscape = 72.0
+    /// AGENT-DIAL-09: a touch within this radius of the pin grabs the pin itself.
+    static let pinGrab = 26.0
     static func horizontal(_ dx: Double, _ dy: Double) -> Bool { abs(dx) > abs(dy) * 1.1 }
     /// AGENT-DIAL-08: the pin follows the finger across the whole groove; only its resting place waits for the Host.
     static func pinPosition(enabled: Bool, dx: Double, travel: Double) -> Double {

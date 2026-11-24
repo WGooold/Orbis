@@ -1019,7 +1019,14 @@ private struct ProviderDialView: View {
                 initialPosition = handle == .agent ? Double(groupIndex) : profilePosition
                 moved = false; axisLocked = false; pinArmed = false
                 pinStartEnabled = pending?.target ?? powered; pinStartChoice = pending
+                // AGENT-DIAL-09: a touch on the pin itself grabs it at once — no direction lock and no dead zone — so
+                // the pin moves with the finger from the first point. Turning the ring starts anywhere else on the hub.
+                let knobX = g.pinStart + g.pinTravel * pinRest
+                if pinTouched && editable && hypot(value.startLocation.x - knobX, value.startLocation.y - g.centerY) <= ProviderDialGeometry.pinGrab {
+                    axisLocked = true; handle = nil; pinOwner = kind; hintTask?.cancel()
+                }
             }
+            if pinOwner != nil && hypot(dx, dy) >= 8 { moved = true }
             if !axisLocked {
                 guard managed ? hypot(dx, dy) >= 8 : abs(dy) >= (handle == .agent ? 10 : 4) else { return }
                 axisLocked = true; moved = true
@@ -1032,12 +1039,6 @@ private struct ProviderDialView: View {
             if let pinOwner {
                 guard editable, pinOwner == kind, pinStartChoice == pending, pinStartEnabled == (pending?.target ?? powered) else {
                     self.pinOwner = nil; pinDrag = nil; pinArmed = false; hint = nil; return
-                }
-                // AGENT-DIAL-06: leaving the groove abandons the edit, so a diagonal swipe never switches an Agent.
-                if abs(dy) > ProviderDialGeometry.pinEscape {
-                    self.pinOwner = nil; pinArmed = false; hint = nil
-                    withAnimation(reduced ? nil : .easeOut(duration: 0.22)) { pinDrag = nil }
-                    return
                 }
                 let position = ProviderDialGeometry.pinPosition(enabled: pinStartEnabled, dx: dx, travel: g.pinTravel)
                 pinDrag = position
@@ -1058,11 +1059,12 @@ private struct ProviderDialView: View {
         }.onEnded { value in
             let captured = handle; handle = nil; gestureStarted = false
             if pinOwner != nil {
-                let apply = editable && pinArmed && pinOwner == kind && pinStartChoice == pending && pinStartEnabled == (pending?.target ?? powered)
+                // Releasing far from the groove is a deliberate "never mind": the pin returns and nothing is sent.
+                let apply = editable && pinArmed && abs(value.translation.height) <= ProviderDialGeometry.pinEscape && pinOwner == kind && pinStartChoice == pending && pinStartEnabled == (pending?.target ?? powered)
                 // The released pin travels on from where the finger left it, back to rest or on to the Host hold.
                 pinOwner = nil; pinArmed = false; hint = nil
                 withAnimation(reduced ? nil : .easeOut(duration: 0.22)) { pinDrag = nil }
-                if apply { onToggle(!pinStartEnabled) }; return
+                if apply { onToggle(!pinStartEnabled) } else if !moved { nudgePin() }; return
             }
             if !moved && pinTouched { nudgePin(); return }
             guard let captured else { onMoving(false); return }

@@ -99,8 +99,10 @@ internal data class DualDialGeometry(val cx: Float, val cy: Float, val radius: F
 internal object AgentDialPin {
     const val HOLD = 0.72f
     const val LOCK = 8f
-    /** AGENT-DIAL-06: vertical travel (dp) past which a pin edit leaves the groove and is abandoned. */
-    const val ESCAPE = 36f
+    /** AGENT-DIAL-09: a release this far (dp) above or below the groove cancels the edit; the drag itself never stops. */
+    const val ESCAPE = 72f
+    /** AGENT-DIAL-09: a touch within this radius (dp) of the pin grabs the pin itself. */
+    const val GRAB = 26f
     fun horizontal(dx: Float, dy: Float) = kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.1f
     /** AGENT-DIAL-08: the pin follows the finger across the whole groove; only its resting place waits for the Host. */
     fun drag(enabled: Boolean, dx: Float, travel: Float): Float = ((if (enabled) 1f else 0f) + dx / travel).coerceIn(0f, 1f)
