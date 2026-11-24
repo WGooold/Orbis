@@ -272,7 +272,9 @@ export class DshWebRuntime implements AgentBackend {
     this.#controlUnsubscribe = this.#client.subscribe("session/control", {}, raw => {
       const frame = object(raw);
       if (frame.type === "baseline") {
-        for (const [id, baseline] of Object.entries(object(object(frame.value).projections))) {
+        const projections = object(object(frame.value).projections);
+        this.#discovery.taskControlBaseline(projections);
+        for (const [id, baseline] of Object.entries(projections)) {
           this.#titleProjection(id, baseline, true);
           const session = this.#sessions.get(this.#publicId(id)); if (session) {
             this.#permissionProjection(session, baseline);
@@ -281,6 +283,10 @@ export class DshWebRuntime implements AgentBackend {
           }
         }
       } else if (frame.type === "projection" && typeof frame.sessionId === "string") {
+        // Newer DSH publishes all projection replacements from one committed event together.
+        const changes = Array.isArray(frame.changes) ? frame.changes.map(object) : [{ key: frame.key, val: frame.value }];
+        const taskChange = changes.find(change => change.key === "subagentCatalog");
+        if (taskChange) this.#discovery.taskControlUpdate(frame.sessionId, { asOfSeq: frame.seq, values: { subagentCatalog: taskChange.val } });
         const baseline = { asOfSeq: frame.seq, values: { [String(frame.key)]: frame.value } };
         if (frame.key === "title") this.#titleProjection(frame.sessionId, baseline);
         const session = this.#sessions.get(this.#publicId(frame.sessionId));
@@ -291,6 +297,7 @@ export class DshWebRuntime implements AgentBackend {
     }, () => {
       this.#controlUnsubscribe?.(); this.#controlUnsubscribe = undefined;
       if (!this.#ready) return;
+      this.#discovery.resetTaskControl();
       this.#controlRetry = setTimeout(() => { this.#controlRetry = undefined; this.#subscribeControl(); }, 2_000);
       this.#controlRetry.unref();
     });
