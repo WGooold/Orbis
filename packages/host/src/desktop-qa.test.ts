@@ -109,6 +109,7 @@ describe("QA-ACT-02 isolated desktop bridge", () => {
       await expect(runtime.enableCodexTerminal("/fixture")).rejects.toThrow("QA Host");
       await expect(runtime.openAgent("codexDesktop")).rejects.toThrow("QA Host");
       await expect(runtime.openAgent("dshDesktop")).rejects.toThrow("QA Host");
+      await expect(runtime.openAgent("kimiCode")).rejects.toThrow("QA Host");
     } finally { await runtime.close(); }
   });
 

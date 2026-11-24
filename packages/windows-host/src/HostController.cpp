@@ -1277,6 +1277,11 @@ void HostController::restartDshServer() {
 }
 void HostController::openAgent(const QString &kind) {
     if (kind == "pi" || kind == "claude") { openAgentTui(kind); return; }
+    if (kind == "kimiCode") {
+        if (!m_bridgeReady || busy() || !m_desiredRunning || !kimiCodeEnabled()) return;
+        command("openAgent", {{"kind", kind}}, [this](const QJsonValue &) { setMessage("Kimi Code 已接入"); });
+        return;
+    }
     command("openAgent", {{"kind", kind}});
 }
 void HostController::openAgentTui(const QString &kind) {

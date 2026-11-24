@@ -35,6 +35,12 @@ const recoveryPage = z.object({ items: z.array(KimiSessionSchema).max(PAGE_SIZE)
 export class KimiLaunchBlocked extends ActivationError {}
 export function isKimiId(value: unknown): value is `kimi-code:${string}` { return typeof value === "string" && value.startsWith(KIMI_PREFIX); }
 export const kimiSessionPath = (id: string) => `/api/v1/sessions/${encodeURIComponent(id)}`;
+export function kimiNativeSessionId(publicId: string, key: string): string {
+  const prefix = `${KIMI_PREFIX}${key}:`;
+  const id = publicId.startsWith(prefix) ? nativeId.safeParse(publicId.slice(prefix.length)) : undefined;
+  if (!id?.success) throw new ActivationError("session_not_found", "此会话不属于当前 Kimi Code 数据源");
+  return id.data;
+}
 
 /** Identity persists through Web restarts and changes when the data root is replaced. */
 export async function kimiSourceKey(home: string): Promise<string> {
@@ -56,12 +62,7 @@ export async function kimiLocalDirectory(path: string): Promise<string> {
 export class KimiSessions {
   constructor(readonly client: Pick<KimiWebClient, "requestJson">, readonly key: string) {}
   publicId(id: string): string { return `${KIMI_PREFIX}${this.key}:${id}`; }
-  nativeId(publicId: string): string {
-    const prefix = this.publicId("");
-    const id = publicId.startsWith(prefix) ? nativeId.safeParse(publicId.slice(prefix.length)) : undefined;
-    if (!id?.success) throw new ActivationError("session_not_found", "此会话不属于当前 Kimi Code 数据源");
-    return id.data;
-  }
+  nativeId(publicId: string): string { return kimiNativeSessionId(publicId, this.key); }
 
   async read(id: string): Promise<KimiSession> {
     return KimiSessionSchema.parse(await this.client.requestJson(kimiSessionPath(id)));

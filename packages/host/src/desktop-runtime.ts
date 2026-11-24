@@ -24,7 +24,7 @@ import { CODEX_SOURCE_COALESCE_MS, CodexRuntime } from "./codex-runtime.js";
 import { loadKimiCodeConfig } from "./config.js";
 import type { KimiSource } from "./kimi-web-client.js";
 import { supportsKimiDesktop } from "./kimi-desktop-owner.js";
-import { KimiRuntime } from "./kimi-runtime.js";
+import { createLocalKimiRuntime, type KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle, openDshDesktopFromHost } from "./dsh-desktop-lifecycle.js";
 import { DSH_VERSION, resolveDshCommand } from "./dsh-client.js";
@@ -885,7 +885,7 @@ export class DesktopRuntime {
       const createKimiCodeRuntime = async (): Promise<KimiRuntime> => {
         const config = await loadKimiCodeConfig(this.#stateDir);
         const source = settings.kimiCodeSource ?? config.kimiCodeSource;
-        return new KimiRuntime({ stateDir: this.#stateDir, homeDir: config.kimiCodeHome, source,
+        return createLocalKimiRuntime({ stateDir: this.#stateDir, homeDir: config.kimiCodeHome, source,
           ...(config.kimiCodeEndpoint === undefined || source !== config.kimiCodeSource ? {} : { endpoint: config.kimiCodeEndpoint }), log: line => this.log(line) });
       };
       let relayAuthenticated = false;
@@ -1660,12 +1660,20 @@ export class DesktopRuntime {
   }
 
   async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {
-    if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop")) throw new Error("QA Host 不打开正式桌面会话");
+    if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop" || kind === "kimiCode")) throw new Error("QA Host 不打开正式桌面会话");
     const source = AgentKindSchema.safeParse(kind);
     if (source.success) await this.#requireAgentEnabled(source.data);
     const lease = source.success ? this.#agentEnablement.lease(source.data) : undefined;
     const requireCurrent = () => { if (!lease?.isCurrent()) throw new Error("此 Agent 已停用"); };
     if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
+    if (kind === "kimiCode") {
+      if (mode !== "setup") throw new Error("未知打开方式");
+      requireCurrent();
+      const service = this.#service;
+      if (!this.#desired || !service) throw new Error("请先启动 Host，再启动 Kimi Code");
+      await service.startKimiCode();
+      return;
+    }
     if (kind === "dsh") {
       const env = await this.#providers.environment("dsh");
       requireCurrent();

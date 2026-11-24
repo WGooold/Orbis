@@ -1,5 +1,5 @@
 /**
- * Read-only discovery and authenticated transport for a user-managed Kimi Code Web server.
+ * Read-only discovery and authenticated transport for a local Kimi Code server.
  * The instance directory is deliberately read without Kimi's listLive helper: upstream
  * maintenance deletes stale registry files, which an Orbis connection must never do.
  */
@@ -17,6 +17,8 @@ export const KIMI_API_CONTRACT_SHA256 = Object.freeze({
 });
 
 export type KimiSource = "web" | "desktop";
+export const KIMI_WEB_VERSION = "2.6.3";
+const KIMI_DESKTOP_SERVER_VERSION = "2.6.2";
 const DESKTOP_CONTRACTS = Object.freeze({
   openapi: "9920b34adcf9458d7dcf00d42c8d4ce794f27f4a6a8f21b570e9e6b100ea985f",
   asyncapi: "6f415309b2946045b0df41f0a529a6699821359fcf0237215ad69baab53ffd59",
@@ -72,7 +74,7 @@ export class KimiBusinessError extends Error {
 }
 
 export class KimiWebError extends Error {
-  constructor(readonly reason: "not_running" | "ambiguous" | "unauthorized" | "unsupported" | "unsafe" | "unavailable", message: string) {
+  constructor(readonly reason: "not_running" | "not_installed" | "ambiguous" | "unauthorized" | "unsupported" | "unsafe" | "unavailable", message: string) {
     super(message);
     this.name = "KimiWebError";
   }
@@ -98,8 +100,8 @@ function decodeRegistration(value: unknown, now: number): KimiInstance | undefin
   if (typeof value !== "object" || value === null) return undefined;
   const item = value as Partial<RegistrationDisk>;
   if (typeof item.server_id !== "string" || !/^[A-Za-z0-9_-]{8,80}$/u.test(item.server_id)
-    || !Number.isSafeInteger(item.pid) || item.pid! < 1
-    || typeof item.host !== "string" || !isLoopbackLiteral(item.host)
+    || !Number.isSafeInteger(item.pid) || item.pid! < 1 || item.pid! > 0x7fff_ffff
+    || typeof item.host !== "string" || item.host.length === 0 || item.host.length > 128
     || !Number.isInteger(item.port) || item.port! < 1 || item.port! > 65535
     || !Number.isSafeInteger(item.started_at) || !Number.isSafeInteger(item.heartbeat_at)
     || typeof item.host_version !== "string" || item.host_version.length === 0 || item.host_version.length > 128
@@ -113,6 +115,11 @@ function decodeRegistration(value: unknown, now: number): KimiInstance | undefin
     heartbeatAt: item.heartbeat_at!,
     version: item.host_version,
   };
+}
+
+function registrationOwnerMayBeAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
 async function readRegistrations(homeDir: string, now: number): Promise<KimiInstance[]> {
@@ -133,12 +140,27 @@ async function readRegistrations(homeDir: string, now: number): Promise<KimiInst
       if (!info.isFile() || info.size > MAX_REGISTRATION_BYTES) return undefined;
       const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
       const candidate = decodeRegistration(parsed, now);
-      return candidate && name === `${candidate.serverId}.json` ? candidate : undefined;
+      // A dead owned launch can leave its registry entry until Kimi next tidies it. Never remove it here.
+      return candidate && name === `${candidate.serverId}.json` && registrationOwnerMayBeAlive(candidate.pid) ? candidate : undefined;
     } catch {
       return undefined;
     }
   }));
   return results.filter((entry): entry is KimiInstance => entry !== undefined);
+}
+
+/** Launch only on proven absence of a fresh registration other than the verified alternate source. */
+export async function assertKimiMayStart(options: KimiWebClientOptions): Promise<void> {
+  if (options.endpoint !== undefined) throw new KimiWebError("not_running", "指定的 Kimi Code 地址仅接入已有服务");
+  const instances = await readRegistrations(options.homeDir ?? defaultKimiHome(), (options.now ?? Date.now)());
+  for (const item of instances) {
+    if (!isLoopbackLiteral(item.host)) throw new KimiWebError("unsafe", "Kimi Code 实例未使用本机回环地址");
+    if (options.source === "desktop" && item.version === KIMI_WEB_VERSION) continue;
+    if (options.source !== "desktop" && item.version === KIMI_DESKTOP_SERVER_VERSION &&
+        await (options.verifyDesktopOwner ?? kimiDesktopOwner)(item.pid, item.host, item.port)) continue;
+    // A newly registered listener or an older standalone CLI is not evidence that it is safe to start another one.
+    throw new KimiWebError("unavailable", "检测到 Kimi Code 实例，等待当前实例完成接入");
+  }
 }
 
 async function readPrivateToken(homeDir: string): Promise<string> {
@@ -229,22 +251,23 @@ export class KimiWebClient {
     const now = (options.now ?? Date.now)();
     const desktop = options.source === "desktop";
     if (desktop && !supportsKimiDesktop && !options.verifyDesktopOwner) throw new KimiWebError("unsupported", "当前平台不支持 Kimi Code Desktop 接入");
+    const requested = options.endpoint === undefined ? undefined : parseEndpoint(options.endpoint);
     const registered = await readRegistrations(homeDir, now);
-    const registrations = registered.filter(item => item.version === (desktop ? "2.6.2" : "2.6.3"));
-    if (registered.length && !registrations.length && !desktop && !registered.every(item => item.version === "2.6.2")) {
+    const registrations = registered.filter(item => item.version === (desktop ? KIMI_DESKTOP_SERVER_VERSION : KIMI_WEB_VERSION));
+    if (registered.length && !registrations.length && !desktop && !registered.every(item => item.version === KIMI_DESKTOP_SERVER_VERSION)) {
       throw new KimiWebError("unsupported", "Kimi Code Web 服务版本不受支持");
     }
     if (registrations.length === 0) throw new KimiWebError("not_running", desktop ? "未发现支持的 Kimi Code Desktop 内嵌服务" : "未发现正在运行的 Kimi Code Web 服务");
 
     let selected: KimiInstance[];
-    if (options.endpoint !== undefined) {
-      const requested = parseEndpoint(options.endpoint);
+    if (requested) {
       selected = registrations.filter(item => item.host === requested.hostname.replace(/^\[|\]$/gu, "") && item.port === Number(requested.port));
       if (selected.length === 0) throw new KimiWebError("not_running", "指定的 Kimi Code 地址不在当前服务登记中");
     } else selected = registrations;
     if (selected.length !== 1) throw new KimiWebError("ambiguous", "发现多个 Kimi Code 服务，请指定一个本机回环地址");
 
     const instance = selected[0]!;
+    if (!isLoopbackLiteral(instance.host)) throw new KimiWebError("unsafe", "Kimi Code 实例未使用本机回环地址");
     const verifyOwner = options.verifyDesktopOwner ?? kimiDesktopOwner;
     if (desktop && !await verifyOwner(instance.pid, instance.host, instance.port)) {
       throw new KimiWebError("unsupported", "Kimi Code 服务不是已验证的桌面应用实例");
@@ -392,7 +415,7 @@ export function defaultKimiHome(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 export type KimiWebConnectionStatus = {
-  state: "disabled" | "connecting" | "connected" | "not_running" | "ambiguous" | "unauthorized" | "unsupported" | "unsafe" | "unavailable" | "stopped";
+  state: "disabled" | "connecting" | "connected" | KimiWebError["reason"] | "stopped";
   reason: string | null;
   generation: number;
 };
@@ -401,8 +424,9 @@ export type KimiWebConnectionStatus = {
 export class KimiWebConnector {
   readonly #options: KimiWebClientOptions & {
     onStatus?: (status: KimiWebConnectionStatus) => void;
+    onMissing?: () => void;
     onFrame?: (frame: Record<string, unknown>, generation: number) => void;
-    onConnected?: (client: KimiWebClient, socket: WebSocket, generation: number) => void;
+    onConnected?: (client: KimiWebClient, socket: WebSocket, generation: number) => void | Promise<void>;
   };
   #status: KimiWebConnectionStatus = { state: "disabled", reason: null, generation: 0 };
   #client: KimiWebClient | undefined;
@@ -413,8 +437,9 @@ export class KimiWebConnector {
 
   constructor(options: KimiWebClientOptions & {
     onStatus?: (status: KimiWebConnectionStatus) => void;
+    onMissing?: () => void;
     onFrame?: (frame: Record<string, unknown>, generation: number) => void;
-    onConnected?: (client: KimiWebClient, socket: WebSocket, generation: number) => void;
+    onConnected?: (client: KimiWebClient, socket: WebSocket, generation: number) => void | Promise<void>;
   }) { this.#options = options; }
 
   get status(): KimiWebConnectionStatus { return this.#status; }
@@ -426,6 +451,14 @@ export class KimiWebConnector {
     this.#running = true;
     this.#set("connecting", null);
     void this.#attempt();
+  }
+
+  /** Explicit user actions can wake discovery instead of waiting for the background backoff. */
+  async probe(): Promise<void> {
+    if (this.#connecting) return this.#connecting;
+    if (!this.#running || this.#status.state === "connected") return;
+    clearTimeout(this.#retry); this.#retry = undefined;
+    await this.#attempt();
   }
 
   #set(state: KimiWebConnectionStatus["state"], reason: string | null): void {
@@ -464,13 +497,14 @@ export class KimiWebConnector {
       this.#status = { state: "connected", reason: null, generation };
       this.#backoffMs = 1_000;
       this.#options.onStatus?.(this.#status);
-      this.#options.onConnected?.(client, socket, generation);
+      await this.#options.onConnected?.(client, socket, generation);
     } catch (error) {
       if (client && this.#client !== client) client.close();
       if (client && this.#client === client) { this.#client = undefined; client.close(); }
       if (!this.#running) return;
       const failure = error instanceof KimiWebError ? error : new KimiWebError("unavailable", "Kimi Code 本机连接失败");
       this.#set(failure.reason, failure.message);
+      if (failure.reason === "not_running") this.#options.onMissing?.();
       this.#scheduleRetry();
     }
   }
@@ -487,7 +521,7 @@ export class KimiWebConnector {
     if (!this.#running || this.#retry) return;
     const delay = this.#backoffMs;
     this.#backoffMs = Math.min(this.#backoffMs * 2, 30_000);
-    this.#retry = setTimeout(() => { this.#retry = undefined; this.#set("connecting", null); void this.#attempt(); }, delay);
+    this.#retry = setTimeout(() => { this.#retry = undefined; void this.#attempt(); }, delay);
     this.#retry.unref();
   }
 

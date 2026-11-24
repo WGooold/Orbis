@@ -124,7 +124,7 @@ import { HostUploadService, hostUploadIndexPath } from "./artifact-upload.js";
 import type { AgentActivateContext, AgentBackend, BackendActivation, NativeRunningSession } from "./agent-backend.js";
 import { AgentLaunchRevoked, ClaudeBackend, PiBackend } from "./agent-backend.js";
 import type { KimiRuntime } from "./kimi-runtime.js";
-import { isKimiId, KIMI_KIND, KimiLaunchBlocked } from "./kimi-sessions.js";
+import { isKimiId, KIMI_KIND, KimiLaunchBlocked, kimiLocalDirectory } from "./kimi-sessions.js";
 import { ClaudeArchiveStore, ClaudeSessionCatalog } from "./claude-catalog.js";
 import { ClaudeHookBridge } from "./claude-hook-bridge.js";
 import { TerminalClaudeLauncher, type ClaudeLauncher } from "./claude-launcher.js";
@@ -313,7 +313,7 @@ export type HostServiceOptions = {
   releaseManagedDsh?: (kind: DshKind) => void;
   /** DeepSeek Harness Desktop (ADR-0076): a separate entry with its own kind, namespace and connection. */
   dshDesktopRuntime?: DshRuntime;
-  /** Existing, user-managed Kimi Web service. */
+  /** Local Kimi Web or Desktop adapter. */
   kimiCodeRuntime?: KimiRuntime;
   createKimiCodeRuntime?: () => Promise<KimiRuntime>;
   /** Open Desktop when closed and attach to the backend it owns; never a substitute Web service. */
@@ -1479,6 +1479,19 @@ export class HostService {
   }
 
   get kimiCodeConnectionState() { return this.#kimi?.connectionState ?? (this.#managedPolicy && !this.#disabledSources.has(KIMI_KIND) ? "unavailable" : "disabled"); }
+  async startKimiCode(): Promise<void> {
+    await this.#ensureKimiReady(this.#sourceCurrent(KIMI_KIND));
+  }
+
+  async #ensureKimiReady(current: () => boolean, sessionId?: string): Promise<void> {
+    if (!current()) throw new AgentLaunchRevoked();
+    const runtime = this.#kimi;
+    if (!runtime || this.#disabledSources.has(KIMI_KIND)) throw new ActivationError("agent_unsupported", "请先在 Host 中启用 Kimi Code 接入");
+    if (runtime.isReady()) return;
+    if (sessionId !== undefined) await runtime.assertResumeSource(sessionId);
+    try { await runtime.ensureReady(() => current() && this.#kimi === runtime); }
+    catch (error) { throw new ActivationError("agent_unsupported", describeError(error)); }
+  }
 
   get relayState(): HostRelayState {
     return this.#relay?.state ?? "closed";
@@ -1885,6 +1898,7 @@ export class HostService {
     if (this.#managedCodexLaunchable.has("codex") && !agents.includes("codex")) agents.push("codex");
     if ((this.#managedPolicy ? this.#managedCodexLaunchable.has("codexDesktop") : this.#options.codexDesktopLaunchable === true) && !agents.includes("codexDesktop")) agents.push("codexDesktop");
     if ((this.#managedPolicy ? this.#managedDshLaunchable.has("dsh") : this.#options.dshLaunchable === true) && !agents.includes("dsh")) agents.push("dsh");
+    if (this.#kimi?.canLaunch() && !agents.includes(KIMI_KIND)) agents.push(KIMI_KIND);
     // A Desktop whose version cannot be attached is not offered as launchable (DSH-DESKTOP-01).
     if (this.#hermes?.installed && !agents.includes("hermes")) agents.push("hermes");
     const desktop = this.#dshDesktopSnapshot()?.state;
@@ -3565,6 +3579,12 @@ export class HostService {
         // LAUNCH-QUEUE-01: held until native creation settles, so a provider change cannot rewrite its settings mid-start.
         releaseProvider = await this.#providerGate.enter(providerGroup(message.agentKind));
       }
+      if (kind === KIMI_KIND && message.type !== "session.configuration.save" && !this.#kimi?.isReady()) {
+        // A selected draft or explicit new session may start Kimi; passive catalog and recovery reads may not.
+        await kimiLocalDirectory(message.cwd);
+        try { await this.#ensureKimiReady(current); }
+        catch (error) { throw new SessionConfigurationError("configuration_unavailable", describeError(error)); }
+      }
       const backend = await this.#configuredBackend(message.agentKind, current);
       const catalog = await backend.sessionConfiguration!(message.cwd);
       if (!current()) return;
@@ -3955,8 +3975,10 @@ export class HostService {
         return;
       }
       const resumeKind = resumeAgentKind(target);
-      if (resumeKind === KIMI_KIND && !this.#kimi?.isReady())
-        throw new ActivationError("agent_unsupported", this.#kimi?.reason ?? "Kimi Code Web 未连接");
+      if (resumeKind === KIMI_KIND && !this.#kimi?.isReady()) {
+        const current = this.#sourceCurrent(KIMI_KIND);
+        await this.#ensureKimiReady(() => current() && link?.active !== undefined && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId), target.sessionId);
+      }
       if (resumeKind === "hermes") await this.#ensureHermes();
       if (resumeKind === "codex" && this.#backends.every(backend => backend.kind !== "codex" || !backend.isReady())) await this.#ensureManagedCodex("codex");
       if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {

@@ -4,7 +4,10 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createKimiLauncher, type KimiLauncher } from "./kimi-launch.js";
+import { KimiRuntime } from "./kimi-runtime.js";
+import { kimiSourceKey } from "./kimi-sessions.js";
 import { KimiWebClient, KimiWebConnector } from "./kimi-web-client.js";
 
 const roots: string[] = [];
@@ -18,8 +21,13 @@ const contracts = {
 const serverId = "01KIMICODE123456789ABCDEFGH";
 const now = Date.now();
 
-async function fixture(options: { id?: string; auth?: boolean; bypass?: boolean; redirect?: boolean; delay?: boolean; version?: string } = {}) {
-  const homeDir = await mkdtemp(join(tmpdir(), "orbis-kimi-client-")); roots.push(homeDir);
+async function tempHome(): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), "orbis-kimi-client-")); roots.push(path); return path;
+}
+
+async function fixture(options: { homeDir?: string; id?: string; auth?: boolean; bypass?: boolean; redirect?: boolean; delay?: boolean; version?: string } = {}) {
+  const homeDir = options.homeDir ?? await tempHome();
+  const id = options.id ?? serverId;
   await mkdir(join(homeDir, "server", "instances"), { recursive: true });
   const token = randomBytes(32).toString("base64url");
   const tokenPath = join(homeDir, "server.token");
@@ -31,7 +39,7 @@ async function fixture(options: { id?: string; auth?: boolean; bypass?: boolean;
     if (options.delay && req.url === "/api/v1/meta") { await new Promise(resolve => setTimeout(resolve, 100)); }
     if (options.auth !== false && req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401); res.end(); return; }
     if (req.url === "/api/v1/meta") res.end(JSON.stringify({ code: 0, data: {
-      server_id: options.id ?? serverId, server_version: options.version ?? "2.6.3", started_at: new Date(now).toISOString(), backend: "v2", dangerous_bypass_auth: options.bypass ?? false,
+      server_id: id, server_version: options.version ?? "2.6.3", started_at: new Date(now).toISOString(), backend: "v2", dangerous_bypass_auth: options.bypass ?? false,
       capabilities: { websocket: true },
     } }));
     else if (req.url === "/openapi.json") res.end(openapi);
@@ -51,8 +59,8 @@ async function fixture(options: { id?: string; auth?: boolean; bypass?: boolean;
   await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
   const address = http.address();
   if (!address || typeof address === "string") throw new Error("fixture did not bind");
-  await writeFile(join(homeDir, "server", "instances", `${serverId}.json`), JSON.stringify({
-    server_id: serverId, pid: process.pid, host: "127.0.0.1", port: address.port,
+  await writeFile(join(homeDir, "server", "instances", `${id}.json`), JSON.stringify({
+    server_id: id, pid: process.pid, host: "127.0.0.1", port: address.port,
     started_at: now, heartbeat_at: now, host_version: options.version ?? "2.6.3",
   }));
   return { homeDir, endpoint: `http://127.0.0.1:${address.port}`, token };
@@ -159,5 +167,95 @@ describe("Kimi Code local Web client", () => {
     await connector.stop();
     expect(connector.status.state).toBe("stopped");
     expect(fixtureServer.server.listening).toBe(true);
+  });
+});
+
+describe("KIMI-12 on-demand launch", () => {
+  it("keeps a custom endpoint or a non-default Desktop profile attach-only", async () => {
+    const homeDir = await tempHome();
+    expect(createKimiLauncher({ source: "web", homeDir, endpoint: "http://127.0.0.1:58627" })).toBeUndefined();
+    expect(createKimiLauncher({ source: "desktop", homeDir })).toBeUndefined();
+  });
+
+  // Host and phone share a single launch but must not advertise a ready connection before authentication.
+  it.each(["web", "desktop"] as const)("reuses the %s source and coalesces concurrent Host and phone requests", async source => {
+    const homeDir = await tempHome();
+    const target: KimiLauncher["start"] = async ({ shouldStart, waitForConnection }) => {
+      expect(await shouldStart()).toBe(true);
+      await fixture({ homeDir, version: source === "desktop" ? "2.6.2" : "2.6.3" });
+      expect(await waitForConnection()).toBe(process.pid);
+    };
+    const start = vi.fn(target);
+    const kimi = new KimiRuntime({ stateDir: homeDir, homeDir, source, expectedContracts: contracts, now: () => now,
+      ...(source === "desktop" ? { verifyDesktopOwner: async () => true } : {}), launcher: { start, available: async () => true } });
+    kimi.start();
+    try {
+      await vi.waitFor(() => expect(kimi.canLaunch()).toBe(true));
+      expect(kimi.connectionState).toBe("not_running");
+      expect(kimi.isReady()).toBe(false);
+      expect(start).not.toHaveBeenCalled();
+      const key = await kimiSourceKey(homeDir);
+      await expect(kimi.assertResumeSource(`kimi-code:${source === "web" ? key : `desktop-${key}`}:session_demo`)).resolves.toBeUndefined();
+      await expect(kimi.assertResumeSource(`kimi-code:${source === "desktop" ? key : `desktop-${key}`}:session_demo`)).rejects.toMatchObject({ code: "session_not_found" });
+      const phone = kimi.ensureReady(), host = kimi.ensureReady();
+      expect(kimi.connectionState).toBe("starting");
+      await Promise.all([phone, host]);
+      expect(kimi.connectionState).toBe("connected");
+      await kimi.ensureReady();
+      expect(start).toHaveBeenCalledTimes(1);
+    } finally { await kimi.stop(); }
+    expect(servers[0]?.server.listening).toBe(true);
+  });
+
+  it("attaches to an existing service without starting it again", async () => {
+    const { homeDir } = await fixture();
+    const start = vi.fn();
+    const kimi = new KimiRuntime({ stateDir: homeDir, homeDir, now: () => now, expectedContracts: contracts, launcher: { start, available: async () => true } });
+    kimi.start();
+    try {
+      await kimi.ensureReady();
+      expect(kimi.isReady()).toBe(true);
+      expect(start).not.toHaveBeenCalled();
+    } finally { await kimi.stop(); }
+  });
+
+  // A failing credential, different contract, non-loopback listener, or multiple instances is not absence.
+  it.each(["unauthorized", "unsupported", "ambiguous", "unsafe"] as const)("does not spawn around a %s installation", async reason => {
+    const { homeDir } = await fixture({ bypass: reason === "unsupported" });
+    const reg = join(homeDir, "server", "instances", `${serverId}.json`);
+    const content = JSON.parse(await readFile(reg, "utf8"));
+    if (reason === "unauthorized") await writeFile(join(homeDir, "server.token"), randomBytes(32).toString("base64url"));
+    if (reason === "ambiguous") await writeFile(join(homeDir, "server", "instances", "01KIMICODESECOND123456789AB.json"),
+      JSON.stringify({ ...content, server_id: "01KIMICODESECOND123456789AB" }));
+    if (reason === "unsafe") await writeFile(reg, JSON.stringify({ ...content, host: "0.0.0.0" }));
+    const start = vi.fn();
+    const kimi = new KimiRuntime({ stateDir: homeDir, homeDir, now: () => now, expectedContracts: contracts, launcher: { start, available: async () => true } });
+    kimi.start();
+    try {
+      await expect(kimi.ensureReady()).rejects.toMatchObject({ reason });
+      expect(kimi.canLaunch()).toBe(false);
+      expect(start).not.toHaveBeenCalled();
+    } finally { await kimi.stop(); }
+  });
+
+  it("revokes the right to launch if the requesting device leaves before opening the installed program", async () => {
+    const homeDir = await tempHome(), opened = vi.fn();
+    let resolveCheck!: () => void;
+    const letCheck = new Promise<void>(resolve => { resolveCheck = resolve; });
+    let current = true;
+    const start = vi.fn<KimiLauncher["start"]>(async ({ shouldStart }) => {
+      await letCheck;
+      if (await shouldStart()) opened();
+    });
+    const kimi = new KimiRuntime({ stateDir: homeDir, homeDir, launcher: { start, available: async () => true } });
+    kimi.start();
+    try {
+      const failed = expect(kimi.ensureReady(() => current)).rejects.toThrow("启动已取消");
+      await vi.waitFor(() => expect(start).toHaveBeenCalledOnce());
+      current = false;
+      resolveCheck();
+      await failed;
+      expect(opened).not.toHaveBeenCalled();
+    } finally { resolveCheck(); await kimi.stop(); }
   });
 });

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { KimiInteractions } from "./kimi-interactions.js";
 import { KimiInput, KimiPromptJournal } from "./kimi-input.js";
 import WebSocket from "ws";
@@ -7,26 +8,41 @@ import type { AgentKey, AgentSessionSummary, RemoteSessionEntry, RuntimeCommand,
 import { ToolActivityProducer, ToolContentReadError, type ToolContentReader, type ToolContentStore } from "@orbis/runtime-bridge";
 import { KimiConversation, kimiObject, type KimiFrame } from "./kimi-conversation.js";
 import type { AgentBackend, AgentActivateTarget, AgentActivateContext, BackendActivation, CommandDispatch, NativeRunningSession } from "./agent-backend.js";
-import { KimiBusinessError, KimiWebConnector, defaultKimiHome, type KimiWebClient, type KimiWebClientOptions } from "./kimi-web-client.js";
-import { KIMI_KIND, KimiLaunchBlocked, KimiSessions, kimiLocalDirectory, kimiSourceKey, type KimiSession } from "./kimi-sessions.js";
+import { KimiBusinessError, KimiWebConnector, KimiWebError, assertKimiMayStart, defaultKimiHome, type KimiWebClient, type KimiWebClientOptions } from "./kimi-web-client.js";
+import { createKimiLauncher, type KimiLauncher } from "./kimi-launch.js";
+import { KIMI_KIND, KimiLaunchBlocked, KimiSessions, kimiLocalDirectory, kimiNativeSessionId, kimiSourceKey, type KimiSession } from "./kimi-sessions.js";
 import { ActivationError } from "./spawner.js";
 import { localHostname } from "./sessions.js";
 import { exitViewCapability, matchesViewExit } from "./shared-session-view.js";
 
 const SUBSCRIBE_TIMEOUT_MS = 5_000;
+// Leave time to return a retryable result before the mobile draft's 20 s configuration deadline.
+const NATIVE_START_TIMEOUT_MS = 15_000;
 const MAX_SUBSCRIPTIONS = 12;
 type Active = { native: KimiSession; cwd: string; id: string; subscribed: boolean; viewGeneration: string; subscribing?: Promise<void>; closing?: Promise<void>;
   compacting?: boolean; input?: KimiInput; interactions?: KimiInteractions; conversation?: KimiConversation; toolProducer?: ToolActivityProducer; thinking?: string };
 type Connection = { sessions: KimiSessions; socket: WebSocket; generation: number };
-type KimiOptions = KimiWebClientOptions & { stateDir: string; log?: (message: string) => void };
+type KimiOptions = KimiWebClientOptions & { stateDir: string; log?: (message: string) => void; launcher?: KimiLauncher };
 
-/** Native REST catalog and WS subscription. The Kimi process and tools remain user-owned. */
+export function createLocalKimiRuntime(options: Omit<KimiOptions, "launcher"> & { homeDir: string }): KimiRuntime {
+  const launcher = createKimiLauncher(options);
+  return new KimiRuntime({ ...options, ...(launcher ? { launcher } : {}) });
+}
+
+/** Native Kimi session adapter. Passive discovery cannot open the CLI or application. */
 export class KimiRuntime implements AgentBackend {
   readonly kind = KIMI_KIND;
   readonly #home: string;
   readonly #desktop: boolean;
   readonly #journal: KimiPromptJournal;
   readonly #connector: KimiWebConnector;
+  readonly #options: KimiOptions;
+  readonly #startRequests = new Set<() => boolean>();
+  #lifetime: AbortController | undefined;
+  #starting: Promise<void> | undefined;
+  #checkingLauncher: Promise<void> | undefined;
+  #launchCandidate: boolean | undefined;
+  #startFailure: KimiWebError | undefined;
   readonly #active = new Map<string, Active>();
   readonly #hidden = new Map<string, { idle: boolean }>();
   readonly #discovering = new Map<string, Connection>();
@@ -43,6 +59,7 @@ export class KimiRuntime implements AgentBackend {
   onReadyChange?: () => void;
 
   constructor(options: KimiOptions) {
+    this.#options = options;
     this.#desktop = options.source === "desktop";
     this.#home = options.homeDir ?? defaultKimiHome();
     this.#journal = new KimiPromptJournal(join(options.stateDir, "kimi-prompt-journal.json"));
@@ -54,9 +71,8 @@ export class KimiRuntime implements AgentBackend {
           else if (status.state !== "connecting") this.onReadyChange?.();
         }
       },
-      onConnected: (client, socket, generation) => {
-        void this.#connected(client, socket, generation).catch(() => socket.terminate());
-      },
+      onMissing: () => this.#refreshLaunchCandidate(),
+      onConnected: (client, socket, generation) => this.#connected(client, socket, generation),
       onFrame: (frame, generation) => this.#frame(frame, generation),
     });
   }
@@ -78,18 +94,127 @@ export class KimiRuntime implements AgentBackend {
     }
   }
 
-  start(): void { this.#connector.start(); }
+  start(): void {
+    this.#lifetime ??= new AbortController();
+    this.#connector.start();
+  }
   async stop(): Promise<void> {
+    this.#lifetime?.abort();
+    this.#lifetime = undefined;
     this.#disconnected("Kimi Code 已断开");
     this.#active.clear();
     this.#hidden.clear();
-    await this.#connector.stop();
+    await Promise.all([this.#connector.stop(), this.#starting?.catch(() => {})]);
   }
   get connectionState() {
     const state = this.#connector.status.state;
-    return state === "connected" && !this.isReady() ? "connecting" : state;
+    if (this.isReady()) return "connected";
+    if (this.#starting) return "starting";
+    if (state === "not_running") return this.#startFailure?.reason ?? (this.#launchCandidate === false ? "not_installed" : state);
+    return state === "connected" ? "connecting" : state;
   }
-  get reason(): string | null { return this.#connector.status.reason; }
+  get reason(): string | null {
+    return this.connectionState === "not_installed" ? (this.#desktop ? "未找到 Kimi Code 桌面版" : "未找到 Kimi Code CLI")
+      : this.#connector.status.state === "not_running" && this.#startFailure ? this.#startFailure.message : this.#connector.status.reason;
+  }
+  canLaunch(): boolean {
+    return this.isReady() || this.#starting !== undefined || (this.#launchCandidate === true && this.#connector.status.state === "not_running");
+  }
+  async #sourceKey(): Promise<string> {
+    const homeKey = await kimiSourceKey(this.#home);
+    return this.#desktop ? `desktop-${homeKey}` : homeKey;
+  }
+  async assertResumeSource(id: string): Promise<void> {
+    const key = await this.#sourceKey().catch(() => { throw new ActivationError("session_not_found", "找不到此 Kimi Code 会话的数据源"); });
+    kimiNativeSessionId(id, key);
+  }
+  #refreshLaunchCandidate(): void {
+    const launcher = this.#options.launcher, lifetime = this.#lifetime;
+    if (!launcher || !lifetime || this.#checkingLauncher) return;
+    this.#checkingLauncher = launcher.available().then(found => {
+      if (this.#lifetime !== lifetime || found === this.#launchCandidate) return;
+      this.#launchCandidate = found;
+      if (found && this.#startFailure?.reason === "not_installed") this.#startFailure = undefined;
+      this.onReadyChange?.();
+    }).catch(() => { /* An installation check failure does not prove the program is absent. */ })
+      .finally(() => { this.#checkingLauncher = undefined; });
+  }
+
+  /** One launch shared by Host UI and explicitly requested, authorized device operations. */
+  async ensureReady(current = (): boolean => true): Promise<void> {
+    const lifetime = this.#lifetime;
+    const admitted = () => lifetime !== undefined && this.#lifetime === lifetime && current();
+    const revoked = () => new KimiWebError("unavailable", "Kimi Code 启动已取消");
+    if (!lifetime || !admitted()) throw revoked();
+    if (this.isReady()) return;
+    this.#startRequests.add(admitted);
+    try {
+      if (!this.#starting) {
+        this.#startFailure = undefined;
+        const deadline = AbortSignal.timeout(NATIVE_START_TIMEOUT_MS);
+        this.#starting = this.#connectOrStart(AbortSignal.any([lifetime.signal, deadline]), () => {
+          lifetime.signal.throwIfAborted();
+          if (![...this.#startRequests].some(isCurrent => isCurrent())) throw revoked();
+        }).catch(error => {
+          const failure = lifetime.signal.aborted ? revoked() : deadline.aborted
+            ? new KimiWebError("unavailable", "Kimi Code 启动后未能完成接入，请稍后重试")
+            : error instanceof KimiWebError ? error : new KimiWebError("unavailable", "Kimi Code 启动失败");
+          if (this.#lifetime === lifetime && [...this.#startRequests].some(isCurrent => isCurrent())) this.#startFailure = failure;
+          throw failure;
+        }).finally(() => {
+          this.#starting = undefined;
+          if (this.#lifetime === lifetime) this.onReadyChange?.();
+        });
+        this.onReadyChange?.();
+      }
+      await this.#starting;
+      if (!admitted()) throw revoked();
+    } finally { this.#startRequests.delete(admitted); }
+  }
+
+  async #connectOrStart(signal: AbortSignal, checkCurrent: () => void): Promise<void> {
+    const statusError = () => {
+      const { state, reason } = this.#connector.status;
+      return new KimiWebError(state === "ambiguous" || state === "unauthorized" || state === "unsupported" || state === "unsafe" || state === "not_running" ? state : "unavailable",
+        reason ?? "Kimi Code 尚未连接");
+    };
+    const probe = async () => {
+      signal.throwIfAborted();
+      // A user launch deadline does not shut down background discovery of user-owned instances.
+      let abort!: () => void;
+      const cancelled = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+      });
+      try { await Promise.race([this.#connector.probe(), cancelled]); return this.isReady(); }
+      finally { signal.removeEventListener("abort", abort); }
+    };
+    if (await probe()) return;
+    const launcher = this.#options.launcher;
+    if (!launcher || this.#connector.status.state !== "not_running") throw statusError();
+    checkCurrent();
+    await launcher.start({ signal,
+      shouldStart: async () => {
+        checkCurrent();
+        if (await probe()) return false;
+        if (this.#connector.status.state !== "not_running") throw statusError();
+        await assertKimiMayStart({ ...this.#options, homeDir: this.#home });
+        checkCurrent();
+        return true;
+      },
+      waitForConnection: async checkChild => {
+        while (true) {
+          signal.throwIfAborted();
+          if (await probe() && this.#connector.client) return this.#connector.client.instance.pid;
+          const state = this.#connector.status.state;
+          if (state !== "not_running" && state !== "unavailable") throw statusError();
+          checkChild?.();
+          await delay(250, undefined, { signal });
+        }
+      },
+    });
+    if (!this.isReady()) throw statusError();
+  }
   isReady(): boolean { return this.#connection?.socket.readyState === WebSocket.OPEN; }
   ownsRuntime(id: string): boolean { return this.#active.has(id); }
   directoryEntries(): RuntimeMetadata[] { return [...this.#active.values()].filter(item => item.subscribed).map(item => this.#metadata(item)); }
@@ -102,12 +227,12 @@ export class KimiRuntime implements AgentBackend {
       ...(item.thinking ? { thinkingLevel: item.thinking } : {}) };
   }
   async #connected(client: KimiWebClient, socket: WebSocket, generation: number): Promise<void> {
-    const homeKey = await kimiSourceKey(this.#home);
-    const key = this.#desktop ? `desktop-${homeKey}` : homeKey;
+    const key = await this.#sourceKey();
     await this.#journal.load();
     if (this.#connector.client !== client || socket.readyState !== WebSocket.OPEN) return;
     const connection = { sessions: new KimiSessions(client, key), socket, generation };
     this.#connection = connection;
+    this.#startFailure = undefined;
     this.onReadyChange?.();
     this.onCatalogChange?.();
     for (const item of this.#active.values()) {
@@ -183,7 +308,7 @@ export class KimiRuntime implements AgentBackend {
   }
 
   async activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
-    if (context?.spawnMode === "tui") throw new KimiLaunchBlocked("agent_unsupported", "Kimi Code 只能接入已运行的原生 Web 服务");
+    if (context?.spawnMode === "tui") throw new KimiLaunchBlocked("agent_unsupported", "Kimi Code 不支持通过 Orbis 启动终端会话");
     const connection = this.#requireConnection();
     if (target.type === "resume") return this.#resume(connection, connection.sessions.nativeId(target.sessionId), false, context?.requireCurrent);
     if (!context?.nativeLaunchMarker || context.configuration?.model !== undefined || context.configuration?.thinking !== undefined

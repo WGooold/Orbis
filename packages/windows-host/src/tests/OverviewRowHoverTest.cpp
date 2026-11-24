@@ -75,6 +75,9 @@ const agents = [
   { kind: "openclaw", label: "OpenClaw", enabled: true }
 ];
 let currentAgents = agents;
+const kimiStatus = (state, ready) => ({ event: "status", kimiCodeState: state, model: { domains: [{ domain: "backends", value: {
+  backends: [{ kind: "kimiCode", ready, launchable: true, runtimeCount: 0 }]
+} }] } });
 require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
   const { id, method, params } = JSON.parse(line);
   if (method === "initialize") {
@@ -85,6 +88,8 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
         hostName: "Fixture",
         devices: [{ deviceId: "phone-1", label: "iPhone", path: "relay", createdAt: 1 }],
         agentEnablement: { revision: 1, agents: currentAgents },
+        kimiCodeSupported: true,
+        kimiDesktopSupported: true,
         openClaw: { source: "file", url: "", hasToken: false },
         hermesRemote: { source: "file", host: "", port: 22, profile: "" }
       }
@@ -96,6 +101,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     out({ event: "hermesCli", installed: true, version: "0.1.4" });
     out({
       event: "status",
+      kimiCodeState: "not_running",
       runtimeCount: 4,
       devices: [{ deviceId: "phone-1", label: "iPhone", path: "relay", createdAt: 1 }],
       activeAgentSessions: { codexDesktop: { total: 4, sessions: [
@@ -112,7 +118,8 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
               { kind: "claude", ready: true, launchable: true, runtimeCount: 0 },
               { kind: "dsh", ready: true, launchable: true, runtimeCount: 0 },
               { kind: "dshDesktop", ready: true, launchable: true, runtimeCount: 0 },
-              { kind: "hermes", ready: true, launchable: true, runtimeCount: 0 }
+              { kind: "hermes", ready: true, launchable: true, runtimeCount: 0 },
+              { kind: "kimiCode", ready: false, launchable: true, runtimeCount: 0 }
             ]
           }
         }]
@@ -140,6 +147,11 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     currentAgents = currentAgents.map(agent => agent.kind === params.kind ? { ...agent, enabled: params.enabled } : agent);
     const snapshot = { revision: params.expectedRevision + 1, agents: currentAgents };
     setTimeout(() => out({ id, result: { status: "applied", snapshot } }), 320);
+    return;
+  }
+  if (method === "openAgent" && params.kind === "kimiCode") {
+    out(kimiStatus("starting", false));
+    setTimeout(() => { out(kimiStatus("connected", true)); out({ id, result: {} }); }, 360);
     return;
   }
   if (method === "provider.list") {
@@ -200,6 +212,45 @@ private slots:
         QQuickStyle::setStyle("Basic");
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
         qmlRegisterType<NeuSurface>("Orbis.Host", 1, 0, "NeuSurface");
+    }
+
+    // KIMI-12: the Host shows its explicit start action only while the configured source can start.
+    void kimiStartsFromHostWithoutAnExternalManualStep() {
+        QVERIFY(!QStandardPaths::findExecutable("node").isEmpty());
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        writeFixtureBridge(root.path());
+        const QString dataDir = root.filePath("desktop");
+        HostController controller(root.path(), dataDir, root.filePath("state"), dataDir, false);
+        controller.m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
+        controller.m_tick.stop();
+        controller.m_credential = "orbis_host_fixture";
+        controller.m_desiredRunning = true;
+
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("host", &controller);
+        engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(dataDir + "/appearance.ini"));
+        engine.rootContext()->setContextProperty("orbisMotionEnabled", false);
+        engine.rootContext()->setContextProperty("trayAvailable", false);
+        engine.loadFromModule("Orbis.Host", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.bridgeReady() && !controller.busy() && controller.kimiCodeState() == "not_running", 10000);
+        auto *overview = findVisualItem(window->contentItem(), "overviewAgent-kimiCode");
+        QVERIFY(overview && overview->isVisible() && overview->isEnabled());
+        QCOMPARE(overview->property("text").toString(), QString("启动"));
+        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, QString("kimiCode"))));
+        auto *detail = findVisualItem(window->contentItem(), "agentDetailOpen");
+        auto *status = findVisualItem(window->contentItem(), "kimiCodeStatus");
+        QTRY_VERIFY(detail && status && detail->isVisible() && detail->isEnabled() && status->isVisible());
+        QCOMPARE(status->property("text").toString(), QString("可启动"));
+        QVERIFY(QMetaObject::invokeMethod(detail, "clicked"));
+        QTRY_COMPARE(status->property("text").toString(), QString("正在启动"));
+        QVERIFY(!detail->isEnabled());
+        QTRY_COMPARE(status->property("text").toString(), QString("已接入"));
+        QVERIFY(!detail->isVisible());
+        controller.shutdown();
     }
 
     void hoveringEnabledAgentRowPreservesRowAndCardGeometry_data() {

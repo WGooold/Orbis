@@ -90,6 +90,14 @@ ApplicationWindow {
         : agentRows.length && enabledAgentCount === 0 ? "enable"
         : overviewAgents.some(agent => agent.data && (agent.installed === false || agent.broken)) && !overviewAgents.some(agent => agent.installed && !agent.broken) ? "install" : "open"
     function backendFor(kind) { return host.backends.find(function(backend) { return backend.kind === kind }) }
+    readonly property bool kimiStartAvailable: host.kimiCodeAvailable && host.kimiCodeEnabled && host.desiredRunning
+        && window.backendFor("kimiCode")?.launchable === true && window.backendFor("kimiCode")?.ready !== true
+    function kimiStatusText() {
+        if (!host.desiredRunning) return "未连接"
+        return ({ connected: "已接入", connecting: "正在连接", starting: "正在启动", not_installed: "未安装",
+            not_running: window.kimiStartAvailable ? "可启动" : host.kimiCodeSource === "desktop" ? "桌面版未连接" : "服务未启动",
+            ambiguous: "有多个实例", unauthorized: "认证失败", unsupported: "版本不支持", unsafe: "配置不安全", unavailable: "暂不可用" })[host.kimiCodeState] || "未连接"
+    }
     /** Whether a phone can use this Agent through the running Host right now. */
     function agentReachable(agent) {
         if (!agent.installed || agent.broken || !window.hostOnline) return false
@@ -120,6 +128,7 @@ ApplicationWindow {
     function agentPhoneState(agent, sessions) {
         if (agent.kind === "codexDesktop" && window.codexDesktopNeedsAttention) return window.codexDesktopLabel()
         if (agent.kind === "openclaw" && !window.agentReachable(agent)) return window.openClawStateText
+        if (agent.kind === "kimiCode" && !window.agentReachable(agent)) return window.kimiStatusText()
         if (agent.passive && !window.agentReachable(agent)) return "未接入"
         // 检测在跑时列表里是旧结论：不标记就会把“还没测完”读成“不能用了”。Claude 有自己的检测。
         if (!host.bridgeReady || window.agentCliDetecting(agent.kind)) return "检测中"
@@ -147,12 +156,14 @@ ApplicationWindow {
     // Unknown installation is not an install verdict: keep the action descriptive but disabled until detection settles.
     function overviewAgentActionText(agent, installable) {
         if (agent.kind === "openclaw") return "配置"
+        if (agent.kind === "kimiCode") return host.kimiCodeState === "starting" ? "正在启动" : "启动"
         if (agent.installed === false) return installable ? (agent.broken ? "修复" : "安装") : "打开"
         if (agent.installed === true && agent.broken && installable && agent.opensToFix !== true) return "修复"
         if (agent.installed === true) return "打开"
         return window.agentPhoneState(agent, 0)
     }
     function overviewAgentActionEnabled(agent, installable) {
+        if (agent.kind === "kimiCode") return host.bridgeReady && !host.busy && window.kimiStartAvailable && host.kimiCodeState !== "starting"
         return host.bridgeReady && !host.busy && (agent.installed === true || (agent.installed === false && installable))
     }
     function overviewAgentActionPrimary(agent, installable) {
@@ -492,6 +503,12 @@ ApplicationWindow {
         if (row.kind === "dshDesktop" && window.dshDesktopBlocked()) return {text: window.dshDesktopShortState(), color: Theme.warning}
         // A confirmed running turn outranks a local CLI detection result (the backend can be remote).
         if (window.runningSessionsFor(row.kind).total > 0) return {text: "已连接", color: Theme.success}
+        if (row.kind === "kimiCode") {
+            const busy = host.kimiCodeState === "starting" || host.kimiCodeState === "connecting"
+            const blocked = ["not_installed", "ambiguous", "unauthorized", "unsupported", "unsafe", "unavailable"].includes(host.kimiCodeState)
+            return {text: window.kimiStatusText(), color: backend?.ready ? Theme.success : busy || blocked ? Theme.warning : Theme.inkMuted,
+                sync: busy, idle: !busy}
+        }
         if (agent && !agent.passive && agent.installed === false && !window.agentCliDetecting(row.kind)) return {text: "未安装", color: Theme.warning, idle: true}
         if (agent && agent.broken) return {text: row.kind === "claude" ? "需升级" : "需要修复", color: Theme.warning, detail: window.agentCliHint(agent)}
         if (backend && backend.ready && window.hostOnline) return {text: "可用", color: Theme.success, idle: true}
@@ -1681,17 +1698,18 @@ ApplicationWindow {
                                                     }
                                                 }
                                             }
-                                            Item { visible: agentRow.modelData.passive === true; Layout.preferredWidth: 112 }
+                                            Item { visible: agentRow.modelData.passive === true && !overviewAgentAction.visible; Layout.preferredWidth: 112 }
                                             ActionButton {
                                                 id: overviewAgentAction
                                                 objectName: "overviewAgent-" + agentRow.modelData.kind
-                                                visible: agentRow.modelData.passive !== true
+                                                visible: agentRow.modelData.passive !== true || agentRow.modelData.kind === "kimiCode" && window.kimiStartAvailable
                                                 Layout.preferredWidth: 112
                                                 text: window.overviewAgentActionText(agentRow.modelData, agentRow.installable)
                                                 primary: window.overviewAgentActionPrimary(agentRow.modelData, agentRow.installable)
                                                 enabled: window.overviewAgentActionEnabled(agentRow.modelData, agentRow.installable)
                                                 loading: host.agentInstalling && host.agentInstallKind === agentRow.modelData.kind
                                                     || agentRow.modelData.kind === "dshDesktop" && host.dshDesktopOpen !== "idle"
+                                                    || agentRow.modelData.kind === "kimiCode" && host.kimiCodeState === "starting"
                                                 Accessible.name: text + " " + agentRow.modelData.name
                                                 onClicked: {
                                                     if (agentRow.installable && (agentRow.modelData.installed === false || agentRow.modelData.broken)) window.showAgentInstaller(agentRow.modelData.data)
@@ -2171,7 +2189,8 @@ ApplicationWindow {
                                         Flow {
                                             id: detailActionBar
                                             objectName: "agentDetailActions"
-                                            readonly property bool hasOpenAction: !!window.detailFacts && !window.detailFacts.passive && window.detailKind !== "openclaw"
+                                            readonly property bool hasOpenAction: window.detailKind === "kimiCode" ? window.kimiStartAvailable
+                                                : !!window.detailFacts && !window.detailFacts.passive && window.detailKind !== "openclaw"
                                             readonly property bool hasEntryAction: !!window.detailFacts && (!!window.agentCliHint(window.detailFacts) || !!host.agentEntryOverrides[window.detailKind])
                                             visible: window.detailUpdateAction.visible || hasOpenAction || window.detailKind === "dsh" || hasEntryAction
                                             Layout.fillWidth: true; spacing: 8
@@ -2188,9 +2207,11 @@ ApplicationWindow {
                                             ActionButton {
                                                 id: detailOpenBtn
                                                 objectName: "agentDetailOpen"
-                                                text: "打开"
+                                                text: window.detailKind !== "kimiCode" ? "打开" : host.kimiCodeState === "starting" ? "正在启动" : "启动"
                                                 visible: detailActionBar.hasOpenAction
-                                                enabled: window.canEditAgent && !!window.detailFacts && window.detailFacts.installed === true
+                                                enabled: window.canEditAgent && !!window.detailFacts && (window.detailKind === "kimiCode"
+                                                    ? window.overviewAgentActionEnabled(window.detailFacts, false) : window.detailFacts.installed === true)
+                                                loading: window.detailKind === "kimiCode" && host.kimiCodeState === "starting"
                                                 onClicked: window.openOverviewAgent(window.detailKind)
                                             }
                                             ActionButton {
@@ -2556,7 +2577,7 @@ ApplicationWindow {
                                                 Hint {
                                                     objectName: "kimiCodeStatus"
                                                     visible: host.kimiCodeEnabled && (!host.kimiDesktopSupported || kimiSource.currentValue === host.kimiCodeSource)
-                                                    text: !host.desiredRunning ? "未连接" : ({ connected: "已接入", connecting: "正在连接", not_running: host.kimiCodeSource === "desktop" ? "桌面版未连接" : "服务未启动", ambiguous: "有多个实例", unauthorized: "认证失败", unsupported: "版本不支持", unsafe: "配置不安全", unavailable: "暂不可用" })[host.kimiCodeState] || "未连接"
+                                                    text: window.kimiStatusText()
                                                 }
                                                 InfoHintButton {
                                                     id: kimiInfoBtn
@@ -2566,7 +2587,7 @@ ApplicationWindow {
                                             }
                                             Hint {
                                                 visible: window.detailKind === "kimiCode" && host.kimiCodeAvailable && kimiInfoBtn.expanded
-                                                text: "桌面版：先打开 Kimi Code。Web：先运行 kimi web。"
+                                                text: "安装后，可在 Host 启动；手机新建或恢复会话时也会按需启动。"
                                                 Layout.fillWidth: true
                                             }
                                             RowLayout {

@@ -30,7 +30,7 @@ import { DshRuntime } from "./dsh-runtime.js";
 import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
 import { resolveDshCommand } from "./dsh-client.js";
 import { HostService } from "./host-service.js";
-import { KimiRuntime } from "./kimi-runtime.js";
+import { createLocalKimiRuntime } from "./kimi-runtime.js";
 import { ProviderManager } from "./provider-manager.js";
 import { describePath } from "./path.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
@@ -49,7 +49,7 @@ const USAGE = `orbis —— 电脑侧的 Host 进程
   --state-dir <路径>             覆盖状态目录（默认 ~/.orbis）
   --codex                        host 子命令：首次沿用 Codex 终端接入；开启时预启动终端后端
   --dsh                          host 子命令：首次沿用 DeepSeek 接入；开启时预启动 Web 后端
-  --kimi-code                    host 子命令：首次沿用 Kimi Code 连接（不启动原生服务）
+  --kimi-code                    host 子命令：首次启用 Kimi Code 接入，按需启动本机服务
   --sessions-root <路径>         host 子命令：只扫这个目录下的 Pi 会话（隔离测试台用它，
                                  免得把真实会话列进来；默认 ~/.pi/agent/sessions）
   --print-payload                pair 子命令：把配对载荷按一行 JSON 打到 stdout（不给二维码），
@@ -166,7 +166,7 @@ async function runHostUntilShutdown(
       agentEnablement: enablement,
       createKimiCodeRuntime: async () => {
         if (config.kimiCodeSource === "desktop" && !profile.launchDesktopAgents) throw new Error("当前平台不支持 Kimi Code 桌面接入");
-        return new KimiRuntime({ stateDir, source: config.kimiCodeSource, homeDir: config.kimiCodeHome,
+        return createLocalKimiRuntime({ stateDir, source: config.kimiCodeSource, homeDir: config.kimiCodeHome,
         ...(config.kimiCodeEndpoint === undefined ? {} : { endpoint: config.kimiCodeEndpoint }), log });
       },
       providers,

@@ -18,11 +18,11 @@ Status: accepted（适配已实现；隔离链路自动验证通过；移动端�
 
 ## 决策
 
-### 1. Host 只连接已经运行、由用户管理的本机服务
+### 1. Host 认证接入所选的本机服务
 
 Host 本地启用后，按配置的 Kimi 数据根和可选显式回环地址选择一个服务。默认数据根沿用 `KIMI_CODE_HOME` / `~/.kimi-code`。版本化读取[官方实例登记][instances]，只使用它提供候选端口和身份；对有效且未过期的登记，仍需在认证后的 `/api/v1/meta` 核对产品版本、能力、启动时间和受支持的 API 契约。Kimi 2.6.3 的登记 `server_id` 与 `/meta.server_id` 是两个不同作用域、不能直接比较；使用登记版本与 `/meta.server_version` 精确相同且启动时间相差不超过 10 秒来绑定本次监听，两个不透明 ID 分别保留，不互相充当会话身份。只接受字面回环地址，拒绝重定向、无认证实例和不匹配的启动身份；找不到或有多个匹配而未指定时不自动选。诊断区分未启用、未运行、未授权、歧义和版本不支持，不把探针失败写成「没有会话」。
 
-REST / WS 使用本机的 Bearer 凭据，限定 Host 内部使用，不写入日志、请求回执、App 或 Relay。探测、连接和重连在 Host 启动关键路径之外，使用独立超时、字节预算和有限退避；默认禁用，用户通过 `orbis host --kimi-code` 或 `ORBIS_KIMI_CODE_ENABLED=1` 明确启用，可用 `KIMI_CODE_HOME` 和 `ORBIS_KIMI_CODE_ENDPOINT` 指定数据根和唯一实例。桌面 Host 同样读取环境变量或 Host 状态目录 `config.json` 的 `kimiCodeEnabled`、`kimiCodeHome`、`kimiCodeEndpoint`，重启 Host 生效；不增加管理入口，QA 桌面 Host 不继承正式 Kimi 配置。Host 停止、取消接入或断线只解除订阅、关闭自己的连接；不启动第二个 `kimi web`，不发送 `shutdown` / `takeover`，不释放原生锁、改变工作区信任或接管 TUI。首版要求用户先用 Kimi 官方方式安装、登录（或配置模型）并开启本机 Web 服务。
+REST / WS 使用本机的 Bearer 凭据，限定 Host 内部使用，不写入日志、请求回执、App 或 Relay。探测、连接和重连在 Host 启动关键路径之外，使用独立超时、字节预算和有限退避；默认禁用，用户通过 `orbis host --kimi-code` 或 `ORBIS_KIMI_CODE_ENABLED=1` 明确启用，可用 `KIMI_CODE_HOME` 和 `ORBIS_KIMI_CODE_ENDPOINT` 指定数据根和唯一实例。桌面 Host 同样读取环境变量或 Host 状态目录 `config.json`，QA 桌面 Host 不继承正式 Kimi 配置。停止 Host、取消接入或断线仅解除已建立的连接；不发送 `shutdown` / `takeover`，不释放原生锁、改变工作区信任或接管 TUI。首版只连接已有服务；KIMI-12 增加按需启动，不代为安装或登录。
 
 ### 2. 目录、激活与会话身份
 
@@ -77,7 +77,7 @@ Kimi 作为独立 `AgentBackend`（`agentKind: "kimiCode"`）接入 Host。`sess
 
 在 Host「设置 → 常规」复用现有开关与应用按钮。保存显式选择后，运行中的 Host 按既有流程重连；暂停的 Host 不自动启动。首次未选择时继承原有本地配置；图形界面的显式选择仅覆盖桌面运行，不改 CLI 配置。共享 QA 构建不展示生产接入开关。
 
-连接状态来自当前适配器，不从开关、安装状态或 Relay 连接推断。只显示短状态，启动说明放在按需提示中，不要求粘贴凭据，也不代启停 Kimi。移动端继续按协商能力显示原有选择器和会话组件。
+连接状态来自当前适配器，不从开关、安装状态或 Relay 连接推断。只显示短状态，启动说明放在按需提示中，不要求粘贴凭据。移动端继续按协商能力显示原有选择器和会话组件。
 
 已实现。macOS Qt 构建、定向测试与最小窗口设置渲染通过；证据见 `verification.json` 中的 `desktopUi`。Windows 安装与手动验收待完成，未部署。
 
@@ -90,3 +90,11 @@ Kimi 作为独立 `AgentBackend`（`agentKind: "kimiCode"`）接入 Host。`sess
 Host 设置在「常规 → 接入 Kimi Code」选择 Web／桌面版；CLI 用 `ORBIS_KIMI_CODE_SOURCE=desktop orbis host --kimi-code`，未配置来源仍走 Web。桌面服务只接受同一注册 PID 的签名应用和实际监听地址。桌面会话与 Web 会话使用不同的 Orbis ID 前缀，避免跨来源误恢复或发送；现有 Web ID 保持不变。两者复用原有 `agent.kimiCode` 协商及移动端界面。
 
 **验证。** 官方桌面包与 Web 服务分别通过实际加密链路：从原生端新建并暂停在审批中的同一会话，可由参考设备续接、拒绝审批，原生订阅者收到终态；另验证 Orbis 新建、历史、重连、精确停止且不清除后续原生队列。Desktop 另通过发布版 Relay 与旧 Host JS runtime 回退；macOS Qt 的来源选择与最小窗口渲染通过。Node 全量 2,576 通过、19 跳过；首轮继承本机 Codex wrapper 配置引起的两项失败保留，隔离该配置后复跑通过。证据：`.artifacts/kimi-desktop-discovery/verification.json`。未部署；Kimi 窗口实际操作、手机安装及用户验收仍待完成。
+
+## KIMI-12：从 Host 或手机按需启动
+
+启用后，Host 的被动探测、目录读取和启动回执回读不启动 Kimi。Host 的「启动」按钮、已协商设备在有效工作目录请求新会话配置或新建，以及选中同数据源的历史会话，可按需启动。`launchableAgents` 表示可以发起启动，`agents` 仍只在认证、契约验证与 WS 握手完成后公告；沿用 `agent.kimiCode`，不扩展协议。
+
+先复用可认证的所选实例；认证失败、契约不符、实例歧义、显式回环地址或桌面自定义数据根不触发备用进程。Web 使用已安装的兼容 CLI 在回环后台运行 `kimi web --host 127.0.0.1 --no-open`，丢弃含凭据的原生启动输出。桌面模式只打开已验证签名和版本的官方 macOS arm64 应用，不抢焦点或切到 Web。一个 Host 内的请求合并为一次启动；停用时撤销启动权限，只清理尚未交付的自产 Web 子进程。已接入的服务继续由用户使用。首次安装、登录或模型配置仍由 Kimi 完成。
+
+**验证与交付。** 实现见 [`kimi-launch.ts`](../../packages/host/src/kimi-launch.ts)、[`kimi-runtime.ts`](../../packages/host/src/kimi-runtime.ts)；冷起并发、拒绝、复用和加密请求回归见 `kimi-web-client.test.ts`、`host-service.test.ts`；Host 按钮与状态覆盖见 `OverviewRowHoverTest.cpp`。隔离启动官方 Web 2.6.3，验证先新建、退出 Orbis 后复用、重启原生进程后恢复同一会话；macOS Qt 构建和既有总览回归通过。证据与首轮失败见 [`.artifacts/kimi-demand-launch-20261124/verification.json`](../../.artifacts/kimi-demand-launch-20261124/verification.json)。未部署；真实 Desktop 窗口和手机安装待用户验证。

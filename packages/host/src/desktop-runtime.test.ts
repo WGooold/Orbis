@@ -111,6 +111,7 @@ describe("desktop Host lifecycle", () => {
     const runtime = new DesktopRuntime(event => events.push(event), root,
       { pi: join(root, "pi"), codex: join(root, "codex"), dsh: join(root, "dsh") });
     const started = vi.spyOn(KimiRuntime.prototype, "start").mockImplementation(() => {});
+    const ensureReady = vi.spyOn(KimiRuntime.prototype, "ensureReady").mockResolvedValue(undefined);
     vi.spyOn(KimiRuntime.prototype, "connectionState", "get").mockReturnValue("not_running");
     const settings = { relayUrl: relay.url, credential, lanPort: 0, codexEnabled: false, dshEnabled: false,
       piIntegrationEnabled: false, claudeIntegrationEnabled: false };
@@ -123,10 +124,14 @@ describe("desktop Host lifecycle", () => {
       expect(started).not.toHaveBeenCalled();
       runtime.status();
       expect(events).toContainEqual(expect.objectContaining({ event: "status", kimiCodeState: "disabled" }));
+      await expect(runtime.openAgent("kimiCode")).rejects.toThrow("请先在 Agent 设置中启用");
+      expect(ensureReady).not.toHaveBeenCalled();
       await runtime.setAgentEnablement({ kind: "kimiCode", enabled: true, expectedRevision: 0 });
       await vi.waitFor(() => expect(started).toHaveBeenCalledTimes(1));
       runtime.status();
       expect(events).toContainEqual(expect.objectContaining({ event: "status", kimiCodeState: "not_running" }));
+      await runtime.openAgent("kimiCode");
+      expect(ensureReady).toHaveBeenCalledOnce();
     } finally { await runtime.close(); await relay.close(); await rm(root, { recursive: true, force: true }); }
   });
 

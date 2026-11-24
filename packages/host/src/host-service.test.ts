@@ -4285,7 +4285,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(host.runningAgentSessions()).not.toHaveProperty("kimiCode");
   });
 
-  // KIMI-06: use the real encrypted transport and verify both directions, including a same-device downgrade.
+  // KIMI-06/12: encrypted feature gate, phone-triggered cold start, and same-device downgrade.
   it("gates Kimi discovery, commands, scoped diagnostics, launch recovery and receipts on the current handshake", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-kimi-host-"));
     relay = await startRelayLocal(stateDir);
@@ -4294,10 +4294,18 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     const kimi = new KimiRuntime({ stateDir });
     let events: (event: RuntimeEvent, runtimeId: string) => void = () => {};
     let online = false;
+    let ready = false;
     const metadata = { name: "Kimi Code", runtimeId: id, sessionId: id, cwd, status: "idle" as const, sessionGraphSync: true };
     vi.spyOn(kimi, "start").mockImplementation(() => {});
     vi.spyOn(kimi, "setEventSink").mockImplementation(sink => { events = sink; });
-    vi.spyOn(kimi, "isReady").mockReturnValue(true);
+    vi.spyOn(kimi, "isReady").mockImplementation(() => ready);
+    vi.spyOn(kimi, "canLaunch").mockReturnValue(true);
+    const startKimi = vi.spyOn(kimi, "ensureReady").mockImplementation(async current => {
+      expect(current?.()).toBe(true);
+      ready = true;
+      kimi.onReadyChange?.(); kimi.onCatalogChange?.();
+    });
+    const resumeSource = vi.spyOn(kimi, "assertResumeSource").mockResolvedValue(undefined);
     vi.spyOn(kimi, "ownsRuntime").mockImplementation(runtimeId => online && runtimeId === id);
     vi.spyOn(kimi, "directoryEntries").mockImplementation(() => online ? [metadata] : []);
     vi.spyOn(kimi, "catalogCoverage").mockImplementation(async archived => ({ complete: true, sessions: archived ? [] : [
@@ -4368,11 +4376,18 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       const reply = await wait(message => message.requestId === ("requestId" in body ? body.requestId : body.commandId) || message.commandId === ("commandId" in body ? body.commandId : "never"), true);
       expect(reply).toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
     }
-    expect(activate).not.toHaveBeenCalled(); expect(dispatched).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled(); expect(dispatched).not.toHaveBeenCalled(); expect(startKimi).not.toHaveBeenCalled();
     send("device.features", { features: ["agent.kimiCode"] });
     const full = await wait(message => message.type === "device.ready" && (message.launchableAgents as string[]).includes("kimiCode"));
     expect(full.modelEpoch).not.toBe(initial.modelEpoch);
     expect(full).not.toHaveProperty("dshDesktop");
+    expect(full.agents).not.toContain("kimiCode");
+    send("session.launch.read", { launchId: "cold-passive-lookup", requestId: "read-without-start" });
+    expect(await wait(message => message.requestId === "read-without-start")).toMatchObject({ phase: "absent" });
+    expect(startKimi).not.toHaveBeenCalled();
+    send("session.configuration.read", { requestId: "cold-draft", agentKind: "kimiCode", cwd });
+    expect(await wait(message => message.requestId === "cold-draft")).toMatchObject({ type: "session.configuration.result", binding: launch.binding });
+    expect(startKimi).toHaveBeenCalledTimes(1);
     const known = (hidden.domains as AgentStateDomainSnapshot[]).map(({ domain, modelEpoch, revision }) => ({ domain, modelEpoch, revision }));
     const snapshot = await read("host-full", "host", known);
     expect(snapshot.unchanged).toBeUndefined();
@@ -4388,6 +4403,11 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     send("runtime.command", { commandId: "native-stop", runtimeId: id, command: { type: "stop" } });
     await wait(message => (message.event as { commandId?: string } | undefined)?.commandId === "native-stop");
     expect(dispatched).toHaveBeenCalledTimes(1);
+    ready = false;
+    send("session.activate", { requestId: "cold-resume", target: { type: "resume", sessionId: id } });
+    expect(await wait(message => message.requestId === "cold-resume")).toMatchObject({ type: "session.activated", sessionId: id });
+    expect(resumeSource).toHaveBeenCalledExactlyOnceWith(id);
+    expect(startKimi).toHaveBeenCalledTimes(2);
     await handshake();
     const downgraded = await wait(message => message.type === "device.ready" && message.modelEpoch !== full.modelEpoch, true);
     expect(downgraded.agents).not.toContain("kimiCode");
@@ -4396,7 +4416,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     await read("private-downgraded", "device");
     send("diagnostics.request", { requestId: "diagnostics-no", category: "fixture" });
     expect(await wait(message => message.requestId === "diagnostics-no", true)).toMatchObject({ page: { records: [] } });
-    expect(activate).toHaveBeenCalledTimes(1);
+    expect(activate).toHaveBeenCalledTimes(2);
   });
 
   // KIMI-09/11: opt-in real Kimi Web/Desktop and released Orbis runtime probes. The fixture owns the isolated native server.

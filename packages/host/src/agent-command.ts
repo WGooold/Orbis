@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { promisify } from "node:util";
 import { agentInstallRoot } from "./agent-root.js";
 
-export type ExternalAgentKind = "pi" | "codex" | "dsh" | "claude" | "hermes";
+export type ExternalAgentKind = "pi" | "codex" | "dsh" | "claude" | "hermes" | "kimi";
 export type AgentCommand = {
   command: string;
   prefixArgs: string[];
@@ -28,9 +28,9 @@ export function agentTerminalEnvironment(env: NodeJS.ProcessEnv): Record<string,
 }
 const packages: Record<ExternalAgentKind, string[]> = {
   pi: ["@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"],
-  codex: ["@openai/codex"], dsh: ["@deepseek-ai/dsh"], claude: ["@anthropic-ai/claude-code"], hermes: [],
+  codex: ["@openai/codex"], dsh: ["@deepseek-ai/dsh"], claude: ["@anthropic-ai/claude-code"], hermes: [], kimi: ["@moonshot-ai/kimi-code"],
 };
-const legacyBins: Record<ExternalAgentKind, string> = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", dsh: "lib/bin.js", claude: "cli.js", hermes: "" };
+const legacyBins: Record<ExternalAgentKind, string> = { pi: "dist/bundle/cli.js", codex: "bin/codex.js", dsh: "lib/bin.js", claude: "cli.js", hermes: "", kimi: "dist/main.mjs" };
 const execute = promisify(execFile);
 
 export function cliPathDirs(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string[] {
@@ -43,7 +43,7 @@ function homePath(value: string, home: string): string {
 }
 
 export const CLI_DISCOVERY_ENV_KEYS = ["CODEX_INSTALL_DIR", "HOMEBREW_PREFIX", "npm_config_prefix", "NPM_CONFIG_PREFIX",
-  "XDG_DATA_HOME", "PIPX_BIN_DIR", "CARGO_HOME", "GOBIN", "GOPATH", "SCOOP", "SCOOP_GLOBAL", "ChocolateyInstall"] as const;
+  "XDG_DATA_HOME", "PIPX_BIN_DIR", "CARGO_HOME", "GOBIN", "GOPATH", "SCOOP", "SCOOP_GLOBAL", "ChocolateyInstall", "KIMI_INSTALL_DIR"] as const;
 
 /** HOST-CLI-DISCOVERY-01: mirror the user's PATH before checking stable installer locations. */
 export function cliSearchDirs(kind: ExternalAgentKind, env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home: string): string[] {
@@ -68,6 +68,7 @@ export function cliSearchDirs(kind: ExternalAgentKind, env: NodeJS.ProcessEnv, p
     add(codexHome, "packages", "standalone", "current");
   }
   if (kind === "claude") add(home, ".claude", "local");
+  if (kind === "kimi") add(env.KIMI_INSTALL_DIR || join(home, ".kimi-code"), "bin");
   for (const dir of [env.PNPM_HOME, env.NVM_SYMLINK, env.FNM_MULTISHELL_PATH, env.PIPX_BIN_DIR, env.GOBIN]) add(dir);
   add(env.VOLTA_HOME || join(home, ".volta"), "bin");
   add(env.BUN_INSTALL || join(home, ".bun"), "bin");
@@ -220,8 +221,8 @@ export async function findExternalAgentEntries(kind: ExternalAgentKind, env: Nod
       if ((!brokenLink && !await executable(candidate, platform)) || await isAgentForwarder(kind, candidate)) continue;
       launcher = candidate;
       const bin = await resolveAgentPackage(kind, launcher, env, platform);
-      // Avoid placing a cmd parent around the app-server when the npm target is known.
-      const entry = kind === "codex" && platform === "win32" && bin && /\.[cm]?js$/iu.test(bin.entry) ? bin.entry : launcher;
+      // Use the real npm bin on Windows so a persistent server is not owned by a cmd shim.
+      const entry = (kind === "codex" || kind === "kimi") && platform === "win32" && bin && /\.[cm]?js$/iu.test(bin.entry) ? bin.entry : launcher;
       await add({ entry, ...(bin?.version === undefined ? {} : { version: bin.version }) }, bin?.entry);
       break;
     }
