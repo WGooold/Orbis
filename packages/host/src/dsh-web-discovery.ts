@@ -1,5 +1,5 @@
 import type { AgentTaskInventory } from "@orbis/protocol";
-import { dshAgentTasks } from "./dsh-agent-tasks.js";
+import { dshAgentTasks, dshCatalogTasks, parseDshTaskCatalog } from "./dsh-agent-tasks.js";
 import type { DshWebConnection, DshWebEvent } from "./dsh-web-client.js";
 import { DshSessionTitles } from "./dsh-session-titles.js";
 
@@ -28,6 +28,11 @@ export class DshWebDiscovery {
   readonly #client: DshWebConnection;
   readonly #callbacks: DiscoveryCallbacks;
   #rows = new Map<string, Row>();
+  #taskCatalogs = new Map<string, { seq: number; catalog: ReturnType<typeof parseDshTaskCatalog> }>();
+  #taskReads = new Map<string, number>();
+  #taskReadCount = 0;
+  #taskGeneration = 0;
+  #taskControlReady = false;
   #archives: Set<string> | undefined;
   #workspaceReady = false;
   #catalogReady = false;
@@ -100,14 +105,69 @@ export class DshWebDiscovery {
 
   invalidate(): void {
     this.#workspaceReady = false; this.#catalogReady = false;
-    this.#callbacks.unverified?.();
+    this.resetTaskControl();
   }
 
   retry(): void { this.#scheduleRetry(); }
 
   tasks(id: string, previous?: AgentTaskInventory): AgentTaskInventory {
     if (!this.#workspaceReady || !this.#catalogReady) return { availability: "unknown", items: previous?.items ?? [], truncated: false };
-    return dshAgentTasks(id, this.#rows, previous, (childId, item) => this.titles.read(childId, item));
+    const fallback = dshAgentTasks(id, this.#rows, previous, (childId, item) => this.titles.read(childId, item));
+    if (!this.#taskControlReady) return fallback;
+    return dshCatalogTasks(id, this.#rows, parent => this.#taskCatalog(parent), fallback);
+  }
+
+  resetTaskControl(): void {
+    this.#taskControlReady = false;
+    ++this.#taskGeneration;
+    this.#taskCatalogs.clear();
+    this.#taskReads.clear();
+    this.#callbacks.unverified?.();
+  }
+
+  taskControlBaseline(projections: Record<string, unknown>): void {
+    if (this.#closed) return;
+    ++this.#taskGeneration;
+    this.#taskCatalogs.clear();
+    this.#taskReads.clear();
+    for (const [id, projection] of Object.entries(projections)) this.#storeTaskCatalog(id, projection);
+    this.#taskControlReady = true;
+    this.#callbacks.unverified?.();
+  }
+
+  taskControlUpdate(id: string, projection: unknown): void {
+    if (this.#taskControlReady && this.#storeTaskCatalog(id, projection)) this.#callbacks.unverified?.();
+  }
+
+  #storeTaskCatalog(id: string, raw: unknown): boolean {
+    const { asOfSeq: seq, values } = object(raw);
+    if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq <= (this.#taskCatalogs.get(id)?.seq ?? -Infinity)) return false;
+    this.#taskCatalogs.set(id, { seq, catalog: parseDshTaskCatalog(object(values).subagentCatalog) });
+    return true;
+  }
+
+  #taskCatalog(id: string): ReturnType<typeof parseDshTaskCatalog> {
+    const cached = this.#taskCatalogs.get(id);
+    if (cached) return cached.catalog;
+    // Cold descendants do not appear in the control baseline. Read their exact
+    // projections without activating them; throttle failures and bound concurrent reads.
+    const now = Date.now();
+    if (this.#taskReadCount >= 8 || (this.#taskReads.get(id) ?? 0) > now || this.#closed) return;
+    const generation = this.#taskGeneration;
+    this.#taskReads.set(id, Infinity);
+    ++this.#taskReadCount;
+    void this.#client.request("session/projections", { request: { sessionId: id } }).then(raw => {
+      if (this.#closed || generation !== this.#taskGeneration) return;
+      if (object(raw).kind === "sequenced") this.#storeTaskCatalog(id, raw);
+    }).catch(() => {}).finally(() => {
+      --this.#taskReadCount;
+      if (this.#closed) return;
+      if (generation === this.#taskGeneration) {
+        if (this.#taskCatalogs.has(id)) this.#taskReads.delete(id);
+        else this.#taskReads.set(id, Date.now() + 2_000);
+      }
+      this.#callbacks.unverified?.();
+    });
   }
 
   titleProjection(id: string, baseline: unknown, complete = false): void {

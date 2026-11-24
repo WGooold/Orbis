@@ -733,6 +733,61 @@ describe("DeepSeek Web runtime adapter", () => {
     expect(inventory()).toMatchObject({ availability: "unknown", truncated: false, items: [{ id: "child" }] });
   });
 
+  it("uses the DSH control catalog for membership, including cold descendants, and registry rows for activity", async () => {
+    const f = discoveryFixture();
+    const child = { ...f.live("child", true), origin: "subagent", parentSessionId: "parent" };
+    f.list([f.live("parent", true), child]);
+    const cold = deferred<unknown>();
+    const exact = (asOfSeq: number, subagentCatalog: unknown[]) => ({ kind: "sequenced", asOfSeq, values: { subagentCatalog } });
+    const oldRequest = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, args) => method === "session/projections" && (args as { request: { sessionId: string } }).request.sessionId === "cold"
+      ? cold.promise : oldRequest(method, args));
+    await f.runtime.start();
+    const control = f.subscriptions.find(item => item.method === "session/control")!;
+    const inventory = () => f.events.flatMap(({ event, runtimeId }) => runtimeId === "dsh:parent" && event.type === "execution.tasks" ? [event.tasks] : []).at(-1)!;
+    const entry = (id: string, mode = "continuable") => ({ id, mode, createdAt: 1, label: `Label ${id}`, prompt: "do not forward" });
+    control.frame({ type: "baseline", value: { projections: {
+      parent: exact(4, [entry("child"), entry("cold")]), child: exact(0, []),
+    } } });
+    expect(inventory()).toMatchObject({ availability: "unknown", truncated: true, items: [{ id: "child", status: "running" }, { id: "cold", status: "unknown" }] });
+    expect(f.request).toHaveBeenCalledWith("session/projections", { request: { sessionId: "cold" } });
+    cold.resolve(exact(2, [entry("external", "external")]));
+    await vi.waitFor(() => expect(inventory()).toEqual({ availability: "ready", truncated: false, items: [
+      { id: "child", title: "Label child", kind: "subagent", status: "running" },
+      { id: "cold", title: "Label cold", kind: "subagent", status: "unknown" },
+      { id: "external", parentId: "cold", title: "Label external", kind: "subagent", status: "unknown" },
+    ] }));
+    expect(f.request).not.toHaveBeenCalledWith("session/projections", { request: { sessionId: "external" } });
+    f.emit("api-session/status", "child", false);
+    expect(inventory().items[0]?.status).toBe("idle");
+    f.emit("api-session/removed", "child");
+    expect(inventory()).toMatchObject({ availability: "ready", items: [{ id: "child", status: "unknown" }, { id: "cold" }, { id: "external" }] });
+    control.frame({ type: "projection", sessionId: "parent", seq: 3, changes: [{ key: "subagentCatalog", val: [] }] });
+    expect(inventory().items).toHaveLength(3);
+    control.frame({ type: "projection", sessionId: "parent", seq: 5, changes: [{ key: "subagentCatalog", val: [] }] });
+    expect(inventory()).toEqual({ availability: "ready", truncated: false, items: [] });
+    control.frame({ type: "projection", sessionId: "parent", seq: 6, changes: [{ key: "subagentCatalog", val: [entry("new", "external")] }] });
+    expect(inventory()).toMatchObject({ availability: "ready", truncated: false, items: [{ id: "new", status: "unknown" }] });
+    control.frame({ type: "projection", sessionId: "parent", seq: 7, key: "subagentCatalog", value: [] });
+    expect(inventory()).toEqual({ availability: "ready", truncated: false, items: [] });
+  });
+
+  it("does not restore task completeness from a stale cold read after disconnection", async () => {
+    const f = discoveryFixture();
+    const cold = deferred<unknown>();
+    const oldRequest = f.request.getMockImplementation()!;
+    f.request.mockImplementation((method, args) => method === "session/projections" ? cold.promise : oldRequest(method, args));
+    f.list([f.live("parent", true)]);
+    await f.runtime.start();
+    const control = f.subscriptions.find(item => item.method === "session/control")!;
+    control.frame({ type: "baseline", value: { projections: { parent: { asOfSeq: 1, values: { subagentCatalog: [{ id: "cold", mode: "one-shot" }] } } } } });
+    f.client.onDiagnostic?.({ event: "socket.closed" });
+    const before = f.events.length;
+    cold.resolve({ kind: "sequenced", asOfSeq: 1, values: { subagentCatalog: [] } });
+    await new Promise<void>(done => setImmediate(done));
+    expect(f.events.slice(before).filter(({ event }) => event.type === "execution.tasks")).toEqual([]);
+  });
+
   it("does not add subagent runs or replacement blank drafts to the ordinary sidebar after each prompt", async () => {
     const f = discoveryFixture();
     const parent = f.live("parent", true);

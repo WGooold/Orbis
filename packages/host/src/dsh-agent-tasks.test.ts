@@ -1,12 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { AgentTaskInventorySchema } from "@orbis/protocol";
-import { dshAgentTasks } from "./dsh-agent-tasks.js";
+import { dshAgentTasks, dshCatalogTasks, parseDshTaskCatalog } from "./dsh-agent-tasks.js";
 
 const child = (id: string, parentSessionId = "root", running = true) => ({ sessionId: id, origin: "subagent", parentSessionId, agentAvailable: true, running });
 const rows = (...items: ReturnType<typeof child>[]) => new Map(items.map(item => [item.sessionId, item]));
 
-// S33 / SC52: use registry evidence only, without leaking prompts or inventing outcomes.
+// S33 / SC52: use native facts without leaking prompts or inventing outcomes.
 describe("DSH task projection", () => {
+  it("does not call a bounded, malformed, cyclic, or registry-conflicting catalog complete", () => {
+    const registry = rows(child("live"));
+    const empty = dshAgentTasks("root", rows());
+    const external = (id: string) => ({ id, mode: "external" });
+    for (const entries of [[{ id: "root", mode: "continuable" }, external("a")], [null, external("a")],
+      Array.from({ length: 257 }, (_, index) => external(`task-${index}`))]) {
+      const tasks = dshCatalogTasks("root", rows(), () => parseDshTaskCatalog(entries), empty);
+      expect(tasks).toMatchObject({ availability: "unknown", truncated: true });
+      expect(AgentTaskInventorySchema.safeParse(tasks).success).toBe(true);
+      expect(tasks.items.length).toBeLessThanOrEqual(256);
+    }
+    const tasks = dshCatalogTasks("root", registry, () => parseDshTaskCatalog([]), dshAgentTasks("root", registry));
+    expect(tasks).toMatchObject({ availability: "unknown", truncated: true, items: [{ id: "live", status: "running" }] });
+  });
   it("projects nested children into their root and excludes siblings and cycles", () => {
     const tasks = dshAgentTasks("root", rows(child("a"), child("b", "a", false), child("other", "elsewhere"), child("cycle", "cycle")));
     expect(tasks).toEqual({ availability: "unknown", truncated: true, items: [
