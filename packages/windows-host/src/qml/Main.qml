@@ -1689,14 +1689,14 @@ ApplicationWindow {
                                                             : agentRow.cliHint || window.agentPhoneState(agentRow.modelData, agentRow.sessions)
                                                                 + (agentRow.pathAction && canEdit ? "。点击圆点管理 CLI 路径。" : "")
                                                         function activate() {
-                                                            if (agentRow.desktopNotice) window.selectPage(4)
+                                                            if (agentRow.desktopNotice) window.goAgent("codexDesktop")
                                                             else if (canEdit) window.showAgentEntry(agentRow.modelData)
                                                         }
                                                         Layout.preferredWidth: Theme.touchTarget; Layout.preferredHeight: Theme.touchTarget
                                                         activeFocusOnTab: canAct
                                                         Accessible.role: canAct ? Accessible.Button : Accessible.StaticText
                                                         Accessible.name: agentRow.modelData.name + "，" + detail
-                                                        Accessible.description: agentRow.desktopNotice ? "查看接入诊断" : canEdit && !agentRow.cliHint ? "管理手动指定的 CLI 路径" : ""
+                                                        Accessible.description: agentRow.desktopNotice ? "查看 Agent 接入情况" : canEdit && !agentRow.cliHint ? "管理手动指定的 CLI 路径" : ""
                                                         Accessible.onPressAction: agentState.activate()
                                                         ToolTip {
                                                             id: agentHint
@@ -2505,17 +2505,32 @@ ApplicationWindow {
                                             visible: hasContent
                                             Layout.fillWidth: true; spacing: 12
                                             Heading { text: "接入" }
+                                            // HOST-DESKTOP-STATUS-01: keep desktop-agent state and its reason on the Agent page, not diagnostics.
                                             RowLayout {
+                                                objectName: "codexDesktopIntegrationStatusRow"
                                                 visible: window.detailKind === "codexDesktop"
                                                 Layout.fillWidth: true; spacing: 8
                                                 Label { text: "桌面接入"; color: Theme.inkMuted; Layout.fillWidth: true }
-                                                Label { text: window.codexDesktopLabel(); color: window.codexDesktopColor() }
+                                                Label { objectName: "codexDesktopIntegrationStatus"; text: window.codexDesktopLabel(); color: window.codexDesktopColor() }
+                                            }
+                                            Hint {
+                                                objectName: "codexDesktopIntegrationReason"
+                                                visible: window.detailKind === "codexDesktop" && text.length > 0
+                                                text: window.codexDesktopReason()
+                                                Layout.fillWidth: true
                                             }
                                             RowLayout {
+                                                objectName: "dshDesktopIntegrationStatusRow"
                                                 visible: window.detailKind === "dshDesktop"
                                                 Layout.fillWidth: true; spacing: 8
                                                 Label { text: "桌面接入"; color: Theme.inkMuted; Layout.fillWidth: true }
-                                                Label { text: window.dshDesktopLabel(); color: window.dshDesktopColor() }
+                                                Label { objectName: "dshDesktopIntegrationStatus"; text: window.dshDesktopLabel(); color: window.dshDesktopColor() }
+                                            }
+                                            Hint {
+                                                objectName: "dshDesktopIntegrationReason"
+                                                visible: window.detailKind === "dshDesktop" && text.length > 0
+                                                text: window.dshDesktopReason()
+                                                Layout.fillWidth: true
                                             }
                                             RowLayout {
                                                 visible: window.detailKind === "opencode"
@@ -2972,45 +2987,6 @@ ApplicationWindow {
                                 anchors.fill: parent; spacing: 16
                                 Heading { text: "连接诊断" }
                                 RowLayout { spacing: 10; ActionButton { text: "运行检查"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.diagnose() } ActionButton { text: "复制诊断"; onClicked: host.copyDiagnostics() } ActionButton { text: "导出文件"; onClicked: host.exportDiagnostics() } ActionButton { text: "数据目录"; onClicked: host.openDataDirectory() } }
-                            }
-                        }
-                        Card {
-                            objectName: "codexDesktopAttach"
-                            visible: window.agentEnabled("codexDesktop")
-                            Layout.fillWidth: true
-                            ColumnLayout {
-                                anchors.fill: parent; spacing: 12
-                                RowLayout { Layout.fillWidth: true
-                                    Heading { text: "Codex 桌面版接入" }
-                                    Item { Layout.fillWidth: true }
-                                    ActionButton { text: "供应商配置"; enabled: host.bridgeReady && !host.busy; onClicked: window.openProviders("codex") }
-                                }
-                                StatusLabel {
-                                    objectName: "codexDesktopAttachStatus"
-                                    Layout.fillWidth: true
-                                    labelObjectName: "codexDesktopAttachLabel"
-                                    text: window.codexDesktopLabel(); color: dotColor; dotColor: window.codexDesktopColor()
-                                    idle: window.codexDesktopState() === "closed"
-                                    font.pixelSize: Theme.body; font.weight: Font.DemiBold
-                                }
-                                Hint { objectName: "codexDesktopAttachReason"; visible: text.length > 0; text: window.codexDesktopReason(); Layout.fillWidth: true }
-                            }
-                        }
-                        Card {
-                            objectName: "dshDesktopAttach"
-                            visible: window.agentEnabled("dshDesktop")
-                            Layout.fillWidth: true
-                            ColumnLayout {
-                                anchors.fill: parent; spacing: 12
-                                Heading { text: "DeepSeek 桌面版接入" }
-                                StatusLabel {
-                                    objectName: "dshDesktopAttachStatus"
-                                    Layout.fillWidth: true
-                                    text: window.dshDesktopLabel(); color: dotColor; dotColor: window.dshDesktopColor()
-                                    idle: window.dshDesktopState() === "closed"
-                                    font.pixelSize: Theme.body; font.weight: Font.DemiBold
-                                }
-                                Hint { text: window.dshDesktopReason(); Layout.fillWidth: true }
                             }
                         }
                         Card {

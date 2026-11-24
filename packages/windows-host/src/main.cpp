@@ -85,7 +85,7 @@ int main(int argc, char *argv[]) {
     parser.addOption({"smoke-compact", "Run the smoke test at the minimum window size"});
     parser.addOption({"screenshot", "Save the smoke-test window image", "path"});
     parser.addOption({"smoke-providers", "Also render provider list and editor using isolated smoke-test data"});
-    parser.addOption({"smoke-codex-desktop", "Check Codex Desktop recovery status in overview and diagnostics with isolated data"});
+    parser.addOption({"smoke-codex-desktop", "Check Codex Desktop recovery status in overview and Agent page with isolated data"});
     parser.addOption({"smoke-agent-entry", "Check overview CLI recovery status, hover hint, and path dialog with isolated data"});
     parser.addOption({"smoke-agents", "Also render Agent installation dialogs without starting downloads"});
     parser.addOption({"smoke-exit", "Verify exit and update confirmation cancellation in the isolated smoke window"});
@@ -306,20 +306,26 @@ int main(int argc, char *argv[]) {
                 }
                 if (!QMetaObject::invokeMethod(dot, "activate")) { app.exit(103); return; }
                 QTest::qWait(400);
-                const auto diagnosticText = [&](const QString &name) {
+                const auto visibleText = [&](const QString &name) {
                     auto *label = item(name);
                     return label && label->isVisible() ? label->property("text").toString() : QString();
                 };
-                if (diagnosticText("codexDesktopAttachLabel") != "未接入" || diagnosticText("codexDesktopAttachReason") != reason) { app.exit(104); return; }
-                if (!screenshot.isEmpty() && !window->grabWindow().save(screenshot + ".diagnostics.png")) { app.exit(105); return; }
+                if (window->property("page").toInt() != 2 || window->property("selectedAgent").toString() != "codexDesktop"
+                    || visibleText("codexDesktopIntegrationStatus") != "未接入"
+                    || visibleText("codexDesktopIntegrationReason") != reason) { app.exit(104); return; }
+                if (!screenshot.isEmpty() && !window->grabWindow().save(screenshot + ".agent.png")) { app.exit(105); return; }
                 const QString error = "Orbis 未找到可运行的匹配 CLI";
                 publish("error", error);
-                if (diagnosticText("codexDesktopAttachLabel") != "接入失败" || diagnosticText("codexDesktopAttachReason") != error) { app.exit(106); return; }
+                if (visibleText("codexDesktopIntegrationStatus") != "接入失败"
+                    || visibleText("codexDesktopIntegrationReason") != error) { app.exit(106); return; }
+                QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 4));
+                QTest::qWait(400);
+                if (item("codexDesktopAttach") || item("dshDesktopAttach")) { app.exit(109); return; }
                 QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 0));
                 QTest::qWait(400);
-                if (diagnosticText("overviewCodexDesktopNotice") != "接入失败") { app.exit(107); return; }
+                if (visibleText("overviewCodexDesktopNotice") != "接入失败") { app.exit(107); return; }
                 publish("attached", "已接入 Codex 桌面版");
-                if (!diagnosticText("overviewCodexDesktopNotice").isEmpty()) { app.exit(108); return; }
+                if (!visibleText("overviewCodexDesktopNotice").isEmpty()) { app.exit(108); return; }
                 app.exit(0);
                 return;
             }

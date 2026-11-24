@@ -680,9 +680,26 @@ private slots:
         controller.receiveLine({{"event", "status"}, {"activeAgentSessions", running}});
         QVERIFY(pane->isVisible());
 
+        // HOST-DESKTOP-STATUS-01: overview routes Codex details to Agent; both desktop integrations are described there, not in diagnostics.
+        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, QString("codexDesktop"))));
+        auto *codexIntegrationStatus = findVisualItem(content, "codexDesktopIntegrationStatus");
+        QTRY_VERIFY(codexIntegrationStatus && codexIntegrationStatus->isVisible());
+        QCOMPARE(codexIntegrationStatus->property("text").toString(), QString("已接入"));
+        auto *codexIntegrationReason = findVisualItem(content, "codexDesktopIntegrationReason");
+        QVERIFY(codexIntegrationReason);
+        QVERIFY(!codexIntegrationReason->isVisible());
+
+        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, QString("dshDesktop"))));
+        auto *dshIntegrationStatus = findVisualItem(content, "dshDesktopIntegrationStatus");
+        auto *dshIntegrationReason = findVisualItem(content, "dshDesktopIntegrationReason");
+        QTRY_VERIFY(dshIntegrationStatus && dshIntegrationStatus->isVisible());
+        QCOMPARE(dshIntegrationStatus->property("text").toString(), QString("已接入"));
+        QTRY_VERIFY(dshIntegrationReason && dshIntegrationReason->isVisible());
+        QCOMPARE(dshIntegrationReason->property("text").toString(), QString("已接入 DeepSeek 桌面版 0.2.2-rc.2"));
+
         QVERIFY(QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 4)));
-        QTRY_VERIFY(aligned(findVisualItem(content, "codexDesktopAttachStatus"), "codexDesktopAttachLabel"));
-        QTRY_VERIFY(aligned(findVisualItem(content, "dshDesktopAttachStatus"), "statusText"));
+        QVERIFY(!findVisualItem(content, "codexDesktopAttach"));
+        QVERIFY(!findVisualItem(content, "dshDesktopAttach"));
         controller.shutdown();
     }
 
