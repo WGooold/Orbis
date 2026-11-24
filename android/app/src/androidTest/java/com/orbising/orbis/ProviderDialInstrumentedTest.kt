@@ -73,6 +73,59 @@ class ProviderDialInstrumentedTest {
         compose.onNodeWithTag("provider-catalog-problem").assertExists()
         assertEquals(before, compose.onNodeWithTag("provider-dual-dial").fetchSemanticsNode().boundsInRoot)
     }
+    private fun managedDial(vararg rows: AgentEnablementRow): SemanticsNodeInteraction {
+        val revision = 5L
+        val list = rows.toList()
+        compose.setContent { OrbisTheme {
+            ProviderDialScreen(ready().copy(agentEnablementAvailable = true, agentEnablementRevision = revision, agentEnablementRows = list,
+                agentDial = AgentDialSync(cached = AgentDialSnapshot(revision, list), synchronized = true)),
+                emptyList(), {}, {}, { provider, host -> changes += provider to host }, { _, _ -> }, showBack = false,
+                onAgentEnabled = { _, kind, target, review, _ -> enablementChanges += Triple(kind, target, review) })
+        } }
+        return compose.onNodeWithTag("provider-dual-dial")
+    }
+    private fun pinGeometry(dial: SemanticsNodeInteraction): DualDialGeometry {
+        val bounds = dial.fetchSemanticsNode().boundsInRoot
+        return with(compose.density) { DualDialGeometry.measure(bounds.width.toDp().value, bounds.height.toDp().value) }
+    }
+
+    /** AGENT-DIAL-06: a pin edit started while the ring is still turning reaches the Agent heading for the gate. */
+    @Test fun pinDuringAgentSettleDisablesTheTappedAgentNotTheFirst() {
+        val dial = managedDial(AgentEnablementRow("codex", "Codex CLI", true), AgentEnablementRow("openclaw", "OpenClaw", true))
+        val g = pinGeometry(dial)
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("provider-agent-openclaw").performTouchInput { click() }
+        compose.mainClock.advanceTimeBy(120)
+        // The ring is still turning, but the tapped Agent is already the selection.
+        compose.onNodeWithTag("provider-agent-reel")
+            .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "OpenClaw"))
+        val turning = compose.onNodeWithTag("provider-agent-reel").fetchSemanticsNode()
+            .config[androidx.compose.ui.semantics.SemanticsProperties.ProgressBarRangeInfo].current
+        assertTrue("ring must still be between detents ($turning)", turning > 0.01f && turning < 0.99f)
+        val socket = with(compose.density) { androidx.compose.ui.geometry.Offset((g.pinStart + g.pinTravel).dp.toPx(), g.cy.dp.toPx()) }
+        val travel = with(compose.density) { g.pinTravel.dp.toPx() }
+        dial.performTouchInput { down(socket); moveTo(socket + androidx.compose.ui.geometry.Offset(-travel * 0.8f, 0f), 250); up() }
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(listOf(Triple("openclaw", false, null)), enablementChanges) }
+    }
+
+    /** AGENT-DIAL-06: a swipe that leaves the groove abandons the pin edit, however far it travelled sideways. */
+    @Test fun swipeLeavingTheGrooveNeverSwitchesAnAgent() {
+        val dial = managedDial(AgentEnablementRow("codex", "Codex CLI", true), AgentEnablementRow("openclaw", "OpenClaw", true))
+        val g = pinGeometry(dial)
+        val socket = with(compose.density) { androidx.compose.ui.geometry.Offset((g.pinStart + g.pinTravel).dp.toPx(), g.cy.dp.toPx()) }
+        val travel = with(compose.density) { g.pinTravel.dp.toPx() }
+        val escape = with(compose.density) { (AgentDialPin.ESCAPE + 24f).dp.toPx() }
+        dial.performTouchInput {
+            down(socket)
+            moveTo(socket + androidx.compose.ui.geometry.Offset(-travel * 0.8f, 0f), 200)
+            moveTo(socket + androidx.compose.ui.geometry.Offset(-travel * 0.8f, escape), 200)
+            up()
+        }
+        compose.runOnIdle { assertTrue(enablementChanges.isEmpty()) }
+    }
+
     /** AGENT-DIAL-05: quota, running sessions, an empty disabled slot and error prompts never move the action between Agents. */
     @Test fun actionHoldsItsPlaceAcrossAgentsWithDifferentFacts() {
         val revision = 3L

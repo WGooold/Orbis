@@ -49,6 +49,8 @@ enum ProviderDialGeometry {
         }
     }
     static let pinHold = 0.72
+    /// AGENT-DIAL-06: vertical travel past which a pin edit leaves the groove and is abandoned.
+    static let pinEscape = 36.0
     static func horizontal(_ dx: Double, _ dy: Double) -> Bool { abs(dx) > abs(dy) * 1.1 }
     static func pinPosition(enabled: Bool, dx: Double, travel: Double) -> Double {
         enabled ? clamp(1 + dx / travel, 1 - pinHold, 1) : clamp(dx / travel, 0, pinHold)

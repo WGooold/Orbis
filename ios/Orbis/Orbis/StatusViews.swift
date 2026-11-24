@@ -678,6 +678,8 @@ private struct ProviderDialView: View {
     @State private var nudge = 0.0
     @State private var hintTask: Task<Void, Never>?
     @State private var ringLit = false
+    /// The Agent whose power state the ring last showed; a different Agent snaps instead of animating.
+    @State private var poweredKind: String?
     @State private var groupPosition = 0.0
     @State private var profilePosition = 0.0
     @State private var handle: ProviderDialGeometry.Handle?
@@ -693,6 +695,7 @@ private struct ProviderDialView: View {
     private var pinRest: Double { ProviderDialGeometry.pinRest(pendingTarget: pending?.target, enabled: powered) }
     private var selectedTravel: Double { pinDrag ?? (restTravel + nudge) }
     private struct PinRestKey: Equatable { let kind: String; let rest: Double }
+    private struct PowerKey: Equatable { let kind: String; let powered: Bool }
     private var pinColor: Color { conflictID != nil ? palette.error : offline || !powered && pending == nil ? palette.faint : palette.agent(kind) }
     private var palette: OrbisPalette { OrbisPalette(scheme) }
     var body: some View {
@@ -811,22 +814,25 @@ private struct ProviderDialView: View {
                     try? await Task.sleep(for: .milliseconds(55)); if Task.isCancelled { return }
                 }
             }
-            .task(id: powered) {
+            // AGENT-DIAL-07: power effects play only when the same Agent's enablement changes. Turning the ring to
+            // another Agent shows that Agent's state at once; the effect is slow enough to read.
+            .task(id: PowerKey(kind: kind, powered: powered)) {
+                if poweredKind != kind { poweredKind = kind; ringLit = powered; sweep = 1; dimSweep = 0; return }
                 if managed && powered && !ringLit && !offline {
                     dimSweep = 0
                     if !reduced { try? await Task.sleep(for: .milliseconds(170)) }
                     guard !Task.isCancelled else { return }
-                    withAnimation(reduced ? nil : InteractionMotion.state) { ringLit = true }
+                    withAnimation(reduced ? nil : .easeOut(duration: 0.5)) { ringLit = true }
                     if !reduced {
                         sweep = 0
-                        withAnimation(.easeOut(duration: 0.58)) { sweep = 1 }
+                        withAnimation(.easeOut(duration: 0.9)) { sweep = 1 }
                     }
                     OrbisHaptics.commit()
                 } else if managed && !powered && ringLit && !offline {
-                    withAnimation(reduced ? nil : InteractionMotion.state) { ringLit = false }
+                    withAnimation(reduced ? nil : .easeOut(duration: 0.5)) { ringLit = false }
                     if !reduced {
                         dimSweep = 1
-                        withAnimation(.easeOut(duration: 0.52)) { dimSweep = 0 }
+                        withAnimation(.easeOut(duration: 0.75)) { dimSweep = 0 }
                     }
                 } else { ringLit = powered; dimSweep = 0 }
             }
@@ -1026,6 +1032,12 @@ private struct ProviderDialView: View {
             if let pinOwner {
                 guard editable, pinOwner == kind, pinStartChoice == pending, pinStartEnabled == (pending?.target ?? powered) else {
                     self.pinOwner = nil; pinDrag = nil; pinArmed = false; hint = nil; return
+                }
+                // AGENT-DIAL-06: leaving the groove abandons the edit, so a diagonal swipe never switches an Agent.
+                if abs(dy) > ProviderDialGeometry.pinEscape {
+                    self.pinOwner = nil; pinArmed = false; hint = nil
+                    withAnimation(reduced ? nil : .easeOut(duration: 0.22)) { pinDrag = nil }
+                    return
                 }
                 let position = ProviderDialGeometry.pinPosition(enabled: pinStartEnabled, dx: dx, travel: g.pinTravel)
                 pinDrag = position

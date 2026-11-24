@@ -149,7 +149,14 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                 activeSessionCount = activeSessionCount, externalSubtitle = externalSubtitle, errorReason = errorReason,
                 autoNudge = canEdit && rows.isNotEmpty() && rows.none { it.enabled },
                 conflictId = visibleNotice?.takeIf { it.kind == kind && it.status == "conflict" }?.id,
-                onToggle = ::toggle,
+                // AGENT-DIAL-06: the dial names the Agent it edits, and this lambda reads this composition's rows;
+                // a function reference compares equal across recompositions and would keep the first Agent forever.
+                onToggle = { agent, target ->
+                    val agentRow = rows.firstOrNull { it.kind == agent }
+                    val agentWrite = state.agentDial.pending(agent)
+                    val agentQueued = agentWrite != null && state.agentDial.inFlight?.choice != agentWrite
+                    if (canEdit && agentRow != null && (agentWrite == null || agentQueued)) onAgentEnabled(hostId, agent, target, null, null)
+                },
                 onKind = { next -> if (kind != next) { chosenKind = next; previewId = "" } },
                 onBrowse = { previewId = providers.getOrNull(it)?.id.orEmpty() }, onMoving = { moving = it }, modifier = modifier)
         }
@@ -289,7 +296,7 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
     canEdit: Boolean, pending: AgentDialChoice?, queued: Boolean, status: AgentDialStatus, offline: Boolean,
     activeSessionCount: Int, externalSubtitle: String?, errorReason: String?,
     autoNudge: Boolean, conflictId: String?,
-    onToggle: (Boolean) -> Unit, onKind: (String) -> Unit, onBrowse: (Int) -> Unit, onMoving: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    onToggle: (String, Boolean) -> Unit, onKind: (String) -> Unit, onBrowse: (Int) -> Unit, onMoving: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     var agentPosition by remember(hostId) { mutableFloatStateOf(kinds.indexOf(kind).toFloat()) }
@@ -300,6 +307,7 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
     )
     var grabbed by remember(hostId) { mutableStateOf<ProviderDialRing?>(null) }
     var settleJob by remember(hostId) { mutableStateOf<Job?>(null) }
+    var settleTarget by remember(hostId) { mutableStateOf<Pair<ProviderDialRing, Int>?>(null) }
     val currentKind by rememberUpdatedState(kind)
     val currentKinds by rememberUpdatedState(kinds)
     val currentOn by rememberUpdatedState(on)
@@ -316,7 +324,8 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
     val recoil = remember(hostId, kind) { Animatable(0f) }
     var nudged by rememberSaveable(hostId) { mutableStateOf(false) }
     fun nudgePin() { if (canEdit && pending == null) { hint = if (on) "向内拉停用" else "向外推启用"; hintEvent++ } }
-    val currentNudge by rememberUpdatedState(::nudgePin)
+    // A lambda, not a function reference: references compare equal, so the update would never replace the first one.
+    val currentNudge by rememberUpdatedState<() -> Unit>({ nudgePin() })
     LaunchedEffect(active, autoNudge) {
         if (active && autoNudge && !nudged) {
             delay(900); nudged = true
@@ -348,15 +357,19 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
     var ringLit by remember(hostId, kind) { mutableStateOf(on) }
     val sweep = remember(hostId, kind) { Animatable(1f) }
     val dimSweep = remember(hostId, kind) { Animatable(0f) }
-    val power by animateFloatAsState(if (ringLit) 1f else 0f, tween(InteractionMotion.duration(240)), label = "agent-ring-power")
+    // AGENT-DIAL-07: keyed by Agent, so turning the ring to another Agent shows its power at once; only the same
+    // Agent's enablement change animates, slowly enough to read.
+    val powerLevel = remember(hostId, kind) { Animatable(if (ringLit) 1f else 0f) }
+    LaunchedEffect(powerLevel, ringLit) { powerLevel.animateTo(if (ringLit) 1f else 0f, tween(InteractionMotion.duration(600), easing = InteractionMotion.Easing)) }
+    val power = powerLevel.value
     LaunchedEffect(on) {
         if (managed && on && !ringLit && !offline) {
             dimSweep.snapTo(0f)
             delay(InteractionMotion.duration(170).toLong()); ringLit = true; haptic()
-            if (ValueAnimator.areAnimatorsEnabled()) { sweep.snapTo(0f); sweep.animateTo(1f, tween(580, easing = InteractionMotion.Easing)) }
+            if (ValueAnimator.areAnimatorsEnabled()) { sweep.snapTo(0f); sweep.animateTo(1f, tween(900, easing = InteractionMotion.Easing)) }
         } else if (managed && !on && ringLit && !offline) {
             ringLit = false
-            if (ValueAnimator.areAnimatorsEnabled()) { dimSweep.snapTo(1f); dimSweep.animateTo(0f, tween(520, easing = InteractionMotion.Easing)) }
+            if (ValueAnimator.areAnimatorsEnabled()) { dimSweep.snapTo(1f); dimSweep.animateTo(0f, tween(750, easing = InteractionMotion.Easing)) }
         } else { ringLit = on; sweep.snapTo(1f); dimSweep.snapTo(0f) }
     }
     val flowing = managed && on && !offline && (status.label.startsWith("准备") || status.label.startsWith("正在") || status.label.startsWith("安装"))
@@ -400,15 +413,35 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
         // A docked Agent leaves gently so its pin visibly retracts before the ring turns; a released drag is already moving.
         val departing = ring == ProviderDialRing.Agent && abs(from - from.roundToInt()) < 0.01f && end.toFloat() != from
         currentOnMoving(true)
+        // AGENT-DIAL-06: the destination Agent is selected as the ring starts turning, so the Agent a pin edit
+        // reaches is always the one heading for the gate, never the Agent the ring is leaving.
+        if (ring == ProviderDialRing.Agent) currentKinds.getOrNull(end)?.let(currentOnKind)
+        settleTarget = ring to end
         settleJob = scope.launch {
             animate(from, end.toFloat(), animationSpec = tween(InteractionMotion.duration(
                 InteractionMotion.Panel + min(240, (abs(end - from) * 90).roundToInt())),
                 easing = if (departing) Easing { if (it < 0.5f) 4 * it * it * it else 1 - (2 - 2 * it).pow(3) / 2 } else Easing { 1 - (1-it).pow(3) })) { value, _ ->
                 if (ring == ProviderDialRing.Agent) agentPosition = value else itemPosition.floatValue = value
             }
-            if (ring == ProviderDialRing.Agent) currentKinds.getOrNull(end)?.let(currentOnKind) else currentOnBrowse(end)
+            if (ring == ProviderDialRing.Profile) currentOnBrowse(end)
+            settleTarget = null
             currentOnMoving(false)
         }
+    }
+    /** A touch during a settle lands it at once instead of stranding the ring between two detents. */
+    fun finishSettle() {
+        val target = settleTarget
+        settleJob?.cancel(); settleTarget = null
+        if (target != null) {
+            if (target.first == ProviderDialRing.Agent) agentPosition = target.second.toFloat()
+            else { itemPosition.floatValue = target.second.toFloat(); currentOnBrowse(target.second) }
+        }
+        currentOnMoving(false)
+    }
+    val currentRecoil by rememberUpdatedState(recoil)
+    fun shakePin() {
+        if (!ValueAnimator.areAnimatorsEnabled()) return
+        scope.launch { currentRecoil.animateTo(-4f, tween(55)); currentRecoil.animateTo(3f, tween(55)); currentRecoil.animateTo(0f, tween(75)) }
     }
     BoxWithConstraints(modifier.clipToBounds().testTag("provider-dual-dial")) {
         val height = maxHeight.value
@@ -424,7 +457,7 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                 val x = down.position.x / px; val y = down.position.y / px
                 val inChannel = managed && gestureGeometry.inPinChannel(x, y)
                 val ring = gestureGeometry.ringAt(x, y) ?: ProviderDialRing.Agent.takeIf { inChannel } ?: return@awaitEachGesture
-                settleJob?.cancel(); currentOnMoving(false)
+                finishSettle()
                 val start = if (ring == ProviderDialRing.Agent) agentPosition.roundToInt().toFloat() else itemPosition.floatValue
                 val startKind = currentKind
                 val startEnabled = currentOn
@@ -433,6 +466,16 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                 velocity.addPosition(down.uptimeMillis, down.position)
                 var locked = false; var radial = false; var armed = false; var released = false
                 var vertical = false
+                // Only the Agent resting in the gate owns the pin; the ring must not be between detents.
+                val docked = abs(agentPosition - currentKinds.indexOf(startKind)) < 0.01f
+                fun releasePin() {
+                    // The released pin travels on from where the finger left it, back to rest or on to the Host hold.
+                    pinDrag?.let { from -> scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                        currentPin.snapTo(from)
+                        currentPin.animateTo(currentPinRest, tween(InteractionMotion.duration(InteractionMotion.Panel), easing = InteractionMotion.Easing))
+                    } }
+                    pinDrag = null; pinArmed = false; hint = null
+                }
                 try {
                     while (true) {
                         val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
@@ -443,7 +486,8 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                         if (!locked && if (managed) hypot(dx, dy) >= AgentDialPin.LOCK else abs(dy) > (if (ring == ProviderDialRing.Agent) 10f else 4f)) {
                             locked = true
                             val horizontal = managed && AgentDialPin.horizontal(dx, dy)
-                            radial = horizontal && inChannel && currentEdit
+                            radial = horizontal && inChannel && currentEdit && docked
+                            if (horizontal && inChannel && !radial) shakePin()
                             vertical = !horizontal && (ring == ProviderDialRing.Agent && currentKinds.isNotEmpty() || ring == ProviderDialRing.Profile && currentProviders.isNotEmpty())
                             if (vertical) { grabbed = ring; currentOnMoving(true) }
                             if (horizontal && inChannel) change.consume()
@@ -451,6 +495,8 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                         if (locked && inChannel && !vertical && !radial) { change.consume() }
                         if (radial) {
                             if (!currentEdit || currentKind != startKind || currentOn != startEnabled || currentPending != startPending) { radial = false; armed = false; pinArmed = false; pinDrag = null; hint = null; break }
+                            // Leaving the groove abandons the edit: a diagonal swipe can never switch an Agent.
+                            if (abs(dy) > AgentDialPin.ESCAPE) { releasePin(); radial = false; armed = false; change.consume(); continue }
                             val effective = startPending?.target ?: startEnabled
                             val value = AgentDialPin.drag(effective, dx, gestureGeometry.pinTravel)
                             pinDrag = value
@@ -476,19 +522,13 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                     }
                 } finally {
                     if (vertical) { grabbed = null; currentOnMoving(false) }
-                    if (radial) {
-                        // The released pin travels on from where the finger left it, back to rest or on to the Host hold.
-                        pinDrag?.let { from -> scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                            currentPin.snapTo(from)
-                            currentPin.animateTo(currentPinRest, tween(InteractionMotion.duration(InteractionMotion.Panel), easing = InteractionMotion.Easing))
-                        } }
-                        pinDrag = null; pinArmed = false; hint = null
-                    }
+                    if (radial) releasePin()
                 }
                 if (radial && released && armed && currentEdit && currentKind == startKind && currentOn == startEnabled && currentPending == startPending)
-                    toggle(!(startPending?.target ?: startEnabled))
-                if (vertical && released) {
-                    if (ring == ProviderDialRing.Agent) settle(ring, agentPosition.roundToInt())
+                    toggle(startKind, !(startPending?.target ?: startEnabled))
+                // An interrupted drag still lands on a detent; only a real release carries fling velocity.
+                if (vertical) {
+                    if (ring == ProviderDialRing.Agent || !released) settle(ring, (if (ring == ProviderDialRing.Agent) agentPosition else itemPosition.floatValue).roundToInt())
                     else settle(ring, (itemPosition.floatValue - velocity.calculateVelocity().y / px / gestureGeometry.profilePitch * 0.14f).roundToInt())
                 }
             }
@@ -497,7 +537,7 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                 .offset(x = (g.cx - radius).dp, y = (g.cy - radius).dp).requiredSize((radius * 2).dp)
             // These are the independent physical rings of the component, each with one frame.
             CompositionLocalProvider(LocalOrbisSurface provides null) {
-                NeumorphSurface(Modifier.disc(g.radius), CircleShape, style = if (managed && !ringLit) NeumorphStyle.Pressed else NeumorphStyle.Raised, shadowScale = 0.4f + power * 0.6f) {}
+                NeumorphSurface(Modifier.disc(g.radius), CircleShape, style = if (managed && !ringLit) NeumorphStyle.Pressed else NeumorphStyle.Raised, shadowScale = if (ringLit) 1f else 0.4f) {}
                 if (managed && !offline && sweep.value in 0f..1f && sweep.value < 1f) {
                     Canvas(Modifier.fillMaxSize()) {
                         val radius = (g.radius - 12) * px
@@ -553,14 +593,6 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                 }
                 val pinColor = when (status.tone) { "success" -> palette.success; "warning" -> palette.warning; "error" -> palette.danger; else -> accent }
                 val pointer = Offset((g.cx + g.radius + 8) * px, g.cy * px)
-                if (managed && !offline && power in 0.01f..0.99f) {
-                    val radius = (g.radius - 12) * px
-                    val start = Offset(g.cx * px - radius, g.cy * px - radius)
-                    val size = androidx.compose.ui.geometry.Size(2 * radius, 2 * radius)
-                    val tint = accent.copy(alpha = sin(power * PI.toFloat()) * 0.7f)
-                    drawArc(tint, 0f, power * 110, false, start, size, style = Stroke(2.dp.toPx()))
-                    drawArc(tint, -power * 110, power * 110, false, start, size, style = Stroke(2.dp.toPx()))
-                }
                 val hollow = managed && (offline || !ringLit || status.tone == "neutral")
                 if (hollow) drawCircle(if (offline || !on) palette.faint else pinColor, 3.5.dp.toPx(), pointer, style = Stroke(1.dp.toPx()))
                 else drawCircle(pinColor, 3.dp.toPx() * pointerPop.value, pointer)
@@ -701,7 +733,7 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                         val target = if (managed && ring == ProviderDialRing.Agent && canEdit) when (event.key) {
                             Key.DirectionLeft -> false; Key.DirectionRight -> true; Key.Spacebar -> !(pending?.target ?: on); else -> null
                         } else null
-                        if (target != null) { onToggle(target); return@onPreviewKeyEvent true }
+                        if (target != null) { onToggle(kind, target); return@onPreviewKeyEvent true }
                         val next = when (event.key) {
                             Key.DirectionUp -> position.roundToInt() - 1
                             Key.DirectionDown -> position.roundToInt() + 1
@@ -731,7 +763,7 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                     .testTag("agent-enablement-$kind").orbisKeyboardFocus().onPreviewKeyEvent { event ->
                         if (event.type != KeyEventType.KeyDown || !canEdit) false else {
                             val targetEnabled = when (event.key) { Key.DirectionRight -> true; Key.DirectionLeft -> false; Key.Spacebar, Key.Enter -> !(pending?.target ?: on); else -> null }
-                            targetEnabled?.let(onToggle); targetEnabled != null
+                            targetEnabled?.let { onToggle(kind, it) }; targetEnabled != null
                         }
                     }.focusable(enabled = active && canEdit).pointerInput(hostId, kind, active) {
                         if (active) detectTapGestures(onTap = { currentNudge() })
@@ -742,8 +774,8 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                         else {
                             val targetEnabled = !(pending?.target ?: on)
                             val action = L10n.tr(if (targetEnabled) "启用" else "停用")
-                            customActions = listOf(CustomAccessibilityAction(action) { onToggle(targetEnabled); true })
-                            onClick(action) { onToggle(targetEnabled); true }
+                            customActions = listOf(CustomAccessibilityAction(action) { onToggle(kind, targetEnabled); true })
+                            onClick(action) { onToggle(kind, targetEnabled); true }
                         }
                     })
             }

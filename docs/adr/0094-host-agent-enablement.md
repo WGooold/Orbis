@@ -184,3 +184,19 @@ iOS 自动验证：[Swift 几何回归 9 项通过](../../.artifacts/agent-dial-
 实现：Android [`ProviderDialScreen.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialScreen.kt)（`Controls`、`ProviderQuotaError`）；iOS [`StatusViews.swift`](../../ios/Orbis/Orbis/StatusViews.swift)（`providerControls`）。回归：Android [`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `actionHoldsItsPlaceAcrossAgentsWithDifferentFacts`（配额、运行会话、未启用留空与目录错误四种 Agent 间主操作位置一致，首条提示在主操作下方且在可见区内）；iOS 沿用 `testProviderCatalogProblemAndQuotaErrorNeverOverlapDialOrQuotaCells`、`testProviderQuotaShowsBothWindowsAndRefreshIsIndependent`。
 
 自动验证（2026-11-24，基于 `175a9eb6` 的工作区）：Android [单元回归 9 项通过](../../.artifacts/agent-dial-05-20261124/apks/build.log)；共享模拟器上 [`ProviderDialInstrumentedTest` 11 项中 9 项通过](../../.artifacts/agent-dial-05-20261124/instrumentation/instrumentation.log)，含新增用例，另 2 项为 AGENT-DIAL-04 已核对的既有失败。iOS 测试构建成功，[2 项界面用例通过](../../.artifacts/agent-dial-05-20261124/ios-ui-tests/command.log)，截图确认配额错误与目录错误位于主操作下方首行且在可见区内。未部署，界面切换手感待用户安装验收。
+
+## AGENT-DIAL-06｜轮盘插销只改动槽口里的 Agent（2026-11-24）
+
+- **问题**：Android 停用任意 Agent 时实际停用的是首个 Agent（Codex CLI）；插销常拖不动、偶发误触发。
+- **根因**：插销手势通过 `rememberUpdatedState` 持有页面传入的切换回调，而回调是局部函数引用 `::toggle`。Kotlin 函数引用的相等性不比较捕获值，状态更新被结构相等策略忽略，手势始终调用首次组合的回调，其中的 Agent 固定为初始默认的 Codex CLI。点按提示 `::nudgePin` 同理。键盘与无障碍路径直接调用参数，不受影响。
+- **修复**：转盘回调显式传入要修改的 Agent，页面以每次组合的 lambda 读取当时的启用目录；点按提示改为 lambda。点按切换时立即选中目标 Agent；动画中途按下会直接落定，不再停在两个刻度之间；只有正对槽口的 Agent 可拨插销；竖向位移超过 `AgentDialPin.ESCAPE`（36dp）即放弃本次拨动，斜划不会切换；被打断的拖动仍会归位；插销被锁定时轻微抖动示意。iOS 同步离开凹槽即放弃（`ProviderDialGeometry.pinEscape`），其点按切换本就立即选中目标。
+
+## AGENT-DIAL-07｜启停特效只随同一 Agent 的状态变化播放（2026-11-24）
+
+- **问题**：每次把轮盘转到状态不同的 Agent 都会播放启用／停用特效，动画过快且播放时卡顿。
+- **根因**：Android 外圈通电程度未按 Agent 区分，切换到状态不同的 Agent 会播放 240ms 光弧，外盘阴影强度逐帧变化导致每帧重建模糊阴影；iOS 特效按启用状态触发而未区分 Agent，切换时也会播放并震动。
+- **修复**：通电程度按 Agent 区分，切换 Agent 直接显示目标状态；只有同一 Agent 的启用状态变化才播放特效。点亮光弧 900ms、熄灭 750ms、外圈过渡 600ms（iOS 500ms）；去掉重复的快速光弧，外盘阴影只在两档之间切换。
+
+实现：Android [`ProviderDialScreen.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialScreen.kt)、[`ProviderDialGeometry.kt`](../../android/app/src/main/java/com/orbising/orbis/ProviderDialGeometry.kt)；iOS [`StatusViews.swift`](../../ios/Orbis/Orbis/StatusViews.swift)、[`ProviderDialGeometry.swift`](../../ios/Orbis/Orbis/ProviderDialGeometry.swift)。回归：[`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `pinDuringAgentSettleDisablesTheTappedAgentNotTheFirst`、`swipeLeavingTheGrooveNeverSwitchesAnAgent`。
+
+自动验证（2026-11-24，基于 `24ef5b50` 的工作区）：两项新用例在修改前的[对照运行](../../.artifacts/agent-dial-06-20261124/baseline-instrumentation/instrumentation.log)中均失败，复现停用首个 Agent 与斜划误切换；修复后[`ProviderDialInstrumentedTest` 13 项中 11 项通过](../../.artifacts/agent-dial-06-20261124/fixed-instrumentation/instrumentation.log)，其余 2 项为 AGENT-DIAL-04 已核对的既有失败；Android 单元回归 15 项通过；iOS 无签名模拟器构建成功。特效时长与流畅度未做自动度量，待用户安装验收。
