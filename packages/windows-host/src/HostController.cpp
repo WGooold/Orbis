@@ -188,6 +188,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         m_claudeLatestVersion.clear(); m_claudeLatestError.clear();
         m_claudeLatestChecking = false; m_claudeUpdateAvailable = false;
         if (agentInstalling()) m_agentInstallStage = "error";
+        clearDownload();
         if (m_shutdown) return;
         m_state = "error";
         setMessage(QString("Host 核心已退出（%1）").arg(code));
@@ -388,7 +389,7 @@ void HostController::receiveLine(const QJsonObject &line) {
             if (method.startsWith("agent.enablement.write")) failAgentChoice();
             else if (method == "agent.enablement.read") m_agentReadPending = false;
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
-            if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; detectAgents(); }
+            if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; clearDownload(); detectAgents(); }
             if (method == "selectAgentEntry") emit agentEntryFinished(params.value("kind").toString(), line.value("error").toString());
             else setMessage(line.value("error").toString());
             if (method == "start" && line.value("error").toString().startsWith("Relay 认证失败：unauthorized ")) invalidateActivation();
@@ -412,17 +413,19 @@ void HostController::receiveLine(const QJsonObject &line) {
         else if (event == "log") { appendLog(line.value("message").toString()); return; }
         else if (event == "providersChanged" && line.value("kind").toString() == m_providerKind) loadProviders(m_providerKind);
         else if (event == "agentInstall") {
-            m_agentInstallKind = line.value("kind").toString();
-            m_agentInstallStage = line.value("stage").toString();
+            const auto kind = line.value("kind").toString();
+            const auto stage = line.value("stage").toString();
+            if (m_agentInstallStage == "cancelling" && stage == "downloading") return;
+            const bool continuingDownload = kind == m_agentInstallKind && m_agentInstallStage == "downloading" && m_downloadReceived >= 0;
+            m_agentInstallKind = kind;
+            m_agentInstallStage = stage;
             if (line.contains("version")) m_agentInstallVersion = line.value("version").toString();
-            // 下载进度（同一次安装里由多个事件陆续上报）：终态时收起来。
-            const auto download = line.value("download").toObject();
-            if (m_agentInstallStage == "downloading" && !download.isEmpty()) {
-                const auto label = m_agentInstallKind == "pi" ? "Pi" : m_agentInstallKind == "dsh" ? "DeepSeek Harness" : "Codex";
-                setDownload(label, qint64(download.value("receivedBytes").toDouble()), qint64(download.value("totalBytes").toDouble()));
-            } else if (m_agentInstallStage != "downloading") {
-                clearDownload();
-            }
+            if (stage == "downloading") {
+                const auto download = line.value("download").toObject();
+                const auto label = kind == "pi" ? "Pi" : kind == "dsh" ? "DeepSeek Harness" : kind == "claude" ? "Claude Code" : "Codex";
+                if (!download.isEmpty()) setDownload(label, qint64(download.value("receivedBytes").toDouble()), qint64(download.value("totalBytes").toDouble()));
+                else if (!continuingDownload) setDownload(label, 0, 0);
+            } else clearDownload();
         }
         else if (event == "agentInstalled") {
             const auto kind = line.value("kind").toString();
@@ -1051,7 +1054,7 @@ void HostController::updateAgent(const QString &kind) {
         const auto result = value.toObject();
         if (kind != "claude") { m_settings.setValue(kind + "Entry", result.value("entry").toString()); m_settings.sync(); }
         const auto warning = result.value("restartWarning").toString();
-        m_agentInstallStage = warning.isEmpty() ? "done" : "restartFailed"; m_agentInstallVersion = result.value("version").toString();
+        m_agentInstallStage = warning.isEmpty() ? "done" : "restartFailed"; clearDownload(); m_agentInstallVersion = result.value("version").toString();
         setMessage(kind == "claude" ? "Claude Code 已更新到最新版本 " + result.value("version").toString() + "。请重新打开 Claude Code 会话。" : warning.isEmpty() ? kind + " " + result.value("version").toString() + " 已更新到最新版本" +
             (result.value("restarted").toBool() ? "，后台已自动重启。请从 Host 重新打开网页。" : "") : warning); detectAgents();
     });
@@ -1059,7 +1062,7 @@ void HostController::updateAgent(const QString &kind) {
 }
 void HostController::cancelInstall() {
     if (!agentInstalling() || m_agentInstallStage == "cancelling" || m_agentInstallStage == "restarting") return;
-    m_agentInstallStage = "cancelling"; emit changed();
+    m_agentInstallStage = "cancelling"; clearDownload(); emit changed();
     command("cancelInstall");
 }
 void HostController::installAllAgents(const QString &action) {
@@ -1073,6 +1076,7 @@ void HostController::installAllAgents(const QString &action) {
         QStringList details; for (const auto &failure : failures) details.append(failure.toString());
         for (const auto &warning : warnings) details.append(warning.toString());
         m_agentInstallStage = result.value("cancelled").toBool() ? "cancelled" : !failures.isEmpty() ? "error" : !warnings.isEmpty() ? "restartFailed" : "done";
+        clearDownload();
         setMessage(QString("%1：成功 %2 项，失败 %3 项%4").arg(m_agentInstallStage == "cancelled" ? "批量操作已取消" : "批量操作完成").arg(result.value("succeeded").toInt()).arg(failures.size()).arg(details.isEmpty() ? "" : "\n" + details.join('\n')));
         detectAgents();
     });
@@ -1493,14 +1497,29 @@ void HostController::confirmHostUpdate() {
     const auto checksumUrl = m_updateChecksumUrl;
     const auto installerUrl = m_updateInstallerUrl;
     const auto updateVersion = m_updateVersion;
+    m_hostUpdateReceived = 0; m_hostUpdateTotal = 0;
     setMessage("正在下载 Host 更新 " + m_updateVersion + "…");
     QNetworkRequest installerRequest{QUrl(m_updateInstallerUrl)};
     installerRequest.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION);
     installerRequest.setTransferTimeout(120000);
     auto *installerReply = m_network.get(installerRequest);
     m_updateReplies = {installerReply};
+    // The update body stays buffered until verification. readyRead also exposes
+    // the first chunk when Qt's throttled downloadProgress has not fired yet.
+    connect(installerReply, &QNetworkReply::readyRead, this, [this, installerReply, generation] {
+        if (generation != m_updateGeneration || m_hostUpdateReceived < 0) return;
+        const auto status = installerReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status < 200 || status >= 300) return;
+        const auto received = installerReply->bytesAvailable();
+        const auto length = installerReply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
+        const auto total = length > 0 && length >= received ? length : 0;
+        if (m_hostUpdateReceived == received && m_hostUpdateTotal == total) return;
+        m_hostUpdateReceived = received; m_hostUpdateTotal = total;
+        emit changed();
+    });
     connect(installerReply, &QNetworkReply::finished, this, [this, installerReply, generation, checksumUrl, installerUrl, updateVersion] {
         if (generation != m_updateGeneration) { installerReply->deleteLater(); return; }
+        m_hostUpdateReceived = -1; m_hostUpdateTotal = 0;
         const auto installer = installerReply->readAll();
         const auto error = installerReply->error();
         const auto errorText = installerReply->errorString();
@@ -1510,6 +1529,7 @@ void HostController::confirmHostUpdate() {
             m_updating = false;
             setMessage("Host 更新下载失败：" + (errorText.isEmpty() ? QString("HTTP %1").arg(status) : errorText)); return;
         }
+        setMessage("正在校验 Host 更新 " + updateVersion + "…");
         QNetworkRequest checksumRequest{QUrl(checksumUrl)};
         checksumRequest.setRawHeader("User-Agent", "OrbisHost/" ORBIS_VERSION);
         checksumRequest.setTransferTimeout(15000);
@@ -1572,6 +1592,7 @@ void HostController::cancelExit() { if (!m_exiting) emit exitCancelled(); }
 void HostController::confirmExit() {
     if (m_exiting) return;
     ++m_updateGeneration; m_updating = false;
+    m_hostUpdateReceived = -1; m_hostUpdateTotal = 0;
     for (const auto &reply : m_updateReplies) if (reply) reply->abort();
     m_updateReplies.clear();
     beginExit();

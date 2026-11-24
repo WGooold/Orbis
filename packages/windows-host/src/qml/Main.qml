@@ -745,15 +745,16 @@ ApplicationWindow {
         var mb = value / 1048576
         return mb >= 100 ? Math.round(mb) + " MB" : mb.toFixed(1) + " MB"
     }
-    /** 下载已用秒数：npm 不给在途字节，单个大包期间百分比不动，靠它证明“还在下”。 */
-    property int downloadSeconds: 0
-    Timer { interval: 1000; repeat: true; running: host.downloadReceived >= 0 || window.codexTerminalPreparing; onTriggered: window.downloadSeconds = host.downloadReceived >= 0 || window.codexTerminalPreparing ? window.downloadSeconds + 1 : 0 }
-    Connections { target: host; function onChanged() { if (host.downloadReceived < 0 && !window.codexTerminalPreparing) window.downloadSeconds = 0 } }
     /** 下载进度条：知道总大小就给百分比，不知道就只报已下字节 + 一段来回走的色块。 */
     component DownloadBar: ColumnLayout {
+        id: downloadBar
         property string label: ""
         property real received: 0
         property real total: 0
+        property int elapsedSeconds: 0
+        onVisibleChanged: if (!visible) elapsedSeconds = 0
+        onLabelChanged: elapsedSeconds = 0
+        Timer { interval: 1000; repeat: true; running: downloadBar.visible; onTriggered: downloadBar.elapsedSeconds++ }
         readonly property real ratio: total > 0 ? Math.max(0, Math.min(1, received / total)) : 0
         spacing: 6
         RowLayout {
@@ -762,10 +763,10 @@ ApplicationWindow {
             Label {
                 text: total > 0
                     ? window.formatBytes(received) + " / " + window.formatBytes(total) + "（" + Math.floor(ratio * 100) + "%）"
-                    : "已下载 " + window.formatBytes(received)
+                    : received > 0 ? "已下载 " + window.formatBytes(received) : ""
                 color: Theme.inkMuted; font.pixelSize: Theme.caption
             }
-            Label { text: "已用 " + window.downloadSeconds + " 秒"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
+            Label { text: "已用 " + elapsedSeconds + " 秒"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
         }
         Rectangle {
             id: track
@@ -1318,6 +1319,21 @@ ApplicationWindow {
                     SoftToolButton { symbol: "close"; onClicked: window.updateNoticeDismissed = true; implicitWidth: Theme.touchTarget; implicitHeight: Theme.touchTarget; Accessible.name: "关闭更新提示" }
                 }
             }
+            // HOST-DOWNLOAD-01: active downloads stay visible when navigating away from their entry point.
+            DownloadBar {
+                objectName: "agentDownloadProgress"
+                visible: host.downloadReceived >= 0
+                label: host.downloadLabel + " 下载"
+                received: host.downloadReceived; total: host.downloadTotal
+                Layout.fillWidth: true; Layout.leftMargin: 40; Layout.rightMargin: 40; Layout.bottomMargin: 14
+            }
+            DownloadBar {
+                objectName: "hostUpdateDownloadProgress"
+                visible: host.hostUpdateReceived >= 0
+                label: "Host 更新"
+                received: host.hostUpdateReceived; total: host.hostUpdateTotal
+                Layout.fillWidth: true; Layout.leftMargin: 40; Layout.rightMargin: 40; Layout.bottomMargin: 14
+            }
             ScrollView {
                 id: scroll; objectName: "pageScroll"
                 Layout.fillWidth: true; Layout.fillHeight: true
@@ -1685,10 +1701,9 @@ ApplicationWindow {
                                         }
                                     }
                                 }
-                                DownloadBar { visible: host.downloadReceived >= 0 && host.agentInstalling; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true; Layout.leftMargin: 36; Layout.topMargin: 6 }
                                 // 终端接入的配套包不在启动关键路径上：手机已经能连，这里只显示它还差多少。
                                 DownloadBar {
-                                    visible: window.agentEnabled("codex") && window.codexTerminalPreparing && window.codexTerminalState.receivedBytes > 0
+                                    visible: window.agentEnabled("codex") && window.codexTerminalPreparing && window.codexTerminalState.receivedBytes !== undefined
                                     label: "Codex 终端接入"
                                     received: window.codexTerminalState.receivedBytes || 0
                                     total: window.codexTerminalState.totalBytes || 0
@@ -2199,7 +2214,6 @@ ApplicationWindow {
                                             Hint { text: window.installationStage(); Layout.fillWidth: true }
                                             ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
                                         }
-                                        DownloadBar { visible: host.downloadReceived >= 0 && host.agentInstallKind === window.detailKind; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
                                         ColumnLayout {
                                             visible: !!window.detailProviderGroup; Layout.fillWidth: true; spacing: 8
                                             RowLayout {
@@ -2905,7 +2919,6 @@ ApplicationWindow {
                             ActionButton { objectName: "applySettings"; text: settingsPane.reconnects ? "应用并重新连接" : "应用设置"; primary: true; enabled: host.bridgeReady && !host.busy; onClicked: host.saveSettings(relayField.text, host.autoStart, host.codexEnabled, nameField.text, host.dshEnabled, host.dshWebUrl, host.piIntegrationEnabled, host.claudeIntegrationEnabled, host.kimiDesktopSupported ? host.kimiCodeSource : "") }
                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline; Layout.topMargin: 10 }
                             RowLayout { spacing: 10; ActionButton { text: "检查更新"; onClicked: host.checkUpdates() } ActionButton { text: "更新 Host"; visible: host.message.indexOf("点击“更新 Host”") >= 0; onClicked: host.updateHost() } ActionButton { text: "打开下载页"; onClicked: host.openDownloads() } Hint { text: "v" + host.version } }
-                            DownloadBar { visible: host.downloadReceived >= 0; label: host.downloadLabel || "Host 更新"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
                         }
                     }
 
@@ -3210,7 +3223,6 @@ ApplicationWindow {
                     Layout.fillWidth: true
                 }
             }
-            DownloadBar { visible: host.downloadReceived >= 0; label: window.agentName(host.agentInstallKind) + " 下载"; received: host.downloadReceived; total: host.downloadTotal; Layout.fillWidth: true }
             Hint { visible: host.desiredRunning && host.runtimeCount > 0; text: "手机上 " + host.runtimeCount + " 个会话会暂时断开"; Layout.fillWidth: true; color: Theme.warning }
         }
         onAccepted: host.installAllAgents("update")

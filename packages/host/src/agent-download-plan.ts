@@ -30,7 +30,7 @@ export type AgentDownloadPackage = {
 
 export type AgentDownloadPlan = {
   packages: AgentDownloadPackage[];
-  /** 所有已知大小之和；一个都问不到时为 0。 */
+  /** 兼容包大小之和；总量不完整时为 0，不显示百分比。 */
   totalBytes: number;
 };
 
@@ -41,16 +41,23 @@ export type AgentDownloadProgress = {
   totalPackages: number;
 };
 
-type LockEntry = { resolved?: unknown; version?: unknown; name?: unknown };
+type LockEntry = { resolved?: unknown; version?: unknown; os?: unknown; cpu?: unknown };
+
+function matchesNpmTarget(values: unknown, current: string): boolean {
+  if (!Array.isArray(values)) return true;
+  const allowed = values.filter((value): value is string => typeof value === "string" && !value.startsWith("!"));
+  return !values.includes(`!${current}`) && (allowed.length === 0 || allowed.includes("any") || allowed.includes(current));
+}
 
 /** 从 npm 的 lockfile 里取出要下载的 tarball 列表（v3 的 `packages`，兼容 v2 的 `dependencies`）。 */
-export function parseLockTarballs(text: string): { name: string; version: string; url: string }[] {
+export function parseLockTarballs(text: string, target = { os: process.env.npm_config_os || process.platform, cpu: process.env.npm_config_cpu || process.arch }): { name: string; version: string; url: string }[] {
   let lock: unknown;
   try { lock = JSON.parse(text); } catch { return []; }
   if (lock === null || typeof lock !== "object") return [];
   const found: { name: string; version: string; url: string }[] = [];
   const seen = new Set<string>();
   const push = (name: unknown, entry: LockEntry, pathKey: string): void => {
+    if (!entry || !matchesNpmTarget(entry.os, target.os) || !matchesNpmTarget(entry.cpu, target.cpu)) return;
     const url = entry.resolved;
     if (typeof url !== "string" || !url.startsWith("http")) return;
     if (seen.has(url)) return;
@@ -66,6 +73,8 @@ export function parseLockTarballs(text: string): { name: string; version: string
       push(undefined, entry, pathKey);
     }
   }
+  // v2 can carry both sections; its legacy section lacks platform constraints.
+  if (packages !== null && typeof packages === "object") return found;
   const dependencies = (lock as { dependencies?: unknown }).dependencies;
   if (dependencies !== null && typeof dependencies === "object") {
     for (const [name, entry] of Object.entries(dependencies as Record<string, LockEntry>)) push(name, entry, name);
@@ -88,12 +97,12 @@ async function probeSize(url: string, timeoutMs: number): Promise<number | undef
       const usable = response.ok || response.status === 206;
       const range = usable ? response.headers.get("content-range") : undefined;
       const total = range?.match(/\/(\d+)\s*$/u)?.[1];
-      const length = total ?? (usable ? response.headers.get("content-length") ?? undefined : undefined);
+      const length = total ?? (usable && response.status !== 206 ? response.headers.get("content-length") ?? undefined : undefined);
       // 只问大小：不把 tarball 读进内存。
       await response.body?.cancel().catch(() => undefined);
       if (length === undefined) return undefined;
       const size = Number(length);
-      return Number.isFinite(size) ? size : undefined;
+      return Number.isSafeInteger(size) && size > 0 ? size : undefined;
     } catch { return undefined; }
     finally { clearTimeout(timer); }
   };
@@ -134,7 +143,7 @@ export async function planAgentDownload(options: AgentDownloadPlanOptions): Prom
   try {
     signal.throwIfAborted();
     await run(npm.command, [
-      ...npm.args, "install", "--package-lock-only", "--no-audit", "--no-fund",
+      ...npm.args, "install", "--package-lock-only", "--include=optional", "--no-audit", "--no-fund",
       "--prefix", planDir, "--", spec,
     ], { signal, timeout: options.timeoutMs ?? 180_000, cwd: planDir });
     const lock = await readFile(join(planDir, "package-lock.json"), "utf8");
@@ -142,10 +151,10 @@ export async function planAgentDownload(options: AgentDownloadPlanOptions): Prom
     if (tarballs.length === 0) return undefined;
     signal.throwIfAborted();
     const probe = options.probe ?? ((url: string) => probeSize(url, options.probeTimeoutMs ?? 8_000));
-    // 单个 tarball 问不到大小不该拖累整份计划：包数仍然有用，少一个体积只是少一点精度。
     const sizes = await mapLimited(tarballs, 8, async entry => await probe(entry.url).catch(() => undefined));
     const packages = tarballs.map((entry, index) => ({ ...entry, ...(sizes[index] === undefined ? {} : { size: sizes[index]! }) }));
-    return { packages, totalBytes: packages.reduce((sum, entry) => sum + (entry.size ?? 0), 0) };
+    const totalBytes = sizes.every(size => size !== undefined) ? sizes.reduce<number>((sum, size) => sum + (size ?? 0), 0) : 0;
+    return { packages, totalBytes };
   } catch {
     // 计划失败只是没有进度数字：安装照旧走 npm 自己的路。
     return undefined;
@@ -153,7 +162,7 @@ export async function planAgentDownload(options: AgentDownloadPlanOptions): Prom
 }
 
 /** npm 的 http 日志行：`npm http fetch GET 200 <url> 1234ms (cache miss)`。 */
-const FETCH_LINE = /\bGET\s+\d{3}\s+(\S+)/u;
+const FETCH_LINE = /\bGET\s+2\d{2}\s+(\S+)/u;
 
 /**
  * 按 npm 的 fetch 日志累加完成量。返回 undefined 表示这一行与已知 tarball 无关。
@@ -185,7 +194,7 @@ export function createAgentDownloadMeter(totalBytes: number, totalPackages: numb
   let highestBytes = 0;
   let highestPackages = 0;
   return (completedBytes, inflightBytes, donePackages) => {
-    const receivedBytes = Math.max(0, Math.min(totalBytes, Math.round(completedBytes + inflightBytes)));
+    const receivedBytes = Math.max(0, Math.min(totalBytes || Infinity, Math.round(completedBytes + inflightBytes)));
     if (receivedBytes <= highestBytes && donePackages <= highestPackages) return undefined;
     highestBytes = Math.max(highestBytes, receivedBytes);
     highestPackages = Math.max(highestPackages, donePackages);

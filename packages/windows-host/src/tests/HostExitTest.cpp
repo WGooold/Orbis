@@ -147,6 +147,36 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!host.m_updating, 5000);
         QVERIFY(!host.exiting()); QVERIFY(!host.exitApproved()); QCOMPARE(host.m_exitWorker.state(), QProcess::NotRunning);
         QVERIFY(host.message().contains("下载失败"));
+        QCOMPARE(host.hostUpdateReceived(), -1);
+    }
+    void installerProgress_data() {
+        QTest::addColumn<bool>("knownSize");
+        QTest::newRow("content-length") << true;
+        QTest::newRow("unknown-size") << false;
+    }
+    // HOST-DOWNLOAD-01: a slow installer publishes real bytes before EOF, even without Content-Length.
+    void installerProgress() {
+        QFETCH(bool, knownSize);
+        QTemporaryDir root; QTcpServer server; QVERIFY(server.listen(QHostAddress::LocalHost));
+        connect(&server, &QTcpServer::newConnection, &server, [&] {
+            auto *socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [socket, knownSize] {
+                socket->readAll();
+                socket->write(knownSize ? "HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n" : "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+                socket->write(QByteArray(50000, 'x'));
+            });
+        });
+        HostController host(root.path(), root.path(), root.path(), root.path(), false);
+        host.m_shutdown = true;
+        host.m_updateVersion = "99.0.0";
+        host.m_updateInstallerUrl = QString("http://127.0.0.1:%1/update").arg(server.serverPort());
+        host.m_updateChecksumUrl = host.m_updateInstallerUrl;
+        host.confirmHostUpdate();
+        QCOMPARE(host.hostUpdateReceived(), 0);
+        QTRY_COMPARE_WITH_TIMEOUT(host.hostUpdateReceived(), 50000, 5000);
+        QCOMPARE(host.hostUpdateTotal(), knownSize ? 100000 : 0);
+        ++host.m_updateGeneration;
+        host.m_updateReplies.front()->abort();
     }
     void verifiedUpdate_data() {
         QTest::addColumn<bool>("valid"); QTest::newRow("checksum-mismatch") << false; QTest::newRow("verified-install") << true;

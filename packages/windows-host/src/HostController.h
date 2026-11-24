@@ -25,7 +25,9 @@ class HostController : public QObject {
     /** 正在进行的下载：已收字节 / 总字节（-1 表示当前没有下载；总字节未知时为 0）。 */
     Q_PROPERTY(qint64 downloadReceived READ downloadReceived NOTIFY changed)
     Q_PROPERTY(qint64 downloadTotal READ downloadTotal NOTIFY changed)
-    /** 这个进度是在下什么（Host 更新包 / Agent 包）。 */
+    Q_PROPERTY(qint64 hostUpdateReceived READ hostUpdateReceived NOTIFY changed)
+    Q_PROPERTY(qint64 hostUpdateTotal READ hostUpdateTotal NOTIFY changed)
+    /** Agent 下载名称。 */
     Q_PROPERTY(QString downloadLabel READ downloadLabel NOTIFY changed)
     Q_PROPERTY(QString email READ email NOTIFY changed)
     Q_PROPERTY(QString hostName READ hostName NOTIFY changed)
@@ -128,6 +130,8 @@ public:
     QString message() const { return m_message; }
     qint64 downloadReceived() const { return m_downloadReceived; }
     qint64 downloadTotal() const { return m_downloadTotal; }
+    qint64 hostUpdateReceived() const { return m_hostUpdateReceived; }
+    qint64 hostUpdateTotal() const { return m_hostUpdateTotal; }
     QString downloadLabel() const { return m_downloadLabel; }
     QString email() const { return m_email; }
     QString hostName() const { return m_hostName; }
@@ -441,6 +445,7 @@ private:
     QString m_piDefaultProvider;
     int m_nextId = 1, m_busy = 0, m_cooldown = 0, m_runtimeCount = 0, m_crashes = 0;
     qint64 m_downloadReceived = -1, m_downloadTotal = 0;
+    qint64 m_hostUpdateReceived = -1, m_hostUpdateTotal = 0;
     QString m_downloadLabel;
     int m_policyTicks = 0;
     qint64 m_pairExpires = 0;

@@ -31,6 +31,34 @@ describe("agent download plan", () => {
     expect(entries[1]?.name).toBe("@openai/codex-win32-x64");
   });
 
+  // HOST-DOWNLOAD-01: npm locks every Codex platform alias, but only the current target belongs in the denominator.
+  it("filters platform-specific lock entries before probing and does not re-add v2 legacy entries", async () => {
+    const packages = {
+      "node_modules/codex": { resolved: "https://r/cli.tgz" },
+      "node_modules/mac-arm": { os: ["darwin"], cpu: ["arm64"], resolved: "https://r/mac-arm.tgz" },
+      "node_modules/mac-x64": { os: ["darwin"], cpu: ["x64"], resolved: "https://r/mac-x64.tgz" },
+      "node_modules/other": { os: ["darwin", "!darwin"], resolved: "https://r/other.tgz" },
+      "node_modules/win": { os: ["win32"], cpu: ["x64"], resolved: "https://r/win.tgz" },
+    };
+    const target = { os: "darwin", cpu: "arm64" };
+    const parsed = JSON.parse(lock(packages));
+    expect(parseLockTarballs(JSON.stringify({ ...parsed, lockfileVersion: 2, dependencies: { win: { resolved: "https://r/win.tgz" } } }), target).map(entry => entry.name))
+      .toEqual(["codex", "mac-arm"]);
+    const planDir = await mkdtemp(join(tmpdir(), "orbis-plan-platform-"));
+    try {
+      await writeFile(join(planDir, "package-lock.json"), lock({
+        ...packages,
+        "node_modules/current": { os: [process.env.npm_config_os || process.platform], cpu: [process.env.npm_config_cpu || process.arch], resolved: "https://r/current.tgz" },
+        "node_modules/foreign": { os: ["not-a-real-platform"], resolved: "https://r/foreign.tgz" },
+      }));
+      const probe = vi.fn(async () => 100);
+      const plan = await planAgentDownload({ run: async () => ({ stdout: "", stderr: "" }), npm: { command: "node", args: [] }, spec: "codex", planDir, signal: new AbortController().signal, probe });
+      expect(probe).toHaveBeenCalledWith("https://r/current.tgz");
+      expect(probe).not.toHaveBeenCalledWith("https://r/foreign.tgz");
+      expect(plan?.totalBytes).toBe((plan?.packages.length ?? 0) * 100);
+    } finally { await rm(planDir, { recursive: true, force: true }); }
+  });
+
   it("counts a completed tarball once and ignores everything else npm logs", () => {
     const plan: AgentDownloadPlan = {
       totalBytes: 300,
@@ -100,10 +128,10 @@ describe("agent download plan", () => {
       spec: "a@1.0.0",
       planDir,
       signal: new AbortController().signal,
-      // a 问得到、b 问不到：整体仍然是可用计划，只是总字节偏小。
+      // a 问得到、b 问不到：保留已知包大小，但不给不完整的总量。
       probe: async url => { if (url.endsWith("b.tgz")) throw new Error("range request refused"); return 120; },
     });
-    expect(plan).toMatchObject({ totalBytes: 120, packages: [{ name: "a", size: 120 }, { name: "b" }] });
+    expect(plan).toMatchObject({ totalBytes: 0, packages: [{ name: "a", size: 120 }, { name: "b" }] });
     await rm(planDir, { recursive: true, force: true });
   });
 });
@@ -118,7 +146,9 @@ describe("install progress wiring", () => {
 
     // npm 会一边跑一边往 stderr 打 "http fetch GET 200 <tarball>"；安装函数必须把它翻成进度。
     const run = async (_command: string, _args: string[], options: { onStderr?: (chunk: string) => void }) => {
-      options.onStderr?.("npm http fetch GET 200 https://r/pi.tgz 900ms (cache miss)\n");
+      expect(_args).toContain("--loglevel=http");
+      options.onStderr?.("npm http fetch GET 200 https://r/");
+      options.onStderr?.("pi.tgz 900ms (cache miss)\n");
       return { stdout: "", stderr: "" };
     };
     const planDir = await mkdtemp(join(tmpdir(), "orbis-install-progress-"));

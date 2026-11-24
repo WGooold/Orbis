@@ -549,6 +549,19 @@ private slots:
         QTRY_COMPARE(host.state(), QString("stopped"));
         QCOMPARE(host.preparations().keys(), QStringList({"claude"}));
     }
+    // HOST-DOWNLOAD-01: an opaque updater is visible without fabricated bytes, and batch items do not share totals.
+    void agentDownloadProgressWithoutTelemetry() {
+        auto &host = *m_host;
+        host.receiveLine({{"event", "agentInstall"}, {"kind", "codex"}, {"stage", "downloading"},
+            {"download", QJsonObject{{"receivedBytes", 10}, {"totalBytes", 100}}}});
+        QCOMPARE(host.downloadTotal(), 100);
+        host.receiveLine({{"event", "agentInstall"}, {"kind", "claude"}, {"stage", "downloading"}});
+        QCOMPARE(host.downloadLabel(), QString("Claude Code"));
+        QCOMPARE(host.downloadReceived(), 0);
+        QCOMPARE(host.downloadTotal(), 0);
+        host.receiveLine({{"event", "agentInstall"}, {"kind", "claude"}, {"stage", "verifying"}});
+        QCOMPARE(host.downloadReceived(), -1);
+    }
     // HOST-ACTIVITY-04: a DSH Server restart says which stage it is waiting on.
     void dshRestartNamesItsStage() {
         auto &host = *m_host;

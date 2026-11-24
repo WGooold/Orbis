@@ -34,6 +34,10 @@ Status: accepted（已实现；macOS 自动验证完成；Windows 验证、发�
 
 Host 更新的哈希与文件提交移到后台线程，使用独立临时目录和原子文件提交。确认弹窗复用 `SoftDialog`、`SoftDialogButtons` 与现有动效。macOS 应用内更新完成收尾后打开 DMG，仍由用户拖入 Applications；手动下载的 DMG 先通过 Host 的退出确认完成收尾。
 
+**HOST-DOWNLOAD-01（2026-11-24）**：Host 内下载在页面切换时仍可见。Host 安装包使用响应体字节和可靠的总长度；独立 npm 安装按目标系统及架构筛选依赖后估算压缩包总量，不使用解压体积。总量不完整、原位 npm 更新或原生 Claude Code 更新时，只显示不定进度；进入校验、取消或失败时收起下载条。由手机、浏览器或 TestFlight 接手的下载不纳入 Host 进度。
+
+回归见 [HostExitTest](../../packages/windows-host/src/tests/HostExitTest.cpp)、[HostLiveChangeTest](../../packages/windows-host/src/tests/HostLiveChangeTest.cpp)、[agent-download-plan.test.ts](../../packages/host/src/agent-download-plan.test.ts) 与 [本机验证记录](../../.artifacts/host-download-progress-20261124/)。未安装或发布。
+
 本次不改变 Relay / App 线协议或自动更新 Agent 的语义。Agent 安装的暂停由 HOST-LIVE-01 自动处理，安装确认继续适用。系统强制结束、应用崩溃、独立终端生命周期和完整安装事务回滚不属于本次已验证保证；安装器的文件占用检测继续保留。
 
 ## 实现

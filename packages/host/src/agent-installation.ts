@@ -25,7 +25,7 @@ export type AgentInstallProgress = {
   stage: "resolving" | "downloading" | "verifying" | "activating" | "restarting" | "restartFailed" | "done" | "cancelled" | "error";
   version?: string;
   message?: string;
-  /** 已知时才带：npm 不给在途字节，所以这是“已下完的包”累加出来的。 */
+  /** 下载遥测；没有可靠总量时 totalBytes 为 0。 */
   download?: AgentDownloadProgress;
 };
 export type LocalAgent = { installed: boolean; installedButBroken: boolean; version?: string; entry?: string; error?: string };
@@ -245,28 +245,34 @@ export async function installAgentPackage(
     // 逐包累加；同时采样 npm 缓存里正在写盘的字节，否则单个巨大的 tarball 会让百分比长时间卡住。
     // 任何一步不配合就只是没有数字，安装本身完全照旧。
     let plan: AgentDownloadPlan | undefined;
-    try {
-      planDir = options.planDir ?? await mkdtemp(join(tmpdir(), "orbis-plan-"));
-      plan = await (options.planDownload ?? planAgentDownload)({
-        run, npm, spec: installPackage(kind, version), planDir, signal,
-      });
-    } catch { plan = undefined; }
+    // 原位 npm 更新会重用现有依赖；空目录的闭包不能当作它的下载总量。
+    if (!external) {
+      try {
+        planDir = options.planDir ?? await mkdtemp(join(tmpdir(), "orbis-plan-"));
+        plan = await (options.planDownload ?? planAgentDownload)({
+          run, npm, spec: installPackage(kind, version), planDir, signal,
+        });
+      } catch { plan = undefined; }
+    }
     let onStderr: ((chunk: string) => void) | undefined;
-    if (plan !== undefined && plan.totalBytes > 0) {
+    if (plan !== undefined) {
       report("downloading", version, { receivedBytes: 0, totalBytes: plan.totalBytes, donePackages: 0, totalPackages: plan.packages.length });
       const track = createAgentDownloadTracker(plan);
       const meter = createAgentDownloadMeter(plan.totalBytes, plan.packages.length);
       let completedBytes = 0, donePackages = 0, inflightBytes = 0, lastReported = 0;
       const publish = (): void => {
+        const now = Date.now();
+        if (now - lastReported < 400 && donePackages < plan.packages.length) return;
         const progress = meter(completedBytes, inflightBytes, donePackages);
         if (progress === undefined) return;
-        const now = Date.now();
-        if (now - lastReported < 400 && progress.donePackages < progress.totalPackages) return;
         lastReported = now;
         report("downloading", version, progress);
       };
+      let pendingLine = "";
       onStderr = (chunk: string) => {
-        for (const line of chunk.split("\n")) {
+        const lines = (pendingLine + chunk).split("\n");
+        pendingLine = (lines.pop() ?? "").slice(-16_384);
+        for (const line of lines) {
           const progress = track(line);
           if (progress === undefined) continue;
           completedBytes = progress.receivedBytes; donePackages = progress.donePackages;
@@ -280,12 +286,13 @@ export async function installAgentPackage(
         if (cacheDir !== undefined) sampleInflightBytes = () => npmCacheInflightBytes(cacheDir);
       }
       if (sampleInflightBytes !== undefined) {
-        const timer = setInterval(() => { void sampleInflightBytes!().then(bytes => { inflightBytes = bytes; publish(); }).catch(() => undefined); }, 500);
-        stopSampling = () => clearInterval(timer);
+        let sampling = true;
+        const timer = setInterval(() => { void sampleInflightBytes!().then(bytes => { if (sampling) { inflightBytes = bytes; publish(); } }).catch(() => undefined); }, 500);
+        stopSampling = () => { sampling = false; clearInterval(timer); };
       }
     }
     try {
-      await run(npm.command, [...npm.args, "install", ...(external ? ["--global"] : []), "--prefix", prefix, "--include=optional", "--no-audit", "--no-fund", "--fetch-timeout=60000", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=10000", "--", installPackage(kind, version)], { signal, timeout: 1_800_000, cwd: prefix, ...(onStderr === undefined ? {} : { onStderr }) });
+      await run(npm.command, [...npm.args, "install", ...(external ? ["--global"] : []), "--prefix", prefix, "--include=optional", ...(onStderr ? ["--loglevel=http"] : []), "--no-audit", "--no-fund", "--fetch-timeout=60000", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=10000", "--", installPackage(kind, version)], { signal, timeout: 1_800_000, cwd: prefix, ...(onStderr === undefined ? {} : { onStderr }) });
     } finally {
       stopSampling?.();
     }
