@@ -21,7 +21,6 @@ import { RegistrationError, type RegistrationAuthority } from "./registration.js
 import { RelayAdmin } from "./admin.js";
 import { HttpError, jsonResponse, readJson, requestSource } from "./http-utils.js";
 import { createWebHandler } from "./web.js";
-import { RelayBandwidth } from "./bandwidth.js";
 import { BulkSendBudget, DEFAULT_BULK_BYTES_PER_SECOND } from "./bulk-send-budget.js";
 import { APNsSender, type APNsConfig } from "./apns.js";
 import { RelayLiveActivities, liveActivityPairingRef, parseLiveActivityUpdate } from "./live-activities.js";
@@ -49,8 +48,6 @@ export interface RelayServerOptions {
   apnsAdditional?: APNsConfig[];
   registration?: RegistrationAuthority;
   adminStateFile?: string;
-  /** X11: defaults to a separate file beside stateFile; counts only the device edge. */
-  bandwidthStateFile?: string;
   downloadsDir?: string;
   /** Android APK 与版本元数据所在目录；未设置时与 downloadsDir 相同。 */
   androidDownloadsDir?: string;
@@ -104,7 +101,6 @@ const deviceMuxes = new WeakMap<WebSocket, OutboundChannelMux<string>>();
 // Each authenticated transport keeps its own outer version. The recipient's
 // version is used when forwarding, without changing any envelope or ciphertext.
 const relayWireVersions = new WeakMap<WebSocket, RelayWireProtocolVersion>();
-const deviceBandwidth = new WeakMap<WebSocket, { telemetry: RelayBandwidth; deviceId: string }>();
 const deviceBulkBudgets = new WeakMap<WebSocket, BulkSendBudget>();
 const stopMux = (socket: WebSocket): void => {
   deviceMuxes.get(socket)?.stop();
@@ -141,12 +137,7 @@ const muxFor = (socket: WebSocket): OutboundChannelMux<string> => {
   const created = new OutboundChannelMux<string>({
     write: (frame) => {
       if (socket.readyState !== WebSocket.OPEN) return;
-      const meter = deviceBandwidth.get(socket);
-      if (!meter) { socket.send(frame); return; }
-      // Count actual transport writes, never queued frames retired by a new handshake.
-      socket.send(frame, error => {
-        if (!error) meter.telemetry.record(meter.deviceId, "download", Buffer.byteLength(frame));
-      });
+      socket.send(frame);
     },
     backlog: () => socket.bufferedAmount,
     bulkSendDelayMs: bytes => deviceBulkBudgets.get(socket)?.delayMs(socket, bytes,
@@ -370,9 +361,6 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
       return sender.sendActivity(token, push);
     },
   });
-  const bandwidth = await RelayBandwidth.create({
-    ...(options.bandwidthStateFile || options.stateFile ? { stateFile: options.bandwidthStateFile ?? `${options.stateFile}.bandwidth.json` } : {}),
-  });
   const startedAt = Date.now();
   const registrationStatus = () => ({
     enabled: options.registration !== undefined && (!admin.qqEmailVerificationRequired || options.registration.enabled),
@@ -578,27 +566,6 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
       if (request.method === "GET" && path === "/v1/admin/session") {
         const session = admin.authenticate(request);
         jsonResponse(response, 200, { csrf: session.csrf, expiresAt: session.expiresAt });
-        return;
-      }
-      if (request.method === "GET" && path === "/v1/admin/bandwidth") {
-        admin.authenticate(request);
-        const snapshot = bandwidth.snapshot();
-        const credentials = new Map([...devicesByCredential.values()].map(device => [device.deviceId, device]));
-        // Include paired devices before their first measurement, and retain revoked IDs for 30 days.
-        const measured = new Map(snapshot.devices.map(device => [device.deviceId, device]));
-        const ids = new Set([...credentials.keys(), ...measured.keys()]);
-        jsonResponse(response, 200, {
-          ...snapshot,
-          devices: [...ids].map(deviceId => {
-            const credential = credentials.get(deviceId);
-            return {
-              deviceId, name: credential?.name ?? "已撤销设备", hostId: credential?.hostId ?? null,
-              online: [...devices].some(device => device.deviceId === deviceId && device.socket.readyState === WebSocket.OPEN),
-              revoked: credential === undefined,
-              ...measured.get(deviceId),
-            };
-          }),
-        });
         return;
       }
       if (request.method === "POST" && path === "/v1/admin/registration") {
@@ -1016,7 +983,6 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
       // Retired connections must not keep forwarding to the Host in that gap.
       if (connection && !devices.has(connection)) return;
       const receivedBytes = Array.isArray(raw) ? raw.reduce((sum, part) => sum + part.byteLength, 0) : raw.byteLength;
-      if (connection) bandwidth.record(connection.deviceId, "upload", receivedBytes);
       if (isBinary) {
         reject(socket, "invalid_message", "Device messages must be JSON");
         return;
@@ -1070,9 +1036,7 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         }
         connection = { socket, deviceId: credential.deviceId, ...(credential.hostId === undefined ? {} : { hostId: credential.hostId }) };
         devices.add(connection);
-        deviceBandwidth.set(socket, { telemetry: bandwidth, deviceId: credential.deviceId });
         deviceBulkBudgets.set(socket, bulkBudget);
-        bandwidth.record(credential.deviceId, "upload", receivedBytes);
         relayWireVersions.set(socket, message.protocolVersion);
         markAuthenticated(socket);
         send(socket, {
@@ -1127,7 +1091,6 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
 
     socket.on("close", () => {
       stopMux(socket);
-      deviceBandwidth.delete(socket);
       if (!connection) return;
       devices.delete(connection);
     });
@@ -1153,18 +1116,12 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
     }
   }, options.heartbeatIntervalMs ?? 30_000);
   heartbeatTimer.unref?.();
-  const bandwidthTimer = setInterval(() => {
-    void bandwidth.flush().catch(() => console.warn(JSON.stringify({ event: "relay.bandwidth.save_failed" })));
-  }, 60_000);
-  bandwidthTimer.unref();
-
   const address = server.address() as AddressInfo;
   const host = address.address === "::" ? "127.0.0.1" : address.address;
   return {
     url: `ws://${host}:${address.port}`,
     async close(): Promise<void> {
       clearInterval(heartbeatTimer);
-      clearInterval(bandwidthTimer);
       await liveActivities.close();
       for (const sender of apns.values()) sender.close();
       for (const runtime of runtimes.values()) { stopMux(runtime.socket); runtime.socket.close(1001, "relay shutdown"); }
@@ -1178,7 +1135,6 @@ export async function createRelayServer(options: RelayServerOptions = {}): Promi
         new Promise<void>((resolve) => deviceWss.close(() => resolve())),
         new Promise<void>((resolve, rejectClose) => server.close((error) => error ? rejectClose(error) : resolve())),
       ]);
-      await bandwidth.flush().catch(() => console.warn(JSON.stringify({ event: "relay.bandwidth.save_failed" })));
     },
   };
 }

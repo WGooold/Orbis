@@ -135,7 +135,6 @@
 | X08 | Web 响应式与键盘可达 |
 | X09 | 官网导览与滚动动效 |
 | X10 | Web 动态状态真实性 |
-| X11 | Relay 单设备流量与带宽（已实现，自动验证通过；浏览器实看、部署与用户验收待完成） |
 
 决策入口：[材质、阅读、设置与外观](0046-mobile-ui-stability-and-material.md)；[首帧与延迟构建](0048-online-chat-entry-budget.md)；[整页导航](0054-shared-full-page-navigation.md)；[共用交互、刷新与下载反馈](0058-shared-interaction-motion.md)。UI-01–UI-06、S / M / V / X 及场景原标识保持，新场景使用新标识。
 
