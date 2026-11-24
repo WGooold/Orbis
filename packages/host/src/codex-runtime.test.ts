@@ -28,6 +28,7 @@ function makeHarness(options?: {
   skillsList?: unknown;
   mcpServerStatusList?: unknown;
   initialTurns?: unknown[];
+  threadRead?: unknown;
   initialHistoryError?: Error;
   holdInitialHistory?: boolean;
   sourceCoalesceMs?: number;
@@ -55,7 +56,7 @@ function makeHarness(options?: {
   // Keep subsequent reconciliation reads separate from the initial native hydration.
   // Existing race tests explicitly resolve those reads; initial hydration uses the fixture.
   const historyReads = vi.fn();
-  const request = vi.fn((method: string, params?: { threadId?: string; parentThreadId?: string; ancestorThreadId?: string; archived?: boolean }) => {
+  const request = vi.fn((method: string, params?: { threadId?: string; parentThreadId?: string; ancestorThreadId?: string; archived?: boolean; includeTurns?: boolean }) => {
     if (method === "thread/list" && params?.parentThreadId && params.ancestorThreadId) {
       return options?.taskRegistry ? Promise.reject(new Error("parentThreadId and ancestorThreadId are mutually exclusive")) : Promise.resolve({ data: [] });
     }
@@ -77,6 +78,8 @@ function makeHarness(options?: {
       });
     }
     if (method === "thread/unsubscribe") return Promise.resolve({});
+    if (method === "thread/read" && options?.desktop && params?.includeTurns === false)
+      return Promise.resolve(options?.threadRead ?? { thread: { id: params?.threadId, cwd: "D:/repo" } });
     if (method === "thread/turns/list" && initialHistory.has(params?.threadId ?? "")) {
       const data = initialHistory.get(params!.threadId!);
       initialHistory.delete(params!.threadId!);
@@ -1898,7 +1901,26 @@ describe("CodexRuntime", () => {
     expect(h.runtime.directoryEntries().find((entry) => entry.sessionId === "th-2")?.sessionName).toBeUndefined();
 
     h.notify("thread/name/updated", { threadId: "th-1", threadName: null });
-    expect(metadata()?.sessionName).toBeUndefined();
+    expect(metadata()?.sessionName).toBe("");
+    expect(h.events).toContainEqual(expect.objectContaining({
+      type: "runtime.metadata", metadata: expect.objectContaining({ sessionId: "th-1", sessionName: "" }),
+    }));
+    h.notify("thread/name/updated", { threadId: "th-1" });
+    expect(metadata()?.sessionName).toBe("");
+  });
+
+  it("resume 名称缺失时按 thread ID 补读，明确的空名称保留清除状态", async () => {
+    const h = makeHarness({ desktop: true, threadRead: { thread: { id: "th-title", cwd: "D:/repo", name: "恢复补读标题" } } });
+    h.runtime.markStarted();
+    h.runtime.seedDesktopThreads(["th-title"]);
+    const activating = h.runtime.activate({ type: "resume", sessionId: "codex-desktop:th-title" });
+    h.resolveNext({ thread: { id: "th-title", cwd: "D:/repo", turns: [] } });
+    await activating;
+    expect(h.requests).toHaveBeenCalledWith("thread/read", { threadId: "th-title", includeTurns: false }, 5_000);
+    expect(h.runtime.directoryEntries().find(entry => entry.sessionId === "codex-desktop:th-title")?.sessionName).toBe("恢复补读标题");
+
+    h.notify("thread/name/updated", { threadId: "th-title", threadName: null });
+    expect(h.runtime.directoryEntries().find(entry => entry.sessionId === "codex-desktop:th-title")?.sessionName).toBe("");
   });
 
   it("catalog：thread/list 没有的会话由磁盘 rollout 补齐（host 重启后历史不丢）", async () => {

@@ -231,7 +231,9 @@ export const RuntimeMetadataSchema = z.strictObject({
   // Machine identity of the Pi host. Needs no user setup, so the APP can tell Pi processes
   // apart across devices. 可选的原因是 `os.hostname()` 可能抛——不是兼容旧中继。
   hostname: z.string().min(1).max(256).optional(),
-  sessionName: z.string().min(1).max(256).optional(),
+  // Empty is reserved for an explicit native title-clear notification; omitted
+  // means the current provider snapshot has no title fact.
+  sessionName: z.string().max(256).optional(),
   // Active model, thinking level, and context utilization are reported so the APP can show them
   // in the chat status line. All are optional because a runtime may not know them yet.
   model: RuntimeModelInfoSchema.optional(),

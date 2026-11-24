@@ -37,7 +37,7 @@ class SessionDisplayNameCacheTest {
         assertSame(restarted, restarted.cachePiSessionNames())
     }
 
-    @Test fun `later runtime names catalog updates and history never replace the Pi label`() {
+    @Test fun `native names outrank cached previews and history never replaces them`() {
         val cached = state().copy(sessionGraphs = mapOf("s" to graph("首次名称"))).cachePiSessionNames()
         val catalog = cached.withModelFixture("catalog", """{"sessions":[
             {"sessionId":"s","cwd":"/repo","agentKind":"pi","name":"电脑上的新名字",
@@ -48,8 +48,8 @@ class SessionDisplayNameCacheTest {
             "name":"Pi runtime","sessionName":"又一个名字","cwd":"/repo","status":"idle","agentKind":"pi"}""")
         val changed = identity.copy(sessionGraphs = mapOf("s" to graph("换了分支后的消息"))).cachePiSessionNames(cached)
         assertEquals("又一个名字", changed.runtimes["r"]?.sessionName)
-        assertEquals("首次名称", changed.runtimeDisplayName(changed.runtimes.getValue("r")))
-        assertEquals("首次名称", changed.copy(runtimes = emptyMap(), sessionGraphs = emptyMap()).sessionDisplayName("s"))
+        assertEquals("又一个名字", changed.runtimeDisplayName(changed.runtimes.getValue("r")))
+        assertEquals("又一个名字", changed.copy(runtimes = emptyMap(), sessionGraphs = emptyMap()).sessionDisplayName("s"))
     }
 
     @Test fun `reconnecting an unnamed runtime keeps the cached title with a new runtime id`() {
@@ -58,8 +58,19 @@ class SessionDisplayNameCacheTest {
         val merged = mergeSessionCatalogEntry(cached.sessions["s"], reconnect.catalogEntry()!!)
         val next = cached.copy(runtimes = mapOf(reconnect.runtimeId to reconnect), sessions = mapOf("s" to merged),
             sessionGraphs = emptyMap(), conversations = emptyMap()).cachePiSessionNames(cached)
-        assertEquals("", merged.name)
+        assertNull(merged.name)
         assertEquals("保持这个名字", next.runtimeDisplayName(reconnect))
+    }
+
+    @Test fun `explicit native clear skips old native and local title caches then uses first user message`() {
+        val cleared = runtime.copy(agentKind = "codex", sessionName = "")
+        val old = SessionCatalogEntry("s", name = "旧原生标题", firstMessage = "首条用户消息。",
+            agentKind = "codex", cachedDisplayName = "旧缓存标题")
+        val state = state(old).copy(runtimes = mapOf("r" to cleared))
+        assertEquals("首条用户消息。", state.sessionDisplayName("s"))
+        val marked = mergeSessionCatalogEntry(old, cleared.catalogEntry()!!)
+        assertEquals("", marked.name)
+        assertEquals("首条用户消息。", state.copy(runtimes = emptyMap(), sessions = mapOf("s" to marked)).sessionDisplayName("s"))
     }
 
     @Test fun `legacy catalog titles are captured on startup without history loading`() {
@@ -129,7 +140,7 @@ class SessionDisplayNameCacheTest {
         assertEquals("当前会话名称", named.runtimeDisplayName(extraWindow))
         val renamed = named.copy(runtimes = mapOf("r" to runtime.copy(sessionName = "稍后命名"), "second" to extraWindow))
         assertSame(renamed, renamed.cachePiSessionNames(named))
-        assertEquals("当前会话名称", renamed.runtimeDisplayName(renamed.runtimes.getValue("r")))
+        assertEquals("稍后命名", renamed.runtimeDisplayName(renamed.runtimes.getValue("r")))
     }
 
     @Test fun `name cache remains scoped to its paired Host and device`() {

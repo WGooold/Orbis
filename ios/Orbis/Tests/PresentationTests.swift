@@ -89,14 +89,24 @@ struct PresentationTests {
         #expect(matchesSessionProvider(unknown, filter: "unknown", current: "native-a"))
         #expect(matchesSessionProvider(unknown, filter: "all", current: nil))
     }
-    private func session(_ id: String, cwd: String = "/project", kind: String = "codex", name: String? = nil, archived: Bool = false) -> SessionSummary {
-        SessionSummary(sessionId: id, name: name, cwd: cwd, firstMessage: "第一句。第二句", createdAt: 0, modifiedAt: 1, messageCount: 1, agentKind: kind, archived: archived)
+    private func session(_ id: String, cwd: String = "/project", kind: String = "codex", name: String? = nil,
+                         firstMessage: String? = "第一句。第二句", archived: Bool = false) -> SessionSummary {
+        SessionSummary(sessionId: id, name: name, cwd: cwd, firstMessage: firstMessage, createdAt: 0, modifiedAt: 1, messageCount: 1, agentKind: kind, archived: archived)
     }
     @Test func titlePrecedenceMatchesAndroidAndUsesOnlyUserContent() {
         let runtime = RuntimeSummary(runtimeId: "runtime", name: "Agent", cwd: "/repo", status: "idle", sessionId: "session", sessionName: "电脑标题")
         #expect(sessionTitle(runtime: runtime, session: session("session", name: "目录标题")) == "电脑标题")
         #expect(sessionTitle(runtime: nil, session: session("session", name: "目录标题")) == "目录标题")
         #expect(sessionTitle(runtime: nil, session: session("session")) == "第一句。")
+        let unnamed = RuntimeSummary(runtimeId: "runtime", name: "Codex", cwd: "/repo", status: "idle", sessionId: "session")
+        #expect(sessionTitle(runtime: unnamed, session: session("session", firstMessage: nil), messages: [
+            ChatMessage(messageId: "assistant", role: "assistant", content: [ChatContent(type: "text", text: "助手开场", toolName: nil, artifact: nil)], timestamp: 0, isError: nil),
+            ChatMessage(messageId: "user", role: "user", content: [ChatContent(type: "text", text: "首条用户请求！后续", toolName: nil, artifact: nil)], timestamp: 1, isError: nil),
+        ]) == "首条用户请求！")
+        let clearedRuntime = RuntimeSummary(runtimeId: "runtime", name: "Codex", cwd: "/repo", status: "idle", sessionId: "session", sessionName: "")
+        #expect(sessionTitle(runtime: clearedRuntime, session: session("session", name: "旧目录标题", firstMessage: nil), messages: [
+            ChatMessage(messageId: "user", role: "user", content: [ChatContent(type: "text", text: "清除后的消息兜底", toolName: nil, artifact: nil)], timestamp: 1, isError: nil),
+        ]) == "清除后的消息兜底")
         let assistant = ChatMessage(messageId: "a", role: "assistant", content: [ChatContent(type: "text", text: "不要用助手开场命名", toolName: nil, artifact: nil)], timestamp: 0, isError: nil)
         #expect(sessionTitle(runtime: runtimeWithoutTitle, session: nil, messages: [assistant]) == "session")
     }

@@ -502,7 +502,7 @@ describe("DeepSeek Web runtime adapter", () => {
     ]));
     expect(f.events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "runtime.metadata", metadata: expect.objectContaining({ sessionName: "自动生成的标题" }) }) }));
     control.frame({ type: "projection", sessionId: "busy", key: "title", seq: 13, value: null });
-    expect(f.runtime.directoryEntries()[0]?.sessionName).toBeUndefined();
+    expect(f.runtime.directoryEntries()[0]?.sessionName).toBe("");
     expect((await f.runtime.catalog()).find(item => item.sessionId === "dsh:busy")?.name).toBe("");
     control.frame({ type: "projection", sessionId: "idle", key: "title", seq: 14, value: { invalid: true } });
     expect((await f.runtime.catalog()).find(item => item.sessionId === "dsh:idle")?.name).toBe("未打开的会话");

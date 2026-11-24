@@ -283,6 +283,8 @@ export const HostCatalogBackendSchema = z.strictObject({
 export type HostCatalogBackend = z.infer<typeof HostCatalogBackendSchema>;
 
 export const AgentCatalogSessionSchema = z.strictObject({
+  // An empty name is an explicit clear marker only for Agent sources whose
+  // native catalog can distinguish clear from omission; omission is unknown.
   sessionId: identity, name: z.string().max(256).optional(), cwd: z.string().max(4096),
   firstMessage: z.string().max(4_000).optional(), createdAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   modifiedAt: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), messageCount: z.number().int().nonnegative().max(100_000),

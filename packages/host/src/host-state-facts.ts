@@ -164,9 +164,25 @@ export class HostStateFacts {
       }
       const incompleteKinds = new Set(state.backends.filter(backend => !backend.complete).map(backend => backend.kind));
       const retained = previous?.sessions.filter(session => incompleteKinds.has(session.agentKind)) ?? [];
+      const previousByIdentity = new Map((previous?.sessions ?? []).map(session =>
+        [JSON.stringify([session.agentKind, session.sessionId]), session] as const));
       const sessions = [...new Map([...retained, ...state.sessions].map(session => {
-        const normalized = AgentSessionSummarySchema.parse(session);
-        return [JSON.stringify([normalized.agentKind, normalized.sessionId]), normalized] as const;
+        // Sparse native metadata preserves the previous value. Empty name is a
+        // reserved explicit-clear marker from a source that supports clearing.
+        const rawName = typeof session.name === "string" ? session.name.trim().slice(0, 256) : undefined;
+        const normalizedName = session.name === "" ? "" : rawName || undefined;
+        const normalized = AgentSessionSummarySchema.parse({
+          ...session,
+          ...(normalizedName === undefined ? { name: undefined } : { name: normalizedName }),
+        });
+        const prior = previousByIdentity.get(JSON.stringify([normalized.agentKind, normalized.sessionId]));
+        const merged = {
+          ...normalized,
+          ...(normalized.name === undefined && prior?.name !== undefined ? { name: prior.name } : {}),
+          ...(normalized.firstMessage === undefined && prior?.firstMessage !== undefined ? { firstMessage: prior.firstMessage } : {}),
+        };
+        const checked = AgentSessionSummarySchema.parse(merged);
+        return [JSON.stringify([checked.agentKind, checked.sessionId]), checked] as const;
       })).values()].sort((left, right) => right.modifiedAt - left.modifiedAt);
       const inventory = boundedArray(sessions.slice(0, CATALOG_INVENTORY_ENTRIES), CATALOG_INVENTORY_BYTES,
         items => ({ ...state, sessions: items }));

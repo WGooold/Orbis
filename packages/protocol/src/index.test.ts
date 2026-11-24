@@ -78,6 +78,14 @@ describe("runtime command protocol", () => {
       type: "session.catalog",
       sessions: [{ sessionId: "session-1", cwd: "/work", createdAt: -1, modifiedAt: 1, messageCount: 0 }],
     }).success).toBe(false);
+    expect(RuntimeEventSchema.safeParse({
+      type: "runtime.metadata",
+      metadata: { runtimeId: "codex:thread", name: "Codex", cwd: "/work", status: "idle", sessionId: "thread", sessionName: "" },
+    }).success).toBe(true);
+    expect(RuntimeEventSchema.safeParse({
+      type: "session.catalog",
+      sessions: [{ sessionId: "session-1", name: "", cwd: "/work", createdAt: 1, modifiedAt: 1, messageCount: 0 }],
+    }).success).toBe(true);
 
     const request = {
       type: "session.sync" as const,

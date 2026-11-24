@@ -18,6 +18,17 @@ const backend = (over: Partial<HostCatalogBackend> = {}): HostCatalogBackend =>
 const state = (registry: AgentStateRegistry) => registry.read<HostCatalogState>({ kind: "host" }, "catalog");
 
 describe("HostStateFacts 目录完整性", () => {
+  it("保留缺省标题，只接受原生目录的显式空标题作为清除", () => {
+    const { registry, facts } = setup();
+    const row = { sessionId: "session", cwd: "/repo", firstMessage: "首条请求", createdAt: 1, modifiedAt: 2,
+      messageCount: 1, agentKind: "pi" as const, hostname: "host" };
+    facts.catalog({ totalSessions: 1, truncated: false, backends: [backend({ sessions: 1 })], sessions: [{ ...row, name: "原生标题" }] });
+    facts.catalog({ totalSessions: 1, truncated: false, backends: [backend({ sessions: 1 })], sessions: [row] });
+    expect(state(registry)?.value?.sessions?.[0]).toMatchObject({ name: "原生标题", firstMessage: "首条请求" });
+    facts.catalog({ totalSessions: 1, truncated: false, backends: [backend({ sessions: 1 })], sessions: [{ ...row, name: "" }] });
+    expect(state(registry)?.value?.sessions?.[0]).toMatchObject({ name: "", firstMessage: "首条请求" });
+  });
+
   it("全部后端读全且未截断时才是完整目录", () => {
     const { registry, facts } = setup();
     facts.catalog({ totalSessions: 3, truncated: false, backends: [backend()] });

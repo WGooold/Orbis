@@ -108,6 +108,17 @@ describe("DeepSeek Harness backend", () => {
     expect(vi.mocked(client.request).mock.calls.filter(args => args[0] === "session/resume")).toHaveLength(1);
   });
 
+  it("keeps the native list title when ACP's active-session row omits it", async () => {
+    const { runtime, client, cwd } = await fixture();
+    const original = vi.mocked(client.request).getMockImplementation()!;
+    vi.mocked(client.request).mockImplementation((method, params) => method === "session/list"
+      ? Promise.resolve({ sessions: [{ sessionId: "one", cwd, title: "原生目录标题" }] })
+      : original(method, params));
+    expect(await runtime.catalog()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: "dsh:one", name: "原生目录标题" }),
+    ]));
+  });
+
   it("paginates the directory and rejects looping cursors", async () => {
     const { runtime, client } = await fixture();
     vi.mocked(client.request).mockResolvedValue({ sessions: [], nextCursor: "repeat" });

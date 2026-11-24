@@ -21,15 +21,19 @@ private fun RemoteState.resolveSessionDisplayName(
     unavailable: String,
 ): String {
     val session = sessions[sessionId]
-    if ((runtime?.agentKind ?: session?.agentKind) == "pi") {
-        session?.cachedDisplayName?.takeIf(String::isNotBlank)?.let { return it }
+    val explicitTitleClear = runtime?.sessionName == "" || session?.name == ""
+    val nativeTitle = if (explicitTitleClear) null else {
+        runtime?.sessionName?.trim()?.takeIf { it.isNotEmpty() && it != sessionId }
+            ?: session?.name?.trim()?.takeIf { it.isNotEmpty() && it != sessionId }
     }
-    return runtime?.sessionName?.trim()?.takeIf(String::isNotEmpty)
-        ?: session?.name?.trim()?.takeIf(String::isNotEmpty)
+    if (nativeTitle != null) return nativeTitle
+    if (!explicitTitleClear && (runtime?.agentKind ?: session?.agentKind) == "pi") {
+        session?.cachedDisplayName?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+    }
+    return session?.firstMessage?.let(::sessionMessagePreview)
         ?: sessionId?.let { id ->
             if (runtime?.sessionId == id) sessionGraphForRuntime(runtime.runtimeId) else sessionGraphForSession(id)
         }?.let(graphTitle)
-        ?: session?.firstMessage?.let(::sessionMessagePreview)
         ?: runtime?.let { liveTitle(conversations[it.runtimeId]?.messages.orEmpty()) }
         ?: sessionId?.trim()?.takeIf(String::isNotEmpty)
         ?: runtime?.runtimeId

@@ -1149,7 +1149,7 @@ export class CodexRuntime implements AgentBackend {
     }
     const cwd = snapshot.cwd;
     if (typeof cwd !== "string") return;
-    const thread = this.#newThreadState(id, cwd, { name: codexSessionName(snapshot.name) });
+    const thread = this.#newThreadState(id, cwd, { name: codexObservedThreadName(snapshot) });
     this.#threads.set(id, thread);
     this.#desktopThreads.add(id);
     this.#rememberDesktopThread(id);
@@ -1515,13 +1515,18 @@ export class CodexRuntime implements AgentBackend {
           const cwd = thread.cwd;
           const createdAt = toMillis(thread.createdAt);
           const modifiedAt = toMillis(thread.updatedAt);
-          const name = codexSessionName(thread.name);
+          let name = codexObservedThreadName(thread);
+          const attached = typeof id === "string" ? this.#threads.get(id) : undefined;
           const modelProvider = codexProviderId(thread.modelProvider);
           if (typeof id !== "string" || id.length === 0 || id.length > 128 || id.includes(":") ||
             typeof cwd !== "string" || cwd.length > 4096 || createdAt === undefined || modifiedAt === undefined) {
             malformed = true;
             return [];
           }
+          if (attached && name !== undefined && attached.name !== name) {
+            attached.name = name;
+            this.#publishMetadataEvent(attached);
+          } else if (name === undefined) name = attached?.name;
           return [{
             sessionId: id,
             cwd,
@@ -1755,6 +1760,19 @@ export class CodexRuntime implements AgentBackend {
     if (isCodexSubagentSource(threadJson?.source, threadJson?.parentThreadId)) {
       throw new ActivationError("session_not_found", "不属于 Codex 的用户会话");
     }
+    // thread/resume is the first title authority. Some Desktop/app-server builds
+    // omit name from that snapshot; make one exact per-thread read before falling
+    // back to the last confirmed name or the first user message.
+    let nativeName = codexObservedThreadName(threadJson ?? {});
+    if (target.type === "resume" && nativeName === undefined && isDesktopAppServer(this.#server)) {
+      try {
+        const read = object(await this.#server.request("thread/read", { threadId: id, includeTurns: false }, 5_000));
+        const snapshot = object(read.thread);
+        if (snapshot.id === id) nativeName = codexObservedThreadName(snapshot);
+      } catch (error) {
+        this.#options.log?.(`Codex 会话标题补读失败：${describeError(error)}`);
+      }
+    }
     const desktop = isDesktopAppServer(this.#server);
     const actualSpawnMode = desktop ? "headless" : spawnMode;
     // Record the exact App-created Desktop identity before configuring it. A
@@ -1771,11 +1789,13 @@ export class CodexRuntime implements AgentBackend {
     // Resuming an attached thread keeps its source sequence, pending interactions and queue.
     // Native replay announces a new epoch itself if the verified history was rewritten.
     const thread: ThreadState = existing ?? this.#newThreadState(id, cwd, {
-      name: codexSessionName(threadJson?.name),
+      name: codexObservedThreadName(threadJson ?? {}),
       model: typeof result.model === "string" ? result.model : undefined,
     });
     thread.cwd = cwd;
-    thread.name = codexSessionName(threadJson?.name);
+    // A missing name is not a rename-to-empty. Preserve the last native title
+    // until an explicit thread/name/updated clear notification arrives.
+    if (nativeName !== undefined) thread.name = nativeName;
     this.#applyNativeSettings(thread, result);
     thread.permissions = codexPermissions(result) ?? thread.permissions;
     if (codexPermissions(result)) this.#effectiveSettings.set(id, object(result));
@@ -3425,7 +3445,7 @@ export class CodexRuntime implements AgentBackend {
       throw new Error("app-server 的 thread/fork 响应缺少 thread.id/cwd");
     }
     const forked: ThreadState = this.#newThreadState(id, cwd, {
-      name: codexSessionName(result.thread?.name),
+      name: codexObservedThreadName(result.thread ?? {}),
       model: typeof result.model === "string" ? result.model : thread.model,
       effort: thread.effort,
     });
@@ -3674,7 +3694,7 @@ export class CodexRuntime implements AgentBackend {
     // The same native thread can be displayed in two TUIs. Do not take another
     // live window's close target away from its card.
     if (otherKey !== undefined && otherKey !== key) return;
-    const thread = existing ?? this.#newThreadState(threadId, cwd, { name: codexSessionName(snapshot.name) });
+    const thread = existing ?? this.#newThreadState(threadId, cwd, { name: codexObservedThreadName(snapshot) });
     this.#threads.set(threadId, thread);
     this.#trackHeadWindow(threadId, key, false);
     this.#headWindowSeen.add(key);
@@ -3713,7 +3733,8 @@ export class CodexRuntime implements AgentBackend {
         const snapshot = object(result.thread);
         if (snapshot.id !== thread.id) throw new Error("app-server 的 thread/resume 响应缺少匹配的 thread.id");
         if (typeof snapshot.cwd === "string") thread.cwd = snapshot.cwd;
-        thread.name = codexSessionName(snapshot.name) ?? thread.name;
+        const nativeName = codexObservedThreadName(snapshot);
+        if (nativeName !== undefined) thread.name = nativeName;
         this.#applyNativeSettings(thread, result);
         thread.permissions = codexPermissions(result) ?? thread.permissions;
         if (codexPermissions(result)) this.#effectiveSettings.set(thread.id, result);
@@ -3975,8 +3996,10 @@ export class CodexRuntime implements AgentBackend {
         this.#reconcileNativeHistory(thread, "revert");
         return;
       case "thread/name/updated": {
-        if (record.threadName !== undefined && record.threadName !== null && typeof record.threadName !== "string") return;
-        const nextName = codexSessionName(record.threadName);
+        if (!Object.hasOwn(record, "threadName") || record.threadName !== null && typeof record.threadName !== "string") return;
+        // This named notification is an explicit title update. Null/blank means
+        // the native title was cleared; snapshot omission remains unknown.
+        const nextName = record.threadName === null ? "" : codexSessionName(record.threadName) ?? "";
         const changed = nextName !== thread.name;
         thread.name = nextName;
         this.#publishMetadataEvent(thread);
@@ -5113,6 +5136,15 @@ function itemClientId(item: Record<string, unknown>, message: ChatMessage): stri
 
 function codexSessionName(value: unknown): string | undefined {
   return typeof value === "string" ? value.trim().slice(0, 256) || undefined : undefined;
+}
+
+/** Missing is unknown; null/empty in an authoritative thread snapshot is an explicit clear. */
+function codexObservedThreadName(thread: Record<string, unknown>): string | undefined {
+  if (!Object.hasOwn(thread, "name")) return undefined;
+  if (thread.name === null) return "";
+  if (typeof thread.name !== "string") return undefined;
+  const name = thread.name.trim().slice(0, 256);
+  return name || (thread.name === "" ? "" : undefined);
 }
 
 /**

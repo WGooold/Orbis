@@ -883,7 +883,12 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
     return copy(
         name = sameSession?.takeIf { it.domainAvailability["identity"] == "ready" }?.name ?: name,
         cwd = sameSession?.takeIf { it.domainAvailability["identity"] == "ready" }?.cwd ?: cwd,
-        sessionName = if (sameSession?.domainAvailability?.get("identity") == "ready") sameSession.sessionName else sessionName,
+        sessionName = when {
+            sessionName == "" -> ""
+            sessionName?.trim()?.isNotEmpty() == true -> sessionName.trim()
+            sameSession?.domainAvailability?.get("identity") == "ready" -> sameSession.sessionName
+            else -> sessionName
+        },
         status = sameSession?.status ?: "unknown",
         compactionPhase = sameSession?.compactionPhase,
         backgroundTasks = sameSession?.backgroundTasks,
@@ -926,9 +931,13 @@ internal fun mergeSessionCatalogEntry(
     // The Host may replace its own metadata, but cannot supply the phone's frozen label.
     if (existing == null) return incoming.copy(cachedDisplayName = null)
     return existing.copy(
-        name = incoming.name ?: existing.name,
+        name = when {
+            incoming.name == "" -> ""
+            incoming.name?.trim()?.isNotEmpty() == true -> incoming.name.trim()
+            else -> existing.name
+        },
         cwd = incoming.cwd.ifBlank { existing.cwd },
-        firstMessage = incoming.firstMessage ?: existing.firstMessage,
+        firstMessage = incoming.firstMessage?.takeIf(String::isNotBlank) ?: existing.firstMessage,
         createdAt = if (incoming.createdAt > 0) incoming.createdAt else existing.createdAt,
         modifiedAt = maxOf(existing.modifiedAt, incoming.modifiedAt),
         messageCount = maxOf(existing.messageCount, incoming.messageCount),
@@ -1342,9 +1351,8 @@ private fun previousViewNeedsRefresh(state: RemoteState, runtime: RuntimeSummary
 internal fun RuntimeSummary.catalogEntry(): SessionCatalogEntry? = directorySessionId?.let { id ->
     SessionCatalogEntry(
         sessionId = id,
-        // Empty means the current runtime is explicitly unnamed, so a cleared title
-        // must not be resurrected by the catalog's missing-field merge fallback.
-        name = sessionName?.trim().orEmpty(),
+        // Missing is unknown; empty is the local catalog's explicit-clear marker.
+        name = sessionName?.trim()?.let { if (it.isEmpty()) "" else it },
         cwd = cwd,
         hostname = hostname,
         modifiedAt = 0,

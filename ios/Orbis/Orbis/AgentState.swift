@@ -460,7 +460,13 @@ struct AgentProjection {
                 guard let identity: RuntimeSummary = HostJSON.object(object).decoded(), identity.runtimeId == runtime.runtimeId,
                       identity.sessionId == runtime.sessionId, value["hostId"] == .null || value["hostId"].string == hostId else { return nil }
                 result.runtime.name = identity.name; result.runtime.cwd = identity.cwd; result.runtime.hostname = identity.hostname
-                result.runtime.sessionName = identity.sessionName; result.runtime.agentKind = identity.agentKind
+                // Omitted title is unknown, not a deletion. Preserve the last
+                // confirmed title while refreshing the rest of this identity.
+                if let rawTitle = identity.sessionName {
+                    let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if rawTitle.isEmpty || !title.isEmpty { result.runtime.sessionName = title }
+                }
+                result.runtime.agentKind = identity.agentKind
                 result.runtime.codexCatalogId = identity.codexCatalogId
                 result.runtime.steerSupported = identity.steerSupported
             case "execution":

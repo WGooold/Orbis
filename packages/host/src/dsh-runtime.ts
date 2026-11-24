@@ -180,10 +180,16 @@ export class DshAcpRuntime implements AgentBackend {
       if (cursor) cursors.add(cursor);
     } while (cursor);
     // ACP session/list intentionally omits sessions active on its own connection.
-    for (const session of this.#sessions.values()) result.set(publicId(session.id), {
+    for (const session of this.#sessions.values()) {
+      const listed = result.get(publicId(session.id));
+      result.set(publicId(session.id), {
       sessionId: publicId(session.id), agentKind: "dsh", hostname: localHostname(), cwd: session.cwd,
       createdAt: session.createdAt, modifiedAt: Number(record(session.entries.at(-1)?.data.message).timestamp) || session.createdAt, messageCount: session.entries.length,
+      // ACP omits the session currently attached to this connection. If a
+      // prior list did include it, the live row must not erase that title.
+      ...(listed?.name === undefined ? {} : { name: listed.name }),
     });
+    }
     return [...result.values()];
   }
 

@@ -123,8 +123,11 @@ func sessionMessagePreview(_ raw: String?) -> String? {
 }
 
 func sessionTitle(runtime: RuntimeSummary?, session: SessionSummary?, messages: [ChatMessage] = []) -> String {
-    for candidate in [runtime?.sessionName, session?.name] {
-        if let title = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
+    let explicitTitleClear = runtime?.sessionName == "" || session?.name == ""
+    if !explicitTitleClear {
+        for (candidate, identity) in [(runtime?.sessionName, runtime?.sessionId), (session?.name, session?.sessionId)] {
+            if let title = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty, title != identity { return title }
+        }
     }
     if let preview = sessionMessagePreview(session?.firstMessage) { return preview }
     for message in messages where message.role == "user" {

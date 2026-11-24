@@ -366,10 +366,12 @@ export class DshWebRuntime implements AgentBackend {
       if (!id || !cwd || archiveIds.has(id) !== archived || item.origin === "subagent" || (!includeBlank && item.blank === true)) return [];
       const local = this.#sessions.get(this.#publicId(id));
       const title = this.#discovery.titles.read(id, item);
+      const normalizedTitle = typeof title === "string" ? title.trim().slice(0, 256) : undefined;
       return [{ sessionId: this.#publicId(id), agentKind: this.kind, hostname: localHostname(), cwd,
         archived,
         createdAt: local?.createdAt ?? Number(item.createdAt ?? item.updatedAt ?? Date.now()), modifiedAt: Number(item.updatedAt ?? item.createdAt ?? Date.now()),
-        messageCount: local?.entries.length ?? 0, ...(title === undefined ? {} : { name: title ?? "" }) }];
+        messageCount: local?.entries.length ?? 0,
+        ...(title === null ? { name: "" } : normalizedTitle ? { name: normalizedTitle } : {}) }];
     });
   }
 
@@ -1374,7 +1376,7 @@ export class DshWebRuntime implements AgentBackend {
   }
   #metadata(session: WebSession): RuntimeMetadata {
     const selection = this.#selection(session);
-    return { runtimeId: this.#publicId(session.id), sessionId: this.#publicId(session.id), name: this.#flavor.runtimeName, ...(session.title ? { sessionName: session.title } : {}), cwd: session.cwd, hostname: localHostname(), status: session.running ? "running" : "idle", sessionGraphSync: true, ...this.#permissionMetadata(session), ...(dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) ? { permissions: dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) } : {}), sessionLeafId: session.entries.at(-1)?.entryId ?? null, ...(selection === undefined ? {} : { model: this.#modelInfo(session.modelCatalog, selection.provider, selection.model) }), ...(selection?.reasoningEffort === undefined ? {} : { thinkingLevel: selection.reasoningEffort }), ...(session.usage === undefined ? {} : { contextUsage: session.usage }),
+    return { runtimeId: this.#publicId(session.id), sessionId: this.#publicId(session.id), name: this.#flavor.runtimeName, ...(session.title === undefined ? {} : { sessionName: session.title }), cwd: session.cwd, hostname: localHostname(), status: session.running ? "running" : "idle", sessionGraphSync: true, ...this.#permissionMetadata(session), ...(dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) ? { permissions: dshPermissions(session.permissionProfile, session.permissionSandbox, session.permissionApproval) } : {}), sessionLeafId: session.entries.at(-1)?.entryId ?? null, ...(selection === undefined ? {} : { model: this.#modelInfo(session.modelCatalog, selection.provider, selection.model) }), ...(selection?.reasoningEffort === undefined ? {} : { thinkingLevel: selection.reasoningEffort }), ...(session.usage === undefined ? {} : { contextUsage: session.usage }),
       currentTurnConfigurationSupported: true,
       currentTurnConfiguration: session.running ? session.currentTurnConfiguration ?? null : null,
       modelSelection: { ...(selection === undefined ? {} : { model: wire({ provider: selection.provider, model: selection.model }) }),
@@ -1443,8 +1445,11 @@ export class DshWebRuntime implements AgentBackend {
     this.#discovery.titleProjection(id, raw, complete);
     const session = this.#sessions.get(this.#publicId(id));
     const title = this.#discovery.titles.read(id, {});
-    if (!session || title === undefined || session.title === (title ?? undefined)) return;
-    if (title) session.title = title; else delete session.title;
+    if (!session || title === undefined) return;
+    // Sequenced null is an explicit native clear; only missing means unknown.
+    const nextTitle = title === null ? "" : title.trim().slice(0, 256);
+    if (session.title === nextTitle) return;
+    session.title = nextTitle;
     this.#publishMetadata(session);
   }
   #permissionProjection(session: WebSession, raw: unknown): void {

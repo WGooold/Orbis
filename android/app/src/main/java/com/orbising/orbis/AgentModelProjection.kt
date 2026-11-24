@@ -49,7 +49,14 @@ internal fun RemoteState.applyAgentDomainProjection(
                     val incoming = json.decodeFromJsonElement<RuntimeSummary>(hydrated)
                     require(incoming.runtimeId == id && incoming.sessionId == sessionId)
                     runtime = runtime.copy(name = incoming.name, cwd = incoming.cwd, hostname = incoming.hostname,
-                        sessionName = incoming.sessionName, agentKind = incoming.agentKind,
+                        // Omission is unknown; the empty marker is reserved for an
+                        // explicit title clear from a provider notification.
+                        sessionName = when {
+                            incoming.sessionName == "" -> ""
+                            incoming.sessionName?.trim()?.isNotEmpty() == true -> incoming.sessionName.trim()
+                            else -> runtime.sessionName
+                        },
+                        agentKind = incoming.agentKind,
                         codexCatalogId = incoming.codexCatalogId,
                         steerSupported = incoming.steerSupported ?: runtime.steerSupported)
                 }

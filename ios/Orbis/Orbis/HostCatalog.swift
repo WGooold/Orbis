@@ -166,6 +166,15 @@ actor SessionCatalogPreparationWorker {
                retained: Set<String>, cacheLoaded: Bool, identity: RuntimeSummary? = nil, replacing: Bool = false,
                unifiedCodex: Bool = false, keepOtherCodexView: Bool = false) -> PreparedSessionCatalog {
         beforeWork?()
+        func retainingSparseTitle(_ incoming: SessionSummary, from old: SessionSummary?) -> SessionSummary {
+            guard let old else { return incoming }
+            var result = incoming
+            if result.name == nil || result.name != "" && result.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                result.name = old.name
+            }
+            if result.firstMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false { result.firstMessage = old.firstMessage }
+            return result
+        }
         func prepare(_ sessions: [SessionSummary]) -> PreparedSessionCatalog {
             PreparedSessionCatalog(sessions: sessions,
                 index: Dictionary(sessions.map { ($0.sessionId, $0) }, uniquingKeysWith: { first, _ in first }),
@@ -177,14 +186,19 @@ actor SessionCatalogPreparationWorker {
         }
         if replacing {
             // Keep rollback data; the directory worker will present only the negotiated view.
-            return prepare(Array(Dictionary((current.filter(otherCodexView) + incoming).map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new }).values)
+            let old = Dictionary(current.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, last in last })
+            let rows = current.filter(otherCodexView) + incoming.map { retainingSparseTitle($0, from: old[$0.sessionId]) }
+            return prepare(Array(Dictionary(rows.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, new in new }).values)
                 .sorted { $0.modifiedAt > $1.modifiedAt })
         }
         if let runtime = identity, let id = runtime.sessionId {
             var sessions = current
             let index = sessions.firstIndex { $0.sessionId == id }
             var entry = index.map { sessions[$0] } ?? SessionSummary(sessionId: id, cwd: runtime.cwd, createdAt: 0, modifiedAt: 0, messageCount: 0)
-            entry.name = runtime.sessionName
+            if let rawTitle = runtime.sessionName {
+                let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                if rawTitle.isEmpty || !title.isEmpty { entry.name = title }
+            }
             if !runtime.cwd.isEmpty { entry.cwd = runtime.cwd }
             entry.agentKind = runtime.agentKind; entry.hostname = runtime.hostname ?? entry.hostname
             if let index { sessions[index] = entry } else { sessions.append(entry) }
@@ -196,7 +210,7 @@ actor SessionCatalogPreparationWorker {
         }
         var merged = Dictionary(current.filter { otherCodexView($0) || !completeKinds.contains($0.agentKind ?? "") || retained.contains($0.sessionId) || !cacheLoaded }
             .map { ($0.sessionId, $0) }, uniquingKeysWith: { _, last in last })
-        for item in incoming { merged[item.sessionId] = item }
+        for item in incoming { merged[item.sessionId] = retainingSparseTitle(item, from: merged[item.sessionId]) }
         let sessions = merged.values.sorted { $0.modifiedAt > $1.modifiedAt }
         return PreparedSessionCatalog(sessions: sessions, index: merged, changed: sessions != current)
     }
