@@ -59,3 +59,11 @@
 记录见 `.artifacts/codex-unified-20261121/host-final/`、`swift-final/`、`android-final/`。这些自动测试不等同于真实已发布版本互通或用户验收。
 
 尚未完成：最近发布版本的真实旧 App／Host／Relay 互通与回退核对、双路运行时占用冲突的完整恢复矩阵、旧缓存／草稿别名的冲突处置审查、完整 iOS／Android 产品构建与设备验收、部署。设备验收由用户完成。
+
+### CODEX-UNIFIED-RESUME-UI-01｜手机恢复入口（2026-11-24）
+
+Host 的原生恢复路由不变。Android [侧栏状态](../../android/app/src/main/java/com/orbising/orbis/HomeUiSnapshot.kt)保留协商、后端就绪和启用状态，历史会话按当前可用方式恢复。iOS 保留先查看本机缓存的入口，[聊天输入区](../../ios/Orbis/Orbis/ChatScreenPublications.swift)随方式就绪或失效刷新「在电脑继续会话」，无需重开页面。
+
+- Android：[状态回归](../../android/app/src/test/java/com/orbising/orbis/HomeUiSnapshotTest.kt)所在的定向单测 48 项通过；[侧栏点击回归](../../android/app/src/androidTest/java/com/orbising/orbis/DrawerCatalogBackgroundInstrumentedTest.kt)已编译，模拟器在 ADB 启动检查阶段中止，未执行 UI 用例。证据：`.artifacts/codex-resume-ui-fix-20261124.bKtL5r/{android-reviewed,android-ui-build,emulator,emulator-retry}/`。
+- iOS：[缓存页恢复回归](../../ios/Orbis/Tests/LaunchLedgerTests.swift)所在的定向单测 59 项通过，模拟器 App 构建通过。证据：`.artifacts/codex-resume-ui-fix-20261124.bKtL5r/{swift-reviewed,ios-app-build}/`。
+- 未部署；设备安装与用户验收待完成。

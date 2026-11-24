@@ -690,7 +690,7 @@ struct ChatComposerView: View, Equatable {
                     } else { actions.activate(session, codexLaunchMode: modes.first) }
                 }
                     .disabled(facts.connection != .secured || facts.activatingSessionId != nil ||
-                              session.sessionId.hasPrefix("codex-history:") && actions.codexResumeModes(session).isEmpty)
+                              session.sessionId.hasPrefix("codex-history:") && facts.cachedCodexResumeModes.isEmpty)
             }
         }.padding(16)
     }

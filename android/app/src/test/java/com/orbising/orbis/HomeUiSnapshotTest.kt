@@ -30,6 +30,36 @@ class HomeUiSnapshotTest {
         assertEquals(listOf("loaded"), drawer.content.sessions.map { it.sessionId })
     }
 
+    // CODEX-UNIFIED-RESUME-UI-01: the drawer must retain the Host's exact resume choices for a non-running row.
+    @Test fun `Codex history resume choices survive home publication and follow Host changes`() {
+        val id = "codex-history:" + "a".repeat(64)
+        val bothModes = listOf("desktop", "terminal")
+        val entry = SessionCatalogEntry(id, cwd = "/repo", agentKind = "codex", codexLaunchModes = bothModes)
+        val source = RemoteState(hostId = "h", connection = RelayConnection.ONLINE, e2eReady = true,
+            sessions = mapOf(id to entry), unifiedCodexHistory = true, supportedAgents = setOf("codex", "codexDesktop"),
+            agentEnablementRevision = 1, agentEnablementRows = listOf(
+                AgentEnablementRow("codex", "Codex Terminal", true), AgentEnablementRow("codexDesktop", "Codex Desktop", true)))
+        val worker = HomeUiWorker()
+        fun publish(state: RemoteState) = worker.resolve(state, listOf(HostSnapshot(pairing("h"), state)), AppLanguage.Chinese)
+
+        val ready = publish(source)
+        val row = ready.catalog.single().directories.single().sessions.single()
+        assertFalse(row.isOnline)
+        assertEquals(id, row.sessionId)
+        assertEquals(bothModes, ready.state.codexResumeModes(id))
+        assertEquals(bothModes, ready.hosts.single().state.codexResumeModes(id))
+
+        val desktopDisabled = publish(source.copy(agentEnablementRevision = 2, agentEnablementRows = source.agentEnablementRows.map {
+            if (it.kind == "codexDesktop") it.copy(enabled = false) else it
+        }))
+        assertSame(ready.catalog, desktopDisabled.catalog)
+        assertEquals(listOf("terminal"), desktopDisabled.state.codexResumeModes(id))
+
+        val onlyDesktopConnected = publish(source.copy(supportedAgents = setOf("codexDesktop")))
+        assertEquals(listOf("desktop"), onlyDesktopConnected.state.codexResumeModes(id))
+        assertTrue(publish(source.copy(unifiedCodexHistory = false)).state.codexResumeModes(id).isEmpty())
+    }
+
     // FT-G11-PREVIEW-02: metadata-only pages publish without rebuilding the tree;
     // streaming transcript updates still reuse the same retained surface.
     @Test fun `metadata changes publish while transcript changes reuse the catalog surface`() {

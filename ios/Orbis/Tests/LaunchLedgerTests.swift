@@ -725,7 +725,12 @@ struct LaunchLedgerTests {
         let session = SessionSummary(sessionId: selectedCatalog, name: "Codex", cwd: "/repo/app", firstMessage: nil,
             createdAt: 0, modifiedAt: 0, messageCount: 1, agentKind: "codex", archived: false,
             codexLaunchModes: [.desktop, .terminal])
-        fixture.host.activate(session, codexLaunchMode: .desktop)
+        #expect(fixture.host.codexResumeModes(session) == [.desktop, .terminal])
+        if !runtimeArrivesBeforeAcknowledgement {
+            fixture.store.activate(session)
+            #expect(fixture.transport.activations.isEmpty, "two modes require a choice when the session is not running")
+        }
+        fixture.store.activate(session, codexLaunchMode: .desktop)
         #expect(fixture.host.sendMessage("resume on desktop"))
         #expect(fixture.transport.userMessages.isEmpty)
         let requestId = try #require(fixture.host.launching?.requestId)
@@ -747,6 +752,62 @@ struct LaunchLedgerTests {
         #expect(fixture.host.pendingSends.items.first?.runtimeId == "codex-desktop:selected")
         #expect(fixture.host.pendingSends.items.first?.sessionId == "same-thread")
         #expect(fixture.host.launching == nil)
+    }
+
+    // CODEX-UNIFIED-RESUME-UI-01: a cached composer already on screen must update
+    // Continue when a Host backend becomes ready or goes away, without reopening the page.
+    @Test(arguments: CodexLaunchMode.allCases)
+    func cachedUnifiedResumeSendsOnlyTheReadyMode(_ mode: CodexLaunchMode) async throws {
+        let fixture = await setup()
+        let features = ["device.features", codexUnifiedHistoryFeature]
+        func ready(_ agents: [String]) async {
+            await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "hostFeatures": features,
+                "deviceFeatures": features, "dshDesktop": NSNull(), "agents": agents,
+                "launchableAgents": ["codex", "codexDesktop"], "runtimes": []])
+        }
+        await ready([])
+        let id = "codex-history:" + String(repeating: "c", count: 64)
+        let list = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.list" }?["requestId"] as? String)
+        await fixture.transport.emit(["type": "session.list.result", "requestId": list, "sessions": [[
+            "sessionId": id, "name": "Cached Codex", "cwd": "/repo/app", "createdAt": 0, "modifiedAt": 0,
+            "messageCount": 1, "agentKind": "codex", "archived": false, "codexLaunchModes": ["desktop", "terminal"]
+        ]]])
+        let session = try #require(fixture.host.sessions.first { $0.sessionId == id })
+        #expect(fixture.store.openCachedSession(session))
+        await fixture.store.waitForPendingEvents()
+        let actions = ChatSessionActions(store: fixture.store, target: .capture(fixture.store))
+        let before = fixture.store.chatScreens.composer
+        #expect(before.cachedSession?.sessionId == id)
+        #expect(before.connection == .secured)
+        #expect(before.cachedCodexResumeModes.isEmpty)
+        #expect(actions.codexResumeModes(session).isEmpty)
+
+        await ready([mode.agentKind])
+        let choices = actions.codexResumeModes(session)
+        #expect(choices == [mode])
+        let refreshed = fixture.store.chatScreens.composer
+        #expect(refreshed.target == before.target)
+        #expect(refreshed.connection == before.connection)
+        #expect(refreshed.cachedCodexResumeModes == [mode])
+        actions.activate(session, codexLaunchMode: mode == .desktop ? .terminal : .desktop)
+        #expect(fixture.transport.activations.isEmpty)
+
+        await ready([])
+        #expect(fixture.store.chatScreens.composer.target == before.target)
+        #expect(fixture.store.chatScreens.composer.cachedCodexResumeModes.isEmpty)
+        actions.activate(session, codexLaunchMode: choices.first)
+        #expect(fixture.transport.activations.isEmpty)
+
+        await ready([mode.agentKind])
+        actions.activate(session, codexLaunchMode: choices.first)
+
+        #expect(fixture.transport.activations.count == 1)
+        let request = try #require(fixture.transport.activations.first)
+        let target = try #require(request["target"] as? [String: String])
+        #expect(target == ["type": "resume", "sessionId": id, "agentKind": "codex"])
+        #expect(request["spawnMode"] as? String == "auto")
+        #expect(request["codexLaunchMode"] as? String == mode.rawValue)
+        await fixture.store.waitForPendingEvents()
     }
 
     @Test func aFailureShowsInPlaceFailsWaitingMessagesAndCanRetry() async throws {

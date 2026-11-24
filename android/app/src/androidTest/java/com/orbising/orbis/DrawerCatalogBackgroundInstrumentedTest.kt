@@ -65,6 +65,54 @@ class DrawerCatalogBackgroundInstrumentedTest {
         assertEquals(listOf("host" to "s"), opened)
     }
 
+    // CODEX-UNIFIED-RESUME-UI-01: click the production drawer's rendered row, not the full Host state.
+    @Test fun codexHistoryClickUsesTheReadyModeAndFallsBackToCacheOnlyWithoutAConnection() {
+        val id = "codex-history:" + "a".repeat(64)
+        val entry = SessionCatalogEntry(id, name = "Saved Codex", cwd = "/repo", agentKind = "codex",
+            hasHistoryCache = true, codexLaunchModes = listOf("desktop", "terminal"))
+        val source = RemoteState(hostId = "host", connection = RelayConnection.ONLINE, e2eReady = true,
+            sessions = mapOf(id to entry), unifiedCodexHistory = true, supportedAgents = setOf("codexDesktop"))
+        val worker = HomeUiWorker()
+        fun publish(state: RemoteState) = worker.resolve(state, listOf(host(state)), AppLanguage.Chinese)
+        val ui = mutableStateOf(publish(source))
+        val resumes = mutableListOf<Triple<String, String, String>>()
+        val history = mutableListOf<Pair<String, String>>()
+        compose.setContent { OrbisTheme(darkTheme = false) {
+            val home = ui.value
+            SessionDrawer(state = home.state, hosts = home.hosts, preparedCatalog = home.catalog,
+                onSelectHost = {}, onUnpairHost = {}, onAddHost = {},
+                onOpenSession = { _, _ -> error("non-running unified Codex must pick a resume mode") },
+                onResumeCodex = { hostId, sessionId, mode -> resumes += Triple(hostId, sessionId, mode) },
+                onOpenHistory = { hostId, sessionId -> history += hostId to sessionId },
+                onNewSession = { _, _ -> }, onSetArchived = { _, _, _ -> })
+        } }
+        awaitRow(id)
+        val row = compose.onNodeWithTag("drawer-session-$id")
+        row.performClick()
+        val desktop = Triple("host", id, "desktop")
+        compose.runOnIdle {
+            assertEquals(listOf(desktop), resumes)
+            assertEquals(emptyList<Pair<String, String>>(), history)
+        }
+
+        val bothModes = publish(source.copy(supportedAgents = setOf("codex", "codexDesktop")))
+        compose.runOnIdle { ui.value = bothModes }
+        row.performClick()
+        compose.onNodeWithText(codexModeTitle("desktop")).assertIsDisplayed()
+        compose.runOnIdle { assertEquals(listOf(desktop), resumes) }
+        compose.onNodeWithText(codexModeTitle("terminal")).performClick()
+        val expected = listOf(desktop, Triple("host", id, "terminal"))
+        compose.runOnIdle { assertEquals(expected, resumes) }
+
+        val offline = publish(source.copy(connection = RelayConnection.OFFLINE, e2eReady = false))
+        compose.runOnIdle { ui.value = offline }
+        row.performClick()
+        compose.runOnIdle {
+            assertEquals(expected, resumes)
+            assertEquals(listOf("host" to id), history)
+        }
+    }
+
     @Test fun hostSwitchAndSearchCannotPublishRowsFromThePreviousHost() {
         val state = mutableStateOf(RemoteState(hostId = "first", hostName = "Fixture", sessions = mapOf("one" to
             SessionCatalogEntry("one", name = "Target first", cwd = "/repo", agentKind = "pi"))))

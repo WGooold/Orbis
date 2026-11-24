@@ -43,6 +43,9 @@ internal class HomeUiWorker {
             runtimes = source.runtimes, sessions = source.sessions, homeSnapshot = source.homeSnapshot?.map { card -> card.copy(error = source.sessionOperationErrors[card.runtime.runtimeId]) },
             sessionOperationErrors = source.sessionOperationErrors, sessionListError = source.sessionListError,
             catalogQuery = source.catalogQuery,
+            // CODEX-UNIFIED-RESUME-UI-01: a catalog row survives this slice; its resume modes must too.
+            unifiedCodexHistory = source.unifiedCodexHistory, supportedAgents = source.supportedAgents,
+            agentEnablementRevision = source.agentEnablementRevision, agentEnablementRows = source.agentEnablementRows,
             capabilities = source.capabilities, currentProviders = source.currentProviders,
             sessionActivateRequests = source.sessionActivateRequests, ledger = OperationLedger(connection = source.ledger.connection, operations = source.ledger.operations.filter {
                 it.payload is LedgerPayload.Archive || it.payload is LedgerPayload.Quit
