@@ -143,6 +143,28 @@ class ProviderDialInstrumentedTest {
             .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "Codex CLI"))
     }
 
+    /** AGENT-DIAL-10: after the ring turns to another Agent, that Agent's pin still follows the finger. */
+    @Test fun pinFollowsAfterTurningToAnotherAgent() {
+        val dial = managedDial(AgentEnablementRow("codex", "Codex CLI", true), AgentEnablementRow("openclaw", "OpenClaw", true))
+        val g = pinGeometry(dial)
+        // Turn the ring with a finger first, as a person does: the dial's pointer handler starts on this touch.
+        val slot = with(compose.density) { androidx.compose.ui.geometry.Offset((g.cx + g.agentRadius).dp.toPx(), g.cy.dp.toPx()) }
+        val step = with(compose.density) { 84.dp.toPx() }
+        dial.performTouchInput { down(slot); moveTo(slot + androidx.compose.ui.geometry.Offset(0f, -step * 0.35f), 200) }
+        capture("ring-turning")
+        dial.performTouchInput { moveTo(slot + androidx.compose.ui.geometry.Offset(0f, -step), 300); up() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("provider-agent-reel")
+            .assert(SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.StateDescription, "OpenClaw"))
+        val socket = with(compose.density) { androidx.compose.ui.geometry.Offset((g.pinStart + g.pinTravel).dp.toPx(), g.cy.dp.toPx()) }
+        val travel = with(compose.density) { g.pinTravel.dp.toPx() }
+        dial.performTouchInput { down(socket); moveTo(socket + androidx.compose.ui.geometry.Offset(-travel * 0.9f, 0f), 250) }
+        val pin = compose.onNodeWithTag("provider-agent-openclaw").fetchSemanticsNode().boundsInRoot.center.x
+        assertEquals(with(compose.density) { (g.pinStart + g.pinTravel * 0.1f).dp.toPx() }, pin, with(compose.density) { 2.dp.toPx() })
+        dial.performTouchInput { up() }
+        compose.runOnIdle { assertEquals(listOf(Triple("openclaw", false, null)), enablementChanges) }
+    }
+
     /** AGENT-DIAL-06: a swipe that leaves the groove abandons the pin edit, however far it travelled sideways. */
     @Test fun swipeLeavingTheGrooveNeverSwitchesAnAgent() {
         val dial = managedDial(AgentEnablementRow("codex", "Codex CLI", true), AgentEnablementRow("openclaw", "OpenClaw", true))

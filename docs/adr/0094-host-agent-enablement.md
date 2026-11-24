@@ -220,3 +220,13 @@ iOS 自动验证：[Swift 几何回归 9 项通过](../../.artifacts/agent-dial-
 回归：[`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `pinGrabbedOnTheKnobFollowsEvenWhenTheSwipeStartsDiagonally`；`swipeLeavingTheGrooveNeverSwitchesAnAgent` 改为在远离凹槽处松手。
 
 自动验证（2026-11-24）：新用例在修改前的[对照运行](../../.artifacts/agent-dial-09-20261124/baseline-instrumentation/instrumentation.log)中失败（起手偏竖时插销留在原位）；修复后[`ProviderDialInstrumentedTest` 15 项中 13 项通过](../../.artifacts/agent-dial-09-20261124/fixed-instrumentation/instrumentation.log)，其余 2 项为既有失败；Android 单元回归 15 项、Swift 几何回归 9 项通过；iOS 无签名模拟器构建成功。拖动手感待用户安装验收。
+
+## AGENT-DIAL-10｜换 Agent 后插销仍跟手；栓帽阴影不被方形截断（2026-11-24）
+
+- **问题**：首次进入页面后用手指转到其他 Agent，再拨插销时插销不动，只在松手时生效；切换页面回来后才跟手。转动过程中栓帽高光呈方形截断。
+- **根因**：轮盘的指针处理协程在首次触摸时启动，之后 Agent 变化不会重启它；插销拖动位置、过半状态与提示按 Agent 键入 `remember`，处理协程仍写入启动时那个 Agent 的状态对象，插销读取的是新 Agent 的状态。半透明的 `graphicsLayer` 在透明度小于 1 时使用离屏缓冲，栓帽软阴影被裁到图层方形边界。
+- **修复**：手势写入的状态只按电脑键入，切换 Agent 时显式清空；带阴影的半透明图层使用 `CompositingStrategy.ModulateAlpha`，不再离屏裁切。
+
+回归：[`ProviderDialInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/ProviderDialInstrumentedTest.kt) `pinFollowsAfterTurningToAnotherAgent`（先用手指转动内环再拨插销，并截取转动中画面）。
+
+自动验证（2026-11-24，在仅含本改动的干净工作树构建）：新用例在修改前的[对照运行](../../.artifacts/agent-dial-10-20261124/baseline-r2-instrumentation/instrumentation.log)中失败（插销停在原位）；修复后[`ProviderDialInstrumentedTest` 16 项中 14 项通过](../../.artifacts/agent-dial-10-20261124/fixed-r2-instrumentation/instrumentation.log)，其余 2 项为既有失败；单元回归 15 项通过。转动中截图对比：修改前栓帽高光方形截断，修改后为完整圆形阴影。待用户安装验收。

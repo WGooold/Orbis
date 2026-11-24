@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import kotlinx.coroutines.CoroutineStart
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -316,11 +317,14 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
     val currentPending by rememberUpdatedState(pending)
     val currentActiveSessions by rememberUpdatedState(activeSessionCount)
     val toggle by rememberUpdatedState(onToggle)
-    var pinDrag by remember(hostId, kind) { mutableStateOf<Float?>(null) }
-    var pinArmed by remember(hostId, kind) { mutableStateOf(false) }
+    // AGENT-DIAL-10: state the gesture writes is not keyed by Agent. The pointer handler outlives Agent changes,
+    // and a per-Agent state object would leave it writing the previous Agent's drag while the pin reads the new one.
+    var pinDrag by remember(hostId) { mutableStateOf<Float?>(null) }
+    var pinArmed by remember(hostId) { mutableStateOf(false) }
     var showStatusInfo by remember(hostId, kind, status.label) { mutableStateOf(false) }
-    var hint by remember(hostId, kind) { mutableStateOf<String?>(null) }
-    var hintEvent by remember(hostId, kind) { mutableIntStateOf(0) }
+    var hint by remember(hostId) { mutableStateOf<String?>(null) }
+    var hintEvent by remember(hostId) { mutableIntStateOf(0) }
+    LaunchedEffect(hostId, kind) { pinDrag = null; pinArmed = false; hint = null }
     val nudge = remember(hostId, kind) { Animatable(0f) }
     val recoil = remember(hostId, kind) { Animatable(0f) }
     var nudged by rememberSaveable(hostId) { mutableStateOf(false) }
@@ -575,7 +579,7 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                     }
                 }
                 NeumorphSurface(Modifier.disc(g.seamRadius), CircleShape, NeumorphStyle.Pressed, shadowScale = 0.4f) {}
-                NeumorphSurface(Modifier.disc(g.hubRadius).graphicsLayer { alpha = if (grabbed == ProviderDialRing.Profile) 0.4f else 1f },
+                NeumorphSurface(Modifier.disc(g.hubRadius).graphicsLayer { alpha = if (grabbed == ProviderDialRing.Profile) 0.4f else 1f; compositingStrategy = CompositingStrategy.ModulateAlpha },
                     CircleShape, shadowScale = if (grabbed == ProviderDialRing.Agent) 0.65f else 0.4f) {}
                 NeumorphSurface(Modifier.disc(g.holeRadius), CircleShape, NeumorphStyle.Pressed, shadowScale = 0.65f) {}
                 if (!managed) NeumorphSurface(Modifier.offset(x = (g.cx + g.agentRadius - 20).dp, y = (g.cy - 20).dp).size(40.dp)
@@ -653,11 +657,12 @@ private fun DualProviderDial(kinds: List<String>, rows: Map<String, AgentEnablem
                         IntOffset((x - 24 + if (selected) recoil.value else 0f).dp.roundToPx(), (y - 24).dp.roundToPx())
                     }.size(48.dp)
                     .testTag("provider-agent-$agent")
-                    .graphicsLayer { alpha = 0.4f + 0.6f * if (grabbed == ProviderDialRing.Profile) AgentDialPin.docked(distance) else gate }
+                    // ModulateAlpha: an offscreen layer would clip the cap's soft shadow to this square.
+                    .graphicsLayer { alpha = 0.4f + 0.6f * if (grabbed == ProviderDialRing.Profile) AgentDialPin.docked(distance) else gate; compositingStrategy = CompositingStrategy.ModulateAlpha }
                     .orbisKeyboardFocus().clickable(enabled = active,
                         interactionSource = remember { MutableInteractionSource() }, indication = null) { tick(); settle(ProviderDialRing.Agent, index) }, contentAlignment = Alignment.Center) {
                     // The raised cap belongs to whichever Agent is docking, rising and sinking with ring position.
-                    if (managed && gate > 0.01f) NeumorphSurface(Modifier.size(40.dp).graphicsLayer { alpha = gate }, CircleShape,
+                    if (managed && gate > 0.01f) NeumorphSurface(Modifier.size(40.dp).graphicsLayer { alpha = gate; compositingStrategy = CompositingStrategy.ModulateAlpha }, CircleShape,
                         shadowScale = if (agentEnabled) 0.6f else 0.28f) {}
                     if (managed && selected && pending != null) {
                         val color = if (conflictId != null) palette.danger else accent
