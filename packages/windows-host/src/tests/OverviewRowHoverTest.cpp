@@ -244,7 +244,18 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     return;
   }
   if (method === "openclaw.save") {
-    out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
+    out({ id, result: { source: "file", url: params.url, hasToken: !!params.token, access: params.access ?? "auto" } });
+    return;
+  }
+  if (method === "openclaw.config.read") {
+    out({ id, result: { ticket: "fixture", fields: [
+      { key: "workspace", label: "默认工作区", group: "模型与工作区", kind: "workspace", editable: true, value: "/fixture" },
+      { key: "profile", label: "工具配置", group: "权限与隔离", kind: "choice", editable: true, value: "coding", options: { coding: "编程", minimal: "最少工具" } }
+    ] } });
+    return;
+  }
+  if (method === "openclaw.config.apply") {
+    out({ id, result: { state: params.ticket === "fixture" && params.changes.workspace === "/new-workspace" ? "saved" : "unexpected" } });
     return;
   }
   if (method === "hermes.remote.save") {
@@ -485,6 +496,75 @@ private slots:
         QVERIFY(save->isEnabled());
         QVERIFY(QMetaObject::invokeMethod(save, "clicked"));
         QCOMPARE(field->property("text").toString(), QString());
+        controller.shutdown();
+    }
+
+    // OPENCLAW-HOST-SETTINGS-01: report Gateway refusal, require acknowledged remote admin, then review exact native changes.
+    void openClawSettingsShowsGrantAndConfirmsChanges() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        writeFixtureBridge(root.path());
+        const auto dir = root.filePath("desktop");
+        QDir().mkpath(dir);
+        HostController controller(root.path(), dir, root.filePath("state"), dir, false);
+        controller.m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
+        controller.m_tick.stop();
+        controller.m_credential = "orbis_host_fixture";
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("host", &controller);
+        engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(dir + "/appearance.ini"));
+        engine.rootContext()->setContextProperty("orbisMotionEnabled", false);
+        engine.rootContext()->setContextProperty("trayAvailable", false);
+        engine.loadFromModule("Orbis.Host", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window && QTest::qWaitForWindowExposed(window));
+        QTRY_VERIFY(controller.bridgeReady() && !controller.busy() && !controller.agents().isEmpty());
+        controller.m_openClaw = {{"source", "file"}, {"url", "wss://gateway.example.test"}, {"access", "sessions"}};
+        emit controller.openClawChanged();
+        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, QString("openclaw"))));
+        auto *rootItem = window->contentItem();
+        auto *access = findVisualItem(rootItem, "openClawAccess");
+        auto *apply = findVisualItem(rootItem, "applyOpenClaw");
+        auto *state = findVisualItem(rootItem, "openClawState");
+        QVERIFY(access && apply && state);
+        QTRY_VERIFY(access->isVisible() && access->isEnabled());
+        QCOMPARE(access->property("currentIndex").toInt(), 1);
+        QVERIFY(!apply->isEnabled());
+        QVERIFY(QMetaObject::invokeMethod(access, "picked", Q_ARG(int, 2)));
+        QTRY_VERIFY(apply->isEnabled());
+        QVERIFY(QMetaObject::invokeMethod(apply, "clicked"));
+        auto *adminDialog = window->findChild<QObject *>("openClawAdminConfirm");
+        QVERIFY(adminDialog);
+        QTRY_VERIFY(adminDialog->property("visible").toBool());
+        QCOMPARE(controller.openClaw().value("access").toString(), QString("sessions"));
+        auto *confirm = adminDialog->findChild<QObject *>("confirmOpenClawAdmin");
+        QVERIFY(confirm && QMetaObject::invokeMethod(confirm, "clicked"));
+        QTRY_COMPARE(controller.openClaw().value("access").toString(), QString("admin"));
+        controller.m_desiredRunning = true;
+        controller.receiveLine({{"event", "status"}, {"openClawConnection", QJsonObject{{"phase", "access_denied"}, {"granted", "sessions"}, {"canEdit", false}}}});
+        QTRY_COMPARE(state->property("text").toString(), QString("权限未授予"));
+        auto *native = findVisualItem(rootItem, "openClawNativeSettings");
+        auto *dialog = window->findChild<QObject *>("openClawNativeDialog");
+        QVERIFY(native && dialog && QMetaObject::invokeMethod(native, "clicked"));
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QVERIFY(!dialog->property("canEdit").toBool());
+        controller.receiveLine({{"event", "status"}, {"openClawConnection", QJsonObject{{"phase", "connected"}, {"granted", "admin"}, {"canEdit", true}}}});
+        auto *read = dialog->findChild<QObject *>("readOpenClawNative");
+        QVERIFY(read && QMetaObject::invokeMethod(read, "clicked"));
+        QTRY_VERIFY(dialog->property("loaded").toBool());
+        const auto screenshotPath = qEnvironmentVariable("ORBIS_OPENCLAW_SETTINGS_SCREENSHOT");
+        if (!screenshotPath.isEmpty()) QVERIFY(window->grabWindow().save(screenshotPath));
+        QVERIFY(QMetaObject::invokeMethod(dialog, "edit", Q_ARG(QVariant, QString("workspace")), Q_ARG(QVariant, QString("/new-workspace"))));
+        auto *applyNative = dialog->findChild<QObject *>("applyOpenClawNative");
+        QVERIFY(applyNative && QMetaObject::invokeMethod(applyNative, "clicked"));
+        auto *review = window->findChild<QObject *>("openClawNativeConfirm");
+        QVERIFY(review);
+        QTRY_VERIFY(review->property("visible").toBool());
+        QVERIFY(controller.openClawNativeFeedback().isEmpty());
+        auto *confirmNative = review->findChild<QObject *>("confirmOpenClawNative");
+        QVERIFY(confirmNative && QMetaObject::invokeMethod(confirmNative, "clicked"));
+        QTRY_COMPARE(controller.openClawNativeFeedback(), QString("已保存。"));
         controller.shutdown();
     }
 

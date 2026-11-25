@@ -72,6 +72,21 @@ test.each([
   } finally { await backend.stop(); }
 });
 
+// OPENCLAW-HOST-SETTINGS-01: distinguish a typed Gateway permission refusal from a lost acknowledgement.
+test("points a native administrator rejection to the Host's OpenClaw settings without exposing upstream text", async () => {
+  const f = await fixture(method => {
+    if (method === "sessions.list") return { hasMore: false, sessions: [] };
+    throw new GatewayClientRequestError({ code: "FORBIDDEN", message: "private server diagnostic", details: {
+      code: "MISSING_SCOPE", missingScope: "operator.admin", requiredScopes: ["operator.admin"],
+    } });
+  });
+  try {
+    await expect(f.backend.activate({ type: "new", cwd }, { deviceId: "fixture", launchId: "fixture" }))
+      .rejects.toThrow(/未授予.*管理员权限.*Host.*OpenClaw 页面/);
+    expect(f.request.mock.calls.filter(([method]) => method === "sessions.create")).toHaveLength(1);
+  } finally { await f.backend.stop(); }
+});
+
 // HOST-RUNNING-01: recent, idle, or archived Gateway records must not light up Host.
 test("reports native active runs without opening OpenClaw sessions", async () => {
   const f = await fixture((method, args) => method === "sessions.list" ? { hasMore: false, sessions: args.activeOnly ? [

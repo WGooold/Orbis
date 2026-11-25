@@ -103,6 +103,9 @@ class HostController : public QObject {
     Q_PROPERTY(QVariantMap activeAgentSessions READ activeAgentSessions NOTIFY changed)
     Q_PROPERTY(QVariantMap agySetup READ agySetup NOTIFY agySetupChanged)
     Q_PROPERTY(QVariantMap openClaw READ openClaw NOTIFY openClawChanged)
+    Q_PROPERTY(QVariantMap openClawConnection READ openClawConnection NOTIFY changed)
+    Q_PROPERTY(QVariantMap openClawNative READ openClawNative NOTIFY openClawNativeChanged)
+    Q_PROPERTY(QString openClawNativeFeedback READ openClawNativeFeedback NOTIFY changed)
     Q_PROPERTY(QVariantMap hermesRemote READ hermesRemote NOTIFY hermesRemoteChanged)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
@@ -205,6 +208,9 @@ public:
     QVariantMap activeAgentSessions() const { return m_activeAgentSessions; }
     QVariantMap agySetup() const { return m_agySetup; }
     QVariantMap openClaw() const { return m_openClaw; }
+    QVariantMap openClawConnection() const { return m_openClawConnection; }
+    QVariantMap openClawNative() const { return m_openClawNative; }
+    QString openClawNativeFeedback() const { return m_openClawNativeFeedback; }
     QVariantMap hermesRemote() const { return m_hermesRemote; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
@@ -238,8 +244,10 @@ public:
     Q_INVOKABLE void saveAgyCredential(const QString &key);
     Q_INVOKABLE void retryAgySetup();
     Q_INVOKABLE void removeAgyCredential();
-    Q_INVOKABLE void saveOpenClaw(const QString &url, const QString &token);
+    Q_INVOKABLE void saveOpenClaw(const QString &url, const QString &token, const QString &access = {}, bool clearToken = false, const QString &auth = {});
     Q_INVOKABLE void reconnectOpenClaw();
+    Q_INVOKABLE void readOpenClawNative();
+    Q_INVOKABLE void applyOpenClawNative(const QVariantMap &changes);
     Q_INVOKABLE void saveHermesRemote(const QString &host, int port, const QString &profile);
     Q_INVOKABLE void reconnectHermesRemote();
     Q_INVOKABLE void stopHost();
@@ -311,6 +319,7 @@ signals:
     void agentWriteFeedback(const QStringList &kinds, const QString &status, double revision);
     void agySetupChanged();
     void openClawChanged();
+    void openClawNativeChanged();
     void hermesRemoteChanged();
     void providersChanged();
     void providerPresetsChanged();
@@ -458,6 +467,8 @@ private:
     int m_agyBridgeGeneration = 0;
     AgyVault m_agyVaultForTest;
     QVariantMap m_openClaw;
+    QVariantMap m_openClawConnection, m_openClawNative;
+    QString m_openClawNativeFeedback;
     QVariantMap m_hermesRemote;
     QVariantMap m_codexDesktop, m_dshDesktop;
     QString m_kimiCodeState, m_kimiCodeDefaultSource = "web";

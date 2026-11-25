@@ -253,7 +253,7 @@ static bool isProviderBackgroundRequest(const QString &method) {
  * not grey out unrelated controls; their own controls read activityKinds instead.
  */
 static bool isBackgroundRequest(const QString &method) {
-    return isProviderBackgroundRequest(method) || method == "detect" || method.startsWith("agent.enablement.") || method.startsWith("agy.setup.");
+    return isProviderBackgroundRequest(method) || method == "detect" || method.startsWith("agent.enablement.") || method.startsWith("agy.setup.") || method == "openclaw.config.read";
 }
 /**
  * 每个桥命令在界面上叫什么。返回空 = 不值得单独提示（Agent 安装/更新有自己一套进度 UI）。
@@ -275,6 +275,8 @@ static QPair<QString, QString> activityFor(const QString &method, const QJsonObj
     if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
     if (method.startsWith("agent.enablement.write")) return { "agentEnablement", "正在保存 Agent 设置" };
     if (method == "openclaw.save") return { "openClaw", "正在保存 OpenClaw 配置" };
+    if (method == "openclaw.config.read") return { "openClawConfig", "正在读取 Gateway 配置" };
+    if (method == "openclaw.config.apply") return { "openClawConfig", "正在应用 Gateway 配置" };
     if (method == "hermes.remote.save") return { "hermesRemote", "正在保存 Hermes SSH 配置" };
     if (method == "rename") return { "host", "正在保存电脑名称" };
     if (method.startsWith("provider.")) {
@@ -387,6 +389,8 @@ void HostController::resumeAfterChange() {
 void HostController::clearRunningFacts() {
     // Desktop connections belong to this Host run; their lifecycles report again on the next start.
     m_backends.clear(); m_activeAgentSessions.clear(); m_runtimeCount = 0; m_codexDesktop.clear(); m_dshDesktop.clear(); m_kimiCodeState.clear(); m_kimiCodeDesktopState.clear();
+    m_openClawConnection.clear();
+    if (!m_openClawNative.isEmpty()) { m_openClawNative.clear(); emit openClawNativeChanged(); }
     // 终端 Codex 与 DeepSeek 后端的准备属于这一次运行：停了就不再有“正在准备”。
     // Claude 插件登记属于 Host 核心本身，暂停连接不影响它。
     m_preparations.remove("codex"); m_preparations.remove("dsh");
@@ -409,7 +413,8 @@ void HostController::receiveLine(const QJsonObject &line) {
             else if (method == "agent.enablement.read") m_agentReadPending = false;
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
             if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; clearDownload(); detectAgents(); }
-            if (method == "selectAgentEntry") emit agentEntryFinished(params.value("kind").toString(), line.value("error").toString());
+            if (method.startsWith("openclaw.config.")) m_openClawNativeFeedback = line.value("error").toString();
+            else if (method == "selectAgentEntry") emit agentEntryFinished(params.value("kind").toString(), line.value("error").toString());
             else setMessage(line.value("error").toString());
             if (method == "start" && line.value("error").toString().startsWith("Relay 认证失败：unauthorized ")) invalidateActivation();
         }
@@ -463,6 +468,7 @@ void HostController::receiveLine(const QJsonObject &line) {
                     backends = domain.toObject().value("value").toObject().value("backends").toArray().toVariantList();
             }
             m_backends = backends;
+            m_openClawConnection = m_desiredRunning ? line.value("openClawConnection").toObject().toVariantMap() : QVariantMap{};
             m_activeAgentSessions = m_state == "connected" ? line.value("activeAgentSessions").toObject().toVariantMap() : QVariantMap{};
             m_kimiCodeState = m_desiredRunning && kimiCodeEnabled() ? line.value("kimiCodeState").toString() : QString();
             m_kimiCodeDesktopState = m_desiredRunning && agentEnabled("kimiCodeDesktop") ? line.value("kimiCodeDesktopState").toString() : QString();
@@ -1156,14 +1162,49 @@ void HostController::removeAgyCredential() {
     });
 }
 
-void HostController::saveOpenClaw(const QString &url, const QString &token) {
+void HostController::saveOpenClaw(const QString &url, const QString &token, const QString &access, bool clearToken, const QString &auth) {
     if (!m_bridgeReady || busy() || m_openClaw.value("source").toString() != "file") return;
-    command("openclaw.save", {{"url", url}, {"token", token}}, [this](const QJsonValue &result) {
+    QJsonObject params{{"url", url}, {"token", token}, {"clearToken", clearToken}};
+    if (!access.isEmpty()) params.insert("access", access);
+    if (!auth.isEmpty()) params.insert("auth", auth);
+    command("openclaw.save", params, [this](const QJsonValue &result) {
         m_openClaw = result.toObject().toVariantMap();
+        m_openClawConnection.clear();
+        m_openClawNative.clear();
+        emit openClawNativeChanged();
         emit openClawChanged();
         // Preserve the current connection when validation or persistence failed.
         reconnectOpenClaw();
         setMessage(m_openClaw.value("url").toString().isEmpty() ? "OpenClaw 连接配置已移除" : "OpenClaw 配置已保存");
+    });
+}
+void HostController::readOpenClawNative() {
+    if (!m_bridgeReady || !m_desiredRunning || busy() || m_methods.values().contains("openclaw.config.read") || !m_openClawConnection.value("canEdit").toBool()) return;
+    m_openClawNative.clear(); m_openClawNativeFeedback.clear();
+    emit openClawNativeChanged();
+    command("openclaw.config.read", {}, [this](const QJsonValue &value) {
+        const auto result = value.toObject();
+        if (!m_desiredRunning || !m_openClawConnection.value("canEdit").toBool()) return;
+        if (result.value("ticket").toString().isEmpty() || !result.value("fields").isArray()) {
+            m_openClawNativeFeedback = "Gateway 配置未确认，请重新读取。";
+            return;
+        }
+        m_openClawNative = result.toVariantMap();
+        emit openClawNativeChanged();
+    });
+}
+void HostController::applyOpenClawNative(const QVariantMap &changes) {
+    const auto ticket = m_openClawNative.value("ticket").toString();
+    if (!m_bridgeReady || !m_desiredRunning || busy() || ticket.isEmpty() || !m_openClawConnection.value("canEdit").toBool() || changes.isEmpty()) return;
+    m_openClawNativeFeedback.clear();
+    command("openclaw.config.apply", {{"ticket", ticket}, {"changes", QJsonObject::fromVariantMap(changes)}}, [this](const QJsonValue &value) {
+        const auto result = value.toObject();
+        const auto state = result.value("state").toString();
+        m_openClawNative.clear();
+        m_openClawNativeFeedback = state == "unchanged" ? "Gateway 配置没有变化。"
+            : state != "saved" ? "未确认是否保存，请重新读取配置。"
+            : result.value("restarting").toBool() ? "已保存。等待 Gateway 重启后重新读取。" : "已保存。";
+        emit openClawNativeChanged();
     });
 }
 void HostController::reconnectOpenClaw() {

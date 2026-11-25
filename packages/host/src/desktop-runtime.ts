@@ -17,6 +17,7 @@ import { AGY_VERSION, findAgy, openAgyProfile, verifyAgyConnection } from "./agy
 import { agyEnvironmentKey, agyKey } from "./agy-credential.js";
 import { AgyRuntime } from "./agy-runtime.js";
 import { agySubmissionFence } from "./agy-submission-fence.js";
+import { OpenClawNativeSettings } from "./openclaw-native-settings.js";
 import { createOpenCodeLocalLauncher, OPENCODE_TUI_ENV_KEYS, prepareOpenCodeTerminalLaunch } from "./opencode-local-launch.js";
 import { OpenCodeServiceConnection } from "./opencode-service-connection.js";
 import { configureOpenCodeTuiTabs, openCodeTuiTabsInstalled } from "./opencode-tui-tabs-install.js";
@@ -172,6 +173,7 @@ export class DesktopRuntime {
   #service: HostService | undefined;
   #agySavedKey: string | undefined;
   readonly #agySetupAbort = new AbortController();
+  readonly #openClawNative = new OpenClawNativeSettings(() => this.#qa ? undefined : this.#service?.openClawSettingsConnection);
   #disposing: Promise<void> | undefined;
   #codex: CodexAppServer | undefined;
   #codexRuntime: CodexRuntime | undefined;
@@ -387,15 +389,18 @@ export class DesktopRuntime {
     }
   }
 
-  async saveOpenClaw(url: unknown, token: unknown): Promise<Awaited<ReturnType<typeof saveOpenClawDesktopSettings>>> {
+  async saveOpenClaw(url: unknown, token: unknown, access?: unknown, clearToken?: unknown, auth?: unknown): Promise<Awaited<ReturnType<typeof saveOpenClawDesktopSettings>>> {
     if (this.#qa) throw new Error("QA Host 不修改 OpenClaw 配置");
-    try { return await saveOpenClawDesktopSettings(this.#stateDir, url, token); }
+    try { return await saveOpenClawDesktopSettings(this.#stateDir, url, token, process.env, { access, clearToken, auth }); }
     catch (error) {
       // Filesystem diagnostics can contain paths; expose only the safe validation messages.
       if (error instanceof Error && !("code" in error)) throw error;
       throw new Error("无法保存 OpenClaw 配置，请检查 Host 状态目录权限");
     }
   }
+
+  async readOpenClawNativeSettings() { return this.#openClawNative.read(); }
+  async applyOpenClawNativeSettings(ticket: unknown, changes: unknown) { return this.#openClawNative.apply(ticket, changes); }
 
   async saveHermesRemote(host: unknown, port: unknown, profile: unknown): Promise<Awaited<ReturnType<typeof saveHermesRemoteGatewaySettings>>> {
     if (this.#qa) throw new Error("QA Host 不修改 Hermes Gateway 配置");
@@ -1239,7 +1244,8 @@ export class DesktopRuntime {
     const model = service.readHostState(["backends", "connections", "management", "operations"]);
     const backends = model.domains.find(domain => domain.domain === "backends")?.value as { backends?: { runtimeCount: number }[] } | undefined;
     const status = { event: "status", devices, runtimeCount: backends?.backends?.reduce((sum, backend) => sum + backend.runtimeCount, 0) ?? 0,
-      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, kimiCodeDesktopState: service.kimiCodeDesktopConnectionState, activeAgentSessions: service.runningAgentSessions(), model };
+      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, kimiCodeDesktopState: service.kimiCodeDesktopConnectionState,
+      activeAgentSessions: service.runningAgentSessions(), openClawConnection: service.openClawConnectionState, model };
     const text = JSON.stringify({ ...status, model: { ...model, domains: model.domains.map(domain => ({ ...domain, checkedAt: 0 })) } });
     if (text !== this.#lastStatus) { this.#lastStatus = text; this.#emit(status); }
   }

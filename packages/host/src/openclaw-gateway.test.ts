@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { afterEach, expect, test, vi } from "vitest";
 import { buildDeviceAuthPayloadV3 } from "@openclaw/gateway-client";
-import { loadOpenClawConfig, OpenClawGateway, openClawRequestedScopes, openClawUrl, readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
+import { loadOpenClawConfig, OpenClawGateway, openClawRequestedScopes, openClawUrl, readOpenClawDesktopSettings, saveOpenClawDesktopSettings, type OpenClawAccess } from "./openclaw-gateway.js";
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -39,7 +39,7 @@ test("desktop saves the private config, retains the token only on the same endpo
   const dir = await stateDir();
   const endpoint = "ws://127.0.0.1:18789", path = join(dir, "openclaw-gateway.json");
   const save = (url: string, token = "") => saveOpenClawDesktopSettings(dir, url, token, {});
-  expect(await save(endpoint, "desktop-token")).toEqual({ source: "file", url: endpoint, hasToken: true, invalid: false });
+  expect(await save(endpoint, "desktop-token")).toEqual({ source: "file", url: endpoint, access: "auto", hasToken: true, invalid: false });
   if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
   expect(await save(`${endpoint}/`)).toHaveProperty("hasToken", true);
   expect(await loadOpenClawConfig(dir, {})).toEqual({ url: endpoint, token: "desktop-token" });
@@ -54,9 +54,45 @@ test("desktop saves the private config, retains the token only on the same endpo
   expect(await save(other)).toHaveProperty("hasToken", false);
   expect(await loadOpenClawConfig(dir, {})).toEqual({ url: other });
   await writeFile(path, "invalid");
-  expect(await readOpenClawDesktopSettings(dir, {})).toEqual({ source: "file", url: "", hasToken: false, invalid: true });
-  expect(await save("")).toEqual({ source: "file", url: "", hasToken: false, invalid: false });
+  expect(await readOpenClawDesktopSettings(dir, {})).toEqual({ source: "file", url: "", access: "auto", hasToken: false, invalid: true });
+  expect(await save("")).toEqual({ source: "file", url: "", access: "auto", hasToken: false, invalid: false });
   expect(await loadOpenClawConfig(dir, {})).toBeUndefined();
+});
+
+// OPENCLAW-HOST-SETTINGS-01: explicit grant and credential edits are bound to one endpoint.
+test("keeps access policy and token on a same-endpoint edit, and does not carry either to another endpoint", async () => {
+  const dir = await stateDir();
+  const endpoint = "wss://gateway.example.net";
+  const save = (url: string, token = "", options?: { access?: unknown; clearToken?: unknown }) => saveOpenClawDesktopSettings(dir, url, token, {}, options);
+  expect(await save(endpoint, "fixture", { access: "admin" })).toMatchObject({ hasToken: true, access: "admin" });
+  expect(await save(endpoint, "", { access: "sessions" })).toMatchObject({ hasToken: true, access: "sessions" });
+  expect(await save(endpoint)).toMatchObject({ hasToken: true, access: "sessions" });
+  await expect(save(endpoint, "secret", { clearToken: true })).rejects.toThrow(/凭据操作无效/);
+  await expect(save(endpoint, "", { access: ["operator.admin"] })).rejects.toThrow(/权限选项无效/);
+  expect(await loadOpenClawConfig(dir, {})).toEqual({ url: endpoint, token: "fixture", access: "sessions" });
+  expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_ACCESS: "admin" })).toEqual({ url: endpoint, token: "fixture", access: "admin" });
+  expect(await readOpenClawDesktopSettings(dir, { ORBIS_OPENCLAW_ACCESS: "admin" })).toEqual({
+    source: "environment", url: endpoint, hasToken: true, invalid: false, access: "admin",
+  });
+  await expect(saveOpenClawDesktopSettings(dir, endpoint, "", { ORBIS_OPENCLAW_ACCESS: "sessions" }, { access: "admin" })).rejects.toThrow(/环境变量/);
+  expect(await save(endpoint, "", { clearToken: true })).toMatchObject({ hasToken: false, access: "sessions" });
+  await save(endpoint, "fixture", { access: "admin" });
+  expect(await save("wss://new.example.net")).toMatchObject({ hasToken: false, access: "auto" });
+});
+
+// A mode switch is not a reinterpretation of the old token, and a readback never sends a password to Qt.
+test("saves Gateway password authentication without disclosing or migrating the credential", async () => {
+  const dir = await stateDir(), endpoint = "wss://gateway.example.net";
+  const save = (secret: string, options: { auth?: unknown; clearToken?: unknown } = {}) => saveOpenClawDesktopSettings(dir, endpoint, secret, {}, options);
+  await save("old-token");
+  expect(await save("", { auth: "password" })).toMatchObject({ auth: "password", hasToken: false, hasPassword: false });
+  expect(await save("fixture-password", { auth: "password" })).toMatchObject({ auth: "password", hasPassword: true });
+  expect(JSON.stringify(await readOpenClawDesktopSettings(dir, {}))).not.toContain("fixture-password");
+  expect(await loadOpenClawConfig(dir, {})).toEqual({ url: endpoint, auth: "password", password: "fixture-password" });
+  expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_TOKEN: "replacement" })).toEqual({ url: endpoint, token: "replacement" });
+  expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_URL: "wss://other.example.net", ORBIS_OPENCLAW_PASSWORD: "other-password" })).toEqual({ url: "wss://other.example.net", auth: "password", password: "other-password" });
+  await expect(loadOpenClawConfig(dir, { ORBIS_OPENCLAW_TOKEN: "one", ORBIS_OPENCLAW_PASSWORD: "two" })).rejects.toThrow(/只能配置一种/);
+  expect(await save("", { clearToken: true })).toMatchObject({ auth: "password", hasPassword: false });
 });
 
 // OPENCLAW-LOCAL-ADMIN-01: do not extend the local default to TLS/remote connections.
@@ -65,6 +101,8 @@ test("only explicit loopback ws endpoints use the SDK's default operator scopes"
   expect(openClawRequestedScopes("ws://[::1]:18789")).toBeUndefined();
   expect(openClawRequestedScopes("wss://gateway.example.net")).toEqual(["operator.read", "operator.write"]);
   expect(openClawRequestedScopes("wss://127.0.0.1:18789")).toEqual(["operator.read", "operator.write"]);
+  expect(openClawRequestedScopes("ws://127.0.0.1:18789", "sessions")).toEqual(["operator.read", "operator.write"]);
+  expect(openClawRequestedScopes("wss://gateway.example.net", "admin")).toEqual(["operator.admin"]);
   expect(() => openClawRequestedScopes("ws://gateway.example.net")).toThrow(/wss/);
 });
 
@@ -79,10 +117,10 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
   await new Promise<void>(resolve => server.once("listening", resolve));
   const address = server.address(); if (typeof address !== "object" || !address) throw new Error("missing address");
   const url = `ws://127.0.0.1:${address.port}`;
-  const connects: Array<{ deviceId: string; token: string; valid: boolean }> = [];
+  const connects: Array<{ deviceId: string; token: string; valid: boolean; password?: string }> = [];
   const requestedScopes: string[][] = [];
   let scopes = ["operator.admin"];
-  let needsPairing = false, rotateSharedToken = false;
+  let needsPairing = false, rotateSharedToken = false, tokenRejected = false;
   server.on("connection", socket => {
     const nonce = `nonce-${connects.length}`;
     const ts = Date.now();
@@ -98,8 +136,8 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
       const raw = Buffer.from(device.publicKey, "base64url");
       const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: device.publicKey }, format: "jwk" });
       const signed = buildDeviceAuthPayloadV3({ deviceId: device.id, clientId: client.id, clientMode: client.mode, role,
-        scopes: frame.params.scopes, signedAtMs: ts, token: auth.token ?? auth.deviceToken, nonce, platform: client.platform, deviceFamily: client.deviceFamily });
-      connects.push({ deviceId: device.id, token: auth.deviceToken ?? auth.token,
+        scopes: frame.params.scopes, signedAtMs: ts, token: auth.token ?? auth.deviceToken ?? null, nonce, platform: client.platform, deviceFamily: client.deviceFamily });
+      connects.push({ deviceId: device.id, token: auth.deviceToken ?? auth.token, ...(auth.password ? { password: auth.password } : {}),
         valid: device.nonce === nonce && device.signedAt === ts && createHash("sha256").update(raw).digest("hex") === device.id &&
           verify(null, Buffer.from(signed), key, Buffer.from(device.signature, "base64url")) });
       if (needsPairing) {
@@ -112,23 +150,32 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
           details: { code: "AUTH_TOKEN_MISMATCH", canRetryWithDeviceToken: true } } }));
         return;
       }
+      if (tokenRejected) {
+        socket.send(JSON.stringify({ type: "res", id: frame.id, ok: false, error: { code: "INVALID_REQUEST",
+          message: "server-controlled secret fixture", details: { code: "AUTH_TOKEN_MISMATCH" } } }));
+        return;
+      }
       socket.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { type: "hello-ok", protocol: 4,
         server: { version: "fixture", connId: "fixture" }, features: { methods: ["sessions.list", "sessions.create", "sessions.subscribe",
-          "sessions.messages.subscribe", "sessions.messages.unsubscribe", "sessions.patch", "chat.history", "chat.send", "chat.abort"], events: [] },
+          "sessions.messages.subscribe", "sessions.messages.unsubscribe", "sessions.patch", "chat.history", "chat.send", "chat.abort", "config.get", "config.patch"], events: [] },
         snapshot: { presence: [], health: {}, stateVersion: { presence: 0, health: 0 }, uptimeMs: 0 },
         auth: { role: "operator", scopes, deviceToken: "paired-token" },
         policy: { maxPayload: 1000000, maxBufferedBytes: 1000000, tickIntervalMs: 10000 } } }));
     });
   });
   const events = { online: vi.fn(), offline: vi.fn(), event: vi.fn(), gap: vi.fn(), log: vi.fn() };
-  const start = async (token?: string): Promise<OpenClawGateway> => {
-    const gateway = await OpenClawGateway.create({ url, ...(token ? { token } : {}) }, dir, events);
+  const start = async (token?: string, access?: OpenClawAccess): Promise<OpenClawGateway> => {
+    const gateway = await OpenClawGateway.create({ url, ...(token ? { token } : {}), ...(access ? { access } : {}) }, dir, events);
     cleanups.push(() => gateway.stop()); gateway.start(); return gateway;
   };
   const first = await start("bootstrap-token");
   await vi.waitFor(() => expect(first.ready).toBe(true));
   expect(await first.request("sessions.list", {})).toEqual({ method: "sessions.list" });
+  expect(first.connectionState).toEqual({ phase: "connected", granted: "admin", canEdit: true });
+  const firstSettings = first.settingsConnection!;
+  await expect(firstSettings.request("config.get", {})).resolves.toEqual({ method: "config.get" });
   await first.stop();
+  await expect(firstSettings.request("config.patch", {})).rejects.toThrow(/unavailable/);
   expect(await readdir(join(dir, "openclaw", createHash("sha256").update(url).digest("hex")))).toHaveLength(2);
   const second = await start();
   await vi.waitFor(() => expect(second.ready).toBe(true));
@@ -142,6 +189,7 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
   const pending = await start();
   await vi.waitFor(() => expect(pending.issue).toBe("pairing_required"));
   expect(pending.ready).toBe(false);
+  expect(pending.connectionState).toEqual({ phase: "pairing_required", granted: "none", canEdit: false, approvalId: "fixture-pairing" });
   needsPairing = false;
   await pending.retryLocal(() => {});
   await vi.waitFor(() => expect(pending.ready).toBe(true));
@@ -162,7 +210,32 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
   await vi.waitFor(() => expect(existing.ready).toBe(true));
   expect(connects.at(-1)?.token).toBe("paired-token");
   expect(requestedScopes.at(-1)).toEqual(scopes);
+  expect(existing.connectionState).toEqual({ phase: "connected", granted: "sessions", canEdit: false });
+  expect(existing.settingsConnection).toBeUndefined();
   await existing.stop();
+
+  // Explicit administrator selection must not silently fall back to session read/write.
+  const refused = await start("bootstrap-token", "admin");
+  await vi.waitFor(() => expect(refused.connectionState.phase).toBe("access_denied"));
+  expect(requestedScopes.at(-1)).toEqual(["operator.admin"]);
+  expect(refused.settingsConnection).toBeUndefined();
+  await refused.stop();
+  scopes = ["operator.admin"];
+  const limited = await start("bootstrap-token", "sessions");
+  await vi.waitFor(() => expect(limited.connectionState.phase).toBe("access_denied"));
+  expect(requestedScopes.at(-1)).toEqual(["operator.read", "operator.write"]);
+  expect(limited.settingsConnection).toBeUndefined();
+  await limited.stop();
+  tokenRejected = true;
+  const mismatched = await start("stale-token");
+  await vi.waitFor(() => expect(mismatched.connectionState.phase).toBe("token_rejected"));
+  expect(JSON.stringify(events.log.mock.calls)).not.toContain("server-controlled secret fixture");
+  await mismatched.stop();
+  tokenRejected = false;
+  const configured = await OpenClawGateway.create({ url, auth: "password", password: "fixture-password" }, dir, events);
+  cleanups.push(() => configured.stop()); configured.start();
+  await vi.waitFor(() => expect(configured.ready).toBe(true));
+  expect(connects.at(-1)).toMatchObject({ password: "fixture-password", valid: true });
 
   // A rotated shared token needn't block a paired device. Do not announce a
   // mismatch while the SDK's one allowed stored-token retry is in flight.

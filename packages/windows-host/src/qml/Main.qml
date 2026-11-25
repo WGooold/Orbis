@@ -81,12 +81,34 @@ ApplicationWindow {
         if (reason === "pairing_required") return "请在 OpenClaw 的设备列表批准 Orbis Host，再重新连接 Host。"
         return !reason || reason === "starting" || reason === "backend_not_ready" || reason === "backend_not_attached" ? "" : reason
     }
+    function openClawProblem() {
+        const phase = host.openClawConnection.phase || ""
+        if (!host.desiredRunning) return ["", ""]
+        switch (phase) {
+        case "pairing_required": return ["待批准", "在该 Gateway 的设备列表中批准 Orbis Host，然后重新连接。"]
+        case "pairing_rejected": return ["配对未通过", "重新连接以发起申请，再在 Gateway 端批准。"]
+        case "token_missing": return ["缺少令牌", "请填该 Gateway 的认证令牌，不是模型 API Key。"]
+        case "token_rejected": return ["令牌未通过", "请核对地址和该 Gateway 当前的令牌，再重新连接。"]
+        case "password_missing": return ["缺少密码", "请选择密码认证，并填该 Gateway 的接入密码。"]
+        case "password_rejected": return ["密码未通过", "请核对地址和该 Gateway 当前的接入密码，再重新连接。"]
+        case "tls_failed": return ["证书未通过", "请检查域名和电脑信任的证书。Host 不会跳过 TLS 校验。"]
+        case "access_denied": return ["权限未授予", "请在 Gateway 核对 Orbis Host 的设备授权，或改用已获准的接入权限。"]
+        case "incompatible": return ["版本不兼容", "请核对 Host 和 Gateway 版本是否支持同一协议。"]
+        case "methods_unavailable": return ["会话接口不可用", "Gateway 未提供 Host 所需的会话接口。请核对 Gateway 版本。"]
+        case "rate_limited": return ["连接受限", "Gateway 暂时限制了认证请求，请稍后重连。"]
+        case "auth_failed": return ["连接未通过", "请核对 Gateway 地址、运行状态、认证方式和日志。"]
+        case "unreachable": return ["无法连接", "请检查 Gateway 是否运行；远程接入还需确认电脑能访问该 WSS 地址。"]
+        case "connected": return window.openClawReady ? ["", ""] : ["会话未就绪", "认证已通过，Gateway 尚未确认会话访问。请核对设备授权。"]
+        default: return ["", ""]
+        }
+    }
     function openClawConnectionState(connectedLabel) {
+        const problem = openClawProblem()
         return host.openClaw.invalid ? "配置无效"
             : !host.openClaw.url ? "待配置" : host.resumePending ? "正在重新连接"
             : window.openClawReady ? connectedLabel : !host.desiredRunning ? "Host 未连接"
             : window.backendFor("openclaw")?.reason === "pairing_required" ? "待批准"
-            : window.startingAgent("openclaw") ? "正在启动" : window.startActionVisible("openclaw") ? "可启动" : "Gateway 未就绪"
+            : window.startingAgent("openclaw") ? "正在启动" : window.startActionVisible("openclaw") ? "可启动" : (problem[0] || "Gateway 未就绪")
     }
     readonly property int setupStep: ["activate", "connect", "pair", "enable", "install"].indexOf(nextStep)
     readonly property bool setupComplete: host.activated && host.devices.length > 0 && overviewAgents.some(agent => agent.installed && !agent.broken)
@@ -2925,26 +2947,50 @@ ApplicationWindow {
                                                 id: openClawCard
                                                 objectName: "openClawCard"
                                                 Layout.fillWidth: true; spacing: 12
-                                                visible: host.bridgeReady && !!host.openClaw.source && window.detailKind === "openclaw" && window.detailPowered
+                                                visible: host.bridgeReady && !!host.openClaw.source && window.detailKind === "openclaw"
                                                 readonly property bool editable: host.openClaw.source === "file"
                                                 readonly property string savedUrl: host.openClaw.url || ""
                                                 readonly property string savedMode: savedUrl && !/^ws:\/\/(127\.0\.0\.1|\[::1\])(:\d+)?\/?$/.test(savedUrl) ? "remote" : "local"
-                                                readonly property string savedPort: { var m = /:(\d+)\/?$/.exec(savedUrl); return savedMode === "local" && m ? m[1] : "18789" }
+                                                readonly property string savedPort: { var m = /:(\d+)\/?$/.exec(savedUrl); return savedMode === "local" && savedUrl ? (m ? m[1] : "80") : "18789" }
+                                                readonly property string localAddress: savedUrl.indexOf("ws://[::1]") === 0 ? "[::1]" : "127.0.0.1"
+                                                readonly property string savedAccess: host.openClaw.access || "auto"
+                                                readonly property string savedAuth: host.openClaw.auth || "token"
+                                                readonly property bool hasSavedSecret: savedAuth === "password" ? !!host.openClaw.hasPassword : !!host.openClaw.hasToken
+                                                readonly property var accessIds: ["auto", "sessions", "admin"]
                                                 property string mode: "local"
+                                                property string access: "auto"
+                                                property string auth: "token"
+                                                property bool clearToken: false
                                                 readonly property string remoteUrl: { var t = clawUrl.text.trim(); return t && t.indexOf("://") < 0 ? "wss://" + t : t }
-                                                readonly property bool remoteInsecure: /^ws:/i.test(remoteUrl)
+                                                readonly property string endpoint: mode === "local"
+                                                    ? "ws://" + localAddress + (Number(clawPort.text) === 80 ? "" : ":" + Number(clawPort.text)) : remoteUrl
+                                                readonly property bool remoteInsecure: remoteUrl.length > 0 && !/^wss:\/\//i.test(remoteUrl)
                                                 readonly property bool valid: mode === "local"
                                                     ? /^\d{1,5}$/.test(clawPort.text.trim()) && Number(clawPort.text) >= 1 && Number(clawPort.text) <= 65535
                                                     : remoteUrl.length > 0 && !remoteInsecure
-                                                readonly property bool dirty: mode !== savedMode || !savedUrl || clawToken.text.length > 0
-                                                    || (mode === "local" ? clawPort.text.trim() !== savedPort : remoteUrl !== savedUrl)
+                                                readonly property bool dirty: endpoint !== savedUrl || access !== savedAccess || auth !== savedAuth || clawToken.text.length > 0 || clearToken
+                                                readonly property string credentialLabel: auth === "password" ? "密码" : "令牌"
+                                                readonly property bool sameCredential: endpoint === savedUrl && auth === savedAuth && hasSavedSecret
                                                 function reset() {
                                                     mode = savedMode
+                                                    access = savedAccess
+                                                    auth = savedAuth
+                                                    clearToken = false
                                                     clawPort.text = savedPort
                                                     clawUrl.text = savedMode === "remote" ? savedUrl : ""
                                                     clawToken.clear()
                                                 }
-                                                onVisibleChanged: { reset(); if (!visible) openClawInfoBtn.expanded = false }
+                                                function endpointEdited() {
+                                                    access = endpoint === savedUrl ? savedAccess : "auto"
+                                                    auth = endpoint === savedUrl ? savedAuth : "token"
+                                                    clearToken = false
+                                                    clawToken.clear()
+                                                }
+                                                function save() {
+                                                    host.saveOpenClaw(endpoint, clawToken.text, access, clearToken, auth)
+                                                    clawToken.clear()
+                                                }
+                                                onVisibleChanged: { reset(); if (!visible) { openClawInfoBtn.expanded = false; openClawAccessInfo.expanded = false } }
                                                 Component.onCompleted: reset()
                                                 Connections { target: host; function onOpenClawChanged() { openClawCard.reset() } }
                                                 RowLayout {
@@ -2969,7 +3015,14 @@ ApplicationWindow {
                                                 }
                                                 Hint {
                                                     visible: openClawInfoBtn.expanded; Layout.fillWidth: true
-                                                    text: "本机：连接这台电脑上运行的 Gateway，只需填写端口。\n远程：连接另一台主机上的 Gateway，须使用 wss:// 加密地址，不接受明文 ws://。"
+                                                    text: "手机仍连接 Orbis Host；只有 Host 连接 Gateway。\n本机填写回环端口。远程填写启用 TLS、可转发 WebSocket 的 wss:// 根地址。认证方式须与 Gateway 一致。首次接入或提高权限时，可能需要在 Gateway 端批准 Orbis Host。"
+                                                }
+                                                Hint {
+                                                    objectName: "openClawProblem"
+                                                    readonly property string detail: window.openClawProblem()[1]
+                                                    visible: detail.length > 0 && !host.resumePending; Layout.fillWidth: true
+                                                    text: detail + (host.openClawConnection.approvalId ? "\n申请编号：" + host.openClawConnection.approvalId : "")
+                                                    color: Theme.warning
                                                 }
                                                 ConnectionModePicker {
                                                     objectName: "openClawMode"
@@ -2977,18 +3030,62 @@ ApplicationWindow {
                                                     options: ["本机", "远程"]
                                                     currentIndex: openClawCard.mode === "remote" ? 1 : 0
                                                     enabled: !host.busy && openClawCard.editable
-                                                    onPicked: function(i) { openClawCard.mode = i === 1 ? "remote" : "local" }
+                                                    onPicked: function(i) {
+                                                        openClawCard.mode = i === 1 ? "remote" : "local"
+                                                        openClawCard.endpointEdited()
+                                                    }
                                                 }
-                                                Field { id: clawPort; objectName: "openClawPort"; visible: openClawCard.mode === "local"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 5; inputMethodHints: Qt.ImhDigitsOnly; marksProviderDirty: false; placeholderText: "Gateway 端口（默认 18789）"; Accessible.name: "OpenClaw 本机 Gateway 端口" }
-                                                Field { id: clawUrl; objectName: "openClawUrl"; visible: openClawCard.mode === "remote"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "wss://gateway.example.com"; Accessible.name: "OpenClaw 远程 Gateway 地址" }
+                                                Field { id: clawPort; objectName: "openClawPort"; visible: openClawCard.mode === "local"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 5; inputMethodHints: Qt.ImhDigitsOnly; marksProviderDirty: false; placeholderText: "Gateway 端口（默认 18789）"; Accessible.name: "OpenClaw 本机 Gateway 端口"; onTextEdited: openClawCard.endpointEdited() }
+                                                Field { id: clawUrl; objectName: "openClawUrl"; visible: openClawCard.mode === "remote"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "wss://gateway.example.com"; Accessible.name: "OpenClaw 远程 Gateway 地址"; onTextEdited: openClawCard.endpointEdited() }
                                                 Hint { visible: openClawCard.mode === "remote" && openClawCard.remoteInsecure; text: "远程 Gateway 须使用 wss:// 加密连接。"; Layout.fillWidth: true; color: Theme.warning }
-                                                Field {
-                                                    id: clawToken; objectName: "openClawToken"
-                                                    visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
-                                                    marksProviderDirty: false; maximumLength: 4096; echoMode: TextInput.Password
-                                                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                                                    placeholderText: host.openClaw.hasToken && openClawCard.mode === openClawCard.savedMode && !openClawCard.dirty ? "已保存令牌" : "Gateway 令牌（可选）"
-                                                    Accessible.name: "OpenClaw Gateway 令牌"
+                                                RowLayout {
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    SoftComboBox {
+                                                        objectName: "openClawAuth"; Accessible.name: "OpenClaw 认证方式"
+                                                        Layout.preferredWidth: 146
+                                                        model: ["令牌认证", "密码认证"]
+                                                        currentIndex: openClawCard.auth === "password" ? 1 : 0
+                                                        enabled: !host.busy && openClawCard.editable
+                                                        onActivated: function(i) {
+                                                            openClawCard.auth = i === 1 ? "password" : "token"
+                                                            openClawCard.clearToken = false
+                                                            clawToken.clear()
+                                                        }
+                                                    }
+                                                    Field {
+                                                        id: clawToken; objectName: "openClawToken"
+                                                        visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
+                                                        marksProviderDirty: false; maximumLength: 4096; echoMode: TextInput.Password
+                                                        inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                                                        placeholderText: openClawCard.clearToken ? "应用后清除" + openClawCard.credentialLabel
+                                                            : openClawCard.sameCredential ? "已保存" + openClawCard.credentialLabel + "，留空保留" : "Gateway " + openClawCard.credentialLabel
+                                                        Accessible.name: "OpenClaw Gateway " + openClawCard.credentialLabel
+                                                        onTextEdited: openClawCard.clearToken = false
+                                                    }
+                                                }
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    Label { text: "请求权限"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                                    Hint {
+                                                        objectName: "openClawGrantedAccess"
+                                                        visible: host.desiredRunning && !!host.openClawConnection.granted
+                                                        text: host.openClawConnection.granted === "admin" ? "已授予：管理员"
+                                                            : host.openClawConnection.granted === "sessions" ? "已授予：会话读写" : "尚未授予"
+                                                    }
+                                                    InfoHintButton { id: openClawAccessInfo; Accessible.name: "OpenClaw 权限说明" }
+                                                }
+                                                Hint {
+                                                    visible: openClawAccessInfo.expanded; Layout.fillWidth: true
+                                                    text: "自动：本机使用 Gateway 默认权限，远程请求会话读写。\n管理员可配置 Gateway，并可能允许在默认工作区外创建会话。这是 Gateway 权限，不是电脑系统管理员；最终以 Gateway 授权为准。"
+                                                }
+                                                ConnectionModePicker {
+                                                    objectName: "openClawAccess"
+                                                    Accessible.name: "OpenClaw 请求权限"
+                                                    Layout.fillWidth: true
+                                                    options: ["自动", "会话读写", "管理员"]
+                                                    currentIndex: Math.max(0, openClawCard.accessIds.indexOf(openClawCard.access))
+                                                    enabled: !host.busy && openClawCard.editable
+                                                    onPicked: function(i) { openClawCard.access = openClawCard.accessIds[i] }
                                                 }
                                                 Hint { visible: !openClawCard.editable; text: "由环境变量配置" }
                                                 Flow {
@@ -2999,19 +3096,43 @@ ApplicationWindow {
                                                         text: host.desiredRunning ? "应用并重新连接" : "保存配置"
                                                         enabled: !host.busy && openClawCard.dirty && openClawCard.valid
                                                         loading: window.activityKinds.indexOf("openClaw") >= 0
-                                                        onClicked: { host.saveOpenClaw(openClawCard.mode === "local" ? "ws://127.0.0.1:" + Number(clawPort.text) : openClawCard.remoteUrl, clawToken.text); clawToken.clear() }
+                                                        onClicked: {
+                                                            if (openClawCard.mode === "remote" && openClawCard.access === "admin"
+                                                                && (openClawCard.savedAccess !== "admin" || openClawCard.endpoint !== openClawCard.savedUrl)) openClawAdminConfirm.open()
+                                                            else openClawCard.save()
+                                                        }
                                                     }
                                                     ActionButton {
-                                                        objectName: "reconnectOpenClaw"; text: "重新连接 Host"
+                                                        objectName: "reconnectOpenClaw"; text: "重新连接"
                                                         visible: !!host.openClaw.url && !host.openClaw.invalid && host.desiredRunning
                                                         enabled: !host.busy && !openClawCard.dirty
                                                         onClicked: host.reconnectOpenClaw()
+                                                    }
+                                                    ActionButton {
+                                                        objectName: "clearOpenClawToken"
+                                                        text: (openClawCard.clearToken ? "保留" : "清除已保存") + openClawCard.credentialLabel
+                                                        visible: openClawCard.editable && openClawCard.sameCredential
+                                                        enabled: !host.busy
+                                                        onClicked: { clawToken.clear(); openClawCard.clearToken = !openClawCard.clearToken }
                                                     }
                                                     ActionButton {
                                                         objectName: "disableOpenClaw"; text: "移除连接配置"
                                                         visible: openClawCard.editable && (!!host.openClaw.url || !!host.openClaw.invalid)
                                                         enabled: !host.busy
                                                         onClicked: { clawToken.clear(); host.saveOpenClaw("", "") }
+                                                    }
+                                                }
+                                                Flow {
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    ActionButton {
+                                                        objectName: "openClawNativeSettings"; text: "Gateway 运行配置"
+                                                        enabled: !host.busy
+                                                        onClicked: openClawNativeDialog.open()
+                                                    }
+                                                    ActionButton {
+                                                        objectName: "openClawControlUi"; text: "打开 OpenClaw 控制台"
+                                                        enabled: !!openClawCard.savedUrl && !host.openClaw.invalid
+                                                        onClicked: Qt.openUrlExternally(openClawCard.savedUrl.replace(/^wss:/, "https:").replace(/^ws:/, "http:"))
                                                     }
                                                 }
                                             }
@@ -3774,6 +3895,178 @@ ApplicationWindow {
     Timer {
         interval: Math.max(5000, (window.oauthPending.interval || 8) * 1000); repeat: true; running: oauthDialog.visible && !!window.oauthPending.deviceCode
         onTriggered: { if (Date.now() >= window.oauthPending.expiresAt) { host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) } else if (!host.busy) host.oauthAccount("poll", window.oauthPending.deviceCode) }
+    }
+    SoftDialog {
+        id: openClawAdminConfirm; objectName: "openClawAdminConfirm"
+        title: "请求远程管理员权限"; anchors.centerIn: parent; modal: true; width: 470
+        contentItem: ColumnLayout {
+            Hint { Layout.fillWidth: true; text: "Host 将向该远程 Gateway 请求管理员权限。请仅对你信任的 Gateway 启用；Gateway 仍可能要求批准。" }
+        }
+        footer: SoftDialogActions {
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "取消"; onClicked: openClawAdminConfirm.close() }
+            ActionButton { objectName: "confirmOpenClawAdmin"; text: "保存并请求"; primary: true; onClicked: { openClawAdminConfirm.close(); openClawCard.save() } }
+        }
+    }
+    SoftDialog {
+        id: openClawNativeDialog; objectName: "openClawNativeDialog"
+        title: "OpenClaw Gateway 运行配置"; anchors.centerIn: parent; modal: true
+        width: Math.min(window.width - 56, 690); height: Math.min(window.height - 52, 700)
+        readonly property bool working: window.activityKinds.indexOf("openClawConfig") >= 0
+        readonly property bool canEdit: host.openClawConnection.canEdit === true && host.desiredRunning
+        readonly property var rows: host.openClawNative.fields || []
+        readonly property bool loaded: canEdit && !!host.openClawNative.ticket && !freshReadRequired
+        readonly property string invalidField: {
+            for (const row of rows) if (Object.prototype.hasOwnProperty.call(draft, row.key) && valueOf(row) === undefined) return row.label
+            return ""
+        }
+        readonly property var changes: {
+            let result = {}
+            for (const row of rows) {
+                if (!Object.prototype.hasOwnProperty.call(draft, row.key)) continue
+                const value = valueOf(row)
+                if (value !== undefined && JSON.stringify(value) !== JSON.stringify(row.value)) result[row.key] = value
+            }
+            return result
+        }
+        property var draft: ({})
+        property bool freshReadRequired: true
+        function edit(key, value) { draft = Object.assign({}, draft, { [key]: value }) }
+        function valueOf(row) {
+            if (!Object.prototype.hasOwnProperty.call(draft, row.key)) return row.value
+            const value = draft[row.key]
+            if (row.kind === "choice" || row.kind === "flag") return value
+            const text = value.trim()
+            if (!text) return null
+            if (row.kind === "number") {
+                const number = Number(text)
+                return /^\d+$/.test(text) && number >= row.min && number <= row.max ? number : undefined
+            }
+            if (row.kind === "models" || row.kind === "tools") {
+                return text === "[]" ? [] : text.split(",").map(x => x.trim())
+            }
+            return text
+        }
+        function choices(row) {
+            if (row.kind === "flag") return [{label: "Gateway 默认", value: null}, {label: "允许", value: true}, {label: "不允许", value: false}]
+            const choices = [{label: "Gateway 默认", value: null}]
+            for (const key of Object.keys(row.options || {})) choices.push({label: row.options[key], value: key})
+            return choices
+        }
+        function read() {
+            freshReadRequired = true
+            draft = ({})
+            host.readOpenClawNative()
+        }
+        onAboutToShow: if (canEdit) read()
+        onClosed: { draft = ({}); freshReadRequired = true }
+        Connections {
+            target: host
+            function onOpenClawNativeChanged() {
+                if (host.openClawNative.ticket) openClawNativeDialog.freshReadRequired = false
+            }
+        }
+        contentItem: ScrollView {
+            clip: true; contentWidth: availableWidth
+            ColumnLayout {
+                width: openClawNativeDialog.availableWidth - 12; spacing: 10
+                Hint {
+                    visible: !openClawNativeDialog.canEdit; Layout.fillWidth: true
+                    text: host.openClawConnection.granted === "admin"
+                        ? "此 Gateway 未开放配置接口，或 Host 选择了会话读写。可在 OpenClaw 控制台修改。"
+                        : "连接后需获得 Gateway 管理员权限才能修改。可在连接卡申请权限，并在 Gateway 端批准。"
+                }
+                Hint { visible: openClawNativeDialog.working; Layout.fillWidth: true; text: "正在与 Gateway 通信…" }
+                Hint {
+                    objectName: "openClawNativeFeedback"
+                    visible: !!host.openClawNativeFeedback; Layout.fillWidth: true; text: host.openClawNativeFeedback
+                }
+                Repeater {
+                    model: openClawNativeDialog.loaded ? openClawNativeDialog.rows : []
+                    delegate: ColumnLayout {
+                        id: clawSetting
+                        required property int index
+                        required property var modelData
+                        readonly property bool choice: modelData.kind === "choice" || modelData.kind === "flag"
+                        readonly property var options: choice ? openClawNativeDialog.choices(modelData) : []
+                        Layout.fillWidth: true; spacing: 7
+                        Heading {
+                            visible: clawSetting.index === 0 || clawSetting.modelData.group !== openClawNativeDialog.rows[clawSetting.index - 1].group
+                            text: clawSetting.modelData.group; Layout.topMargin: 12; Layout.bottomMargin: 4; Layout.fillWidth: true
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 12
+                            Label { text: clawSetting.modelData.label; Layout.preferredWidth: 161; color: Theme.inkMuted }
+                            SoftComboBox {
+                                objectName: "openClawSetting-" + clawSetting.modelData.key
+                                visible: clawSetting.choice && clawSetting.modelData.editable
+                                enabled: !host.busy && !openClawNativeDialog.working
+                                inModal: true; Layout.fillWidth: true; textRole: "label"; valueRole: "value"
+                                Accessible.name: clawSetting.modelData.label
+                                model: clawSetting.options
+                                currentIndex: Math.max(0, clawSetting.options.findIndex(x => x.value === openClawNativeDialog.valueOf(clawSetting.modelData)))
+                                onActivated: function(i) { openClawNativeDialog.edit(clawSetting.modelData.key, clawSetting.options[i].value) }
+                            }
+                            Field {
+                                objectName: "openClawInput-" + clawSetting.modelData.key
+                                visible: !clawSetting.choice && clawSetting.modelData.editable
+                                enabled: !host.busy && !openClawNativeDialog.working
+                                Layout.fillWidth: true; marksProviderDirty: false; maximumLength: 8192
+                                Accessible.name: clawSetting.modelData.label
+                                inputMethodHints: clawSetting.modelData.kind === "number" ? Qt.ImhDigitsOnly : Qt.ImhNone
+                                placeholderText: clawSetting.modelData.placeholder || "Gateway 默认"
+                                text: {
+                                    const row = clawSetting.modelData
+                                    if (Object.prototype.hasOwnProperty.call(openClawNativeDialog.draft, row.key)) return openClawNativeDialog.draft[row.key]
+                                    const value = row.value
+                                    return value === null ? "" : Array.isArray(value) ? (value.length ? value.join(", ") : "[]") : String(value)
+                                }
+                                onTextEdited: openClawNativeDialog.edit(clawSetting.modelData.key, text)
+                            }
+                            Hint { visible: !clawSetting.modelData.editable; Layout.fillWidth: true; text: "此值需在 OpenClaw 控制台修改" }
+                        }
+                    }
+                }
+                Hint {
+                    visible: openClawNativeDialog.loaded && !!openClawNativeDialog.invalidField; Layout.fillWidth: true
+                    color: Theme.warning; text: "请检查「" + openClawNativeDialog.invalidField + "」"
+                }
+            }
+        }
+        footer: SoftDialogActions {
+            InfoHintButton { id: openClawDefaultsInfo; Accessible.name: "OpenClaw 运行配置说明"; onClicked: openClawDefaultsHelp.open() }
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "关闭"; enabled: !openClawNativeDialog.working; onClicked: openClawNativeDialog.close() }
+            ActionButton { objectName: "readOpenClawNative"; text: "重新读取"; enabled: openClawNativeDialog.canEdit && !host.busy && !openClawNativeDialog.working; onClicked: openClawNativeDialog.read() }
+            ActionButton {
+                objectName: "applyOpenClawNative"; text: "应用到 Gateway"; primary: true
+                enabled: openClawNativeDialog.loaded && !host.busy && !openClawNativeDialog.working && !openClawNativeDialog.invalidField && Object.keys(openClawNativeDialog.changes).length > 0
+                onClicked: openClawNativeConfirm.open()
+            }
+        }
+    }
+    SoftDialog {
+        id: openClawDefaultsHelp; title: "运行配置说明"; anchors.centerIn: parent; modal: true; width: 490
+        contentItem: ColumnLayout {
+            Hint { Layout.fillWidth: true; text: "留空或选择「Gateway 默认」会移除该项覆盖；工具或备用模型列表填 [] 表示显式空列表。\n高级配置、供应商登录、密钥和渠道操作请在 OpenClaw 控制台完成。" }
+        }
+        standardButtons: Dialog.Ok
+    }
+    SoftDialog {
+        id: openClawNativeConfirm; objectName: "openClawNativeConfirm"
+        title: "应用 Gateway 默认配置"; anchors.centerIn: parent; modal: true; width: 475
+        contentItem: ColumnLayout {
+            Hint { Layout.fillWidth: true; text: "此修改会影响该 Gateway 的其他客户端。已有的 Agent 单独配置仍优先；部分改动会触发 Gateway 重启。" }
+        }
+        footer: SoftDialogActions {
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "取消"; onClicked: openClawNativeConfirm.close() }
+            ActionButton {
+                objectName: "confirmOpenClawNative"; text: "确认应用"; primary: true
+                enabled: openClawNativeDialog.loaded && !host.busy && !openClawNativeDialog.working
+                onClicked: { openClawNativeConfirm.close(); host.applyOpenClawNative(openClawNativeDialog.changes) }
+            }
+        }
     }
     SoftDialog {
         id: codexPreferencesDialog; title: "Codex 通用配置"; anchors.centerIn: parent; modal: true; width: 660; height: 480

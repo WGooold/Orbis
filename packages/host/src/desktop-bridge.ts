@@ -73,7 +73,9 @@ input.on("line", line => {
         case "agy.setup.verify": result = await runtime.checkAgyCredential(p.key); break;
         case "agy.setup.apply": result = await runtime.applyAgyCredential(p.key); break;
         case "agy.setup.retry": result = await runtime.retryAgyCredential(); break;
-        case "openclaw.save": result = await runtime.saveOpenClaw(p.url, p.token); break;
+        case "openclaw.save": result = await runtime.saveOpenClaw(p.url, p.token, p.access, p.clearToken, p.auth); break;
+        case "openclaw.config.read": result = await runtime.readOpenClawNativeSettings(); break;
+        case "openclaw.config.apply": result = await runtime.applyOpenClawNativeSettings(p.ticket, p.changes); break;
         case "hermes.remote.save": result = await runtime.saveHermesRemote(p.host, p.port, p.profile); break;
         case "start": await runtime.start(p as DesktopSettings); break;
         case "stop": await runtime.stop(); break;

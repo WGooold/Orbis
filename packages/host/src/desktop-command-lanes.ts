@@ -16,7 +16,7 @@
 export type DesktopCommandLane = "exclusive" | "lifecycle" | "background" | "agySetup" | "preempt";
 
 const LIFECYCLE = new Set(["start", "pair", "cancelPair"]);
-const BACKGROUND = new Set(["detect", "state.read", "state.range", "provider.check", "provider.models"]);
+const BACKGROUND = new Set(["detect", "state.read", "state.range", "provider.check", "provider.models", "openclaw.config.read"]);
 const PREEMPT = new Set(["stop", "shutdown"]);
 
 export function desktopCommandLane(method: string): DesktopCommandLane {

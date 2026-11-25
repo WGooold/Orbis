@@ -2693,6 +2693,10 @@ export class HostService {
     }
   }
 
+  // Desktop-only settings and diagnostics. Do not add credentials, grants, or config to mobile/Relay state.
+  get openClawConnectionState() { return this.#openClaw?.connectionState; }
+  get openClawSettingsConnection() { return this.#openClaw?.settingsConnection; }
+
   async #stopManagedOpenClaw(): Promise<void> {
     const backend = this.#openClaw;
     const startup = this.#openClawStart?.startup;

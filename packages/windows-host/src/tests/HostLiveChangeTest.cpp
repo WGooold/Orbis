@@ -48,7 +48,12 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (method === "agy.setup.verify") return out({ id, result: { verification: !params.key || /^fixture-valid-/.test(params.key) ? "verified" : "rejected" } });
   if (method === "agy.setup.apply") return out({ id, result: { source: params.key ? "saved" : "none", installed: true, requiredVersion: "1.5.17" } });
   if (method === "agy.setup.retry") return out({ id, result: { source: "saved", verification: "rejected" } });
-  if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
+  if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token, access: params.access ?? "auto" } });
+  if (method === "openclaw.config.read") return out({ id, result: { ticket: "fixture", fields: [{ key: "workspace", editable: true, value: "/fixture" }] } });
+  if (method === "openclaw.config.apply") {
+    fs.writeFileSync(path.join(__dirname, method + ".json"), JSON.stringify(params));
+    return out({ id, result: { state: "saved", restarting: true } });
+  }
   if (method === "hermes.remote.save") return out({ id, result: { source: "file", host: params.host, port: params.port, profile: params.profile } });
   if (method === "selectAgentEntry") return out({ id, result: { entry: params.entry, version: "2.1.322" } });
   if (method === "detect") return out({ id, result: [] });
@@ -274,10 +279,11 @@ private slots:
         connectHost(host, root());
         host.m_openClaw = {{"source", "file"}};
         const auto url = QString("ws://127.0.0.1:18789");
-        host.saveOpenClaw(url, "fixture-token");
+        host.saveOpenClaw(url, "fixture-token", "sessions");
         settle(host);
         QCOMPARE(methods(root()), QStringList({"openclaw.save", "stop", "start"}));
         QCOMPARE(host.openClaw().value("url").toString(), url);
+        QCOMPARE(host.openClaw().value("access").toString(), QString("sessions"));
         QVERIFY(!host.openClaw().contains("token"));
         QFile marker(root() + "/packages/host/dist/fail-openclaw.save");
         QVERIFY(marker.open(QIODevice::WriteOnly)); marker.close();
@@ -300,6 +306,32 @@ private slots:
         host.saveOpenClaw("", "");
         QVERIFY(!host.busy());
         QVERIFY(methods(root()).isEmpty());
+    }
+
+    // OPENCLAW-HOST-SETTINGS-01: native writes require reported Gateway authority and a loaded form.
+    void openClawNativeSettingsRequireGrantAndRead() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        const QVariantMap changes{{"workspace", "/new-workspace"}, {"resetHour", QVariant::fromValue(nullptr)}};
+        host.receiveLine({{"event", "status"}, {"openClawConnection", QJsonObject{{"phase", "connected"}, {"granted", "sessions"}, {"canEdit", false}}}});
+        host.readOpenClawNative(); host.applyOpenClawNative(changes);
+        QVERIFY(methods(root()).isEmpty());
+        host.receiveLine({{"event", "status"}, {"openClawConnection", QJsonObject{{"phase", "connected"}, {"granted", "admin"}, {"canEdit", true}}}});
+        host.applyOpenClawNative(changes);
+        QVERIFY(methods(root()).isEmpty());
+        host.readOpenClawNative();
+        QTRY_COMPARE(host.openClawNative().value("ticket").toString(), QString("fixture"));
+        host.applyOpenClawNative(changes);
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"openclaw.config.read", "openclaw.config.apply"}));
+        QVERIFY(host.openClawNative().isEmpty());
+        QVERIFY(host.openClawNativeFeedback().contains("等待 Gateway 重启"));
+        QFile written(root() + "/packages/host/dist/openclaw.config.apply.json");
+        QVERIFY(written.open(QIODevice::ReadOnly));
+        const auto args = QJsonDocument::fromJson(written.readAll()).object();
+        QCOMPARE(args.value("ticket").toString(), QString("fixture"));
+        QCOMPARE(args.value("changes").toObject().value("workspace").toString(), QString("/new-workspace"));
+        QVERIFY(args.value("changes").toObject().value("resetHour").isNull());
     }
 
     // HERMES-REMOTE-01: apply an SSH target by reconnecting the Host; never retain auth material in Qt.
