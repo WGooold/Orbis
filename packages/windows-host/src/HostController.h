@@ -78,6 +78,8 @@ class HostController : public QObject {
     Q_PROPERTY(QString kimiCodeDesktopState READ kimiCodeDesktopState NOTIFY changed)
     Q_PROPERTY(bool dshEnabled READ dshEnabled NOTIFY changed)
     Q_PROPERTY(bool piIntegrationEnabled READ piIntegrationEnabled NOTIFY changed)
+    Q_PROPERTY(bool openCodeTuiTabsSupported READ openCodeTuiTabsSupported NOTIFY changed)
+    Q_PROPERTY(bool openCodeTuiTabsEnabled READ openCodeTuiTabsEnabled NOTIFY changed)
     Q_PROPERTY(bool claudeIntegrationEnabled READ claudeIntegrationEnabled NOTIFY changed)
     Q_PROPERTY(bool claudeInstalled READ claudeInstalled NOTIFY changed)
     Q_PROPERTY(bool claudeCompatible READ claudeCompatible NOTIFY changed)
@@ -177,6 +179,8 @@ public:
     bool codexEnabled() const { return m_settings.value("codexEnabled", true).toBool(); }
     bool dshEnabled() const { return m_settings.value("dshEnabled", false).toBool(); }
     bool piIntegrationEnabled() const { return m_settings.value("piIntegrationEnabled", true).toBool(); }
+    bool openCodeTuiTabsSupported() const { return !m_qaMode && m_openCodeTuiTabsSupported; }
+    bool openCodeTuiTabsEnabled() const { return m_openCodeTuiTabsEnabled; }
     bool claudeIntegrationEnabled() const { return m_settings.value("claudeIntegrationEnabled", true).toBool(); }
     bool claudeInstalled() const { return m_claudeInstalled; }
     bool claudeCompatible() const { return m_claudeCompatible; }
@@ -242,6 +246,7 @@ public:
     Q_INVOKABLE void installAllAgents(const QString &action);
     Q_INVOKABLE void activateInstallation(const QString &kind, const QString &id);
     Q_INVOKABLE void enableCodexTerminal();
+    Q_INVOKABLE void setOpenCodeTuiTabs(bool enabled);
     Q_INVOKABLE void piCommand(const QString &action);
     Q_INVOKABLE void selectAgentEntry(const QString &kind, const QString &entry);
     Q_INVOKABLE void selectCodexEntry(const QString &entry);
@@ -438,6 +443,7 @@ private:
     QString m_kimiCodeDesktopState;
     bool m_kimiDesktopSupported = false;
     bool m_kimiCodeSupported = false;
+    bool m_openCodeTuiTabsSupported = false, m_openCodeTuiTabsEnabled = false;
     /** 后台准备进度，按 kind 存放（Codex 可能是一次上百 MB 的下载，但都不阻塞中继连接）。 */
     QVariantMap m_preparations;
     QString m_dshDesktopOpen = "idle";

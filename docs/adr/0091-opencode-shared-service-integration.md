@@ -110,3 +110,11 @@ try {
 已启用时，桌面 Host 的「启动」与已协商手机请求新建配置或恢复会话，先复用已验证的注册实例；只有没有可用登记且本机配置允许时，才用兼容 CLI 的 `serve --service --hostname 127.0.0.1`。保留原生共享端口和默认数据源，不使用随机端口、standalone 或 ACP；无效登记、认证失败、版本不符、禁用、非回环绑定或远程配置不触发备用进程。一个 Host 内并发启动合并；不停止来自其他启动者或已经交付的服务。`launchableAgents` 与 `backends[].launchable` 公告可发起启动，`agents` 与 `ready` 仍要求验证 SDK 和事件流。移动端使用已有字段兼容旧 Host；未协商的设备看不到该来源。
 
 实现见 [`opencode-local-launch.ts`](../../packages/host/src/opencode-local-launch.ts) 和 [`opencode-service-connection.ts`](../../packages/host/src/opencode-service-connection.ts)，真实隔离 CLI 验证见 [`opencode-native.test.ts`](../../packages/host/src/opencode-native.test.ts)；Qt、加密传输和两端状态回归的证据索引见 [本地验证](../../.artifacts/agent-demand-launch-20261124/verification.json)。未发布，未安装至用户设备。
+
+## App 新建会话的原生标签栏同步
+
+在桌面 Host 的 **Agent → OpenCode → 接入** 选择 **启用会话栏同步**。这是单独的本机选项，只安装一个 TUI 扩展，不改 `cli.json` 或服务配置，不启动、重启或切换 OpenCode。OpenCode 2.3.2 已打开的完整 TUI 在同一配置目录下会热加载扩展；禁用了文件监听或插件时，需要在 OpenCode 侧检查设置。如果关闭了原生标签栏，扩展不强制开启。Host 与 TUI 必须连接同一共享服务。
+
+Host 只为 App 新建的会话写入 `orbis.app.session: 1`，不记录设备 ID、不修改已存在会话的元数据。[TUI 扩展](../../packages/host/src/opencode-tui-tabs-plugin.ts)监听原生 `session.created`，确认是未归档的根会话后用 [OpenCode 2.3.2 的 `ui.tabs.open`](https://github.com/anomalyco/opencode/blob/c0ad18b402eb2827fc1ee71c171b1177b3fc02d1/packages/plugin/src/tui/context.ts#L490-L529) 在后台加标签。标签、运行指示、未读状态和持久化由 OpenCode 自己管理。停用只停止继续同步，保留已有标签和历史。同一 TUI 中已手动关掉的标签不会被重加；加载时只尝试找回仍在运行的 App 会话，不批量把旧历史加进标签栏。
+
+[原生 PTY 回归](../../packages/host/src/opencode-tui-tabs.native.test.ts)使用隔离的服务和模拟模型，在先打开的 2.3.2 TUI 内检查新标签与实际渲染的运行、完成指示，同时确认不切换当前标签。复跑需先编译 Host，并将 `ORBIS_OPENCODE_TEST_BINARY` 指向 2.3.2 的原生可执行文件（非登录包装脚本）；测试仅在 macOS/Linux 的 Unix PTY 上运行，不读取用户配置或凭据。

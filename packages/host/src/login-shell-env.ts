@@ -16,7 +16,8 @@ import { AGENT_LAUNCH_ENV_KEYS, CLI_DISCOVERY_ENV_KEYS, cliPathDirs } from "./ag
 const MARKER = "__ORBIS_LOGIN_ENV__";
 
 /** 只合并这些：其余变量（代理、语言等）Host 自己的行为不依赖，也不该被用户 shell 随意改写。 */
-const ADOPTED = [...AGENT_LAUNCH_ENV_KEYS.filter(key => key !== "PATH"), "CLAUDE_CONFIG_DIR", ...CLI_DISCOVERY_ENV_KEYS] as const;
+const ADOPTED = [...AGENT_LAUNCH_ENV_KEYS.filter(key => key !== "PATH"), "CLAUDE_CONFIG_DIR",
+  "OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME", ...CLI_DISCOVERY_ENV_KEYS] as const;
 
 /** Append newly installed Windows locations without replacing the Host's explicit PATH order. */
 export function mergeWindowsEnvironment(target: NodeJS.ProcessEnv, registered: Record<string, string>): void {

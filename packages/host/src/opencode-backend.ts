@@ -1,6 +1,6 @@
 import { isMessageNotFoundError, isSessionNotFoundError, type OpenCodeEvent } from "@opencode/client";
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +12,7 @@ import type { AgentBackend, AgentActivateContext, AgentActivateTarget, BackendAc
 import { ActivationError } from "./spawner.js";
 import { OPENCODE_RUNTIME_PREFIX } from "./device-agent-visibility.js";
 import { type OpenCodeClient, OpenCodeServiceConnection } from "./opencode-service-connection.js";
+import { ORBIS_APP_SESSION_KEY } from "./opencode-tui-tabs-plugin.js";
 import { exitViewCapability, matchesViewExit } from "./shared-session-view.js";
 import { formRequest, permissionRequest, projectAssistant, projectHistory, projectLive, time, wireId,
   type NativeForm, type NativeMessage, type NativeSession } from "./opencode-projection.js";
@@ -137,6 +138,35 @@ export class OpenCodeBackend implements AgentBackend {
     return [...this.#records.values()].flatMap(record => record.runtime ? [record.runtime] : []);
   }
 
+  /** Match native Resume and the exact workspace; try the selected spelling for older App sessions too. */
+  async latestSessionInDirectory(cwd: string): Promise<{ sessionId: string; directory: string; workspace: string } | undefined> {
+    if (!isAbsolute(cwd)) throw new Error("OpenCode 工作区必须是绝对路径");
+    const attempt = this.#requireReady();
+    const workspace = await this.#workingDirectory(cwd);
+    attempt.controller.signal.throwIfAborted();
+    try {
+      const directories = new Set<string>();
+      for (const path of new Set([workspace, cwd])) {
+        const { directory } = await attempt.client.location.get({ location: { directory: path } }, this.#request(attempt));
+        if (!isAbsolute(directory)) throw new Error();
+        directories.add(directory);
+      }
+      const candidates = await Promise.all([...directories].map(async directory => {
+        const { data: [row] } = await attempt.client.session.list({ directory, parentID: null, archived: false, order: "desc", limit: 1 }, this.#request(attempt));
+        if (row && (!row.id || row.location.directory !== directory || row.parentID != null || row.time.archived != null)) throw new Error();
+        return row ? { row, directory } : undefined;
+      }));
+      attempt.controller.signal.throwIfAborted();
+      const selected = candidates.flatMap(value => value ? [value] : []).sort((a, b) => b.row.time.updated - a.row.time.updated)[0];
+      if (!selected) return undefined;
+      const { row, directory } = selected;
+      const info = await attempt.client.session.get({ sessionID: row.id }, this.#request(attempt));
+      attempt.controller.signal.throwIfAborted();
+      if (info.id !== row.id || info.location.directory !== directory || info.parentID != null || info.time.archived != null) throw new Error();
+      return { sessionId: info.id, directory, workspace };
+    } catch { throw new Error("无法读取所选工作区的 OpenCode 会话"); }
+  }
+
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
     const attempt = this.#requireReady();
     let rows: NativeSession[];
@@ -160,10 +190,10 @@ export class OpenCodeBackend implements AgentBackend {
   }
 
   async sessionConfiguration(cwd: string): Promise<SessionConfigurationCatalog> {
-    await this.#checkDirectory(cwd);
+    const directory = await this.#workingDirectory(cwd);
     const attempt = this.#requireReady();
     try {
-      const { catalog } = await readModels(attempt.client, cwd, this.#request(attempt));
+      const { catalog } = await readModels(attempt.client, directory, this.#request(attempt));
       attempt.controller.signal.throwIfAborted();
       return catalog;
     } catch { throw new Error("OpenCode model options could not be read"); }
@@ -176,11 +206,13 @@ export class OpenCodeBackend implements AgentBackend {
     let selected: ModelRef | undefined;
     try {
       if (target.type === "new") {
-        await this.#checkDirectory(target.cwd);
-        if (context?.configuration) selected = selectionModel(await readModels(client, target.cwd, this.#request(attempt)), context.configuration);
+        const directory = await this.#workingDirectory(target.cwd);
+        if (context?.configuration) selected = selectionModel(await readModels(client, directory, this.#request(attempt)), context.configuration);
         attempt.controller.signal.throwIfAborted();
         context?.requireCurrent?.();
-        const info = await client.session.create({ location: { directory: target.cwd }, ...(selected ? { model: selected } : {}) }, this.#request(attempt));
+        const info = await client.session.create({ location: { directory }, ...(selected ? { model: selected } : {}),
+          ...(context?.deviceId ? { metadata: { [ORBIS_APP_SESSION_KEY]: 1 } } : {}),
+        }, this.#request(attempt));
         sessionId = info.id;
         await context?.onCreated?.({ sessionId, spawnMode: "headless" });
         if (selected && !sameModel(info.model, selected)) throw new OpenCodeCommandError("configuration_unconfirmed", "unconfirmed");
@@ -217,10 +249,14 @@ export class OpenCodeBackend implements AgentBackend {
     }
   }
 
-  async #checkDirectory(cwd: string): Promise<void> {
-    if (!isAbsolute(cwd) || !await stat(cwd).then(value => value.isDirectory(), () => false)) {
-      throw new ActivationError("cwd_missing", "OpenCode working directory is unavailable");
+  async #workingDirectory(cwd: string): Promise<string> {
+    if (isAbsolute(cwd)) {
+      // The native TUI lists the directory returned by process.cwd() after chdir. The SDK
+      // only normalizes path text; passing an alias (e.g. macOS /var) hides it from that view.
+      const directory = await realpath(cwd).catch(() => undefined);
+      if (directory && await stat(directory).then(info => info.isDirectory(), () => false)) return directory;
     }
+    throw new ActivationError("cwd_missing", "OpenCode working directory is unavailable");
   }
 
   async setArchived(sessionId: string, archived: boolean): Promise<void> {

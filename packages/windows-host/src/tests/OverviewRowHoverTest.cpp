@@ -1,11 +1,13 @@
 #include "../HostController.h"
 #include "../NeuSurface.h"
 #include <QAccessible>
+#include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QSignalSpy>
 #include <QEnterEvent>
 #include <QFile>
+#include <QFileDialog>
 #include <QMouseEvent>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -16,6 +18,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QtTest>
 #include <algorithm>
 
@@ -56,6 +59,28 @@ QQuickItem *findHoverHighlight(QQuickItem *card, const QColor &expectedColor) {
     return nullptr;
 }
 
+bool clickWithWorkspacePicker(QQuickItem *action, const QString &workspace, QString &pickerTitle) {
+    const bool usedQtPicker = QCoreApplication::testAttribute(Qt::AA_DontUseNativeDialogs);
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+    QTimer pickerProbe;
+    pickerProbe.setSingleShot(true);
+    QObject::connect(&pickerProbe, &QTimer::timeout, [&] {
+        auto *picker = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+        if (!picker) return;
+        pickerTitle = picker->windowTitle();
+        if (!workspace.isEmpty()) {
+            picker->setDirectory(workspace);
+            QMetaObject::invokeMethod(picker, "accept");
+        }
+        if (picker->isVisible()) picker->reject();
+    });
+    // The timer runs inside the directory picker's nested event loop, if it opens.
+    pickerProbe.start(0);
+    const bool clicked = QMetaObject::invokeMethod(action, "clicked");
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs, usedQtPicker);
+    return clicked;
+}
+
 void writeFixtureBridge(const QString &root) {
     QDir().mkpath(root + "/packages/host/dist");
     QFile file(root + "/packages/host/dist/desktop-bridge.js");
@@ -90,6 +115,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
         agentEnablement: { revision: 1, agents: currentAgents },
         kimiCodeSupported: true,
         kimiDesktopSupported: true,
+        openCodeTuiTabsEnabled: false,
         openClaw: { source: "file", url: "", hasToken: false },
         hermesRemote: { source: "file", host: "", port: 22, profile: "" }
       }
@@ -147,6 +173,14 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     currentAgents = currentAgents.map(agent => agent.kind === params.kind ? { ...agent, enabled: params.enabled } : agent);
     const snapshot = { revision: params.expectedRevision + 1, agents: currentAgents };
     setTimeout(() => out({ id, result: { status: "applied", snapshot } }), 320);
+    return;
+  }
+  if (method === "openCodeTuiTabs") {
+    setTimeout(() => out({ id, result: { enabled: params.enabled } }), 100);
+    return;
+  }
+  if (method === "openAgent" && params.kind === "opencode" && params.mode === "tui") {
+    out({ id, result: {} });
     return;
   }
   if (method === "openAgent" && ["kimiCode", "opencode", "hermes", "openclaw"].includes(params.kind)) {
@@ -220,6 +254,7 @@ private slots:
     }
 
     // KIMI-12 / HOST-AGENT-START-01: shared start UI reflects process status; configured remote gateways cannot be started here.
+    // OPENCODE-TUI-01: only a ready OpenCode switches both existing actions from headless start to the workspace picker.
     void startsLocalAgentFromHost() {
         QFETCH(QString, kind);
         QVERIFY(!QStandardPaths::findExecutable("node").isEmpty());
@@ -251,7 +286,8 @@ private slots:
                 }}}}}
             }}}}});
         }
-        auto *overview = findVisualItem(window->contentItem(), "overviewAgent-" + kind);
+        const auto overviewAction = [&] { return findVisualItem(window->contentItem(), "overviewAgent-" + kind); };
+        auto *overview = overviewAction();
         QVERIFY(overview && overview->isVisible() && overview->isEnabled());
         QCOMPARE(overview->property("text").toString(), QString("启动"));
         QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, kind)));
@@ -269,11 +305,74 @@ private slots:
             emit controller.changed();
             QTRY_VERIFY(detail->isVisible() && detail->isEnabled());
         }
-        QVERIFY(QMetaObject::invokeMethod(detail, "clicked"));
+        if (kind == "opencode") {
+            auto *syncTabs = findVisualItem(window->contentItem(), "openCodeTuiTabsAction");
+            QTRY_VERIFY(syncTabs && syncTabs->isVisible() && syncTabs->isEnabled());
+            for (const bool enable : {true, false}) {
+                QCOMPARE(syncTabs->property("text").toString(), QString(enable ? "启用会话栏同步" : "停用会话栏同步"));
+                const int tabsRequestId = controller.m_nextId;
+                QVERIFY(QMetaObject::invokeMethod(syncTabs, "clicked"));
+                QCOMPARE(controller.m_methods.value(tabsRequestId), QString("openCodeTuiTabs"));
+                QCOMPARE(controller.m_requestParams.value(tabsRequestId), (QJsonObject{{"enabled", enable}}));
+                QVERIFY(!syncTabs->isEnabled());
+                QTRY_COMPARE(controller.openCodeTuiTabsEnabled(), enable);
+                QTRY_VERIFY(syncTabs->isEnabled());
+            }
+            QCOMPARE(detail->property("text").toString(), QString("启动"));
+            const int requestId = controller.m_nextId;
+            QString pickerTitle;
+            QVERIFY(clickWithWorkspacePicker(detail, {}, pickerTitle));
+            QVERIFY(pickerTitle.isEmpty());
+            QCOMPARE(controller.m_methods.value(requestId), QString("openAgent"));
+            QCOMPARE(controller.m_requestParams.value(requestId), (QJsonObject{{"kind", "opencode"}}));
+        } else {
+            QVERIFY(QMetaObject::invokeMethod(detail, "clicked"));
+        }
         QTRY_COMPARE(status->property("text").toString(), QString("正在启动"));
         QVERIFY(!detail->isEnabled());
         QTRY_COMPARE(status->property("text").toString(), QString(kind == "kimiCode" ? "已接入" : "可用"));
-        QVERIFY(!detail->isVisible());
+        if (kind == "opencode") {
+            QTRY_VERIFY(detail->isVisible() && detail->isEnabled());
+            QCOMPARE(detail->property("text").toString(), QString("打开终端"));
+            QVERIFY(!detail->property("loading").toBool());
+            const auto workspace = root.filePath("workspace");
+            QVERIFY(QDir().mkpath(workspace));
+            for (const int page : {2, 0}) {
+                QVERIFY(QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, page)));
+                auto *action = page == 2 ? detail : overviewAction();
+                QVERIFY(action && action->isVisible() && action->isEnabled());
+                QCOMPARE(action->property("text").toString(), QString("打开终端"));
+
+                const int requestId = controller.m_nextId;
+                QString pickerTitle;
+                QVERIFY(clickWithWorkspacePicker(action, {}, pickerTitle));
+                QCOMPARE(pickerTitle, QString("选择 OpenCode 工作区"));
+                QCOMPARE(controller.m_nextId, requestId); // Cancel must not dispatch a bridge command.
+                pickerTitle.clear();
+                QVERIFY(clickWithWorkspacePicker(action, workspace, pickerTitle));
+                QCOMPARE(pickerTitle, QString("选择 OpenCode 工作区"));
+                QCOMPARE(controller.m_methods.value(requestId), QString("openAgent"));
+                QCOMPARE(controller.m_requestParams.value(requestId),
+                         (QJsonObject{{"kind", "opencode"}, {"mode", "tui"}, {"cwd", workspace}}));
+                QVERIFY(!action->isEnabled());
+                QTRY_VERIFY(!controller.busy());
+                QTRY_COMPARE(controller.message(), QString("已打开 OpenCode 终端界面。请在新窗口中继续操作。"));
+            }
+
+            auto disabledAgents = QJsonArray::fromVariantList(controller.agentEnablement().value("agents").toList());
+            for (qsizetype i = 0; i < disabledAgents.size(); ++i) {
+                auto agent = disabledAgents.at(i).toObject();
+                if (agent.value("kind") != "opencode") continue;
+                agent.insert("enabled", false);
+                disabledAgents.replace(i, agent);
+            }
+            controller.receiveLine({{"event", "agentEnablement"}, {"snapshot", QJsonObject{{"revision", 2}, {"agents", disabledAgents}}}});
+            QTRY_VERIFY(overviewAction() == nullptr);
+            QVERIFY(QMetaObject::invokeMethod(window, "selectPage", Q_ARG(QVariant, 2)));
+            QVERIFY(!detail->isVisible());
+        } else {
+            QVERIFY(!detail->isVisible());
+        }
         controller.shutdown();
     }
 

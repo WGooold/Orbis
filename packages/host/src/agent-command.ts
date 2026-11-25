@@ -18,11 +18,11 @@ export const AGENT_LAUNCH_ENV_KEYS = ["PATH", "PI_CODING_AGENT_DIR", "PI_MANAGED
   "VOLTA_HOME", "PNPM_HOME", "BUN_INSTALL", "NVM_DIR", "FNM_DIR", "FNM_MULTISHELL_PATH", "NVM_SYMLINK"] as const;
 
 /** QA-ACT-02: Terminal.app starts from its own login environment; restore only private QA roots. */
-export function agentTerminalEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
-  const keys: readonly string[] = env.ORBIS_QA_HOME ? [...AGENT_LAUNCH_ENV_KEYS,
-    "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
-    "ORBIS_QA_HOME", "ORBIS_NO_KEYCHAIN", "TERM", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP"] : AGENT_LAUNCH_ENV_KEYS;
-  const result = Object.fromEntries(keys.flatMap(key => env[key] === undefined ? [] : [[key, env[key]]]));
+export function agentTerminalEnvironment(env: NodeJS.ProcessEnv, additionalKeys: readonly string[] = []): Record<string, string> {
+  const keys = new Set<string>([...AGENT_LAUNCH_ENV_KEYS, ...additionalKeys]);
+  if (env.ORBIS_QA_HOME) for (const key of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+    "ORBIS_QA_HOME", "ORBIS_NO_KEYCHAIN", "TERM", "LANG", "LC_ALL", "TMPDIR", "TMP", "TEMP"]) keys.add(key);
+  const result = Object.fromEntries([...keys].flatMap(key => env[key] === undefined ? [] : [[key, env[key]]]));
   if (env.ORBIS_QA_HOME && !result.TERM) result.TERM = "xterm-256color";
   return result;
 }

@@ -132,6 +132,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_openClaw = obj.value("openClaw").toObject().toVariantMap();
             m_hermesRemote = obj.value("hermesRemote").toObject().toVariantMap();
             m_kimiCodeSupported = obj.value("kimiCodeSupported").toBool();
+            m_openCodeTuiTabsSupported = obj.value("openCodeTuiTabsEnabled").isBool();
+            m_openCodeTuiTabsEnabled = obj.value("openCodeTuiTabsEnabled").toBool();
             m_kimiDesktopSupported = obj.value("kimiDesktopSupported").toBool();
             m_kimiCodeDefaultSource = obj.value("kimiCodeDefaultSource").toString("web");
             m_bridgeReady = true;
@@ -171,6 +173,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         m_agentEnablement.clear(); m_agentChoices.clear(); m_agentReview.reset(); m_agentInFlight.reset(); m_agentWriteId = -1; m_agentChoiceRecheck = false; m_agentReadPending = false;
         emit agentEnablementChanged();
         m_kimiCodeSupported = false;
+        m_openCodeTuiTabsSupported = m_openCodeTuiTabsEnabled = false;
         m_bridgeReady = false; m_desiredRunning = false; m_pending.clear(); m_methods.clear(); m_requestParams.clear(); ++m_draftGeneration; m_busy = 0; m_qr.clear();
         // 在途命令随内核一起没了：进度说明也必须跟着消失，否则会永久停在“正在做什么”。
         m_activity.clear(); m_activityOrder.clear(); m_claudeDetecting = false; m_claudeCliIssue.clear(); m_hermesCli.clear(); m_agents.clear();
@@ -1108,6 +1111,15 @@ void HostController::enableCodexTerminal() {
         setMessage("终端接入已修复。请重新打开终端。");
     });
 }
+void HostController::setOpenCodeTuiTabs(bool enabled) {
+    if (!m_bridgeReady || busy() || !openCodeTuiTabsSupported() || enabled == m_openCodeTuiTabsEnabled || (enabled && !agentEnabled("opencode"))) return;
+    command("openCodeTuiTabs", {{"enabled", enabled}}, [this](const QJsonValue &value) {
+        const auto choice = value.toObject().value("enabled");
+        if (!choice.isBool()) { setMessage("无法确认 OpenCode 会话栏设置"); return; }
+        m_openCodeTuiTabsEnabled = choice.toBool();
+        setMessage(m_openCodeTuiTabsEnabled ? "已启用 OpenCode 会话栏同步" : "已停止同步新会话，已有标签保持不变");
+    });
+}
 void HostController::selectAgentEntry(const QString &kind, const QString &entry) {
     if (!m_bridgeReady || busy() || !manualCliKinds.contains(kind)) return;
     pauseForChange();
@@ -1268,9 +1280,15 @@ void HostController::copyProvider(const QString &id) {
     const auto kind = m_providerKind;
     command("provider.copy", {{"kind", kind}, {"id", id}}, [this, kind](const QJsonValue &value) { if (kind == m_providerKind) { setProviders(value.toArray().toVariantList()); setMessage("供应商已复制，请编辑副本后启用"); } });
 }
+static QString terminalAgentLabel(const QString &kind) {
+    if (kind == "pi") return "Pi";
+    if (kind == "claude") return "Claude Code";
+    if (kind == "opencode") return "OpenCode";
+    return "Codex";
+}
 QString HostController::selectWorkspace(const QString &kind) {
     const auto cwd = QFileDialog::getExistingDirectory(nullptr,
-        QString("选择 %1 工作区").arg(kind == "pi" ? "Pi" : kind == "claude" ? "Claude Code" : "Codex"),
+        QString("选择 %1 工作区").arg(terminalAgentLabel(kind)),
         m_settings.value("lastWorkspace", QDir::homePath()).toString());
     if (!cwd.isEmpty()) m_settings.setValue("lastWorkspace", cwd);
     return cwd;
@@ -1297,15 +1315,24 @@ void HostController::openAgent(const QString &kind) {
     command("openAgent", {{"kind", kind}});
 }
 void HostController::openAgentTui(const QString &kind) {
-    if (!m_bridgeReady || busy()) return;
+    const auto canOpen = [&] {
+        if (kind != "opencode") return m_bridgeReady && !busy();
+        return agentChoicesAvailable() && agentEnabled(kind) && m_desiredRunning &&
+            std::any_of(m_backends.cbegin(), m_backends.cend(), [&](const QVariant &value) {
+                const auto backend = value.toMap();
+                return backend.value("kind").toString() == kind && backend.value("ready").toBool();
+            });
+    };
+    if (!canOpen()) return;
     QJsonObject params{{"kind", kind}, {"mode", "tui"}};
-    if (kind == "pi" || kind == "codex" || kind == "claude") {
+    if (kind == "pi" || kind == "codex" || kind == "claude" || kind == "opencode") {
         const auto cwd = selectWorkspace(kind);
-        if (cwd.isEmpty()) return;
+        // The modal picker processes bridge events; OpenCode may no longer be ready after selection.
+        if (cwd.isEmpty() || (kind == "opencode" && !canOpen())) return;
         params.insert("cwd", cwd);
     }
     command("openAgent", params, [this, kind](const QJsonValue &) {
-        setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(kind == "pi" ? "Pi" : kind == "claude" ? "Claude Code" : "Codex"));
+        setMessage(kind == "dsh" ? "已打开 DeepSeek Harness 网页工作台" : QString("已打开 %1 终端界面。请在新窗口中继续操作。").arg(terminalAgentLabel(kind)));
     });
 }
 void HostController::setAutoStart(bool enabled) {

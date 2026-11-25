@@ -1,15 +1,25 @@
-import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
-import { RuntimeEventSchema, type RuntimeCommand, type RuntimeEvent } from "@orbis/protocol";
+import { dirname, join, resolve } from "node:path";
+import { promisify } from "node:util";
+import { RUNTIME_VIEW_CLOSE_CAPABILITY, RuntimeEventSchema, type RuntimeCommand, type RuntimeEvent } from "@orbis/protocol";
 import { expect, it, vi } from "vitest";
 import { OpenCodeBackend } from "./opencode-backend.js";
-import { createOpenCodeLocalLauncher } from "./opencode-local-launch.js";
-import { OPENCODE_CLIENT_VERSION, OpenCodeServiceConnection } from "./opencode-service-connection.js";
+import { createOpenCodeLocalLauncher, prepareOpenCodeTerminalLaunch } from "./opencode-local-launch.js";
+import { OPENCODE_CLIENT_VERSION, openCodeTerminalService, OpenCodeServiceConnection } from "./opencode-service-connection.js";
 
+const exec = promisify(execFile);
 const binary = process.env.ORBIS_OPENCODE_TEST_BINARY;
 const version = OPENCODE_CLIENT_VERSION;
+
+async function fixtureCli(root: string): Promise<string> {
+  const bin = join(root, "fixture-bin");
+  await mkdir(bin);
+  if (process.platform === "win32") await copyFile(resolve(binary!), join(bin, "opencode.exe"));
+  else await symlink(resolve(binary!), join(bin, "opencode"));
+  return bin;
+}
 
 // HOST-AGENT-START-01: startup uses the released CLI's shared service and leaves that exact service usable after Host detach.
 it.skipIf(!binary)("cold starts the native OpenCode service once and reuses it after Host detach", async () => {
@@ -18,7 +28,7 @@ it.skipIf(!binary)("cold starts the native OpenCode service once and reuses it a
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(path|systemroot|windir|comspec|pathext)$/i.test(key)));
   const env = { ...inherited, HOME: home, USERPROFILE: home, OPENCODE_TEST_HOME: home, XDG_STATE_HOME: join(root, "state"),
     XDG_DATA_HOME: join(root, "data"), XDG_CONFIG_HOME: join(root, "config"), XDG_CACHE_HOME: join(root, "cache"),
-    OPENCODE_SIMULATE: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", PATH: [dirname(resolve(binary!)), process.env.PATH].join(delimiter) };
+    OPENCODE_SIMULATE: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", PATH: await fixtureCli(root) };
   // Reserve a fixture port in the native service config; the launch itself never substitutes a random endpoint.
   const testServer = (await import("node:net")).createServer();
   await new Promise<void>(resolveListen => testServer.listen(0, "127.0.0.1", resolveListen));
@@ -55,7 +65,9 @@ it.skipIf(!binary)(`validates the native OpenCode ${version} shared service in i
   const temporary = resolve(tmpdir());
   const root = await mkdtemp(join(temporary, "orbis-opencode-native-"));
   if (dirname(resolve(root)) !== temporary) throw new Error("OpenCode test directory outside temporary root");
-  const home = join(root, "home"), work = join(root, "work"), state = join(root, "state"), temp = join(root, "tmp");
+  const parent = await realpath(root);
+  const work = join(parent, "work"), otherWork = join(parent, "other-work"), alias = join(parent, "work-alias");
+  const home = join(root, "home"), state = join(root, "state"), temp = join(root, "tmp");
   const data = join(root, "data"), config = join(root, "config"), cache = join(root, "cache");
   const registrationPath = join(state, "opencode", "service.json");
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(path|systemroot|windir|comspec|pathext)$/i.test(key)));
@@ -74,7 +86,8 @@ it.skipIf(!binary)(`validates the native OpenCode ${version} shared service in i
   let spawnFailed = false;
   const timing = { timeout: 6_000, interval: 50 };
   try {
-    await Promise.all([home, work, state, temp, data, config, cache].map(dir => mkdir(dir)));
+    await Promise.all([home, work, otherWork, state, temp, data, config, cache].map(dir => mkdir(dir)));
+    await symlink(work, alias, process.platform === "win32" ? "junction" : "dir");
     backend.start();
     await expect(connection.refresh()).resolves.toEqual({ state: "unavailable", reason: "service_not_found" });
     child = spawn(resolve(binary!), ["serve", "--service", "--hostname", "127.0.0.1", "--port", "0"], {
@@ -94,18 +107,34 @@ it.skipIf(!binary)(`validates the native OpenCode ${version} shared service in i
     const client = connection.client!;
     const service = await client.server.info();
     expect(service).toMatchObject({ version, pid: child.pid });
+    const serviceIdentity = connection.identity!;
+    const native = await openCodeTerminalService(serviceIdentity, registrationPath);
+    const controlSession = await client.session.create({ location: { directory: otherWork } });
+    const listProjectSessions = async (cwd: string): Promise<string[]> => {
+      const { stdout } = await exec(resolve(binary!), ["session", "list", "--format", "json", "--server", serviceIdentity.origin],
+        { cwd, env: { ...env, OPENCODE_PASSWORD: native.password }, timeout: 15_000, maxBuffer: 1_000_000 });
+      const value: unknown = JSON.parse(stdout);
+      if (!Array.isArray(value)) throw new Error("Pinned OpenCode CLI did not return a JSON session array");
+      return value.flatMap(row => row && typeof row === "object" && typeof (row as { id?: unknown }).id === "string" ? [(row as { id: string }).id] : []);
+    };
 
     const catalog = await backend.sessionConfiguration(work);
     const model = catalog.models.find(item => item.thinking.some(variant => variant.value !== "default"));
     const variant = model?.thinking.find(item => item.value !== "default");
     const alternate = catalog.models.find(item => item.value !== model?.value);
     if (!model || !variant || !alternate) throw new Error("Pinned OpenCode fixture did not expose the expected test models");
-    const activation = await backend.activate({ type: "new", cwd: work }, { configuration: { model: model.value } });
+    // OPENCODE-TUI-02: the App may select an alias, but native TUI lists the physical directory.
+    const activation = await backend.activate({ type: "new", cwd: alias }, { configuration: { model: model.value } });
     const sessionID = activation.sessionId;
     if (!sessionID) throw new Error("OpenCode did not return the native session identity");
+    expect((await client.session.get({ sessionID })).location.directory).toBe(work);
     const id = `opencode:${sessionID}`;
     await expect(backend.activate({ type: "resume", sessionId: sessionID })).resolves.toEqual(activation);
     expect(await backend.catalog()).toContainEqual(expect.objectContaining({ sessionId: sessionID, agentKind: "opencode" }));
+    const [appProjectSessions, desktopProjectSessions] = await Promise.all([listProjectSessions(work), listProjectSessions(otherWork)]);
+    expect(appProjectSessions).toContain(sessionID);
+    expect(desktopProjectSessions).toContain(controlSession.id);
+    expect(desktopProjectSessions).not.toContain(sessionID);
     await backend.setArchived(sessionID, true);
     expect(await backend.catalog(true)).toContainEqual(expect.objectContaining({ sessionId: sessionID, archived: true }));
     await backend.setArchived(sessionID, false);
@@ -151,6 +180,41 @@ it.skipIf(!binary)(`validates the native OpenCode ${version} shared service in i
     await dispatch("reply-form", { type: "interaction.respond", extensionId: "opencode.form", requestId: form.id,
       response: { kind: "questionnaire", answers: [{ id: "proceed", values: ["true"] }, { id: "count", values: [], other: "3" }] } });
     expect((await client.session.form.get({ sessionID, formID: form.id })).state).toMatchObject({ status: "answered", answer: { proceed: true, count: 3 } });
+
+    const capabilities = [...events].reverse().find(row => row.id === id && row.event.type === "runtime.capabilities")?.event;
+    if (capabilities?.type !== "runtime.capabilities") throw new Error("OpenCode did not publish its view-close capability");
+    const closeGeneration = capabilities.capabilities.commands.find(command => command.name === RUNTIME_VIEW_CLOSE_CAPABILITY)?.closeGeneration;
+    if (!closeGeneration) throw new Error("OpenCode did not publish a view-close generation");
+    await dispatch("app-quit", { type: "session.close", sessionId: sessionID, confirmed: true, closeGeneration });
+    expect(backend.directoryEntries()).toEqual([]);
+    expect((await client.session.get({ sessionID })).id).toBe(sessionID);
+    expect((await client.message.list({ sessionID, type: "user" })).data).toContainEqual(expect.objectContaining({
+      text: "Isolated Orbis test input", metadata: expect.objectContaining({ "orbis.clientMessageId": "app-fixture" }),
+    }));
+    expect(await listProjectSessions(work)).toContain(sessionID);
+
+    // OPENCODE-TUI-01: use the same native selection after the App view has detached.
+    const newerChild = await client.session.create({ parentID: sessionID, location: { directory: work } });
+    const archive = await client.session.create({ location: { directory: work } });
+    await client.session.update({ sessionID: archive.id, archived: true });
+    expect(new Set([sessionID, newerChild.id, archive.id]).size).toBe(3);
+    const target = { sessionId: sessionID, directory: work, workspace: work, service: serviceIdentity };
+    await expect(backend.latestSessionInDirectory(`${work}/.`)).resolves.toEqual({ sessionId: sessionID, directory: work, workspace: work });
+    await expect(backend.latestSessionInDirectory(alias)).resolves.toEqual({ sessionId: sessionID, directory: work, workspace: work });
+    await expect(backend.latestSessionInDirectory(otherWork)).resolves.toEqual({ sessionId: controlSession.id, directory: otherWork, workspace: otherWork });
+    const legacy = await client.session.create({ location: { directory: alias } });
+    expect(legacy.location.directory).toBe(alias);
+    await expect(backend.latestSessionInDirectory(alias)).resolves.toEqual({ sessionId: legacy.id, directory: alias, workspace: work });
+    await expect(backend.latestSessionInDirectory(work)).resolves.toEqual({ sessionId: sessionID, directory: work, workspace: work });
+    const isolatedPath = await fixtureCli(root);
+    const launch = await prepareOpenCodeTerminalLaunch(target, AbortSignal.timeout(8_000), { ...env, PATH: isolatedPath,
+      OPENCODE_PASSWORD: "must-not-serialize-test-password", NODE_OPTIONS: "must-not-serialize-test-node-options" });
+    expect(launch.environment.XDG_STATE_HOME).toBe(state);
+    expect(launch.environment).not.toHaveProperty("OPENCODE_PASSWORD");
+    expect(launch.environment).not.toHaveProperty("NODE_OPTIONS");
+    expect(JSON.parse(Buffer.from(launch.args[1]!, "base64url").toString("utf8"))).toEqual({ target, cliCommand: {
+      command: join(isolatedPath, process.platform === "win32" ? "opencode.exe" : "opencode"), prefixArgs: [],
+    } });
 
     backend.close();
     connection.close();

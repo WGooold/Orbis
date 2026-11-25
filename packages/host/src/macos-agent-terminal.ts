@@ -6,19 +6,19 @@ import { setTimeout as delay } from "node:timers/promises";
 import { agentTerminalEnvironment } from "./agent-command.js";
 
 /** Opening a private .command file needs no Terminal Apple Events/Automation consent. */
-export async function openMacAgentTerminal(input: { stateDir: string; cwd: string; command: string; args: readonly string[]; env: NodeJS.ProcessEnv; confirmStart?: boolean; unsetEnv?: readonly string[]; requireCurrent?: () => void }): Promise<void> {
+export async function openMacAgentTerminal(input: { stateDir: string; cwd: string; command: string; args: readonly string[]; env: NodeJS.ProcessEnv; confirmStart?: boolean; unsetEnv?: readonly string[]; terminalEnvironmentKeys?: readonly string[]; cleanEnvironment?: boolean; requireCurrent?: () => void }): Promise<void> {
   const directory = join(input.stateDir, "tmp");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const file = join(directory, `agent-${randomUUID()}.command`);
   const startedFile = `${file}.started`;
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   // Deliberately do not copy credentials or the entire Host environment into a file.
-  const environment = Object.entries(agentTerminalEnvironment(input.env)).map(([key, value]) => `${key}=${value}`)
+  const environment = Object.entries(agentTerminalEnvironment(input.env, input.terminalEnvironmentKeys)).map(([key, value]) => `${key}=${value}`)
     .concat(["ORBIS_STATE_DIR", "PI_REMOTE_STATE_DIR", "PI_OFFLINE", "PI_SKIP_VERSION_CHECK"]
       .flatMap(key => input.env[key] === undefined ? [] : [`${key}=${input.env[key]}`]));
   const script = ["#!/bin/sh", `cd -- ${quote(input.cwd)} || exit 1`, 'rm -f -- "$0"',
     ...(input.confirmStart ? [`[ -t 0 ] || exit 1`, `/usr/bin/touch -- ${quote(startedFile)}`] : []),
-    `exec /usr/bin/env ${[...(input.env.ORBIS_QA_HOME ? ["-i"] : []), ...(input.unsetEnv ?? []).flatMap(key => ["-u", key]), ...environment, input.command, ...input.args].map(quote).join(" ")}`, ""].join("\n");
+    `exec /usr/bin/env ${[...(input.cleanEnvironment || input.env.ORBIS_QA_HOME ? ["-i"] : []), ...(input.unsetEnv ?? []).flatMap(key => ["-u", key]), ...environment, input.command, ...input.args].map(quote).join(" ")}`, ""].join("\n");
   await writeFile(file, script, { mode: 0o700, flag: "wx" });
   try {
     await chmod(file, 0o700);

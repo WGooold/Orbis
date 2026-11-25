@@ -12,8 +12,9 @@ import { AgentBatchConfirmationRequired, AgentDisableConfirmationRequired, Agent
 import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
-import { createOpenCodeLocalLauncher } from "./opencode-local-launch.js";
+import { createOpenCodeLocalLauncher, OPENCODE_TUI_ENV_KEYS, prepareOpenCodeTerminalLaunch } from "./opencode-local-launch.js";
 import { OpenCodeServiceConnection } from "./opencode-service-connection.js";
+import { configureOpenCodeTuiTabs, openCodeTuiTabsInstalled } from "./opencode-tui-tabs-install.js";
 import { loadHermesRemoteGatewayConfig, readHermesRemoteGatewaySettings, saveHermesRemoteGatewaySettings } from "./hermes-remote-gateway.js";
 import { RelayAuthenticationError } from "./relay-client.js";
 import { CodexAppServer, codexCommandForEntry, resolveCodexCommand } from "./codex-daemon.js";
@@ -275,6 +276,8 @@ export class DesktopRuntime {
     return { kimiCodeSupported: !this.#qa, kimiCodeDefaultSource: kimi?.kimiCodeSource ?? "web",
       kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
       agentEnablement: enablement,
+      ...(!this.#qa && (process.platform === "darwin" || process.platform === "win32")
+        ? { openCodeTuiTabsEnabled: await openCodeTuiTabsInstalled().catch(() => false) } : {}),
       ...(this.#qa ? {} : { openClaw: await readOpenClawDesktopSettings(this.#stateDir) }),
       ...(this.#qa ? {} : { hermesRemote: await readHermesRemoteGatewaySettings(this.#stateDir) }),
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
@@ -1674,6 +1677,20 @@ export class DesktopRuntime {
     if (!this.#agentEnablement.allows(kind)) throw new Error("请先在 Agent 设置中启用此接入");
   }
 
+  async setOpenCodeTuiTabs(enabled: unknown): Promise<{ enabled: boolean }> {
+    if (typeof enabled !== "boolean") throw new Error("无效的 OpenCode 会话栏设置");
+    if (this.#qa || (process.platform !== "darwin" && process.platform !== "win32")) throw new Error("此 Host 不支持配置 OpenCode 会话栏");
+    if (enabled) await this.#requireAgentEnabled("opencode");
+    const lease = enabled ? this.#agentEnablement.lease("opencode") : undefined;
+    const requireCurrent = () => { if (enabled && !lease?.isCurrent()) throw new Error("OpenCode 已停用"); };
+    try { await configureOpenCodeTuiTabs(enabled, requireCurrent); }
+    catch (error) {
+      if (error instanceof Error && !("code" in error)) throw error;
+      throw new Error("无法配置 OpenCode 会话栏，请检查 OpenCode 配置目录权限");
+    }
+    return { enabled };
+  }
+
   async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {
     const startLocal = kind === "opencode" || kind === "openclaw" || kind === "hermes";
     if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop" || kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND || startLocal)) throw new Error("QA Host 不打开正式 Agent 会话");
@@ -1682,6 +1699,35 @@ export class DesktopRuntime {
     const lease = source.success ? this.#agentEnablement.lease(source.data) : undefined;
     const requireCurrent = () => { if (!lease?.isCurrent()) throw new Error("此 Agent 已停用"); };
     if (mode !== "setup" && mode !== "tui") throw new Error("未知打开方式");
+    if (kind === "opencode" && mode === "tui") {
+      if (process.platform !== "darwin" && process.platform !== "win32") throw new Error("当前系统不支持从 Host 打开 OpenCode 终端");
+      const settings = this.#desired, service = this.#service;
+      if (!settings || !service) throw new Error("请先启动 Host，再打开 OpenCode 终端");
+      const requireHandoffCurrent = () => {
+        requireCurrent();
+        if (this.#desired !== settings || this.#service !== service) throw new Error("Host 已暂停，已取消打开 OpenCode 终端");
+      };
+      const workingDirectory = await terminalWorkspace(cwd);
+      requireHandoffCurrent();
+      const target = await service.openCodeTerminalTarget(workingDirectory);
+      requireHandoffCurrent();
+      const launch = await prepareOpenCodeTerminalLaunch(target, lease!.signal);
+      requireHandoffCurrent();
+      if (process.platform === "darwin") {
+        await openMacAgentTerminal({ stateDir: this.#stateDir, cwd: target.workspace, command: process.execPath,
+          args: launch.args, env: launch.environment, terminalEnvironmentKeys: OPENCODE_TUI_ENV_KEYS, cleanEnvironment: true, requireCurrent: requireHandoffCurrent });
+      } else {
+        const script = agentPowerShellScript({ command: process.execPath, prefixArgs: [] }, launch.args, launch.environment);
+        const encoded = Buffer.from(script, "utf16le").toString("base64");
+        try { await openWindowsConsole({ file: "powershell.exe", argumentLine: `-NoProfile -NoExit -EncodedCommand ${encoded}`, cwd: target.workspace }, { env: launch.environment }); }
+        catch (error) {
+          if (!(error instanceof WindowsConsoleLaunchError)) throw error;
+          this.log(`无法打开 OpenCode 终端界面：${error.message}`);
+          throw new Error("无法打开 OpenCode 终端界面，请重试");
+        }
+      }
+      return;
+    }
     if (kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND || startLocal) {
       if (mode !== "setup") throw new Error("未知打开方式");
       requireCurrent();

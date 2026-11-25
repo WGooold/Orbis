@@ -93,6 +93,9 @@ ApplicationWindow {
         : agentRows.length && enabledAgentCount === 0 ? "enable"
         : overviewAgents.some(agent => agent.data && (agent.installed === false || agent.broken)) && !overviewAgents.some(agent => agent.installed && !agent.broken) ? "install" : "open"
     function backendFor(kind) { return host.backends.find(function(backend) { return backend.kind === kind }) }
+    function openCodeTerminalAvailable(kind) {
+        return kind === "opencode" && host.desiredRunning && window.backendFor(kind)?.ready === true
+    }
     readonly property bool kimiStartAvailable: host.kimiCodeAvailable && host.kimiCodeEnabled && host.desiredRunning
         && window.backendFor("kimiCode")?.launchable === true && window.backendFor("kimiCode")?.ready !== true
     readonly property bool kimiDesktopStartAvailable: host.kimiDesktopSupported && window.agentEnabled("kimiCodeDesktop") && host.desiredRunning
@@ -176,6 +179,7 @@ ApplicationWindow {
     }
     // Unknown installation is not an install verdict: keep the action descriptive but disabled until detection settles.
     function overviewAgentActionText(agent, installable) {
+        if (agent.kind === "opencode" && window.openCodeTerminalAvailable(agent.kind)) return "打开终端"
         if (window.startActionVisible(agent.kind)) return window.startingAgent(agent.kind) ? "正在启动" : "启动"
         if (agent.kind === "openclaw") return "配置"
         if (agent.installed === false) return installable ? (agent.broken ? "修复" : "安装") : "打开"
@@ -184,6 +188,8 @@ ApplicationWindow {
         return window.agentPhoneState(agent, 0)
     }
     function overviewAgentActionEnabled(agent, installable) {
+        if (agent.kind === "opencode") return window.canEditAgent
+            && (window.openCodeTerminalAvailable(agent.kind) || (window.startActionVisible(agent.kind) && !window.startingAgent(agent.kind)))
         if (window.startActionVisible(agent.kind)) return host.bridgeReady && !host.busy && !window.startingAgent(agent.kind)
         return host.bridgeReady && !host.busy && (agent.installed === true || (agent.installed === false && installable))
     }
@@ -217,7 +223,11 @@ ApplicationWindow {
         return host.claudeVersion ? "需升级" : "版本未确认"
     }
     function openOverviewAgent(kind) {
-        if (kind === "openclaw" && !window.startActionVisible(kind)) window.goAgent(kind)
+        if (kind === "opencode") {
+            if (!window.canEditAgent || !window.agentEnabled(kind)) return
+            if (window.openCodeTerminalAvailable(kind)) host.openAgentTui(kind)
+            else if (window.startActionVisible(kind) && !window.startingAgent(kind)) host.openAgent(kind)
+        } else if (kind === "openclaw" && !window.startActionVisible(kind)) window.goAgent(kind)
         else if (kind === "pi" || kind === "codex" || kind === "claude") host.openAgentTui(kind)
         else host.openAgent(kind)
     }
@@ -1730,6 +1740,7 @@ ApplicationWindow {
                                                 id: overviewAgentAction
                                                 objectName: "overviewAgent-" + agentRow.modelData.kind
                                                 visible: agentRow.modelData.passive !== true || window.startActionVisible(agentRow.modelData.kind)
+                                                    || window.openCodeTerminalAvailable(agentRow.modelData.kind)
                                                 Layout.preferredWidth: 112
                                                 text: window.overviewAgentActionText(agentRow.modelData, agentRow.installable)
                                                 primary: window.overviewAgentActionPrimary(agentRow.modelData, agentRow.installable)
@@ -2217,8 +2228,9 @@ ApplicationWindow {
                                             id: detailActionBar
                                             objectName: "agentDetailActions"
                                             readonly property bool localStart: window.startActionVisible(window.detailKind)
-                                            readonly property bool hasOpenAction: window.detailKind === "kimiCode" || window.localServiceAgent(window.detailKind) ? localStart
-                                                : !!window.detailFacts && !window.detailFacts.passive && window.detailKind !== "openclaw"
+                                            readonly property bool hasOpenAction: window.openCodeTerminalAvailable(window.detailKind)
+                                                || (window.detailKind === "kimiCode" || window.localServiceAgent(window.detailKind) ? localStart
+                                                : !!window.detailFacts && !window.detailFacts.passive && window.detailKind !== "openclaw")
                                             readonly property bool hasEntryAction: !!window.detailFacts && (!!window.agentCliHint(window.detailFacts) || !!host.agentEntryOverrides[window.detailKind])
                                             visible: window.detailUpdateAction.visible || hasOpenAction || window.detailKind === "dsh" || hasEntryAction
                                             Layout.fillWidth: true; spacing: 8
@@ -2235,10 +2247,13 @@ ApplicationWindow {
                                             ActionButton {
                                                 id: detailOpenBtn
                                                 objectName: "agentDetailOpen"
-                                                text: !detailActionBar.localStart ? "打开" : window.startingAgent(window.detailKind) ? "正在启动" : "启动"
+                                                text: window.openCodeTerminalAvailable(window.detailKind) ? "打开终端"
+                                                    : !detailActionBar.localStart ? "打开" : window.startingAgent(window.detailKind) ? "正在启动" : "启动"
                                                 visible: detailActionBar.hasOpenAction
-                                                enabled: window.canEditAgent && !!window.detailFacts && (detailActionBar.localStart
-                                                    ? !window.startingAgent(window.detailKind) : window.detailFacts.installed === true)
+                                                enabled: !!window.detailFacts && (window.detailKind === "opencode"
+                                                    ? window.overviewAgentActionEnabled(window.detailFacts, false)
+                                                    : window.canEditAgent && (detailActionBar.localStart
+                                                        ? !window.startingAgent(window.detailKind) : window.detailFacts.installed === true))
                                                 loading: window.startingAgent(window.detailKind)
                                                 onClicked: window.openOverviewAgent(window.detailKind)
                                             }
@@ -2545,6 +2560,24 @@ ApplicationWindow {
                                                 Layout.fillWidth: true; spacing: 8
                                                 Label { text: "共享服务"; color: Theme.inkMuted; Layout.fillWidth: true }
                                                 Label { text: window.backendFor("opencode")?.ready === true ? "已连接" : "等待接入"; color: window.backendFor("opencode")?.ready === true ? Theme.success : Theme.inkMuted }
+                                            }
+                                            ColumnLayout {
+                                                visible: window.detailKind === "opencode" && host.openCodeTuiTabsSupported
+                                                Layout.fillWidth: true; spacing: 8
+                                                RowLayout {
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    Label { text: "会话栏同步"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                                    ActionButton {
+                                                        objectName: "openCodeTuiTabsAction"
+                                                        text: host.openCodeTuiTabsEnabled ? "停用会话栏同步" : "启用会话栏同步"
+                                                        enabled: host.bridgeReady && !host.busy && (host.openCodeTuiTabsEnabled || window.agentEnabled("opencode"))
+                                                        onClicked: host.setOpenCodeTuiTabs(!host.openCodeTuiTabsEnabled)
+                                                    }
+                                                }
+                                                Hint {
+                                                    Layout.fillWidth: true
+                                                    text: "将 App 新建的会话加入已连接同一服务的 OpenCode 2.3.2 会话栏，并显示原生运行状态。不会打开新窗口或切换当前标签。"
+                                                }
                                             }
                                             SoftSwitch {
                                                 id: codexSwitch
