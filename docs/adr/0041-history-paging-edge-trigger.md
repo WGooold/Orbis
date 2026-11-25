@@ -94,3 +94,9 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 实现见 [iOS 顶部覆盖层](../../ios/Orbis/Orbis/ChatHeaderView.swift)和 [Android 顶部覆盖层](../../android/app/src/main/java/com/orbising/orbis/ChatQuestionReminder.kt)；回归见 [iOS 分页与锚点](../../ios/Orbis/UITests/OrbisUITests.swift)和 [Android 动画时钟及手势](../../android/app/src/androidTest/java/com/orbising/orbis/ChatQuestionReminderInstrumentedTest.kt)。
 
 自动验证（工作区）：[Android 分页单测 6 项](../../.artifacts/chat-history-motion-20261122/android-build/test-results/testDebugUnitTest/TEST-com.orbising.orbis.HistoryPagingTest.xml)、[模拟器逐帧、手势与锚点回归 4 项](../../.artifacts/chat-history-motion-20261122/android-ui/instrumentation.log)、[Swift 手势与视口单测 3 项](../../.artifacts/chat-history-motion-20261122/swift/run.log)、[iOS 模拟器常规与减少动画的分页锚点回归 2 项](../../.artifacts/chat-history-motion-20261122/ios-device/command.log)通过。[共享 QA 第 2 轮](../../.artifacts/chat-history-motion-20261122/qa/registration.json)使用上一轮候选基线，仅加入本次改动；待用户领取后构建安装包，不沿用工作区的模拟器产物。未部署，真机观感待用户验证。
+
+## CHAT-PAGING-08：iOS 提示胶囊尺寸过渡
+
+iOS 对齐 Android：跨越或回退阈值、松手开始加载时，文案和图标交叉淡化，胶囊宽度在同一表面内连续变化。持续下拉不触发离散动画；加载与重试在原位交接，退场不再可点。减少动态效果时直接切换。分页、触感和阅读锚点仍沿用 CHAT-PAGING-07。
+
+实现见 [ChatHeaderView.swift](../../ios/Orbis/Orbis/ChatHeaderView.swift)，逐帧回归见 `testHistoryStatusMorphsOnlyAtPhaseChanges`（[测试源码](../../ios/Orbis/UITests/OrbisUITests.swift)）。本地模拟器的[常规与减少动态效果帧记录](../../.artifacts/ios-history-status-motion/simulator-frame-probe/command.log)及[实际分页锚点回归](../../.artifacts/ios-history-status-motion/simulator/command.log)独立保留；未部署，真机观感待用户验证。
