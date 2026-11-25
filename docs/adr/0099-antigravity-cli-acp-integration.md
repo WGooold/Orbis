@@ -1,6 +1,6 @@
 # ADR-0099：Antigravity CLI 的 App 客户端接入
 
-日期：2026-11-25 · 状态：已决定，分支实现；未部署，真实账号与设备验收待验证。
+日期：2026-11-25 · 状态：已决定，分支实现；Host 本机凭据流程已接入，未部署，真实授权与设备验收待验证。
 
 历史：2026-11-19 的 ACP 草案（原编号 0090，`f13aab5`）及 AGY-01–03（末端 `028936f`）保存在本地 `archive/agy-acp-20261119`。主线的 ADR-0090 已用于 Linux Headless Host；此 ADR 取代 AGY 旧方案，不改变 Linux ADR。
 
@@ -14,11 +14,14 @@ Orbis App 是交互界面。Host 启动本机官方 `agy acp` 子进程，通过
 
 ### AGY-11｜Host 所有权、启用与认证
 
-- Host 进程必须本机设置 `ORBIS_AGY_ENABLED=1` 并通过环境提供获授权的 `GEMINI_API_KEY`。CLI 可从 PATH 或本机配置的绝对 `ORBIS_AGY_ENTRY` 发现；版本与 `initialize` 的 list/load 能力均需匹配。`authenticate(gemini-api-key)` 和原生 `session/list` 通过后才标记就绪。不把凭据作为认证数据写入 App、Relay、Orbis 配置或日志；原生 stderr 不进入 Host 日志。不回退个人凭据。
-- Host 使用专用 `agy-acp` profile、受限子进程环境和独占 owner lock；保留原生会话，不复制其它 profile。只操作自产进程，以 EOF 停止，超时定向终止所属进程；清理未确认则保留锁。进程异常后只尝试恢复传输，不恢复写操作。启动、文件 I/O 和握手不阻塞 App 主线程。
-- 由现有 Agent 启用策略管理此来源；无本机许可时不显示入口。用户在授权 Host 的 Agent 设置启用 Antigravity CLI；不可用时在该页查看诊断并重试。CLI 新状态目录可将本机显式启用作为初始选择。启动不安装、不登录、不改全局权限。请求 `--sandbox`，并保留原生权限规则；不把该参数当作所有平台均验证的沙盒保证。
+- Host 进程须经本机策略授权。桌面 Host 的 Agent 页即使 AGY 未启用也提供本机设置入口；手机不能保存密钥，也不能在 Host 未配置凭据时远程启用该 Agent。无头 Host 仍须由操作者预先明确设置 `ORBIS_AGY_ENABLED=1` 和 `GEMINI_API_KEY`。
+- CLI 从 Host 登录环境的 PATH、平台官方安装位置或绝对 `ORBIS_AGY_ENTRY` 发现。要求 `agy 1.5.17`、ACP v1、`session/list`/`load` 能力及声明 `gemini-api-key` 认证。就绪条件包括固定 Google Gemini Developer API `models.list` 验证、ACP API-Key 认证和原生 `session/list`；任一失败都不发布 ready。
+- `agy-acp` 使用 Host 独占 profile 和 owner lock；`--gemini-dir`、HOME、缓存、临时目录均限定在该 profile。Google API Key 只由 Host 受限子进程环境提供，不进入 argv、ACP 请求、Relay/App、Host JSON 配置、诊断或日志。ACP 输出先按凭据值脱敏再解析。原生 stderr 不进入 Host 日志；既有模型和用量按实际协议观测。
+- 桌面设置验证新密钥的 Google API 与一次隔离的 ACP 认证／会话清单，再写入系统凭据存储；失败保持旧密钥。macOS 使用独立 `com.orbis.host.agy` Keychain 条目，Windows 使用用户 DPAPI 保护的独立槽。重启后状态不向 App 暴露凭据，Host 在内存短暂读取并复核；环境变量模式只读不可改。没有系统凭据后端时不回退到明文文件。用户显式更换或移除时只复位 AGY 连接，不重启整个 Host、不重放运行中的提示或会话。
+- 用户完成本机验证后再启用 Agent；保存配置后，ACP ready 时手机才可新建。真实推理仍由 Google 和所选模型决定；`models.list`、ACP 认证或空 `session/list` 不证明某一次模型调用已成功。
+- 参考 `cc-switch` 的 Host 设置可见性、校验后应用和重试交互，不复制其多账号个人 OAuth/登录缓存逻辑。官方 FAQ 明确不支持把消费型 Antigravity 登录包装进第三方应用；本接入只支持获授权的 Google AI Studio Gemini Developer API Key，不转用个人 Google AI 订阅。启动不安装 CLI、不改全局权限或绕过限制。请求 `--sandbox` 并保留原生权限规则，不把该参数宣称为所有平台已验证的沙盒保证。
 
-实现：[`agy-client.ts`](../../packages/host/src/agy-client.ts)、[`acp-client.ts`](../../packages/host/src/acp-client.ts)、[`agent-enablement.ts`](../../packages/host/src/agent-enablement.ts)、[`host-service.ts`](../../packages/host/src/host-service.ts)。
+实现：[`agy-credential.ts`](../../packages/host/src/agy-credential.ts)、[`agy-client.ts`](../../packages/host/src/agy-client.ts)、[`acp-client.ts`](../../packages/host/src/acp-client.ts)、[`desktop-runtime.ts`](../../packages/host/src/desktop-runtime.ts)、[`CredentialStore`](../../packages/windows-host/src/CredentialStore.cpp)、[`HostController`](../../packages/windows-host/src/HostController.cpp)、[`agent-enablement.ts`](../../packages/host/src/agent-enablement.ts)、[`host-service.ts`](../../packages/host/src/host-service.ts)。
 
 ### AGY-12｜目录、生命周期和交互
 
@@ -39,15 +42,24 @@ iOS／Android 在配对 Host 确认能力后才允许新建与恢复；复用 Ag
 
 实现：[`OrbisStore.swift`](../../ios/Orbis/Orbis/OrbisStore.swift)、[`HostConnection.kt`](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt)、[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)。测试：[`LaunchLedgerTests.swift`](../../ios/Orbis/Tests/LaunchLedgerTests.swift)、[`AgyIntegrationTest.kt`](../../android/app/src/test/java/com/orbising/orbis/AgyIntegrationTest.kt)、[`OverviewRowHoverTest.cpp`](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp)。
 
+### AGY-15｜Host 本机凭据设置与连接验证
+
+Agent 页可在尚未启用 AGY 时打开设置卡，输入框使用密码遮蔽和禁预测输入；密钥通过 Qt 私有本机桥交给 Host，不进入 App／Relay wire schema。Host 先请求固定官方 Gemini `models.list` endpoint，随后以临时 HOME/Gemini 目录启动 `agy acp --stdio`，走官方 `authenticate(gemini-api-key)`，再要求 `session/list.sessions` 为数组。认证探测进程退出后清理临时目录；会话进程使用独立、跨 Host 重启保留的 profile。只有完整探测成功才将新密钥原子替换进系统凭据存储并允许启用。请求 deadline、凭据拒绝、网络不可用、CLI 缺失／不匹配分别留在本机 UI；错误正文和 Key 不传给 App。
+
+更换失败时旧密钥仍保留。重试会复验现有密钥；移除先删系统凭据，再让私有 Host 桥清除内存密钥并结束/回收当前 AGY ACP generation，不改变已保存的启用偏好。每次 UI 重启后，从 macOS Keychain／Windows DPAPI 读取并重验；只把 `{source, requiredVersion, installed}` 与有限状态投影到 Qt。环境 Key 模式仅显示来源、不可编辑。Linux/其它没有该 Host 凭据后端的平台不落盘、不降级为明文。
+
+实现：[`agy-credential.ts`](../../packages/host/src/agy-credential.ts)、[`agy-client.ts`](../../packages/host/src/agy-client.ts)、[`desktop-runtime.ts`](../../packages/host/src/desktop-runtime.ts)、[`desktop-bridge.ts`](../../packages/host/src/desktop-bridge.ts)、[`desktop-command-lanes.ts`](../../packages/host/src/desktop-command-lanes.ts)、[`CredentialStore`](../../packages/windows-host/src/CredentialStore.cpp)、[`HostController`](../../packages/windows-host/src/HostController.cpp)、[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)。断言覆盖 Google endpoint/认证探测、secret redaction、系统凭据先提交、失败保留旧值、替换、移除、重启读取、远程 enablement 拒绝及 Host 生命周期隔离；主机本地真实 Key 与推理尚未运行。
+
 ### AGY-14｜验证与交付
 
-- 同版隔离 Host／Relay／ACP fixture 检查协商、新建、流式消息、历史和同设备能力撤回；夹具不等价于有凭据的真实推理。测试见 [`host-service.test.ts`](../../packages/host/src/host-service.test.ts) 和 [`device-agent-visibility.test.ts`](../../packages/host/src/device-agent-visibility.test.ts)。
-- 代码验证：Node 类型检查、打包、定向 lint 通过；[Node](../../.artifacts/agy-acp-20261125/node-verified.log) 459 项通过、3 项跳过；[iOS Swift](../../.artifacts/agy-acp-20261125/swift-final/run.log) 80 项通过，无签名 Simulator 构建成功；[Android](../../.artifacts/agy-acp-20261125/android-final/run.log) 35 项通过，另有已核验的 [Debug APK](../../.artifacts/agy-acp-20261125/android-debug/artifact-verification.log)；[Qt/macOS](../../.artifacts/agy-acp-20261125/qt-agy-verified/run.log) 构建、Host live-change 和 AGY 界面用例通过。Qt Kimi Web 的既有断言在 [基线](../../.artifacts/agy-acp-20261125/qt-baseline-kimi/run.log) 同样失败，未改断言。
-- [已发布 Relay v0.1.24 对照](../../.artifacts/agy-acp-20261125/relay-release-delivery.log)使用该 tag 的真实 Relay 构建，并复用同版正对照的 Node 加密链路测试；不等价于运行旧 iOS／Android 安装包。实机 CLI 用同一启动参数在无凭据的隔离环境确认 `1.5.17`、ACP v1、list/load/close 能力和未登录的原生拒绝（[证据](../../.artifacts/agy-acp-20261125/native-production-flags.log)）；未调用真实模型或使用个人账号。
+- 同版隔离 Host／Relay／ACP fixture 检查协商、新建、流式消息、历史、密钥更换时的 generation 撤回和同设备能力撤回；另有 ACP 进程 fixture 检查从认证、ready、创建到首条 prompt 的完整顺序及密钥不进入共享文本。夹具不等价于真实模型推理。测试见 [`agy-client.test.ts`](../../packages/host/src/agy-client.test.ts)、[`agy-credential.test.ts`](../../packages/host/src/agy-credential.test.ts)、[`agy-runtime.test.ts`](../../packages/host/src/agy-runtime.test.ts)、[`host-service.test.ts`](../../packages/host/src/host-service.test.ts)。
+- 代码验证：本轮完整 `npm test` 为 2,965 通过、22 跳过、9 失败，9 个失败均在 `67a062c` 独立基线复现；AGY 聚焦 Node 文件 [192 项通过、3 项跳过](../../.artifacts/agy-acp-20261125/setup-node-tests-final.log)，最终类型检查、打包和定向 lint 分别记录于 [`setup-node-types-final.log`](../../.artifacts/agy-acp-20261125/setup-node-types-final.log)、[`setup-node-build-final.log`](../../.artifacts/agy-acp-20261125/setup-node-build-final.log)、[`setup-node-lint-final.log`](../../.artifacts/agy-acp-20261125/setup-node-lint-final.log)。[iOS Swift](../../.artifacts/agy-acp-20261125/swift-final/run.log) 80 项通过，无签名 Simulator 构建成功；[Android](../../.artifacts/agy-acp-20261125/android-final/run.log) 35 项通过，另有已核验的 [Debug APK](../../.artifacts/agy-acp-20261125/android-debug/artifact-verification.log)；本轮 [Qt/macOS](../../.artifacts/agy-acp-20261125/setup-qt-final-2/run.log) Host live-change、AGY 启动和未启用时设置卡均通过，租约正常释放。旧 Kimi Web UI 断言也在此前 [基线](../../.artifacts/agy-acp-20261125/qt-baseline-kimi/run.log) 失败，未改断言。
+- 已发布 Relay `v0.1.24` 的 AGY 加密链路对照仍为通过（[先前证据](../../.artifacts/agy-acp-20261125/relay-release-delivery.log)；本轮重跑见 [`setup-relay-release.log`](../../.artifacts/agy-acp-20261125/setup-relay-release.log)）；不等价于运行旧 iOS／Android 安装包。完整 Node 基准为 2,965 项通过、22 项跳过、9 项失败；在原集成提交 `67a062c` 的独立归档基线中，四个相同测试文件的相同 9 项断言均复现（分别涉及发布站点中点字符、Codex 桌面 CLI 清理、DSH Desktop／OpenClaw 可见性以及两条 Agent Enablement 兼容断言）。对照日志见 [`setup-node-suite.log`](../../.artifacts/agy-acp-20261125/setup-node-suite.log) 和 [`setup-full-baseline.log`](../../.artifacts/agy-acp-20261125/setup-full-baseline.log)；保持失败原样、未改断言。实机 CLI 在无凭据隔离环境确认 `1.5.17`、ACP v1、list/load/close 能力；另证明 ACP 对占位 Key 可报告认证和空会话成功，但官方 Google `models.list` 拒绝该值（[证据](../../.artifacts/agy-acp-20261125/setup-native-auth-proof.log)）。未调用真实模型或使用个人账号。
 - [本地证据目录](../../.artifacts/agy-acp-20261125/)保留首次失败、构建租约清理、重跑和对照。QA 看板需要可拉取的候选提交，本地候选尚未发布到远端。
-- 待用户验证：用隔离 Host／Relay 和获授权的 API key，安装对应候选 App。检查首次启动与首句、审批允许/拒绝、停止／排队、关闭后重开、断线恢复、旧版 App 不出现 AGY。真实模型响应、实际权限表单以及 Windows/Linux Host 设备环境需分别确认。未签发、未部署；用户验收独立记录。
+- 待用户验证：安装未发布的本地候选，通过 Host UI 录入用户自行管理且获授权的 Gemini Developer API Key，检查真实 Key 的官方复验与 Keychain/DPAPI 往返，再跑首次 AGY 会话和首条真实模型响应、审批允许／拒绝、停止／排队、更换／移除、关闭后重开、断线恢复及旧 App 不出现 AGY。当前无真实 API Key，因此调用、配额、模型权限和端到端实际推理仍未验证；Android/iOS Host 设备矩阵也未完成。未签发、未部署；QA 候选受远端分支约束，本工作树不推送未在 origin 的父提交、不登记候选、不代领用户测试。
 
 [acp]: https://antigravity.google/docs/ide/extensions/acp/
 [faq]: https://antigravity.google/docs/faq/
 [release]: https://github.com/google-antigravity/antigravity-cli/releases/tag/1.5.17
 [schema]: https://agentclientprotocol.com/protocol/schema
+[models-api]: https://ai.google.dev/api/models

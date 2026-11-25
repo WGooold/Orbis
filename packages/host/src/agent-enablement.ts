@@ -100,11 +100,12 @@ export class AgentEnablementStore {
     });
   }
 
-  async setBatch(input: unknown, inspectDisable: (kind: AgentKind, revision: number, scope: string) => AgentDisableReview | undefined): Promise<AgentEnablementResult> {
+  async setBatch(input: unknown, inspectDisable: (kind: AgentKind, revision: number, scope: string) => AgentDisableReview | undefined,
+    stillAuthorized: () => boolean = allowed): Promise<AgentEnablementResult> {
     const { kinds, enabled, expectedRevision, reviews } = batchSchema.parse(input);
     // Approval covers this exact selection, not a larger batch or a single write.
     const scope = `desktop:batch:${JSON.stringify([...kinds].sort())}`;
-    return this.#setChoices(kinds, enabled, expectedRevision, allowed, (disabling, revision) => {
+    return this.#setChoices(kinds, enabled, expectedRevision, stillAuthorized, (disabling, revision) => {
       const affected = disabling.flatMap(kind => inspectDisable(kind, revision, scope) ?? []);
       if (affected.some(review => reviews?.[review.kind as AgentKind] !== review.token)) throw new AgentBatchConfirmationRequired(affected);
     });
@@ -249,8 +250,8 @@ export class AgentEnablementController {
     return result;
   }
 
-  async setBatch(input: unknown, inspectDisable: Parameters<AgentEnablementStore["setBatch"]>[1]): Promise<AgentEnablementResult> {
-    const result = await this.#store.setBatch(input, inspectDisable);
+  async setBatch(input: unknown, inspectDisable: Parameters<AgentEnablementStore["setBatch"]>[1], stillAuthorized?: () => boolean): Promise<AgentEnablementResult> {
+    const result = await this.#store.setBatch(input, inspectDisable, stillAuthorized);
     this.#apply(result.snapshot);
     return result;
   }
@@ -315,34 +316,47 @@ export class AgentLifecycleRegistry {
     const wanted = new Set(running ? snapshot.agents.filter(row => row.enabled).map(row => row.kind) : []);
     // First revoke every removed lease. No source can publish a stale result while its
     // cleanup is queued behind a start that has not returned yet.
-    for (const [kind, slot] of this.#slots) {
-      if (wanted.has(kind) || slot.current === undefined) continue;
-      const controller = slot.current;
-      delete slot.current;
-      delete slot.running;
-      controller.abort();
-      slot.queue = slot.queue.then(() => this.#stop(kind, slot));
-    }
-    for (const [kind, slot] of this.#slots) {
-      if (!wanted.has(kind) || slot.current !== undefined) continue;
-      const controller = slot.current = new AbortController();
-      const lease = { signal: controller.signal, isCurrent: () => slot.current === controller };
-      slot.queue = slot.queue.then(async () => {
-        if (!lease.isCurrent()) return;
-        slot.running = controller;
-        try { await slot.registration.start(lease); }
-        catch (error) {
-          // If revoked during start, the queued stop already owns cleanup.
-          if (!lease.isCurrent()) return;
-          delete slot.current;
-          delete slot.running;
-          controller.abort();
-          this.onError(kind, "start", error);
-          await this.#stop(kind, slot);
-        }
-      });
-    }
+    for (const [kind, slot] of this.#slots) if (!wanted.has(kind)) this.#revoke(kind, slot);
+    for (const [kind, slot] of this.#slots) if (wanted.has(kind)) this.#activate(kind, slot);
     return Promise.all(Array.from(this.#slots.values(), slot => slot.queue)).then(() => undefined);
+  }
+
+  /** Replace one source's local connection without flipping or writing its enabled choice. */
+  restart(kind: AgentKind): Promise<void> {
+    const slot = this.#slots.get(kind);
+    if (!slot?.current) return Promise.resolve();
+    this.#revoke(kind, slot);
+    this.#activate(kind, slot);
+    return slot.queue;
+  }
+
+  #revoke(kind: AgentKind, slot: LifecycleSlot): void {
+    const controller = slot.current;
+    if (!controller) return;
+    delete slot.current;
+    delete slot.running;
+    controller.abort();
+    slot.queue = slot.queue.then(() => this.#stop(kind, slot));
+  }
+
+  #activate(kind: AgentKind, slot: LifecycleSlot): void {
+    if (slot.current) return;
+    const controller = slot.current = new AbortController();
+    const lease = { signal: controller.signal, isCurrent: () => slot.current === controller };
+    slot.queue = slot.queue.then(async () => {
+      if (!lease.isCurrent()) return;
+      slot.running = controller;
+      try { await slot.registration.start(lease); }
+      catch (error) {
+        // If revoked during start, the queued stop already owns cleanup.
+        if (!lease.isCurrent()) return;
+        delete slot.current;
+        delete slot.running;
+        controller.abort();
+        this.onError(kind, "start", error);
+        await this.#stop(kind, slot);
+      }
+    });
   }
 
   async #stop(kind: AgentKind, slot: LifecycleSlot): Promise<void> {

@@ -302,6 +302,7 @@ export type HostServiceOptions = {
   /** Connection monitor; a production launcher is injected only when local startup is permitted. */
   opencodeConnection?: OpenCodeServiceConnection | false;
   createAgyRuntime?: (hostId: string) => AgyRuntime;
+  agyCredentialConfigured?: () => boolean;
   createOpenCodeConnection?: () => OpenCodeServiceConnection;
   /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
   ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
@@ -1160,10 +1161,19 @@ export class HostService {
     this.refreshHostFacts();
   }
 
+  refreshAgyConnection(): Promise<void> {
+    return this.#providerFactsClosing ? Promise.resolve() : this.#managedAgents.restart(AGY_KIND);
+  }
+
+  retryAgyConnection(): void {
+    if (!this.#providerFactsClosing && this.#managedAgents.lease(AGY_KIND)?.isCurrent()) void this.#agy?.start();
+  }
+
   #startManagedAgy(lease: AgentLifecycleLease): void {
     if (!this.#options.createAgyRuntime || !lease.isCurrent() || this.#agy) return;
     const runtime = this.#agy = this.#options.createAgyRuntime(this.#identity.hostId);
     this.#backends.push(runtime);
+    lease.signal.addEventListener("abort", () => runtime.revoke(), { once: true });
     const current = () => lease.isCurrent() && this.#agy === runtime && !this.#providerFactsClosing;
     runtime.setEventSink((event, id) => { if (current()) this.#publishRuntimeEvent(id, event); });
     runtime.onCatalogChange = () => { if (current()) this.#invalidateCatalog(); };
@@ -1203,10 +1213,11 @@ export class HostService {
     this.#agy = undefined;
     if (!runtime) return;
     this.#backends = this.#backends.filter(item => item !== runtime);
+    const reason = this.#disabledSources.has(AGY_KIND) ? "agent_disabled" : "Antigravity CLI 已断开";
     for (const { runtimeId } of runtime.directoryEntries()) {
       this.#notifications.end(runtimeId);
-      this.#markRuntimeOffline(runtimeId, "agent_disabled");
-      this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason: "agent_disabled" });
+      this.#markRuntimeOffline(runtimeId, reason);
+      this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
     }
     await runtime.stop();
     this.#invalidateCatalog();
@@ -2657,8 +2668,14 @@ export class HostService {
       const kindFeature = kind === AGY_KIND ? DEVICE_FEATURE_AGY : kind === KIMI_KIND ? DEVICE_FEATURE_KIMI_CODE : kind === KIMI_DESKTOP_KIND ? DEVICE_FEATURE_KIMI_CODE_DESKTOP : undefined;
       if (kindFeature !== undefined && !features.has(kindFeature)) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
       if (review !== undefined && !scoped) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
+      const permitted = () => active() && (kind !== AGY_KIND || !enabled || this.#options.agyCredentialConfigured?.() !== false);
+      if (!permitted()) {
+        this.#sendToDevice(deviceId, { type: "protocol.error", requestId, code: "agent_enablement_unavailable",
+          message: "请先在 Host 本机配置 Antigravity CLI" });
+        return;
+      }
       const result = await controller.set({ kind, enabled, expectedRevision, ...(confirmDisable ? { confirmDisable } : {}), ...(review ? { review } : {}) },
-        active, (source, revision, token) => this.verifyAgentDisable(source, revision, token, `paired:${deviceId}`), scoped);
+        permitted, (source, revision, token) => this.verifyAgentDisable(source, revision, token, `paired:${deviceId}`), scoped);
       const snapshot = result.snapshot;
       if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.result", requestId, status: result.status, snapshot: this.#enablementForDevice(deviceId, snapshot) });
     } catch (error) {

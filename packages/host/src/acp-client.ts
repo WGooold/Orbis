@@ -11,6 +11,7 @@ type AcpLaunchOptions = {
   cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number;
   validate: (result: JsonObject) => void;
   signal?: AbortSignal;
+  redact?: (line: string) => string;
 };
 
 export type AcpRequest = {
@@ -22,6 +23,7 @@ export type AcpRequest = {
 export interface AcpConnection {
   request(method: string, params: JsonObject, timeoutMs?: number): Promise<unknown>;
   readonly supportsClose?: boolean;
+  readonly connected?: boolean;
   notify(method: string, params: JsonObject): void;
   onNotification: ((method: string, params: JsonObject) => void) | undefined;
   onRequest: ((request: AcpRequest) => void) | undefined;
@@ -47,7 +49,7 @@ export class AcpClient implements AcpConnection {
   supportsClose = false;
   get connected(): boolean { return !this.#closed; }
 
-  private constructor(child: ChildProcess, private readonly label: string) {
+  private constructor(child: ChildProcess, private readonly label: string, redact?: (line: string) => string) {
     this.#child = child;
     const decoder = new StringDecoder("utf8");
     let buffered = "";
@@ -61,7 +63,7 @@ export class AcpClient implements AcpConnection {
         if (!line) continue;
         try {
           if (Buffer.byteLength(line) > 16 * 1024 * 1024) throw new Error("ACP frame too large");
-          this.#receive(JSON.parse(line));
+          this.#receive(JSON.parse(redact ? redact(line) : line));
         }
         catch { this.#fail(`${this.label} 返回了无效的 ACP 消息`); void this.stop().catch(() => {}); return; }
       }
@@ -85,7 +87,7 @@ export class AcpClient implements AcpConnection {
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
       ...(options.env === undefined ? {} : { env: options.env }),
     });
-    const client = new AcpClient(child, label);
+    const client = new AcpClient(child, label, options.redact);
     const abort = () => { void client.stop().catch(() => {}); };
     options.signal?.addEventListener("abort", abort, { once: true });
     try {

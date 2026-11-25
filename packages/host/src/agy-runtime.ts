@@ -110,11 +110,11 @@ export class AgyRuntime implements AgentBackend {
       this.#abort.signal.addEventListener("abort", abort, { once: true });
       // initialize is also available before login. A read-only list verifies readiness.
       const readiness = record(await client.request("session/list", {}, 5_000).finally(() => this.#abort.signal.removeEventListener("abort", abort)));
-      if (!Array.isArray(readiness.sessions)) throw new Error("Invalid ACP session list");
+      if (client.connected === false || !Array.isArray(readiness.sessions)) throw new Error("Invalid ACP session list");
       if (this.#stopping) { await client.stop(); return; }
       const connected = client;
-      client.onNotification = (method, params) => { if (this.#client === connected) this.#update(method, params); };
-      client.onRequest = rpc => { if (this.#client === connected) this.#request(rpc); else this.#cancelRequest(rpc); };
+      client.onNotification = (method, params) => { if (!this.#stopping && this.#client === connected) this.#update(method, params); };
+      client.onRequest = rpc => { if (!this.#stopping && this.#client === connected) this.#request(rpc); else this.#cancelRequest(rpc); };
       client.onExit = () => {
         if (this.#client !== connected) return;
         this.#cleanup = connected.stop();
@@ -130,9 +130,14 @@ export class AgyRuntime implements AgentBackend {
     }
   }
 
-  async stop(): Promise<void> {
+  /** Fence work synchronously when the Host revokes this generation. */
+  revoke(): void {
     this.#stopping = true;
     this.#abort.abort();
+  }
+
+  async stop(): Promise<void> {
+    this.revoke();
     await this.#opening;
     const client = this.#client;
     this.#disconnect();
@@ -159,7 +164,7 @@ export class AgyRuntime implements AgentBackend {
   async catalog(archived = false): Promise<AgentSessionSummary[]> {
     if (archived) return [];
     const client = this.#client;
-    if (!client) throw new Error(this.#reason);
+    if (!client || this.#stopping) throw new Error(this.#reason || "Antigravity CLI 已断开");
     return this.#listing ??= this.#list(client).finally(() => { this.#listing = undefined; });
   }
 

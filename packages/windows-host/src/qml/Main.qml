@@ -541,6 +541,8 @@ ApplicationWindow {
     function agentStatus(row) {
         const change = choiceFor(row.kind)
         if (change) return {text: change.queued ? "已排队" : "待确认", color: Theme.accent, sync: !change.queued}
+        if (row.kind === "agy" && (host.agySetup.source === "none" || host.agySetup.source === "vaultError"))
+            return {text: host.agySetup.busy ? "准备中" : "待配置", color: Theme.warning, idle: !host.agySetup.busy}
         if (!row.enabled) return {text: "未启用", color: Theme.inkFaint, idle: true}
         const agent = window.overviewAgents.find(candidate => candidate.kind === row.kind)
         const backend = window.backendFor(row.kind)
@@ -2235,6 +2237,132 @@ ApplicationWindow {
                                         }
                                     }
                                     ColumnLayout {
+                                        id: agyCard
+                                        objectName: "agySetupCard"
+                                        visible: window.detailKind === "agy" && !!source && source !== "unsupported"
+                                        Layout.fillWidth: true; spacing: 8
+                                        readonly property string source: host.agySetup.source || ""
+                                        readonly property string verification: host.agySetup.verification || ""
+                                        readonly property bool checking: host.agySetup.busy === true
+                                        readonly property bool editable: source === "saved" || source === "none" || source === "vaultError"
+                                        readonly property var backend: window.backendFor("agy")
+                                        readonly property string credentialMessage: {
+                                            switch (verification) {
+                                            case "invalid": return "请输入有效的 Gemini API Key。"
+                                            case "candidateRejected": return "Google 未接受这个密钥；原配置未更改。"
+                                            case "rejected": return "Google 未接受已配置的密钥，请检查权限或更换。"
+                                            case "unavailable": return "暂时无法验证密钥，请检查网络后重试。"
+                                            case "vaultError": return "无法访问系统凭据存储，请授权后重试。"
+                                            case "applyError": return "无法应用密钥，请重试。"
+                                            default: return ""
+                                            }
+                                        }
+                                        onVisibleChanged: if (!visible && agyCandidate) agyCandidate.clear()
+                                        Heading { text: "接入" }
+                                        RowLayout {
+                                            Layout.fillWidth: true; spacing: 8
+                                            Label { text: "Gemini API Key"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                            Label {
+                                                objectName: "agyCredentialStatus"
+                                                text: agyCard.checking ? "处理中" : agyCard.source === "environment" ? "由环境变量配置"
+                                                    : agyCard.source === "vaultError" ? "无法读取" : agyCard.source !== "saved" ? "未配置"
+                                                    : agyCard.verification === "rejected" ? "需更换" : agyCard.verification === "verified" ? "已验证" : "已保存"
+                                                color: agyCard.verification === "verified" ? Theme.success : Theme.inkMuted
+                                            }
+                                            InfoHintButton { id: agyHelp; Accessible.name: "Antigravity CLI 接入帮助" }
+                                        }
+                                        Hint {
+                                            visible: agyHelp.expanded; Layout.fillWidth: true
+                                            text: "使用 Google AI Studio 的 Gemini API Key，不使用个人 Google AI 订阅。密钥只保存在这台电脑。需要 Antigravity CLI " + (host.agySetup.requiredVersion || "") + "。"
+                                        }
+                                        Field {
+                                            id: agyCandidate; objectName: "agyApiKey"
+                                            visible: agyCard.editable; enabled: !agyCard.checking && host.bridgeReady
+                                            Layout.fillWidth: true; marksProviderDirty: false
+                                            maximumLength: 512; echoMode: TextInput.Password
+                                            inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                                            placeholderText: agyCard.source === "saved" ? "输入新密钥" : "输入密钥"
+                                            Accessible.name: "Gemini API Key"
+                                        }
+                                        Flow {
+                                            Layout.fillWidth: true; spacing: 8
+                                            ActionButton {
+                                                objectName: "agySaveCredential"
+                                                visible: agyCard.editable
+                                                text: agyCard.source === "saved" ? "验证并更换" : "验证并保存"
+                                                enabled: host.bridgeReady && !agyCard.checking && agyCandidate.text.trim().length > 0
+                                                onClicked: {
+                                                    if (agyCard.source === "saved" || agyCard.source === "vaultError") {
+                                                        agyCredentialDialog.removing = false
+                                                        agyCredentialDialog.open()
+                                                    } else { host.saveAgyCredential(agyCandidate.text); agyCandidate.clear() }
+                                                }
+                                            }
+                                            ActionButton {
+                                                objectName: "agyRetryCredential"; text: "重新检测"
+                                                enabled: host.bridgeReady && !agyCard.checking
+                                                onClicked: host.retryAgySetup()
+                                            }
+                                            ActionButton {
+                                                objectName: "agyRemoveCredential"; text: "移除密钥"
+                                                visible: agyCard.source === "saved" || agyCard.source === "vaultError"
+                                                enabled: host.bridgeReady && !agyCard.checking
+                                                onClicked: { agyCredentialDialog.removing = true; agyCredentialDialog.open() }
+                                            }
+                                            ActionButton {
+                                                objectName: "agyGetKey"; text: "获取密钥"
+                                                visible: agyCard.editable && (agyCard.source !== "saved" || agyHelp.expanded)
+                                                onClicked: Qt.openUrlExternally("https://aistudio.google.com/apikey")
+                                            }
+                                        }
+                                        Hint { visible: agyCard.credentialMessage.length > 0; Layout.fillWidth: true; color: Theme.warning; text: agyCard.credentialMessage }
+                                        RowLayout {
+                                            Layout.fillWidth: true; spacing: 8
+                                            Label { text: "ACP"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                            Label {
+                                                objectName: "agyConnectionStatus"
+                                                text: agyCard.backend?.ready === true ? "已连接" : agyCard.backend?.reason === "starting" ? "正在连接"
+                                                    : host.agySetup.installed !== true ? "未找到 CLI" : !window.agentEnabled("agy") ? "未启用"
+                                                    : !host.desiredRunning ? "Host 已暂停" : "等待接入"
+                                                color: agyCard.backend?.ready === true ? Theme.success : Theme.inkMuted
+                                            }
+                                            ActionButton {
+                                                objectName: "agyInstallGuide"; text: "安装指南"
+                                                visible: host.agySetup.installed !== true || agyHelp.expanded
+                                                onClicked: Qt.openUrlExternally("https://antigravity.google/docs/getting-started/#antigravity-cli")
+                                            }
+                                        }
+                                        Hint {
+                                            visible: text.length > 0 && text !== "starting" && !agyCard.credentialMessage.length
+                                            text: agyCard.backend?.reason || ""
+                                            Layout.fillWidth: true
+                                        }
+                                        SoftDialog {
+                                            id: agyCredentialDialog
+                                            property bool removing: false
+                                            parent: Overlay.overlay
+                                            anchors.centerIn: parent
+                                            modal: true; width: 410
+                                            title: removing ? "移除密钥？" : "更换密钥？"
+                                            Hint { width: parent.width; text: "Antigravity CLI 会断开，已保存的会话会保留。" }
+                                            footer: SoftDialogButtons {
+                                                ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+                                                ActionButton {
+                                                    text: agyCredentialDialog.removing ? "移除" : "验证并更换"
+                                                    danger: agyCredentialDialog.removing
+                                                    DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                                                }
+                                                onAccepted: agyCredentialDialog.accept()
+                                                onRejected: agyCredentialDialog.reject()
+                                            }
+                                            onAccepted: {
+                                                if (removing) host.removeAgyCredential()
+                                                else host.saveAgyCredential(agyCandidate.text)
+                                                agyCandidate.clear()
+                                            }
+                                        }
+                                    }
+                                    ColumnLayout {
                                         visible: !window.detailPowered
                                         Layout.fillWidth: true; Layout.topMargin: 44; Layout.bottomMargin: 24; spacing: 14
                                         Hint {
@@ -2248,6 +2376,7 @@ ApplicationWindow {
                                             visible: !window.detailPowered
                                             text: window.detailChange ? "正在启用" : "启用 " + (window.selectedAgentRow ? window.selectedAgentRow.label : "Agent")
                                             primary: true; enabled: window.canEditAgent && !window.detailChange
+                                                && (window.detailKind !== "agy" || host.agySetup.verification === "verified")
                                             Layout.alignment: Qt.AlignHCenter
                                             onClicked: window.flipAgent(window.detailKind)
                                         }
@@ -2557,7 +2686,7 @@ ApplicationWindow {
                                             id: agentIntegrationSection
                                             objectName: "agentIntegrationSection"
                                             readonly property bool hasContent:
-                                                ["codex", "codexDesktop", "claude", "dsh", "dshDesktop", "opencode", "agy"].includes(window.detailKind)
+                                                ["codex", "codexDesktop", "claude", "dsh", "dshDesktop", "opencode"].includes(window.detailKind)
                                                 || (window.detailKind === "pi" && (Qt.platform.os === "osx" || ["installed", "available", "foreign"].includes(window.piAgent().terminalCommand)))
                                                 || (window.detailKind === "kimiCode" && host.kimiCodeAvailable)
                                                 || (window.detailKind === "kimiCodeDesktop" && host.kimiDesktopSupported)
@@ -2591,17 +2720,6 @@ ApplicationWindow {
                                                 objectName: "dshDesktopIntegrationReason"
                                                 visible: window.detailKind === "dshDesktop" && text.length > 0
                                                 text: window.dshDesktopReason()
-                                                Layout.fillWidth: true
-                                            }
-                                            RowLayout {
-                                                visible: window.detailKind === "agy"
-                                                Layout.fillWidth: true; spacing: 8
-                                                Label { text: "ACP"; color: Theme.inkMuted; Layout.fillWidth: true }
-                                                Label { text: window.backendFor("agy")?.ready === true ? "已连接" : "等待接入"; color: window.backendFor("agy")?.ready === true ? Theme.success : Theme.inkMuted }
-                                            }
-                                            Hint {
-                                                visible: window.detailKind === "agy" && !window.startingAgent("agy") && text.length > 0
-                                                text: window.backendFor("agy")?.reason || ""
                                                 Layout.fillWidth: true
                                             }
                                             RowLayout {

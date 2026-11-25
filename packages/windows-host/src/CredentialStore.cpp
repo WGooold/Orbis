@@ -111,10 +111,63 @@ static QByteArray keychainRead(const QString &path, const QByteArray &reference,
     CFRelease(result);
     return plain;
 }
+// AGY is a separate native slot, not the CLI's own Google-login entry or the
+// activated Host's slot. Fixed identity lets Keychain replace it atomically.
+static CFMutableDictionaryRef agyKeychainQuery(const QString &path) {
+    const auto bytes = QFileInfo(path).absoluteFilePath().toUtf8();
+    auto account = CFStringCreateWithBytes(nullptr, reinterpret_cast<const UInt8 *>(bytes.constData()), bytes.size(), kCFStringEncodingUTF8, false);
+    auto query = CFDictionaryCreateMutable(nullptr, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
+    CFDictionarySetValue(query, kSecAttrService, CFSTR("com.orbis.host.agy"));
+    CFDictionarySetValue(query, kSecAttrAccount, account);
+    CFRelease(account);
+    return query;
+}
+static bool writeAgyKeychain(const QString &path, const QByteArray &plain, QString *error) {
+    if (!defaultKeychainAvailable(error)) return false;
+    auto query = agyKeychainQuery(path);
+    auto data = CFDataCreate(nullptr, reinterpret_cast<const UInt8 *>(plain.constData()), plain.size());
+    const void *keys[] = { kSecValueData };
+    const void *values[] = { data };
+    auto attrs = CFDictionaryCreate(nullptr, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    auto status = SecItemUpdate(query, attrs);
+    CFRelease(attrs);
+    if (status == errSecItemNotFound) {
+        CFDictionarySetValue(query, kSecValueData, data);
+        status = SecItemAdd(query, nullptr);
+    }
+    CFRelease(data);
+    CFRelease(query);
+    if (status != errSecSuccess && error) *error = QStringLiteral("无法写入 Antigravity CLI 钥匙串凭据");
+    return status == errSecSuccess;
+}
+static QJsonObject readAgyKeychain(const QString &path, QString *error) {
+    if (!defaultKeychainAvailable(error)) return {};
+    auto query = agyKeychainQuery(path);
+    CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
+    CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
+    CFTypeRef result = nullptr;
+    const auto status = SecItemCopyMatching(query, &result);
+    CFRelease(query);
+    if (status == errSecItemNotFound) return {};
+    if (status != errSecSuccess || !result || CFGetTypeID(result) != CFDataGetTypeID()) {
+        if (result) CFRelease(result);
+        if (error) *error = QStringLiteral("无法读取 Antigravity CLI 钥匙串凭据");
+        return {};
+    }
+    const auto data = static_cast<CFDataRef>(result);
+    const auto value = QJsonDocument::fromJson(QByteArray::fromRawData(reinterpret_cast<const char *>(CFDataGetBytePtr(data)), CFDataGetLength(data))).object();
+    CFRelease(result);
+    if (value.isEmpty() && error) *error = QStringLiteral("Antigravity CLI 凭据已损坏");
+    return value;
+}
 #endif
 
-bool CredentialStore::save(const QString &path, const QJsonObject &value, QString *error) {
-    if (plainFileStore(path)) {
+bool CredentialStore::save(const QString &path, const QJsonObject &value, QString *error, Scope scope) {
+#ifdef Q_OS_MACOS
+    if (scope == Scope::Agy) return writeAgyKeychain(path, QJsonDocument(value).toJson(QJsonDocument::Compact), error);
+#endif
+    if (scope == Scope::Activation && plainFileStore(path)) {
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly)) {
             if (error) *error = QStringLiteral("无法保存激活凭据：") + file.errorString();
@@ -131,7 +184,7 @@ bool CredentialStore::save(const QString &path, const QJsonObject &value, QStrin
 #ifdef Q_OS_WIN
     QByteArray plain = QJsonDocument(value).toJson(QJsonDocument::Compact);
     DATA_BLOB input{DWORD(plain.size()), reinterpret_cast<BYTE *>(plain.data())}, encrypted{};
-    if (!CryptProtectData(&input, L"Orbis Host activation", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &encrypted)) {
+    if (!CryptProtectData(&input, scope == Scope::Agy ? L"Orbis Host AGY" : L"Orbis Host activation", nullptr, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &encrypted)) {
         if (error) *error = QStringLiteral("Windows 无法保护激活凭据");
         return false;
     }
@@ -151,10 +204,21 @@ bool CredentialStore::save(const QString &path, const QJsonObject &value, QStrin
 #endif
 }
 
-bool CredentialStore::clear(const QString &path, QString *error) {
+bool CredentialStore::clear(const QString &path, QString *error, Scope scope) {
+#ifdef Q_OS_MACOS
+    if (scope == Scope::Agy) {
+        if (!defaultKeychainAvailable(error)) return false;
+        auto query = agyKeychainQuery(path);
+        const auto status = SecItemDelete(query);
+        CFRelease(query);
+        if (status == errSecSuccess || status == errSecItemNotFound) return true;
+        if (error) *error = QStringLiteral("无法移除 Antigravity CLI 钥匙串凭据");
+        return false;
+    }
+#endif
     QFile file(path);
     if (!file.exists()) return true;
-    if (plainFileStore(path)) {
+    if (scope == Scope::Activation && plainFileStore(path)) {
         if (!file.remove()) { if (error) *error = file.errorString(); return false; }
         return true;
     }
@@ -170,11 +234,14 @@ bool CredentialStore::clear(const QString &path, QString *error) {
     return true;
 }
 
-QJsonObject CredentialStore::load(const QString &path, QString *error) {
+QJsonObject CredentialStore::load(const QString &path, QString *error, Scope scope) {
+#ifdef Q_OS_MACOS
+    if (scope == Scope::Agy) return readAgyKeychain(path, error);
+#endif
     QFile file(path);
     if (!file.exists()) return {};
     if (!file.open(QIODevice::ReadOnly)) { if (error) *error = file.errorString(); return {}; }
-    if (plainFileStore(path)) {
+    if (scope == Scope::Activation && plainFileStore(path)) {
         QJsonParseError parseError;
         const auto value = QJsonDocument::fromJson(file.readAll(), &parseError).object();
         if (parseError.error != QJsonParseError::NoError && error) *error = QStringLiteral("激活凭据已损坏，请重新验证邮箱");

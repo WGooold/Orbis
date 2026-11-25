@@ -101,6 +101,7 @@ class HostController : public QObject {
     Q_PROPERTY(bool agentChoicesAvailable READ agentChoicesAvailable NOTIFY changed)
     Q_PROPERTY(bool agentChoicesNeedRetry READ agentChoicesNeedRetry NOTIFY changed)
     Q_PROPERTY(QVariantMap activeAgentSessions READ activeAgentSessions NOTIFY changed)
+    Q_PROPERTY(QVariantMap agySetup READ agySetup NOTIFY agySetupChanged)
     Q_PROPERTY(QVariantMap openClaw READ openClaw NOTIFY openClawChanged)
     Q_PROPERTY(QVariantMap hermesRemote READ hermesRemote NOTIFY hermesRemoteChanged)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
@@ -202,6 +203,7 @@ public:
     bool agentChoicesAvailable() const { return m_bridgeReady && !busy() && !m_agentEnablement.isEmpty() && !m_agentChoiceRecheck; }
     QVariantMap agentChanges() const;
     QVariantMap activeAgentSessions() const { return m_activeAgentSessions; }
+    QVariantMap agySetup() const { return m_agySetup; }
     QVariantMap openClaw() const { return m_openClaw; }
     QVariantMap hermesRemote() const { return m_hermesRemote; }
     QVariantList devices() const { return m_devices; }
@@ -234,6 +236,9 @@ public:
     Q_INVOKABLE void dismissAgentReviews();
     Q_INVOKABLE void refreshAgentChoices();
     Q_INVOKABLE void refreshAgentProviders(const QString &kind);
+    Q_INVOKABLE void saveAgyCredential(const QString &key);
+    Q_INVOKABLE void retryAgySetup();
+    Q_INVOKABLE void removeAgyCredential();
     Q_INVOKABLE void saveOpenClaw(const QString &url, const QString &token);
     Q_INVOKABLE void reconnectOpenClaw();
     Q_INVOKABLE void saveHermesRemote(const QString &host, int port, const QString &profile);
@@ -304,6 +309,7 @@ signals:
     void agentEnablementChanged();
     void agentReviewsRequested(const QStringList &kinds, const QVariantList &reviews, double revision);
     void agentWriteFeedback(const QStringList &kinds, const QString &status, double revision);
+    void agySetupChanged();
     void openClawChanged();
     void hermesRemoteChanged();
     void providersChanged();
@@ -355,6 +361,14 @@ private:
     void resumeAfterChange();
     /** Paused Hosts have no reachable phones or sessions; drop the running service's facts with it. */
     void clearRunningFacts();
+    enum class AgyVaultAction { Load, Save, Remove };
+    using AgyVault = std::function<std::optional<QString>(AgyVaultAction, const QString &, const QString &)>;
+    void runAgyVault(AgyVaultAction action, const QString &key, std::function<void(std::optional<QString>)> done);
+    void loadAgyCredential();
+    void applyAgyCredential(const QString &key, const QString &verification = QString());
+    void finishAgySetup(const QJsonObject &info, const QString &verification = QString());
+    void beginAgySetup();
+    bool canEditAgySetup() const;
     void applyAgentEnablement(const QJsonObject &snapshot, bool announce = false);
     void enqueueAgentChoices(const QStringList &kinds, bool enabled, double expectedRevision, bool batch);
     void pumpAgentChoices();
@@ -438,6 +452,11 @@ private:
     std::optional<AgentChoice> m_agentInFlight, m_agentReview;
     int m_agentWriteId = -1;
     bool m_agentChoiceRecheck = false, m_agentReadPending = false;
+    QVariantMap m_agySetup;
+    QString m_agyVaultPath;
+    QThreadPool m_agyVaultPool;
+    int m_agyBridgeGeneration = 0;
+    AgyVault m_agyVaultForTest;
     QVariantMap m_openClaw;
     QVariantMap m_hermesRemote;
     QVariantMap m_codexDesktop, m_dshDesktop;

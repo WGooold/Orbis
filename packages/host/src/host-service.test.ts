@@ -87,6 +87,7 @@ import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { ProviderManager } from "./provider-manager.js";
 import { SessionConfigurationStore } from "./session-configuration-store.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
+import { AGENT_ENABLEMENT_FEATURE } from "@orbis/protocol";
 import { OpenCodeServiceConnection, type OpenCodeClient } from "./opencode-service-connection.js";
 import { OpenClawBackend, type OpenClawConnection } from "./openclaw-backend.js";
 import { openClawAdvice } from "./openclaw-diagnostics.js";
@@ -4527,12 +4528,18 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
         }
         throw new Error(method);
       }) };
-    const agy = new AgyRuntime(async () => client);
-    const enablement = new AgentEnablementController(new AgentEnablementStore(stateDir, async () => ({ agy: true })), () => {});
+    let configured = false;
+    let agy: AgyRuntime | undefined;
+    const enablement = new AgentEnablementController(new AgentEnablementStore(stateDir), () => {});
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
-      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, agentEnablement: enablement, createAgyRuntime: () => agy });
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, agentEnablement: enablement,
+      agyCredentialConfigured: () => configured,
+      createAgyRuntime: () => agy = new AgyRuntime(async () => {
+        if (!configured) throw new Error("Host local credentials required");
+        return client;
+      }),
+    });
     await host.start();
-    await vi.waitFor(() => expect(agy.isReady()).toBe(true));
     const opened = await host.openPairingWindow();
     const connected = await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
       qrText: encodePairingQrText(opened.payload), deviceName: "Antigravity fixture" });
@@ -4555,7 +4562,16 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     send("session.launch", launch);
     expect(await wait(message => message.requestId === "create")).toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
     expect(vi.mocked(client.request).mock.calls.some(([method]) => method === "session/new")).toBe(false);
-    send("device.features", { features: ["agent.dshDesktop", "agent.agy"] });
+    send("device.features", { features: ["agent.dshDesktop", "agent.agy", AGENT_ENABLEMENT_FEATURE] });
+    await wait(message => message.type === "device.ready" && (message.deviceFeatures as string[]).includes("agent.agy"));
+    const revision = (await enablement.read()).revision;
+    // A paired client may not authorize a credential-less Host, even when it
+    // understands the AGY source. Provisioning and permission start locally.
+    send("agent.enablement.write", { requestId: "unconfigured", kind: "agy", enabled: true, expectedRevision: revision });
+    expect(await wait(message => message.requestId === "unconfigured")).toMatchObject({ type: "protocol.error", code: "agent_enablement_unavailable" });
+    expect(agy).toBeUndefined();
+    configured = true;
+    await enablement.set({ kind: "agy", expectedRevision: revision, enabled: true });
     const shown = await wait(message => message.type === "device.ready" && (message.agents as string[]).includes("agy"));
     expect(shown.modelEpoch).not.toBe(hidden.modelEpoch);
     expect(shown.deviceFeatures).toContain("agent.agy");
@@ -4570,6 +4586,18 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     send("runtime.command", { commandId: "history", runtimeId: id, command: { type: "session.sync", sessionId: id, syncId: "history", range: "preview" } });
     const history = await wait(message => (message.event as { type?: string } | undefined)?.type === "session.snapshot");
     expect(JSON.stringify(history)).toContain("native answer");
+    // Replacing/removing credentials revokes the live generation, not the enabled
+    // choice or a different Agent. Outstanding sessions are not auto-replayed.
+    const previous = agy!;
+    configured = false;
+    const refresh = host.refreshAgyConnection();
+    expect(previous.isReady()).toBe(false);
+    await refresh;
+    const down = await wait(message => message.type === "device.ready" && !(message.agents as string[]).includes("agy"));
+    expect(down.agents).not.toContain("agy");
+    expect(await enablement.read()).toMatchObject({ agents: expect.arrayContaining([expect.objectContaining({ kind: "agy", enabled: true })]) });
+    expect(client.stop).toHaveBeenCalledOnce();
+    expect(vi.mocked(client.request).mock.calls.filter(([method]) => method === "session/prompt")).toHaveLength(1);
     await handshake();
     const downgraded = await wait(message => message.type === "device.ready" && message.modelEpoch !== shown.modelEpoch);
     expect(JSON.stringify(downgraded)).not.toContain(id);

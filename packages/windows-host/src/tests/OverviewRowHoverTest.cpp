@@ -438,6 +438,48 @@ private slots:
         controller.shutdown();
     }
 
+    // AGY-15: setup is discoverable with the source disabled and with no Host connection.
+    // The password stays masked, and the card clears the draft after sending it to the bridge.
+    void offersLocalAgySetupBeforeEnabling() {
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        writeFixtureBridge(root.path());
+        const auto desktop = root.filePath("desktop");
+        HostController controller(root.path(), desktop, root.filePath("state"), desktop, false);
+        controller.m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
+        controller.m_tick.stop();
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("host", &controller);
+        engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(desktop + "/appearance.ini"));
+        engine.rootContext()->setContextProperty("orbisMotionEnabled", false);
+        engine.rootContext()->setContextProperty("trayAvailable", false);
+        engine.loadFromModule("Orbis.Host", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.bridgeReady(), 10000);
+        controller.applyAgentEnablement({{"revision", 2}, {"agents", QJsonArray{QJsonObject{
+            {"kind", "agy"}, {"label", "Antigravity CLI"}, {"enabled", false}
+        }}}});
+        controller.m_desiredRunning = false;
+        controller.finishAgySetup({{"source", "none"}, {"installed", false}, {"requiredVersion", "1.5.17"}});
+        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, QString("agy"))));
+        auto *field = findVisualItem(window->contentItem(), "agyApiKey");
+        auto *save = findVisualItem(window->contentItem(), "agySaveCredential");
+        auto *install = findVisualItem(window->contentItem(), "agyInstallGuide");
+        QTRY_VERIFY(field && field->isVisible() && save && install && install->isVisible());
+        QVERIFY(!controller.agentEnabled("agy"));
+        QVERIFY(!save->isEnabled());
+        auto *enable = findVisualItem(window->contentItem(), "agentDetailEnable");
+        QVERIFY(enable && enable->isVisible() && !enable->isEnabled());
+        QCOMPARE(field->property("echoMode").toInt(), 2); // TextInput.Password
+        field->setProperty("text", "fixture-only-not-a-key");
+        QVERIFY(save->isEnabled());
+        QVERIFY(QMetaObject::invokeMethod(save, "clicked"));
+        QCOMPARE(field->property("text").toString(), QString());
+        controller.shutdown();
+    }
+
     void hoveringEnabledAgentRowPreservesRowAndCardGeometry_data() {
         QTest::addColumn<int>("windowWidth");
         QTest::newRow("compact") << 1020;

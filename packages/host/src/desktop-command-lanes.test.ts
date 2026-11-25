@@ -97,6 +97,23 @@ describe("desktop command lanes", () => {
     start.release(); shutdown.release(); await lanes.drain();
   });
 
+  // AGY-15: an unreachable Google endpoint must not hold up other sources or pause.
+  it("serializes AGY setup separately from Host lifecycle and detection", async () => {
+    const lanes = new DesktopCommandLanes(); const log: string[] = [];
+    const verify = gate(log, "verify"); const apply = gate(log, "apply");
+    const detect = gate(log, "detect"); const stop = gate(log, "stop");
+    void lanes.enqueue("agy.setup.verify", verify.task);
+    void lanes.enqueue("agy.setup.apply", apply.task);
+    void lanes.enqueue("detect", detect.task);
+    void lanes.enqueue("stop", stop.task);
+    await settle();
+    expect(verify.started() && detect.started() && stop.started()).toBe(true);
+    expect(apply.started()).toBe(false);
+    verify.release(); await settle();
+    expect(apply.started()).toBe(true);
+    apply.release(); stop.release(); detect.release(); await lanes.drain();
+  });
+
   it("keeps running later commands after one fails", async () => {
     const lanes = new DesktopCommandLanes(); const log: string[] = [];
     void lanes.enqueue("rename", async () => { throw new Error("rejected"); });

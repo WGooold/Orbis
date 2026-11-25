@@ -51,6 +51,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     : QObject(parent), m_runtimeRoot(std::move(runtimeRoot)), m_dataDir(std::move(dataDir)), m_hostStateDir(std::move(hostStateDir)), m_credentialDir(std::move(credentialDir)),
       m_settings(m_dataDir + "/settings.ini", QSettings::IniFormat) {
     m_activationPool.setMaxThreadCount(1);
+    m_agyVaultPool.setMaxThreadCount(1);
     m_automaticIntegrations = automaticIntegrations;
 #ifdef ORBIS_QA_BUILD
     m_qaMode = true;
@@ -138,6 +139,14 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_kimiDesktopSupported = obj.value("kimiDesktopSupported").toBool();
             m_kimiCodeDefaultSource = obj.value("kimiCodeDefaultSource").toString("web");
             m_bridgeReady = true;
+            const auto agy = obj.value("agySetup").toObject();
+            const auto stateDir = obj.value("stateDir").toString();
+            // Scope the vault slot to the core's actual state directory, not the
+            // activation directory shared by normal and preview desktop launches.
+            m_agyVaultPath = QDir::isAbsolutePath(stateDir) && !stateDir.isEmpty()
+                ? QDir(stateDir).filePath("antigravity-api-key.dat") : QString();
+            finishAgySetup(agy);
+            if (agy.value("source").toString() == "none") loadAgyCredential();
             emit openClawChanged();
             emit hermesRemoteChanged();
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
@@ -172,6 +181,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
         m_agentVersionRequirements.clear();
+        ++m_agyBridgeGeneration; m_agySetup.clear(); m_agyVaultPath.clear(); emit agySetupChanged();
         m_agentEnablement.clear(); m_agentChoices.clear(); m_agentReview.reset(); m_agentInFlight.reset(); m_agentWriteId = -1; m_agentChoiceRecheck = false; m_agentReadPending = false;
         emit agentEnablementChanged();
         m_kimiCodeSupported = false;
@@ -243,7 +253,7 @@ static bool isProviderBackgroundRequest(const QString &method) {
  * not grey out unrelated controls; their own controls read activityKinds instead.
  */
 static bool isBackgroundRequest(const QString &method) {
-    return isProviderBackgroundRequest(method) || method == "detect" || method.startsWith("agent.enablement.");
+    return isProviderBackgroundRequest(method) || method == "detect" || method.startsWith("agent.enablement.") || method.startsWith("agy.setup.");
 }
 /**
  * 每个桥命令在界面上叫什么。返回空 = 不值得单独提示（Agent 安装/更新有自己一套进度 UI）。
@@ -332,7 +342,7 @@ int HostController::command(const QString &method, const QJsonObject &params, Ca
     if (m_bridge.state() != QProcess::Running) { setMessage("Host 核心尚未就绪"); return -1; }
     int id = m_nextId++;
     m_pending.insert(id, std::move(done)); m_methods.insert(id, method);
-    if (method != "openclaw.save" && method != "hermes.remote.save") m_requestParams.insert(id, params);
+    if (method != "openclaw.save" && method != "hermes.remote.save" && !method.startsWith("agy.setup.")) m_requestParams.insert(id, params);
     if (!isBackgroundRequest(method)) ++m_busy;
     const auto activity = activityFor(method, params);
     if (!activity.first.isEmpty() || !activity.second.isEmpty()) { m_activity.insert(id, activity); m_activityOrder.append(id); }
@@ -390,7 +400,10 @@ void HostController::receiveLine(const QJsonObject &line) {
         auto callback = m_pending.take(id); auto method = m_methods.take(id); const auto params = m_requestParams.take(id);
         if (!isBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
         if (m_activity.remove(id)) m_activityOrder.removeAll(id);
-        if (line.contains("error")) {
+        if (line.contains("error") && method.startsWith("agy.setup.")) {
+            // Credential operations report a local, fixed status, never arbitrary bridge error text.
+            if (callback) callback(QJsonValue());
+        } else if (line.contains("error")) {
             if (method.startsWith("agent.enablement.write")) failAgentChoice();
             else if (method == "agent.enablement.read") m_agentReadPending = false;
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
@@ -1023,6 +1036,125 @@ void HostController::pumpAgentChoices() {
     }
     emit changed();
 }
+static QString normalizedAgyKey(const QString &value) {
+    static const QRegularExpression format("^[A-Za-z0-9._-]{16,512}$");
+    if (value.size() > 512) return {};
+    const auto key = value.trimmed();
+    return format.match(key).hasMatch() ? key : QString();
+}
+
+bool HostController::canEditAgySetup() const {
+    const auto source = m_agySetup.value("source").toString();
+    return m_bridgeReady && !m_qaMode && !m_exiting && !m_agySetup.value("busy").toBool()
+        && !source.isEmpty() && source != "environment" && source != "unsupported";
+}
+
+void HostController::beginAgySetup() {
+    m_agySetup.insert("busy", true);
+    m_agySetup.remove("verification");
+    emit agySetupChanged();
+}
+
+void HostController::finishAgySetup(const QJsonObject &info, const QString &verification) {
+    const auto source = info.value("source").toString();
+    if (QStringList{"none", "saved", "environment", "unsupported", "vaultError"}.contains(source)) m_agySetup.insert("source", source);
+    if (info.contains("requiredVersion")) m_agySetup.insert("requiredVersion", info.value("requiredVersion").toString());
+    if (info.contains("installed")) m_agySetup.insert("installed", info.value("installed").toBool());
+    m_agySetup.insert("busy", false);
+    m_agySetup.insert("verification", verification);
+    emit agySetupChanged();
+}
+
+void HostController::runAgyVault(AgyVaultAction action, const QString &key, std::function<void(std::optional<QString>)> done) {
+    const auto path = m_agyVaultPath;
+    if (path.isEmpty()) { done(std::nullopt); return; }
+    const auto generation = m_agyBridgeGeneration;
+    auto *watcher = new QFutureWatcher<std::optional<QString>>(this);
+    connect(watcher, &QFutureWatcher<std::optional<QString>>::finished, this, [this, watcher, generation, done = std::move(done)] {
+        auto result = watcher->result();
+        watcher->deleteLater();
+        if (generation == m_agyBridgeGeneration && m_bridgeReady && !m_exiting) done(std::move(result));
+    });
+    watcher->setFuture(QtConcurrent::run(&m_agyVaultPool, [path, action, key, testVault = m_agyVaultForTest]() -> std::optional<QString> {
+        if (testVault) return testVault(action, path, key);
+        constexpr auto scope = CredentialStore::Scope::Agy;
+        if (action == AgyVaultAction::Save)
+            return CredentialStore::save(path, {{"key", key}}, nullptr, scope) ? std::optional<QString>(key) : std::nullopt;
+        if (action == AgyVaultAction::Remove)
+            return CredentialStore::clear(path, nullptr, scope) ? std::optional<QString>(QString()) : std::nullopt;
+        QString error;
+        const auto data = CredentialStore::load(path, &error, scope);
+        const auto stored = normalizedAgyKey(data.value("key").toString());
+        if (!error.isEmpty() || (!data.isEmpty() && stored.isEmpty())) return std::nullopt;
+        return stored;
+    }));
+}
+
+void HostController::loadAgyCredential() {
+    if (!canEditAgySetup()) return;
+    beginAgySetup();
+    runAgyVault(AgyVaultAction::Load, {}, [this](auto key) {
+        if (!key) { finishAgySetup({{"source", "vaultError"}}, "vaultError"); return; }
+        if (key->isEmpty()) { applyAgyCredential({}); return; }
+        const auto id = command("agy.setup.verify", {{"key", *key}}, [this, key](const QJsonValue &result) {
+            const auto checked = result.toObject().value("verification").toString();
+            const auto safe = QStringList{"verified", "rejected", "invalid"}.contains(checked) ? checked : QStringLiteral("unavailable");
+            applyAgyCredential(*key, safe);
+        });
+        if (id < 0) finishAgySetup({}, "unavailable");
+    });
+}
+
+void HostController::applyAgyCredential(const QString &key, const QString &verification) {
+    const auto id = command("agy.setup.apply", {{"key", key.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(key)}}, [this, verification](const QJsonValue &result) {
+        finishAgySetup(result.toObject(), result.isObject() ? verification : QStringLiteral("applyError"));
+    });
+    if (id < 0) finishAgySetup({}, "applyError");
+}
+
+void HostController::saveAgyCredential(const QString &key) {
+    if (!canEditAgySetup()) return;
+    const auto candidate = normalizedAgyKey(key);
+    if (candidate.isEmpty()) { finishAgySetup({}, "invalid"); return; }
+    beginAgySetup();
+    const auto id = command("agy.setup.verify", {{"key", candidate}}, [this, candidate](const QJsonValue &result) {
+        const auto checked = result.toObject().value("verification").toString();
+        if (checked != "verified") {
+            finishAgySetup({}, checked == "rejected" ? "candidateRejected" : checked == "invalid" ? "invalid" : "unavailable");
+            return;
+        }
+        runAgyVault(AgyVaultAction::Save, candidate, [this](auto saved) {
+            if (!saved) { finishAgySetup({}, "vaultError"); return; }
+            applyAgyCredential(*saved, "verified");
+        });
+    });
+    if (id < 0) finishAgySetup({}, "unavailable");
+}
+
+void HostController::retryAgySetup() {
+    const auto source = m_agySetup.value("source").toString();
+    if (!m_bridgeReady || m_exiting || m_qaMode || m_agySetup.value("busy").toBool()) return;
+    if (source == "vaultError" || source == "none" || m_agySetup.value("verification").toString() == "applyError") { loadAgyCredential(); return; }
+    if (source != "saved" && source != "environment") return;
+    beginAgySetup();
+    const auto id = command("agy.setup.retry", {}, [this](const QJsonValue &result) {
+        const auto verified = result.toObject().value("verification").toString();
+        finishAgySetup(result.toObject(), QStringList{"verified", "rejected", "invalid"}.contains(verified) ? verified : QStringLiteral("unavailable"));
+    });
+    if (id < 0) finishAgySetup({}, "unavailable");
+}
+
+void HostController::removeAgyCredential() {
+    if (!canEditAgySetup()) return;
+    const auto source = m_agySetup.value("source").toString();
+    if (source != "saved" && source != "vaultError") return;
+    beginAgySetup();
+    runAgyVault(AgyVaultAction::Remove, {}, [this](auto removed) {
+        if (!removed) { finishAgySetup({}, "vaultError"); return; }
+        applyAgyCredential({}, "removed");
+    });
+}
+
 void HostController::saveOpenClaw(const QString &url, const QString &token) {
     if (!m_bridgeReady || busy() || m_openClaw.value("source").toString() != "file") return;
     command("openclaw.save", {{"url", url}, {"token", token}}, [this](const QJsonValue &result) {

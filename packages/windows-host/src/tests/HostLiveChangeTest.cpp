@@ -9,6 +9,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <atomic>
 #include <memory>
 
 // HOST-LIVE-01 / HOST-GUIDE-01: a running Host applies settings, Agent installs and DSH restarts by
@@ -44,6 +45,9 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     }
     return out({ id, result: { status: "applied", snapshot } });
   }
+  if (method === "agy.setup.verify") return out({ id, result: { verification: !params.key || /^fixture-valid-/.test(params.key) ? "verified" : "rejected" } });
+  if (method === "agy.setup.apply") return out({ id, result: { source: params.key ? "saved" : "none", installed: true, requiredVersion: "1.5.17" } });
+  if (method === "agy.setup.retry") return out({ id, result: { source: "saved", verification: "rejected" } });
   if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
   if (method === "hermes.remote.save") return out({ id, result: { source: "file", host: params.host, port: params.port, profile: params.profile } });
   if (method === "selectAgentEntry") return out({ id, result: { entry: params.entry, version: "2.1.322" } });
@@ -88,6 +92,63 @@ private slots:
         m_host->m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
     }
     void cleanup() { m_host.reset(); m_root.reset(); }
+
+    // AGY-15: the secure-vault boundary must commit the verified candidate before the private
+    // bridge receives it. A failed replacement leaves the old connection and key alone.
+    void managesLocalAgyCredentialWithoutRestartingHost() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        auto saved = std::make_shared<QString>();
+        auto failWrite = std::make_shared<std::atomic_bool>(false);
+        host.m_agyVaultPath = root() + "/state/antigravity-api-key.dat";
+        host.m_agyVaultForTest = [saved, failWrite](HostController::AgyVaultAction action, const QString &, const QString &key) -> std::optional<QString> {
+            if (action == HostController::AgyVaultAction::Save) {
+                if (failWrite->load()) return std::nullopt;
+                *saved = key;
+            } else if (action == HostController::AgyVaultAction::Remove) saved->clear();
+            return *saved;
+        };
+        const auto verification = [&host] { return host.agySetup().value("verification").toString(); };
+        const auto source = [&host] { return host.agySetup().value("source").toString(); };
+        const QString first = "fixture-valid-first", next = "fixture-valid-rotation";
+        host.finishAgySetup({{"source", "none"}, {"installed", true}});
+        host.saveAgyCredential("fixture-rejected-key");
+        QTRY_COMPARE(verification(), QString("candidateRejected"));
+        QCOMPARE(methods(root()), QStringList({"agy.setup.verify"}));
+        QCOMPARE(source(), QString("none"));
+        host.saveAgyCredential(first);
+        QVERIFY(!host.busy());
+        for (const auto &request : std::as_const(host.m_requestParams)) QVERIFY(!request.contains("key"));
+        QTRY_COMPARE(source(), QString("saved"));
+        QCOMPARE(verification(), QString("verified"));
+        QCOMPARE(*saved, first);
+        QVERIFY(!QJsonDocument(QJsonObject::fromVariantMap(host.agySetup())).toJson().contains(first.toLatin1()));
+
+        failWrite->store(true);
+        host.saveAgyCredential(next);
+        QTRY_COMPARE(verification(), QString("vaultError"));
+        QCOMPARE(*saved, first);
+        QCOMPARE(methods(root()).count("agy.setup.apply"), 1);
+        failWrite->store(false);
+        host.retryAgySetup();
+        QTRY_COMPARE(verification(), QString("rejected"));
+        host.saveAgyCredential(next);
+        QTRY_COMPARE(verification(), QString("verified"));
+        QCOMPARE(*saved, next);
+
+        // A fresh bridge's initialization brings back only status; the same vault
+        // reload path then restores the saved key without the user entering it again.
+        host.finishAgySetup({{"source", "none"}});
+        host.loadAgyCredential();
+        QTRY_COMPARE(source(), QString("saved"));
+        host.removeAgyCredential();
+        QTRY_COMPARE(source(), QString("none"));
+        QCOMPARE(verification(), QString("removed"));
+        QVERIFY(saved->isEmpty());
+        QCOMPARE(methods(root()).count("agy.setup.apply"), 4);
+        QVERIFY(!methods(root()).contains("stop"));
+        QCOMPARE(host.state(), QString("connected"));
+    }
 
     // HOST-CLI-DISCOVERY-01: a rejected path keeps the previous choice; a
     // successful path/reset survives the pause → change → resume boundary.

@@ -32,7 +32,8 @@ import { resolveDshCommand } from "./dsh-client.js";
 import { HostService } from "./host-service.js";
 import { createLocalKimiRuntime } from "./kimi-runtime.js";
 import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
-import { agyLocallyAllowed, openAgyProfile } from "./agy-client.js";
+import { openAgyProfile } from "./agy-client.js";
+import { agyEnvironmentKey } from "./agy-credential.js";
 import { AgyRuntime } from "./agy-runtime.js";
 import { agySubmissionFence } from "./agy-submission-fence.js";
 import { createOpenCodeLocalLauncher } from "./opencode-local-launch.js";
@@ -173,7 +174,7 @@ async function runHostUntilShutdown(
   try {
     service = await HostService.create({
       agentEnablement: enablement,
-      ...(agyLocallyAllowed() && sessionsRoot === undefined ? { createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(stateDir, signal), hostId, agySubmissionFence(stateDir)) } : {}),
+      ...(agyLocallyAllowed() && sessionsRoot === undefined ? { agyCredentialConfigured: () => agyEnvironmentKey() !== undefined, createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(stateDir, signal, { key: agyEnvironmentKey() }), hostId, agySubmissionFence(stateDir)) } : {}),
       createKimiCodeRuntime: async (kind: KimiKind) => {
         const source = kind === KIMI_DESKTOP_KIND ? "desktop" : "web";
         if (source === "desktop" && !profile.launchDesktopAgents) throw new Error("当前平台不支持 Kimi Code 桌面接入");
@@ -286,6 +287,8 @@ async function runHostUntilShutdown(
   }
   console.error("[host] 已退出");
 }
+
+const agyLocallyAllowed = () => process.env.ORBIS_AGY_ENABLED === "1";
 
 function cliEnablement(stateDir: string, choices: Partial<Record<AgentKind, boolean>> = {}): AgentEnablementController {
   return new AgentEnablementController(new AgentEnablementStore(stateDir, async () => {

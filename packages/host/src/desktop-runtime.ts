@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile, rename, rm, stat } from "node:fs/promises";
 import { Socket } from "node:net";
 import { homedir } from "node:os";
-import { join, delimiter, isAbsolute } from "node:path";
+import { join, delimiter, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { DEVICE_STORE_FILE, HOST_IDENTITY_FILE, X25519_KEY_BYTES, deriveSharedSecret, fromBase64UrlFixed, loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, privateKeyFromRaw, resolveStateDir, revokeDeviceRecord, saveDeviceStore, toBase64Url } from "@orbis/e2e";
@@ -13,7 +13,8 @@ import { agentVersionRequirements } from "./agent-version-requirements.js";
 import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
-import { agyLocallyAllowed, openAgyProfile } from "./agy-client.js";
+import { AGY_VERSION, findAgy, openAgyProfile, verifyAgyConnection } from "./agy-client.js";
+import { agyEnvironmentKey, agyKey } from "./agy-credential.js";
 import { AgyRuntime } from "./agy-runtime.js";
 import { agySubmissionFence } from "./agy-submission-fence.js";
 import { createOpenCodeLocalLauncher, OPENCODE_TUI_ENV_KEYS, prepareOpenCodeTerminalLaunch } from "./opencode-local-launch.js";
@@ -167,6 +168,8 @@ export class DesktopRuntime {
   #claudeStatus: DesktopEvent = { event: "claudeStatus", installed: false, compatible: false, minimumVersion: CLAUDE_MIN_VERSION };
   readonly #emit: (event: DesktopEvent) => void;
   #service: HostService | undefined;
+  #agySavedKey: string | undefined;
+  readonly #agySetupAbort = new AbortController();
   #disposing: Promise<void> | undefined;
   #codex: CodexAppServer | undefined;
   #codexRuntime: CodexRuntime | undefined;
@@ -213,7 +216,8 @@ export class DesktopRuntime {
   #legacyKimiEnabled: boolean | undefined;
   #claudeIntegrationPreference: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {};
 
-  constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths, qa?: DesktopQaConfiguration) {
+  constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths, qa?: DesktopQaConfiguration,
+    private readonly agyCredentialVerifier: typeof verifyAgyConnection = verifyAgyConnection) {
     this.#emit = emit;
     this.#qa = qa;
     this.#stateDir = resolveStateDir(stateDir);
@@ -224,7 +228,7 @@ export class DesktopRuntime {
       const keepKimi = this.#legacyKimiEnabled ?? kimi?.kimiCodeEnabled;
       const legacyKimiKind = kimi?.kimiCodeSource === "desktop" ? KIMI_DESKTOP_KIND : KIMI_KIND;
       return { ...(openClaw.url ? { openclaw: true } : {}), ...(keepKimi === undefined ? {} : { [legacyKimiKind]: keepKimi }), ...(this.#legacyDshEnabled ? { dsh: true } : {}), ...(this.#legacyCodexEnabled ? { codex: true } : {}), ...(this.#legacyPiEnabled ? { pi: true } : {}), ...(this.#legacyClaudeEnabled ? { claude: true } : {}) };
-    }, kind => kind !== "agy" || (!this.#qa && agyLocallyAllowed())), snapshot => {
+    }, kind => kind !== "agy" || !this.#qa), snapshot => {
       if (!snapshot.agents.some(row => row.kind === "dshDesktop" && row.enabled)) this.#cancelDshDesktopOpen();
       if (!this.#agentEnablement.allows("claude")) this.#claudeIntegrationAbort?.abort();
       if (this.#poll) this.#prepareClaudeIntegration();
@@ -278,10 +282,11 @@ export class DesktopRuntime {
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
     const kimi = await this.#kimiCodeConfig();
     return { kimiCodeSupported: !this.#qa, kimiCodeDefaultSource: kimi?.kimiCodeSource ?? "web",
-      kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
+      kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: resolve(this.#stateDir), devices, nodeVersion: process.version,
       agentEnablement: enablement, agentVersionRequirements,
       ...(!this.#qa && (process.platform === "darwin" || process.platform === "win32")
         ? { openCodeTuiTabsEnabled: await openCodeTuiTabsInstalled().catch(() => false) } : {}),
+      agySetup: await this.agySetupInfo(),
       ...(this.#qa ? {} : { openClaw: await readOpenClawDesktopSettings(this.#stateDir) }),
       ...(this.#qa ? {} : { hermesRemote: await readHermesRemoteGatewaySettings(this.#stateDir) }),
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
@@ -294,6 +299,43 @@ export class DesktopRuntime {
     this.#routing = this.#routing.then(() => wanted ? this.#providers.startRouting() : this.#providers.closeRouting())
       .catch(error => { this.log(error instanceof ProviderError ? error.message : "无法更新 Codex 本地路由"); });
   }
+
+  #agyEnvironmentKey(): string | undefined { return this.#qa ? undefined : agyEnvironmentKey(); }
+  #agyKey(): string | undefined { return this.#agyEnvironmentKey() ?? this.#agySavedKey; }
+
+  async agySetupInfo() {
+    const source = this.#qa ? "unsupported" : this.#agyEnvironmentKey() ? "environment" : this.#agySavedKey ? "saved" : "none";
+    return { source, requiredVersion: AGY_VERSION, installed: !this.#qa && await findAgy() };
+  }
+
+  // These methods are reachable from the private GUI stdio bridge only. The Qt
+  // parent owns the OS credential store; a candidate is never applied before it commits.
+  async checkAgyCredential(candidate: unknown) {
+    if (this.#qa || this.#agyEnvironmentKey()) throw new Error("当前无法更改 Antigravity CLI 密钥");
+    return { verification: await this.agyCredentialVerifier(candidate, { signal: this.#agySetupAbort.signal }) };
+  }
+
+  async applyAgyCredential(value: unknown) {
+    if (this.#qa || this.#agyEnvironmentKey()) throw new Error("当前无法更改 Antigravity CLI 密钥");
+    this.#agySetupAbort.signal.throwIfAborted();
+    const key = value === null ? undefined : agyKey(value);
+    if (value !== null && !key) throw new Error("Antigravity CLI 密钥格式无效");
+    if (key !== this.#agySavedKey) {
+      this.#agySavedKey = key;
+      await this.#service?.refreshAgyConnection();
+    }
+    return this.agySetupInfo();
+  }
+
+  async retryAgyCredential() {
+    if (this.#qa) throw new Error("Antigravity CLI 设置不可用");
+    const verification = await this.agyCredentialVerifier(this.#agyKey(), { signal: this.#agySetupAbort.signal });
+    if (verification === "verified") this.#service?.retryAgyConnection();
+    else if (verification === "rejected") await this.#service?.refreshAgyConnection();
+    return { ...(await this.agySetupInfo()), verification };
+  }
+
+  cancelAgySetup(): void { this.#agySetupAbort.abort(); }
 
   async readAgentEnablement(): Promise<AgentEnablementSnapshot> {
     if (!this.#qa) {
@@ -313,8 +355,12 @@ export class DesktopRuntime {
     if (!choice.success) throw new Error("此 Agent 暂不支持启用设置");
     try {
       if (choice.data.review !== undefined && !scoped) throw new Error("Unnegotiated Agent review");
-      return await this.#agentEnablement.set(choice.data, undefined, (kind, revision, review) => this.#service?.verifyAgentDisable(kind, revision, review), scoped);
+      const credentialAvailable = () => choice.data.kind !== "agy" || !choice.data.enabled || this.#agyKey() !== undefined;
+      if (!credentialAvailable()) throw new Error("请先在 Host 本机验证并保存 Antigravity CLI 密钥");
+      return await this.#agentEnablement.set(choice.data, credentialAvailable,
+        (kind, revision, review) => this.#service?.verifyAgentDisable(kind, revision, review), scoped);
     } catch (error) {
+      if (error instanceof Error && error.message === "请先在 Host 本机验证并保存 Antigravity CLI 密钥") throw error;
       if (error instanceof AgentDisableConfirmationRequired) {
         if (scoped) return { status: "review", review: error.review };
         throw error;
@@ -325,8 +371,14 @@ export class DesktopRuntime {
 
   async setAgentEnablementBatch(input: unknown): Promise<AgentEnablementResult | { status: "review"; reviews: AgentDisableReview[] }> {
     try {
-      return await this.#agentEnablement.setBatch(input, (kind, revision, scope) => this.#service?.reviewAgentDisable(kind, revision, scope));
+      const batch = input && typeof input === "object" ? input as { kinds?: unknown; enabled?: unknown } : {};
+      const includesAgy = Array.isArray(batch.kinds) && batch.kinds.includes("agy");
+      const credentialAvailable = () => !includesAgy || batch.enabled !== true || this.#agyKey() !== undefined;
+      if (!credentialAvailable()) throw new Error("请先在 Host 本机验证并保存 Antigravity CLI 密钥");
+      return await this.#agentEnablement.setBatch(input,
+        (kind, revision, scope) => this.#service?.reviewAgentDisable(kind, revision, scope), credentialAvailable);
     } catch (error) {
+      if (error instanceof Error && error.message === "请先在 Host 本机验证并保存 Antigravity CLI 密钥") throw error;
       if (error instanceof AgentBatchConfirmationRequired) return { status: "review", reviews: error.reviews };
       throw new Error("无法保存 Agent 设置，请检查 Host 状态目录权限");
     }
@@ -911,7 +963,10 @@ export class DesktopRuntime {
       };
       let relayAuthenticated = false;
       const service = await HostService.create({
-        ...(!this.#qa && agyLocallyAllowed() ? { createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(this.#stateDir, signal), hostId, agySubmissionFence(this.#stateDir)) } : {}),
+        ...(!this.#qa ? {
+          agyCredentialConfigured: () => this.#agyKey() !== undefined,
+          createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(this.#stateDir, signal, { key: this.#agyKey() }), hostId, agySubmissionFence(this.#stateDir)),
+        } : {}),
         ...(this.#qa ? {} : { createKimiCodeRuntime, kimiCodeDesktopSupported: supportsKimiDesktop, openClawLauncher: createOpenClawLocalLauncher(),
           createOpenCodeConnection: () => new OpenCodeServiceConnection({ launcher: createOpenCodeLocalLauncher() }) }),
         agentEnablement: this.#agentEnablement,
@@ -1889,6 +1944,8 @@ export class DesktopRuntime {
   }
 
   async close(): Promise<void> {
+    this.cancelAgySetup();
+    this.#agySavedKey = undefined;
     this.#dshDesktopOpenAbort?.abort();
     this.#claudeIntegrationAbort?.abort();
     this.cancelInstall();
