@@ -86,6 +86,8 @@ Keep your computer awake and connected, with Orbis Host running. Orbis prefers a
 
 Your agents run on your own computer. Conversations and file transfers between your phone and computer are end-to-end encrypted, so the relay cannot read their contents. Manage paired devices on your computer and revoke access for devices you no longer use.
 
+The Relay counts homepage visits, download categories and bytes, registration and pairing-code events, and service metrics such as CPU, memory, connections, and event-loop delay. It does not record IP addresses, cookies, email addresses, user agents, message contents, or URL query parameters. Per-device message traffic, connection duration, and bandwidth details are off by default. Enable them in **App Settings → Privacy → Device usage sharing**. Turning this off deletes that device's detailed history; aggregate service metrics remain. See [`packages/relay/TELEMETRY.md`](packages/relay/TELEMETRY.md).
+
 ## Join the Orbis community
 
 Share your experience, suggest improvements, or discuss a problem with other users. Scan the code below in WeChat to join the **Orbis community group**.

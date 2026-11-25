@@ -27,6 +27,7 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 
 /** Design alignment: settings expose consequences before a transport-changing write. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,12 +38,35 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
     var protocolOpen by rememberSaveable { mutableStateOf(false) }
     var languageOpen by rememberSaveable { mutableStateOf(false) }
     var voiceOpen by remember { mutableStateOf(false) }
+    var telemetryEnabled by remember(state.hostId) { mutableStateOf(false) }
+    var telemetryStatus by remember(state.hostId) { mutableStateOf(L10n.tr("正在读取设置…")) }
+    var telemetryAvailable by remember(state.hostId) { mutableStateOf(false) }
+    var telemetryBusy by remember(state.hostId) { mutableStateOf(false) }
+    val telemetryScope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
     var voiceApiEnabled by remember { mutableStateOf(false) }
     LaunchedEffect(context) {
         try { voiceApiEnabled = VoiceCleanupApiStore(context).load() != null }
         catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (_: Exception) { }
+    }
+    LaunchedEffect(model, state.hostId, state.connection) {
+        if (model == null || !model.hasActiveRelayPairing()) {
+            telemetryStatus = L10n.tr("配对 Relay 后可设置")
+            telemetryAvailable = false
+            return@LaunchedEffect
+        }
+        telemetryStatus = L10n.tr("正在读取设置…")
+        try {
+            val enabled = model.relayTelemetryConsent()
+            telemetryAvailable = enabled != null
+            if (enabled == null) telemetryStatus = L10n.tr("此 Relay 不支持遥测设置")
+            else { telemetryEnabled = enabled; telemetryStatus = "" }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) {
+            telemetryAvailable = false
+            telemetryStatus = L10n.tr("无法读取遥测设置")
+        }
     }
     Scaffold(containerColor = MaterialTheme.colorScheme.surface, topBar = {
         RemoteTopAppBar(title = { Text(L10n.tr("设置"), fontWeight = FontWeight.SemiBold) }, navigationIcon = {
@@ -79,6 +103,44 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
             SettingsGroup(L10n.tr("语音"), padding = 8.dp) {
                 SettingsRow(L10n.tr("语音清理"), L10n.tr(if (voiceApiEnabled) "自定义模型 API" else "手机本地规则"),
                     "settings-voice-cleanup", onClick = { voiceOpen = true })
+            }
+            SettingsGroup(L10n.tr("隐私"), padding = 8.dp, tag = "settings-privacy-group") {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(L10n.tr("设备使用统计"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = telemetryEnabled,
+                            enabled = telemetryAvailable && !telemetryBusy && model != null,
+                            onCheckedChange = { requested ->
+                                val currentModel = model
+                                if (currentModel != null) {
+                                    telemetryBusy = true
+                                    telemetryScope.launch {
+                                        try {
+                                            val result = currentModel.setRelayTelemetryConsent(requested)
+                                            if (result == null) {
+                                                telemetryAvailable = false
+                                                telemetryStatus = L10n.tr("此 Relay 不支持遥测设置")
+                                            } else {
+                                                telemetryEnabled = result
+                                                telemetryStatus = ""
+                                            }
+                                        } catch (_: Exception) {
+                                            telemetryStatus = L10n.tr("无法保存遥测设置")
+                                        } finally { telemetryBusy = false }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.testTag("settings-device-telemetry"),
+                        )
+                    }
+                    Text(L10n.tr("允许当前 Relay 统计本设备消息流量与连接时长。关闭后会删除本 Relay 上本设备的详细记录；网站访问、下载总量及 Relay 运行指标仍会统计。"),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (telemetryBusy || telemetryStatus.isNotEmpty()) {
+                        Text(if (telemetryBusy) L10n.tr("正在保存设置…") else telemetryStatus,
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
             SettingsGroup(L10n.tr("外观")) { AppearancePicker() }
             SettingsGroup(L10n.tr("语言"), padding = 8.dp, tag = "settings-language-group") {

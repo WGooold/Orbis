@@ -181,6 +181,18 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         active()?.setRelayTransportMode(mode)
     }
 
+    fun hasActiveRelayPairing(): Boolean = pairingOrder.value.any { it.hostId == activeHostId.value }
+
+    suspend fun relayTelemetryConsent(): Boolean? {
+        val pairing = pairingOrder.value.firstOrNull { it.hostId == activeHostId.value } ?: return null
+        return RelayClient().telemetryConsent(pairing.credential())
+    }
+
+    suspend fun setRelayTelemetryConsent(enabled: Boolean): Boolean? {
+        val pairing = pairingOrder.value.firstOrNull { it.hostId == activeHostId.value } ?: return null
+        return RelayClient().setTelemetryConsent(pairing.credential(), enabled)
+    }
+
     private fun setActiveHost(hostId: String?) {
         if (active()?.hostId != hostId) active()?.cancelQueuedAgentDial()
         active()?.closeToolDetail()

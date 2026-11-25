@@ -116,7 +116,7 @@ describe("public site download cards and device recommendation", () => {
     });
     expect(macArm["host-platform"]!.value).toBe("macos-arm64");
     expect(macArm["device-recommendation"]!.hidden).toBe(false);
-    expect(macArm["device-recommendation"]!.allText()).toContain("Orbis Host（macOS · Apple Silicon）");
+    expect(macArm["device-recommendation"]!.allText()).toContain("Orbis Host（macOS，Apple Silicon）");
     expect(macArm["host-card"]!.classList.contains("is-recommended")).toBe(true);
     expect(macArm["host-recommend"]!.hidden).toBe(false);
     expect(macArm["app-recommend"]!.hidden).toBe(true);

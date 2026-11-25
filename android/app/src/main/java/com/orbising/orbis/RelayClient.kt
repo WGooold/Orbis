@@ -15,6 +15,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -27,6 +28,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URI
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -147,6 +149,7 @@ class RelayClient internal constructor(
     private val json: Json = Json { ignoreUnknownKeys = true },
     private val socketFactory: (Request, RelayTransportMode, RelaySocketListener) -> RelaySocketConnection = { request, mode, listener -> RelaySocket(http, request, listener, mode = mode) },
 ) {
+    private val consentHttp = http.newBuilder().followRedirects(false).followSslRedirects(false).build()
     private val relayLock = Any()
     private var candidate: RelaySocketConnection? = null
     private var switchAttempt = 0L
@@ -254,6 +257,42 @@ class RelayClient internal constructor(
             .build()
         http.newCall(request).execute().use { response ->
             if (!response.isSuccessful && response.code != 401) error(L10n.tr("撤销设备失败（HTTP {0}）", response.code))
+        }
+    }
+
+    /** Returns null when the selected Relay predates the explicit consent endpoint. */
+    suspend fun telemetryConsent(device: DeviceCredential): Boolean? = withContext(Dispatchers.IO) {
+        requireSupportedRelay(device.relayUrl)
+        val request = Request.Builder()
+            .url("${device.relayUrl.toHttpBase().trimEnd('/')}/v1/device/telemetry-consent")
+            .header("Authorization", "Bearer ${device.credential}")
+            .get()
+            .build()
+        consentHttp.newCall(request).execute().use { response ->
+            if (response.code == 404) return@withContext null
+            if (!response.isSuccessful) throw IOException("telemetry_consent_http_${response.code}")
+            val enabled = runCatching {
+                json.parseToJsonElement(response.body?.string().orEmpty()).jsonObject["enabled"]?.jsonPrimitive?.booleanOrNull
+            }.getOrNull() ?: throw IOException("invalid_telemetry_consent_response")
+            enabled
+        }
+    }
+
+    /** Returns null when the selected Relay does not implement this setting. */
+    suspend fun setTelemetryConsent(device: DeviceCredential, enabled: Boolean): Boolean? = withContext(Dispatchers.IO) {
+        requireSupportedRelay(device.relayUrl)
+        val body = buildJsonObject { put("enabled", enabled) }.toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("${device.relayUrl.toHttpBase().trimEnd('/')}/v1/device/telemetry-consent")
+            .header("Authorization", "Bearer ${device.credential}")
+            .put(body)
+            .build()
+        consentHttp.newCall(request).execute().use { response ->
+            if (response.code == 404) return@withContext null
+            if (!response.isSuccessful) throw IOException("telemetry_consent_http_${response.code}")
+            runCatching {
+                json.parseToJsonElement(response.body?.string().orEmpty()).jsonObject["enabled"]?.jsonPrimitive?.booleanOrNull
+            }.getOrNull() ?: throw IOException("invalid_telemetry_consent_response")
         }
     }
 

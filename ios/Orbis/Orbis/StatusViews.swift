@@ -16,6 +16,10 @@ struct ConnectionStatusView: View {
     @State private var voiceCleanupUsesAPI = false
     @State private var protocolOpen = false
     @State private var proposedProtocol: RelayTransportMode = .auto
+    @State private var relayTelemetryEnabled = false
+    @State private var relayTelemetryAvailable = false
+    @State private var relayTelemetryBusy = false
+    @State private var relayTelemetryStatus = L10n.tr("正在读取设置…")
     var root = false
     let onBack: () -> Void
     var onOpenAgent: () -> Void = {}
@@ -73,6 +77,23 @@ struct ConnectionStatusView: View {
                             }.frame(minHeight: 56).contentShape(Rectangle())
                         }.buttonStyle(.plain).accessibilityIdentifier("settings-voice-cleanup")
                     }
+                    StatusSection(title: L10n.tr("隐私")) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle(L10n.tr("设备使用统计"), isOn: Binding(
+                                get: { relayTelemetryEnabled },
+                                set: { requested in Task { await updateRelayTelemetryConsent(requested) } }
+                            ))
+                            .font(.orbisBody(.semibold))
+                            .disabled(!relayTelemetryAvailable || relayTelemetryBusy || store.selectedHost == nil)
+                            .accessibilityIdentifier("settings-device-telemetry")
+                            Text(L10n.tr("允许当前 Relay 统计本设备消息流量与连接时长。关闭后会删除本 Relay 上本设备的详细记录；网站访问、下载总量及 Relay 运行指标仍会统计。"))
+                                .font(.orbisLabel()).foregroundStyle(palette.secondary)
+                            if relayTelemetryBusy || !relayTelemetryStatus.isEmpty {
+                                Text(relayTelemetryBusy ? L10n.tr("正在保存设置…") : relayTelemetryStatus)
+                                    .font(.orbisLabel()).foregroundStyle(palette.secondary)
+                            }
+                        }.padding(.vertical, 8)
+                    }
                     StatusSection(title: L10n.tr("外观")) { appearancePicker.padding(.vertical, 12) }
                     StatusSection(title: L10n.tr("语言")) {
                         OrbisMotionButton { languageOpen = true } label: {
@@ -97,6 +118,7 @@ struct ConnectionStatusView: View {
                     Spacer(minLength: 0)
                 }.padding(16).orbisSheet([.medium])
             }
+            .task(id: "\(store.selectedHost?.hostId ?? "")|\(store.connection.rawValue)") { await loadRelayTelemetryConsent() }
             .task { voiceCleanupUsesAPI = (try? SecureStore.shared.voiceCleanupAPIConfig()) != nil }
             .orbisBottomSheet(isPresented: $voiceCleanupOpen) {
                 VoiceCleanupSettings(onClose: { voiceCleanupOpen = false }, onSaved: { enabled in
@@ -106,6 +128,64 @@ struct ConnectionStatusView: View {
             }
             .orbisBottomSheet(isPresented: $protocolOpen) { protocolSheet.orbisSheet([.medium, .large]) }
     }
+
+    @MainActor
+    private func loadRelayTelemetryConsent() async {
+        guard let host = store.selectedHost else {
+            relayTelemetryEnabled = false
+            relayTelemetryAvailable = false
+            relayTelemetryStatus = L10n.tr("配对 Relay 后可设置")
+            return
+        }
+        let hostId = host.hostId
+        let relay = host.relay
+        relayTelemetryBusy = true
+        relayTelemetryStatus = L10n.tr("正在读取设置…")
+        defer { relayTelemetryBusy = false }
+        do {
+            let result = try await RelayTelemetryConsent.read(relay)
+            guard !Task.isCancelled, store.selectedHost?.hostId == hostId else { return }
+            if let enabled = result {
+                relayTelemetryEnabled = enabled
+                relayTelemetryAvailable = true
+                relayTelemetryStatus = ""
+            } else {
+                relayTelemetryEnabled = false
+                relayTelemetryAvailable = false
+                relayTelemetryStatus = L10n.tr("此 Relay 不支持遥测设置")
+            }
+        } catch is CancellationError { return }
+        catch {
+            guard !Task.isCancelled, store.selectedHost?.hostId == hostId else { return }
+            relayTelemetryAvailable = false
+            relayTelemetryStatus = L10n.tr("无法读取遥测设置")
+        }
+    }
+
+    @MainActor
+    private func updateRelayTelemetryConsent(_ enabled: Bool) async {
+        guard let host = store.selectedHost, relayTelemetryAvailable, !relayTelemetryBusy else { return }
+        let hostId = host.hostId
+        let relay = host.relay
+        relayTelemetryBusy = true
+        relayTelemetryStatus = ""
+        defer { relayTelemetryBusy = false }
+        do {
+            let result = try await RelayTelemetryConsent.write(relay, enabled: enabled)
+            guard store.selectedHost?.hostId == hostId else { return }
+            if let saved = result {
+                relayTelemetryEnabled = saved
+                relayTelemetryStatus = ""
+            } else {
+                relayTelemetryAvailable = false
+                relayTelemetryStatus = L10n.tr("此 Relay 不支持遥测设置")
+            }
+        } catch {
+            guard store.selectedHost?.hostId == hostId else { return }
+            relayTelemetryStatus = L10n.tr("无法保存遥测设置")
+        }
+    }
+
     private var connectionSheet: some View {
         VStack(spacing: 16) {
             OrbisPageHeader(title: L10n.tr("当前连接"), closes: true, back: { connectionOpen = false }) { EmptyView() }
