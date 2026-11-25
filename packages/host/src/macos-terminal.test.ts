@@ -170,6 +170,23 @@ describe("macOS terminal launch", () => {
     expect(await readFile(join(workspace, "tmp", files[0]!), "utf8")).toContain("[ -t 0 ] || exit 1");
   });
 
+  it("opens the OpenCode worker with a private script and only the allowed profile environment", async () => {
+    const profile = join(workspace, "OpenCode state");
+    const handoff = "opaque-existing-session-target";
+    await openMacAgentTerminal({ stateDir: workspace, cwd: workspace, command: process.execPath,
+      args: [join(workspace, "opencode-terminal-entry.js"), handoff], cleanEnvironment: true,
+      terminalEnvironmentKeys: ["HOME", "XDG_STATE_HOME"], env: { PATH: "/usr/bin:/bin", HOME: workspace,
+        XDG_STATE_HOME: profile, OPENCODE_PASSWORD: "not-for-the-script", NODE_OPTIONS: "not-for-the-worker" } });
+    const [command, args] = terminal.spawn.mock.calls[0]!;
+    expect(command).toBe("/usr/bin/open");
+    expect(args.slice(0, 2)).toEqual(["-a", "Terminal"]);
+    const script = await readFile(args[2], "utf8");
+    expect(script).toContain("exec /usr/bin/env '-i'");
+    expect(script).toContain(`'XDG_STATE_HOME=${profile.replaceAll("'", "'\\''")}'`);
+    expect(script).toContain(`'${handoff}'`);
+    expect(script).not.toMatch(/OPENCODE_PASSWORD|NODE_OPTIONS|not-for-the/u);
+  });
+
   it("does not call open success a terminal start when the script never executes", async () => {
     vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(10_001);
     await expect(openMacAgentTerminal({ stateDir: workspace, cwd: workspace, command: "/bin/echo", args: ["ok"], env: {}, confirmStart: true }))

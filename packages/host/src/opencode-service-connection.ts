@@ -7,8 +7,11 @@ export const OPENCODE_CLIENT_VERSION = "2.3.2";
 const INFO_TIMEOUT_MS = 3_000;
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 export type OpenCodeClient = ReturnType<typeof OpenCode.make>;
+/** A desktop handoff pins the verified instance without serializing credentials. */
+export type OpenCodeServiceIdentity = { readonly origin: string; readonly pid: number; readonly registrationId?: string };
 type ClientOptions = Parameters<typeof OpenCode.make>[0];
-type Registration = Endpoint & { pid?: Info["pid"]; version?: Info["version"] };
+type Registration = Endpoint & { pid?: Info["pid"]; version?: Info["version"]; id?: Info["id"] };
+type AttachedService = OpenCodeServiceIdentity & { authorization: string | null; client: OpenCodeClient };
 
 export type OpenCodeServiceStatus =
   | { readonly state: "unavailable"; readonly reason: "service_not_found" | "unsupported_version" | "invalid_endpoint" | "connection_failed" }
@@ -42,15 +45,16 @@ function localServiceUrl(value: string): URL | undefined {
 }
 
 // ADR-0091 §2：SDK discover probes the recorded URL before returning it. Vet it before any network I/O.
-async function readRegistration(path: string): Promise<Registration | undefined> {
+async function readOpenCodeServiceRegistration(path = fallback()): Promise<Registration | undefined> {
   try {
     const info: Partial<Info> | null = JSON.parse(await readFile(path, "utf8"));
     if (!info || typeof info.url !== "string" || typeof info.pid !== "number" || !Number.isSafeInteger(info.pid) || info.pid <= 0 || info.pid > 0x7fff_ffff ||
-        (info.version !== undefined && typeof info.version !== "string") ||
+        (info.version !== undefined && typeof info.version !== "string") || (info.id !== undefined && typeof info.id !== "string") ||
         (info.password !== undefined && typeof info.password !== "string")) throw new Error("Invalid OpenCode registration");
     try { process.kill(info.pid, 0); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return undefined; }
     return { url: info.url, pid: info.pid, ...(info.version === undefined ? {} : { version: info.version }),
+      ...(info.id === undefined ? {} : { id: info.id }),
       ...(info.password === undefined ? {} : { auth: { type: "basic", username: "opencode", password: info.password } }) };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
@@ -66,6 +70,21 @@ function localFetch(origin: string): typeof globalThis.fetch {
   };
 }
 
+/** Terminal-side, read-only revalidation. The password stays in memory until the native CLI is spawned. */
+export async function openCodeTerminalService(expected: OpenCodeServiceIdentity, registrationPath?: string) {
+  const unavailable = () => new Error("OpenCode 共享服务已断开或更换，请从 Host 重试");
+  try {
+    const registration = await readOpenCodeServiceRegistration(registrationPath);
+    const url = registration && localServiceUrl(registration.url);
+    if (!registration || !url || url.origin !== expected.origin || registration.pid !== expected.pid || registration.id !== expected.registrationId ||
+        (registration.version !== undefined && registration.version !== OPENCODE_CLIENT_VERSION)) throw unavailable();
+    const client = OpenCode.make({ baseUrl: url.origin, headers: Service.headers(registration), fetch: localFetch(url.origin) });
+    const info = await client.server.info({ signal: AbortSignal.timeout(INFO_TIMEOUT_MS) });
+    if (info.pid !== expected.pid || info.version !== OPENCODE_CLIENT_VERSION) throw unavailable();
+    return { client, password: registration.auth?.password };
+  } catch { throw unavailable(); }
+}
+
 /** Monitors the user-level service; only explicit, admitted operations can launch it. */
 export class OpenCodeServiceConnection {
   readonly #discover: NonNullable<OpenCodeServiceOptions["discover"]>;
@@ -78,13 +97,13 @@ export class OpenCodeServiceConnection {
   readonly #launcher: OpenCodeLocalLauncher | undefined;
   #installed = false;
   #status: OpenCodeServiceStatus = initialStatus;
-  #attached: { origin: string; authorization: string | null; pid: number; client: OpenCodeClient } | undefined;
+  #attached: AttachedService | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #refreshing: Promise<OpenCodeServiceStatus> | undefined;
   #started = false;
 
   constructor(options: OpenCodeServiceOptions = {}) {
-    this.#discover = options.discover ?? (() => readRegistration(options.registrationPath ?? fallback()));
+    this.#discover = options.discover ?? (() => readOpenCodeServiceRegistration(options.registrationPath));
     this.#createClient = options.createClient ?? OpenCode.make;
     this.#pollIntervalMs = Math.max(250, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
     this.#onChange = options.onChange;
@@ -93,6 +112,11 @@ export class OpenCodeServiceConnection {
 
   get status(): OpenCodeServiceStatus { return this.#status; }
   get client(): OpenCodeClient | undefined { return this.#attached?.client; }
+  get identity(): OpenCodeServiceIdentity | undefined {
+    const attached = this.#attached;
+    return attached && { origin: attached.origin, pid: attached.pid,
+      ...(attached.registrationId === undefined ? {} : { registrationId: attached.registrationId }) };
+  }
   get isReady(): boolean { return this.#status.state === "ready" && this.#attached !== undefined; }
   get starting(): boolean { return this.#startup.starting; }
   get launchable(): boolean { return !this.#lifetime.signal.aborted && (this.starting || this.#missing() && this.#installed); }
@@ -168,7 +192,7 @@ export class OpenCodeServiceConnection {
 
   async #probe(): Promise<OpenCodeServiceStatus> {
     let next: OpenCodeServiceStatus = initialStatus;
-    let attached: { origin: string; authorization: string | null; pid: number; client: OpenCodeClient } | undefined;
+    let attached: AttachedService | undefined;
     try {
       const registration = await this.#discover();
       if (this.#lifetime.signal.aborted) return this.#status;
@@ -181,7 +205,7 @@ export class OpenCodeServiceConnection {
           const headers = new Headers(Service.headers(registration));
           const authorization = headers.get("authorization");
           const previous = this.#attached;
-          const sameEndpoint = previous?.origin === url.origin && previous.authorization === authorization;
+          const sameEndpoint = previous?.origin === url.origin && previous.authorization === authorization && previous.registrationId === registration.id;
           const create = () => this.#createClient({ baseUrl: registration.url, headers, fetch: localFetch(url.origin) });
           const client = sameEndpoint && (registration.pid === undefined || registration.pid === previous.pid) ? previous.client : create();
           const info = await client.server.info({ signal: AbortSignal.any([this.#lifetime.signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]) });
@@ -189,7 +213,9 @@ export class OpenCodeServiceConnection {
           else if (registration.pid !== undefined && registration.pid !== info.pid) next = { state: "unavailable", reason: "connection_failed" };
           else {
             next = { state: "ready", version: info.version };
-            attached = { origin: url.origin, authorization, pid: info.pid, client: previous?.client === client && previous.pid !== info.pid ? create() : client };
+            attached = { origin: url.origin, authorization, pid: info.pid,
+              ...(registration.id === undefined ? {} : { registrationId: registration.id }),
+              client: previous?.client === client && previous.pid !== info.pid ? create() : client };
           }
         }
       }

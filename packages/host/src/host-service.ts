@@ -1535,14 +1535,18 @@ export class HostService {
     await this.#ensureSharedAgent(kind, this.#sourceCurrent(kind), true);
   }
 
-  /** Resolve the newest active native OpenCode session in the exact project chosen for a TUI handoff. */
-  async latestOpenCodeSession(cwd: string): Promise<AgentSessionSummary | undefined> {
-    if (!isAbsolute(cwd)) throw new Error("OpenCode 工作区必须是绝对路径");
-    const backend = this.#openCodeBackend;
-    if (!backend?.isReady() || this.#disabledSources.has(OPENCODE_KIND)) throw new Error("OpenCode 共享服务尚未就绪");
-    const directory = normalize(cwd);
-    const key = (value: string) => process.platform === "win32" ? normalize(value).toLocaleLowerCase("en-US") : normalize(value);
-    return (await backend.catalog(false)).find(session => key(session.cwd) === key(directory));
+  /** Desktop only: pin the live service with the native session, so a reconnect cannot retarget a handoff. */
+  async openCodeTerminalTarget(cwd: string) {
+    const current = this.#sourceCurrent(OPENCODE_KIND);
+    const connection = this.#opencodeConnection, backend = this.#openCodeBackend;
+    const client = connection?.client, service = connection?.identity;
+    if (!current() || this.#disabledSources.has(OPENCODE_KIND) || !backend?.isReady() || !connection?.isReady || !client || !service)
+      throw new Error("OpenCode 共享服务尚未就绪");
+    const selected = await backend.latestSessionInDirectory(cwd);
+    if (!current() || this.#openCodeBackend !== backend || this.#opencodeConnection !== connection || !backend.isReady() || connection.client !== client)
+      throw new Error("OpenCode 共享服务已断开或更换，请重试");
+    if (!selected) throw new Error("所选工作区没有可恢复的 OpenCode 会话，请选择 App 创建会话时使用的目录");
+    return { ...selected, service };
   }
 
   async #ensureSharedAgent(kind: "opencode" | "openclaw" | "hermes", current: () => boolean, localOnly = false): Promise<void> {

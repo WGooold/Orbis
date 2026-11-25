@@ -24,6 +24,15 @@ describe("login shell environment", () => {
     mergeLoginEnvironment(target, { PATH: "/tools", CODEX_HOME: "/other", DSH_HOME: "/dsh", PI_MANAGED_INSTALL_ROOT: "/pi/install", FNM_MULTISHELL_PATH: "/fnm/session", HOMEBREW_PREFIX: "/custom/brew", CODEX_INSTALL_DIR: "/custom/codex/bin" });
     expect(target).toMatchObject({ CODEX_HOME: "/explicit", DSH_HOME: "/dsh", PI_MANAGED_INSTALL_ROOT: "/pi/install", FNM_MULTISHELL_PATH: "/fnm/session", HOMEBREW_PREFIX: "/custom/brew", CODEX_INSTALL_DIR: "/custom/codex/bin" });
   });
+  it("adopts the terminal's OpenCode config roots without importing its credentials", () => {
+    const target: NodeJS.ProcessEnv = { OPENCODE_CONFIG_DIR: "/explicit" };
+    mergeLoginEnvironment(target, { OPENCODE_CONFIG_DIR: "/terminal", XDG_CONFIG_HOME: "/xdg", OPENCODE_PASSWORD: "private" });
+    expect(target).toEqual({ PATH: "", OPENCODE_CONFIG_DIR: "/explicit", XDG_CONFIG_HOME: "/xdg" });
+    const fromLogin: NodeJS.ProcessEnv = {};
+    mergeLoginEnvironment(fromLogin, { OPENCODE_CONFIG_DIR: "/terminal" });
+    expect(fromLogin.OPENCODE_CONFIG_DIR).toBe("/terminal");
+  });
+
   it("ignores whatever the startup files print around the environment block", () => {
     const block = ["PATH=/opt/tools/bin:/usr/bin", "PI_CODING_AGENT_DIR=/Users/a/pi agent", "MULTI=a\nb"].join("\0");
     expect(parseLoginEnvironment(`Welcome!\n__ORBIS_LOGIN_ENV__${block}\0__ORBIS_LOGIN_ENV__bye`))

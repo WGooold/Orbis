@@ -48,7 +48,7 @@ export class LocalAgentStart {
 }
 
 export function serviceCli(kind: "opencode" | "openclaw", inherited: NodeJS.ProcessEnv = process.env) {
-  const home = homedir();
+  const home = (process.platform === "win32" ? inherited.USERPROFILE : inherited.HOME) || homedir();
   const env = { ...inherited };
   for (const key of Object.keys(env)) if (/^orbis_/iu.test(key) || (key.toUpperCase() === "PATH" && key !== "PATH")) delete env[key];
   env.PATH = cliSearchDirs(kind, inherited, process.platform, home).join(delimiter);

@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { OpenCodeEvent } from "@opencode/client";
 import { RuntimeEventSchema, type RuntimeEvent, type SessionSyncRequest } from "@orbis/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -67,6 +69,7 @@ async function harness(args: { active?: boolean; messages?: NativeMessage[] } = 
   const onRuntimeOnline = vi.fn(), onRuntimeOffline = vi.fn(), onCatalogChange = vi.fn();
   const client = {
     server: { info: vi.fn(async () => ({ version: "2.3.2", pid: 1 })) },
+    location: { get: vi.fn(async ({ location }: { location: { directory: string } }) => ({ directory: resolve(location.directory) })) },
     session: {
       active: vi.fn(async (): Promise<Record<string, { type: "running" }>> => native.active ? { s1: { type: "running" } } : {}),
       get: vi.fn(async ({ sessionID }: { sessionID: string }) => {
@@ -163,6 +166,37 @@ async function harness(args: { active?: boolean; messages?: NativeMessage[] } = 
 }
 
 describe("OpenCode catalog and Agent state", () => {
+  it("uses the native Resume filter and refuses to substitute for a missing, moved, or mismatched ID", async () => {
+    const h = await harness();
+    const directory = await realpath(process.cwd());
+    const selected = { ...sessionInfo("s2"), location: { directory } };
+    const page = { data: [selected], cursor: { next: "older-session" } };
+    const readback = { ...selected, model: { id: "model", providerID: "provider" }, agent: "build" };
+    const { list, get, create, prompt } = h.client.session;
+    list.mockResolvedValueOnce(page);
+    get.mockResolvedValueOnce(readback);
+    await expect(h.backend.latestSessionInDirectory(`${directory}/.`)).resolves.toEqual({ sessionId: "s2", directory, workspace: directory });
+    expect(list).toHaveBeenCalledExactlyOnceWith({ directory, parentID: null, archived: false, order: "desc", limit: 1 }, expect.anything());
+    expect(get).toHaveBeenCalledExactlyOnceWith({ sessionID: "s2" }, expect.anything());
+
+    list.mockResolvedValueOnce({ data: [], cursor: { next: null } });
+    await expect(h.backend.latestSessionInDirectory(join(directory, "packages"))).resolves.toBeUndefined();
+    await expect(h.backend.latestSessionInDirectory("relative/project")).rejects.toThrow("绝对路径");
+    expect(get).toHaveBeenCalledTimes(1);
+    for (const mismatch of [{ ...readback, id: "s1" }, { ...readback, location: { directory: "relative" } },
+      { ...readback, location: { directory: join(directory, "other") } }, { ...readback, time: { ...readback.time, archived: 3_000 } },
+      { ...readback, parentID: "s1" }]) {
+      list.mockResolvedValueOnce(page);
+      get.mockResolvedValueOnce(mismatch);
+      await expect(h.backend.latestSessionInDirectory(directory)).rejects.toThrow("无法读取所选工作区");
+    }
+    list.mockResolvedValueOnce(page);
+    get.mockRejectedValueOnce(new Error("not found"));
+    await expect(h.backend.latestSessionInDirectory(directory)).rejects.toThrow("无法读取所选工作区");
+    expect(create).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+  });
+
   it("loads every catalog page and bounds a repeated cursor", async () => {
     const h = await harness();
     await expect(h.backend.catalog(true)).resolves.toMatchObject([{ sessionId: "s1", archived: true }, { sessionId: "s2", archived: true }]);
@@ -254,7 +288,7 @@ describe("OpenCode catalog and Agent state", () => {
 
   it("creates with a validated native model, resumes the exact session, and confirms later model and agent selections", async () => {
     const h = await harness();
-    const cwd = process.cwd();
+    const cwd = await realpath(process.cwd());
     const catalog = await h.backend.sessionConfiguration(cwd);
     const model = catalog.models[0]!;
     const created: Array<{ sessionId: string; spawnMode?: string }> = [];
@@ -281,6 +315,20 @@ describe("OpenCode catalog and Agent state", () => {
     expect(switchedAgent).toMatchObject({ ok: true, status: "success" });
     expect(h.client.session.switchAgent).toHaveBeenCalledWith({ sessionID: "created-1", agent: "build" }, expect.anything());
     expect(h.events.some(item => item.type === "runtime.capabilities" && item.capabilities.commands.some(command => command.name === "thinking"))).toBe(true);
+  });
+
+  it("marks only device-created native sessions for desktop tab sync, without storing the device ID", async () => {
+    const h = await harness();
+    const cwd = await realpath(process.cwd());
+    await h.backend.activate({ type: "new", cwd });
+    const mobile = await h.backend.activate({ type: "new", cwd }, { deviceId: "private-device-id" });
+    expect(h.client.session.create.mock.calls.map(([input]) => input)).toEqual([
+      { location: { directory: cwd } },
+      { location: { directory: cwd }, metadata: { "orbis.app.session": 1 } },
+    ]);
+    await h.backend.activate({ type: "resume", sessionId: mobile.sessionId! }, { deviceId: "private-device-id" });
+    expect(h.client.session.create).toHaveBeenCalledTimes(2);
+    expect(h.client.session.update).not.toHaveBeenCalled();
   });
 
   it("preserves App message identity and distinguishes cancellation from a concurrent native delivery", async () => {

@@ -11,7 +11,7 @@
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -3489,7 +3489,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
 
   // HOST-AGENT-START-01: a negotiated draft starts the shared service, without loosening receipt visibility.
   it("gates OpenCode by device feature and keeps deduplicated command receipts private", async () => {
-    stateDir = await mkdtemp(join(tmpdir(), "orbis-host-opencode-feature-"));
+    stateDir = await realpath(await mkdtemp(join(tmpdir(), "orbis-host-opencode-feature-")));
     relay = await startAgentCompatRelay(stateDir, agentStartCompatReleaseRoot);
     const info = { id: "oc-session", title: "OpenCode fixture", location: { directory: stateDir }, time: { created: 1000, updated: 2000 } };
     const selected = { providerID: "fixture-provider", id: "fixture-model" };
@@ -3502,6 +3502,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       ({ id: "oc-inbox", sessionID, type: "user", delivery: "queue", time: { created: 3000 }, payload: { text, metadata } }));
     const client = {
       server: { info: async () => ({ version: "2.3.2", pid: 1 }) },
+      location: { get: async ({ location }: { location: { directory: string } }) => location },
       event: { async *subscribe({ signal }: { signal: AbortSignal }) {
         yield { type: "server.connected", data: {} };
         if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
@@ -3532,6 +3533,8 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
     await vi.waitFor(() => expect(host!.readHostState(["backends"]).domains).toContainEqual(expect.objectContaining({ domain: "backends",
       value: expect.objectContaining({ launchableAgents: expect.arrayContaining(["opencode"]) }) })));
     expect(host.opencodeServiceStatus.state).toBe("unavailable");
+    await expect(host.openCodeTerminalTarget(stateDir)).rejects.toThrow("共享服务尚未就绪");
+    expect(startService).not.toHaveBeenCalled();
     device = await readyDevice({ host, relay });
     const owner = device;
     const other = await readyDevice({ host, relay });
@@ -3580,6 +3583,10 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       const config = await reply(owner, "config-visible");
       expect(config).toMatchObject({ type: "session.configuration.result", agentKind: "opencode" });
       expect(startService).toHaveBeenCalledTimes(1);
+      await expect(host.openCodeTerminalTarget(stateDir)).resolves.toEqual({ sessionId: info.id, directory: stateDir, workspace: stateDir,
+        service: { origin: "http://127.0.0.1:4096", pid: 1 } });
+      expect(startService).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
       request(owner, { type: "session.launch", requestId: "launch-visible", launchId: "stable-opencode-launch", ...kind,
         binding: config.binding, revision: config.revision, values: config.values });
       const unknown = await until(owner, message => message.requestId === "launch-visible" && message.phase === "unknown");
@@ -3616,6 +3623,7 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       expect(prompt).toHaveBeenCalledTimes(1);
       await policy.set({ kind: "opencode", enabled: false, expectedRevision: 2, confirmDisable: true });
       await vi.waitFor(() => expect(host!.opencodeServiceStatus.state).toBe("closed"));
+      await expect(host.openCodeTerminalTarget(stateDir)).rejects.toThrow("共享服务尚未就绪");
       request(owner, { type: "session.configuration.read", requestId: "config-disabled", ...kind });
       await expect(reply(owner, "config-disabled")).resolves.toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
       expect(host.readHostState(["backends"]).domains[0]?.value).toMatchObject({ agents: expect.arrayContaining(["pi"]) });

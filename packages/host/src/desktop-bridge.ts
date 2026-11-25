@@ -86,6 +86,7 @@ input.on("line", line => {
         case "selectAgentEntry": result = await runtime.selectAgentEntry(p.kind, p.entry); break;
         case "selectCodexEntry": result = await runtime.selectCodexEntry(String(p.entry)); break;
         case "enableCodexTerminal": result = await runtime.enableCodexTerminal(String(p.runtimeRoot)); break;
+        case "openCodeTuiTabs": result = await runtime.setOpenCodeTuiTabs(p.enabled); break;
         case "piIntegration": await runtime.setPiIntegration(p.enabled === true); break;
         case "claudeIntegration": await runtime.configureClaudeIntegration(p.enabled === true); break;
         case "piCommand": result = await runtime.piCommand(String(p.action)); break;
