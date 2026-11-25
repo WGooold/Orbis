@@ -1,0 +1,84 @@
+name: Publish WeChat QR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/assets/weixinqrcode.png
+  workflow_dispatch:
+
+concurrency:
+  group: wechat-qr-publish
+  queue: max
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: 发布微信群二维码
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      TARGET: ${{ secrets.ORBIS_DEPLOY_TARGET || secrets.PI_REMOTE_DEPLOY_TARGET }}
+      PORT: ${{ secrets.ORBIS_SSH_PORT || secrets.PI_REMOTE_SSH_PORT }}
+      SSH_KEY_FILE: /tmp/orbis-qr-deploy-key
+      SSH_PRIVATE_KEY: ${{ secrets.ORBIS_SSH_KEY || secrets.PI_REMOTE_SSH_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.ORBIS_SSH_KNOWN_HOSTS || secrets.PI_REMOTE_SSH_KNOWN_HOSTS }}
+      LOCAL_IMAGE: docs/assets/weixinqrcode.png
+      PUBLIC_URL: https://orbising.com/downloads/wechat-group.png
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate image and prepare SSH
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$LOCAL_IMAGE"
+          test "$(od -An -N8 -tx1 "$LOCAL_IMAGE" | tr -d ' \n')" = '89504e470d0a1a0a'
+          size="$(wc -c < "$LOCAL_IMAGE" | tr -d ' ')"
+          test "$size" -le 5242880
+          digest="$(sha256sum "$LOCAL_IMAGE" | cut -d' ' -f1)"
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+          : "${TARGET:?Missing production deploy target}"
+          : "${PORT:?Missing production SSH port}"
+          [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( PORT >= 1 && PORT <= 65535 ))
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$SSH_KEY_FILE"
+          chmod 600 "$SSH_KEY_FILE"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          : "${SSH_KNOWN_HOSTS:?Missing pinned production SSH host keys}"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          printf 'Host *\n  StrictHostKeyChecking yes\n  IdentitiesOnly yes\n' > ~/.ssh/config
+
+      - name: Upload and atomically publish
+        shell: bash
+        env:
+          QR_SHA256: ${{ steps.image.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          remote_file="/tmp/orbis-wechat-qr-$QR_SHA256.png"
+          ssh_opts=(-i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20)
+          scp -P "$PORT" "${ssh_opts[@]}" "$LOCAL_IMAGE" "$TARGET:$remote_file"
+          ssh -p "$PORT" "${ssh_opts[@]}" "$TARGET" "bash -s -- '$QR_SHA256'" < deploy/remote-publish-wechat-qr.sh
+
+      - name: Verify public image digest
+        shell: bash
+        env:
+          QR_SHA256: ${{ steps.image.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL --connect-timeout 15 --max-time 30 -H 'Cache-Control: no-cache' \
+            "$PUBLIC_URL?sha256=$QR_SHA256" -o "$tmp"
+          test "$(sha256sum "$tmp" | cut -d' ' -f1)" = "$QR_SHA256"
+          test "$(od -An -N8 -tx1 "$tmp" | tr -d ' \n')" = '89504e470d0a1a0a'
+          echo "Verified $PUBLIC_URL ($QR_SHA256)"
+
+      - name: Remove SSH key
+        if: always()
+        shell: bash
+        run: rm -f "$SSH_KEY_FILE"

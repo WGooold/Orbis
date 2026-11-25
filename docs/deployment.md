@@ -113,3 +113,14 @@ QQ email verification defaults to required. In the console's Service page, the o
 Back up `shared/relay.env`, all `shared/data/` files, and download checksums privately. The Relay device store, registration store and administrator policy/audit store must migrate together. Host pairing keys remain private to each computer and phone. Stop writes briefly for the final state copy when moving servers, then verify hashes and resume traffic.
 
 For existing clients with the former Relay URL, keep that hostname as a reverse proxy to the new Relay until clients have migrated. Maintain one authoritative writable Relay state after cutover.
+
+## WeChat group QR
+
+`README.md` and `README.en.md` use the stable public URL
+`https://orbising.com/downloads/wechat-group.png`. When
+`docs/assets/weixinqrcode.png` changes on `main`, the **Publish WeChat QR**
+workflow uploads it to the existing Nginx downloads directory, atomically
+replaces the served image, and verifies the public SHA-256. To refresh the
+image, generate a new group QR in WeChat and replace that source file; no README
+or server configuration edit is needed. The QR itself remains subject to
+WeChat's seven-day expiry.
