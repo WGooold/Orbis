@@ -58,6 +58,9 @@ struct OrbisApp: App {
             } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=reply-motion") {
                 ReplyCardMotionPreview().environmentObject(store)
                     .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--preview-dark") ? .dark : .light)
+            } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=history-status-motion") {
+                HistoryStatusMotionPreview()
+                    .preferredColorScheme(.light)
             } else if ProcessInfo.processInfo.arguments.contains("--preview-screen=feedback") {
                 ActionFeedbackPreview()
                     .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--preview-dark") ? .dark : .light)

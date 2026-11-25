@@ -98,7 +98,7 @@ struct ReplyCardMotionPreview: View {
     @State private var showNew = false
     @State private var arrivals = ReplyCardArrivals()
     @State private var expanded = false
-    @StateObject private var disclosureFrames = DisclosureFrameProbe()
+    @StateObject private var disclosureFrames = PreviewLayoutFrameProbe()
     private var measuresDisclosure: Bool { ProcessInfo.processInfo.arguments.contains("--preview-reply-disclosure") }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -138,7 +138,7 @@ struct ReplyCardMotionPreview: View {
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
                 .modifier(OrbisReplyCard(id: "old", parts: [.init(id: "text", text: text)], live: true, arrivals: nil))
-                .background { if measuresDisclosure { DisclosureFrameView(probe: disclosureFrames) } }
+                .background { if measuresDisclosure { PreviewLayoutFrameView(probe: disclosureFrames) } }
                 .accessibilityElement(children: .contain).accessibilityIdentifier("reply-card")
             if showNew {
                 VStack(alignment: .leading) { Text("NEW FIRST\nNEW SECOND\nNEW THIRD") }
@@ -153,9 +153,34 @@ struct ReplyCardMotionPreview: View {
     }
 }
 
-/// SC89: sample actual laid-out reply bounds while the nested disclosure animates.
+/// CHAT-PAGING-08: feed exact pull values without XCTest releasing the pointer
+/// before inspecting the threshold. Use the same progress pill as the transcript.
+struct HistoryStatusMotionPreview: View {
+    @Environment(\.colorScheme) private var scheme
+    @State private var stage = 0
+    @StateObject private var frames = PreviewLayoutFrameProbe()
+    private let progress: [CGFloat] = [0.25, 0.7, 1, 0.7, 1, 1]
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Button("Advance history status") {
+                frames.begin()
+                stage += 1
+            }.disabled(stage == progress.count - 1)
+                .accessibilityIdentifier("history-motion-advance")
+            Text(frames.report).font(.system(size: 1)).frame(height: 1)
+                .accessibilityIdentifier("history-motion-frames")
+            ChatHistoryProgress(loading: stage == progress.count - 1, pullProgress: { progress[stage] })
+                .background { PreviewLayoutFrameView(probe: frames) }
+            Spacer()
+        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(OrbisPalette(scheme).base)
+    }
+}
+
+/// Sample actual laid-out bounds across an animation (SC89, CHAT-PAGING-08).
 /// XCTest waits for idle after a tap, so endpoint snapshots alone miss a jump or reversal.
-private final class DisclosureFrameProbe: NSObject, ObservableObject {
+private final class PreviewLayoutFrameProbe: NSObject, ObservableObject {
     @Published private(set) var report = "idle"
     weak var view: UIView?
     private var link: CADisplayLink?
@@ -186,8 +211,8 @@ private final class DisclosureFrameProbe: NSObject, ObservableObject {
     }
 }
 
-private struct DisclosureFrameView: UIViewRepresentable {
-    let probe: DisclosureFrameProbe
+private struct PreviewLayoutFrameView: UIViewRepresentable {
+    let probe: PreviewLayoutFrameProbe
     func makeUIView(context: Context) -> UIView {
         let view = UIView(); view.isUserInteractionEnabled = false
         probe.view = view

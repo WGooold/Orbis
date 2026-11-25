@@ -1,12 +1,13 @@
 import SwiftUI
 
-private struct ChatHistoryProgress: View {
+struct ChatHistoryProgress: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.orbisVisualActive) private var visualActive
     let loading: Bool
-    let viewport: ChatViewportController
-    private enum Phase: Equatable {
+    let pullProgress: () -> CGFloat
+
+    private enum Phase: CaseIterable {
         case pull, armed, loading
         var title: String {
             switch self {
@@ -15,41 +16,78 @@ private struct ChatHistoryProgress: View {
             case .loading: L10n.tr("正在加载更早的历史…")
             }
         }
+        func color(_ palette: OrbisPalette) -> Color { self == .armed ? palette.accent : palette.secondary }
     }
 
     var body: some View {
-        let progress = viewport.historyPullVisualProgress
+        let progress = loading ? 1 : pullProgress()
         let phase: Phase = loading ? .loading : progress >= 1 ? .armed : .pull
         let palette = OrbisPalette(scheme)
-        let color = phase == .armed ? palette.accent : palette.secondary
         HStack(spacing: 8) {
             ZStack {
-                if loading {
-                    ProgressView().controlSize(.small).transition(.opacity)
-                } else {
-                    ZStack {
-                        Circle().stroke(palette.secondary.opacity(0.2), lineWidth: 2)
-                        Circle().trim(from: 0, to: progress)
-                            .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                            .rotationEffect(.degrees(-90))
-                            .animation(nil, value: progress)
-                        Image(systemName: "arrow.down").font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(color)
-                    }.padding(1).transition(.opacity)
-                }
+                glyph(phase, progress: progress, palette: palette)
+                    .id(phase).transition(.opacity)
             }.frame(width: 18, height: 18).accessibilityHidden(true)
-            Text(phase.title).font(.orbisLabel()).foregroundStyle(color)
-                .contentTransition(.opacity)
+            ChatHistoryLabelLayout(pull: phase == .pull ? 1 : 0, armed: phase == .armed ? 1 : 0) {
+                ForEach(Phase.allCases, id: \.self) { label in
+                    Text(label.title).font(.orbisLabel()).foregroundStyle(label.color(palette))
+                        .opacity(phase == label ? 1 : 0)
+                }
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .neuSurface(radius: OrbisRadius.control, intensity: 0.6, concentric: false)
-        .animation(reduceMotion || !visualActive ? nil : InteractionMotion.state, value: phase)
-        // Position and ring follow the finger, not the discrete phase animation.
-        .offset(y: loading || reduceMotion ? 0 : -6 * (1 - progress))
-        .opacity(loading ? 1 : 0.65 + 0.35 * progress)
+        .animation(reduceMotion || !visualActive ? nil : InteractionMotion.stateMorph, value: phase)
+        // Keep touch position, opacity, and the ring's trim out of the discrete morph.
+        .offset(y: reduceMotion ? 0 : -6 * (1 - progress))
+        .opacity(0.65 + 0.35 * progress)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(phase.title)
         .accessibilityIdentifier(loading ? "chat-history-loading" : "chat-history-pull")
+    }
+
+    @ViewBuilder private func glyph(_ phase: Phase, progress: CGFloat, palette: OrbisPalette) -> some View {
+        if phase == .loading {
+            ProgressView().controlSize(.small)
+        } else {
+            let color = phase.color(palette)
+            ZStack {
+                Circle().stroke(palette.secondary.opacity(0.2), lineWidth: 2)
+                Circle().trim(from: 0, to: progress)
+                    .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(nil, value: progress)
+                Image(systemName: "arrow.down").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(color)
+            }.padding(1).frame(width: 18, height: 18)
+        }
+    }
+}
+
+// CHAT-PAGING-08: keep both titles at their natural size while only the pill's
+// bounds interpolate, like Android's crossfade with an unclipped SizeTransform.
+private struct ChatHistoryLabelLayout: Layout {
+    var pull: CGFloat
+    var armed: CGFloat
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { .init(pull, armed) }
+        set { (pull, armed) = (newValue.first, newValue.second) }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let titleProposal = ProposedViewSize(width: proposal.width, height: nil)
+        return zip(subviews, [pull, armed, 1 - pull - armed]).reduce(into: .zero) { size, entry in
+            let label = entry.0.sizeThatFits(titleProposal)
+            size.width += label.width * entry.1
+            size.height += label.height * entry.1
+        }
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let titleProposal = ProposedViewSize(width: proposal.width, height: nil)
+        for label in subviews {
+            label.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading, proposal: titleProposal)
+        }
     }
 }
 
@@ -119,10 +157,8 @@ struct ChatNoticesRegion: View, Equatable {
         let progress = loading || viewport.showingHistoryPull
         let retry = !progress && history.hasOlder && history.historyError != nil
         let motion = !reduceMotion && visualActive
-        let transition: AnyTransition = motion ? .asymmetric(
-            insertion: .offset(y: -6).combined(with: .opacity).animation(InteractionMotion.state),
-            removal: .offset(y: -6).combined(with: .opacity).animation(InteractionMotion.exit)
-        ) : .identity
+        let visible = progress || retry
+        let fade: AnyTransition = motion ? .opacity : .identity
         return VStack(spacing: 0) {
             ZStack(alignment: .top) {
                 if !progress && !retry {
@@ -139,26 +175,33 @@ struct ChatNoticesRegion: View, Equatable {
                             .transition(.identity)
                     }
                 }
-                Group {
-                    if progress {
-                        ChatHistoryProgress(loading: loading, viewport: viewport)
-                            .padding(.horizontal, 16).padding(.top, 6)
-                            .transition(transition)
+                ZStack(alignment: .top) {
+                    Group {
+                        if progress {
+                            ChatHistoryProgress(loading: loading, pullProgress: { viewport.historyPullVisualProgress })
+                                .padding(.horizontal, 16).padding(.top, 6)
+                                .transition(fade)
+                        }
                     }
-                }
-                .accessibilityHidden(!progress)
-                .allowsHitTesting(false)
-                Group {
-                    if retry {
-                        historyRetry(enabled: !history.syncing && (history.canSend || history.cached))
-                            .transition(transition)
+                    .accessibilityHidden(!progress)
+                    .allowsHitTesting(false)
+                    .animation(motion ? (progress ? InteractionMotion.state : InteractionMotion.exit) : nil, value: progress)
+                    Group {
+                        if retry {
+                            historyRetry(enabled: !history.syncing && (history.canSend || history.cached))
+                                .transition(fade)
+                        }
                     }
+                    .accessibilityHidden(!retry)
+                    .allowsHitTesting(retry)
+                    .animation(motion ? (retry ? InteractionMotion.state : InteractionMotion.exit) : nil, value: retry)
                 }
-                .accessibilityHidden(!retry)
-                .allowsHitTesting(retry)
+                // Enter the pull at the finger's offset; travel only when appearing
+                // without a finger or retiring the slot, not when crossfading to retry.
+                .animation(motion && (!visible || loading || retry) ? (visible ? InteractionMotion.state : InteractionMotion.exit) : nil) {
+                    $0.offset(y: motion && !visible ? -6 : 0)
+                }
             }
-            .animation(motion ? InteractionMotion.state : nil, value: progress)
-            .animation(motion ? InteractionMotion.state : nil, value: retry)
             if hasNotices { runtimeNotices }
         }
         .id(mountToken)
