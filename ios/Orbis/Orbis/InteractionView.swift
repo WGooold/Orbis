@@ -64,9 +64,12 @@ struct InteractionWorkspaceView: View, Equatable {
                     }.padding(.horizontal, 16)
                 }
                 if let request = requests.first(where: { $0.requestId == selectedId }) ?? requests.first {
-                    requestView(request, inSheet: true)
-                        .padding(.horizontal, 16).padding(.bottom, 20)
-                        .frame(maxHeight: .infinity, alignment: .top)
+                    // Keep long forms inside the sheet's real viewport so only the answer list scrolls.
+                    GeometryReader { proxy in
+                        requestView(request, inSheet: true)
+                            .padding(.horizontal, 16).padding(.bottom, 20)
+                            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+                    }
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .foregroundStyle(OrbisPalette(scheme).text)
@@ -200,10 +203,14 @@ private struct InteractionRequestView: View {
             .scrollBounceBehavior(.basedOnSize)
             .id(request.kind == "questionnaire" ? "question-\(currentQuestion?.id ?? "")" : "interaction-content")
             .accessibilityIdentifier(request.kind == "questionnaire" ? "questionnaire-answer-scroll" : "interaction-content-scroll")
-            if request.kind == "questionnaire" {
-                questionnaireProgress
+            VStack(alignment: .leading, spacing: 12) {
+                if request.kind == "questionnaire" {
+                    questionnaireProgress
+                }
+                actionButtons(expired: expired)
             }
-            actionButtons(expired: expired)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
         }
         .frame(maxHeight: inSheet ? .infinity : nil, alignment: .top)
         .padding(.top, 8)

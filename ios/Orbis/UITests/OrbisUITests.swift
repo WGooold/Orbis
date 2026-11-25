@@ -4864,6 +4864,26 @@ final class OrbisUITests: XCTestCase {
         capture("questionnaire-page-navigation-and-scroll", app: app)
     }
 
+    // A single long question used to size the request card from its content on compact-height
+    // devices, placing the footer below the sheet while the inner answer scroll was already at
+    // its end. The submit action must remain pinned inside the actual sheet viewport.
+    func testQuestionnaireSubmitStaysHittableOnCompactHeight() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+
+        let app = launch("interactions", arguments: [
+            "--preview-questionnaire", "--preview-questionnaire-single", "--preview-reduce-motion",
+        ])
+        let sheet = app.descendants(matching: .any)["orbis-bottom-sheet"].firstMatch
+        let submit = app.buttons["questionnaire-submit"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 8))
+        XCTAssertTrue(submit.waitForExistence(timeout: 5))
+        XCTAssertTrue(submit.isHittable)
+        XCTAssertGreaterThanOrEqual(submit.frame.minY, sheet.frame.minY)
+        XCTAssertLessThanOrEqual(submit.frame.maxY, sheet.frame.maxY)
+        capture("questionnaire-submit-compact-height", app: app)
+    }
+
     func testToolExportAndInteractionDraftSwitching() {
         let tool = launch("tool")
         XCTAssertTrue(tool.buttons["展开read，已完成"].waitForExistence(timeout: 8)); tool.buttons["展开read，已完成"].tap()
