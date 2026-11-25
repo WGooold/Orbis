@@ -39,12 +39,12 @@ class MockElement {
 
 const sampleSiteData = {
   windows: [
-    { name: "OrbisHost-0.1.24-windows-x64-setup.exe", url: "downloads/OrbisHost-0.1.24-windows-x64-setup.exe", checksumUrl: "downloads/OrbisHost-0.1.24-windows-x64-setup.exe.sha256", bytes: 15728640 },
-    { name: "OrbisHost-0.1.24-windows-x64.zip", url: "downloads/OrbisHost-0.1.24-windows-x64.zip", checksumUrl: "downloads/OrbisHost-0.1.24-windows-x64.zip.sha256", bytes: 14680064 },
+    { name: "OrbisHost-0.1.25-windows-x64-setup.exe", url: "downloads/OrbisHost-0.1.25-windows-x64-setup.exe", checksumUrl: "downloads/OrbisHost-0.1.25-windows-x64-setup.exe.sha256", bytes: 15728640 },
+    { name: "OrbisHost-0.1.25-windows-x64.zip", url: "downloads/OrbisHost-0.1.25-windows-x64.zip", checksumUrl: "downloads/OrbisHost-0.1.25-windows-x64.zip.sha256", bytes: 14680064 },
   ],
   macos: [
-    { name: "OrbisHost-0.1.24-macos-arm64.dmg", url: "downloads/OrbisHost-0.1.24-macos-arm64.dmg", checksumUrl: "downloads/OrbisHost-0.1.24-macos-arm64.dmg.sha256", bytes: 18874368 },
-    { name: "OrbisHost-0.1.24-macos-x64.dmg", url: "downloads/OrbisHost-0.1.24-macos-x64.dmg", checksumUrl: "downloads/OrbisHost-0.1.24-macos-x64.dmg.sha256", bytes: 19922944 },
+    { name: "OrbisHost-0.1.25-macos-arm64.dmg", url: "downloads/OrbisHost-0.1.25-macos-arm64.dmg", checksumUrl: "downloads/OrbisHost-0.1.25-macos-arm64.dmg.sha256", bytes: 18874368 },
+    { name: "OrbisHost-0.1.25-macos-x64.dmg", url: "downloads/OrbisHost-0.1.25-macos-x64.dmg", checksumUrl: "downloads/OrbisHost-0.1.25-macos-x64.dmg.sha256", bytes: 19922944 },
   ],
   android: "https://orbising.com/downloads/orbis.apk",
   androidVersion: "0.1.49",
@@ -99,7 +99,7 @@ describe("public site download cards and device recommendation", () => {
     const el = await runDownloads({ userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", platform: "Win32" });
     const hostLinks = el["host-downloads"]!.children as MockElement[];
     expect(hostLinks).toHaveLength(1);
-    expect(hostLinks[0]!.href).toBe("downloads/OrbisHost-0.1.24-windows-x64-setup.exe");
+    expect(hostLinks[0]!.href).toBe("downloads/OrbisHost-0.1.25-windows-x64-setup.exe");
     expect(hostLinks[0]!.textContent).toBe("下载 Windows 版（15 MB）");
 
     const appLinks = el["app-downloads"]!.children as MockElement[];
@@ -146,7 +146,7 @@ describe("public site download cards and device recommendation", () => {
       { ...sampleSiteData, macos: [] },
     );
     expect(macNoRelease["host-platform"]!.value).toBe("windows");
-    expect(macNoRelease["host-version"]!.textContent).toBe("预览版 0.1.24");
+    expect(macNoRelease["host-version"]!.textContent).toBe("预览版 0.1.25");
     expect(macNoRelease["device-recommendation"]!.allText()).toContain("Orbis Host（macOS）");
   });
 });

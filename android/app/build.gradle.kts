@@ -44,8 +44,8 @@ android {
         applicationId = "com.orbising.orbis"
         minSdk = 26
         targetSdk = 35
-        versionCode = 61
-        versionName = "0.1.60"
+        versionCode = 62
+        versionName = "0.1.61"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // QA 构建用独立包名：与手机上的发布版共存，装测试包不会顶掉发布版。
         // 只有显式传 -PorbisQaBuild=true 时生效，日常与发版构建完全不变。
