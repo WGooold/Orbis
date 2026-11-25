@@ -91,10 +91,10 @@ Your agents run on your own computer. Conversations and file transfers between y
 Share your experience, suggest improvements, or discuss a problem with other users. Scan the code below in WeChat to join the **Orbis community group**.
 
 <p align="center">
-  <img src="docs/assets/weixinqrcode.png" width="360" alt="Orbis WeChat community QR code, valid before November 25, 2026">
+  <img src="https://orbising.com/downloads/wechat-group.png" width="360" alt="Orbis WeChat community QR code, valid for 7 days after generation">
 </p>
 
-The QR code is marked as valid **before November 25, 2026**. If it has expired, request a fresh code through [GitHub Issues](https://github.com/WGooold/Orbis/issues). When reporting a problem, include your device OS, Orbis version, and steps to reproduce it.
+The QR code is valid for **7 days after generation**; reopen the QR-code page in WeChat to refresh it. If it has expired, request a fresh code through [GitHub Issues](https://github.com/WGooold/Orbis/issues). When reporting a problem, include your device OS, Orbis version, and steps to reproduce it.
 
 ## Open source and license
 
