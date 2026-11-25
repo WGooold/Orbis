@@ -3128,10 +3128,11 @@ internal class HostConnection(
 
     /** ADR-0049 §6.5 `respond`：面板立即收起，原位显示回答摘要；回执、断线、期限与核对全部交给账本。 */
     private fun respond(request: PendingInteraction, summary: String, send: (String, String) -> String?): Boolean {
-        val runtimeId = mutableState.value.selectedRuntimeId ?: return false
         val current = mutableState.value
+        val runtimeId = current.selectedRuntimeId ?: return false
         val conversation = current.conversations[runtimeId] ?: return false
         val pending = conversation.interactions[request.requestId] ?: return false
+        if (!isMobileSupportedInteractionKind(pending.kind) || pending.kind != request.kind || pending.extensionId != request.extensionId) return false
         if (current.runtimes[runtimeId]?.domainAvailability?.get("interactions") != "ready") {
             refreshAgentModel(runtimeId, force = true)
             return false
@@ -3146,7 +3147,8 @@ internal class HostConnection(
         }
         if (!created) return false
         if (send(runtimeId, commandId) == null) {
-            updateState { it.copy(ledger = it.ledger.remove(commandId)).conversationFailure(runtimeId, L10n.tr("交互响应未发送，请连接电脑后重试")) }
+            updateState { it.copy(ledger = it.ledger.remove(commandId))
+                .withInteractionResponseError(runtimeId, request.requestId, L10n.tr("回答未发送，请检查连接后重试")) }
             return false
         }
         updateState { it.ledgerWritten(commandId, System.currentTimeMillis()) }
@@ -3971,7 +3973,7 @@ internal class HostConnection(
         val previousIds = previous.conversations.values.flatMap { it.interactions.keys }.toSet()
         for ((runtimeId, conversation) in next.conversations) {
             for (request in conversation.interactions.values) {
-                if (request.requestId !in previousIds) {
+                if (request.requestId !in previousIds && isMobileSupportedInteractionKind(request.kind)) {
                     val runtime = next.runtimes[runtimeId]
                     notifier.show(runtime?.let(next::runtimeDisplayName) ?: L10n.tr("Orbis 会话"), request)
                 }

@@ -155,15 +155,17 @@ object OperationKinds {
         .mapNotNullTo(mutableSetOf()) { (it.payload as? LedgerPayload.Respond)?.takeIf { p -> p.runtimeId == runtimeId }?.requestId }
 
     /** 原位短状态：确认前带处理中标记；结果不明显示“未确认”。 */
-    fun respondStatus(ledger: AppLedger, runtimeId: String): Pair<String, Boolean>? {
+    internal fun respondStatus(ledger: AppLedger, runtimeId: String, excluding: Set<String> = emptySet()): InteractionStatus? {
         for (op in ledger.operations.asReversed()) {
             val payload = op.payload as? LedgerPayload.Respond ?: continue
-            if (payload.runtimeId != runtimeId) continue
-            when (op.phase) {
-                LedgerPhase.Waiting, LedgerPhase.Sent, LedgerPhase.Accepted -> return payload.summary to true
-                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> return L10n.tr("{0}，未确认", payload.summary) to false
+            if (payload.runtimeId != runtimeId || payload.requestId in excluding) continue
+            val (text, pending) = when (op.phase) {
+                LedgerPhase.Waiting, LedgerPhase.Sent -> L10n.tr("正在发送…") to true
+                LedgerPhase.Accepted -> L10n.tr("已提交，等待处理结果…") to true
+                LedgerPhase.Unknown, LedgerPhase.Unconfirmed -> L10n.tr("回答结果未确认") to false
                 is LedgerPhase.Rejected -> continue
             }
+            return InteractionStatus(text, pending, payload.requestId)
         }
         return null
     }
@@ -480,7 +482,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
         } ?: (event.operation.payload as? LedgerPayload.Respond)?.let { respond ->
             // 回答已结算：原位短暂显示结果（约 2.5 秒，V16）。只因请求已不在而结算的显示“已处理”，不声称是本机回答生效。
             outcomes = outcomes + (respond.runtimeId to InteractionOutcome(event.operation.opId,
-                if (event.operation.succeeded) respond.summary else L10n.tr("已处理")))
+                if (event.operation.succeeded) respond.summary else L10n.tr("已处理"), requestId = respond.requestId))
         }
         else -> Unit
     }
@@ -703,7 +705,7 @@ internal fun RemoteState.ledgerQueue(runtimeId: String, delivered: Set<String>, 
 }
 
 /** 回答结算后显示约 2.5 秒（V16）。期限属于状态，重建页面不能重新计时。 */
-data class InteractionOutcome(val id: String, val text: String, val expiresAt: Long = System.currentTimeMillis() + 2_500)
+data class InteractionOutcome(val id: String, val text: String, val expiresAt: Long = System.currentTimeMillis() + 2_500, val requestId: String? = null)
 
 /** `respond` 先记入账本（尚未写入），opId 即命令的 commandId。同一请求的回答尚未结算时不重复创建（L9）。 */
 internal fun RemoteState.createRespond(commandId: String, runtimeId: String, requestId: String, summary: String, now: Long):
@@ -712,13 +714,29 @@ internal fun RemoteState.createRespond(commandId: String, runtimeId: String, req
         policy = OperationKinds.respondPolicy, basis = ledgerBasis(OperationKinds.interactionsDomain(runtimeId)),
         payload = LedgerPayload.Respond(runtimeId, requestId, summary), written = false, now = now)
     val created = copy(ledger = next)
-    return (if (creation is LedgerCreation.Created) created.clearInteractionOutcome(runtimeId) else created) to creation
+    return (if (creation is LedgerCreation.Created) created.clearInteractionOutcome(runtimeId)
+        .withInteractionResponseError(runtimeId, requestId, null) else created) to creation
 }
 
-/** 原位短状态：账本中未结算的回答，或尚未过期的结果（文案, 是否处理中, 结果标识）。 */
-internal fun RemoteState.interactionStatus(runtimeId: String, now: Long = System.currentTimeMillis()): Triple<String, Boolean, String?>? =
-    OperationKinds.respondStatus(ledger, runtimeId)?.let { Triple(it.first, it.second, null) }
-        ?: interactionOutcomes[runtimeId]?.takeIf { now < it.expiresAt }?.let { Triple(it.text, false, it.id) }
+/** Keep response feedback on its request; a removed request or a different composer never owns this error. */
+internal fun RemoteState.withInteractionResponseError(runtimeId: String, requestId: String, message: String?): RemoteState {
+    val conversation = conversations[runtimeId] ?: return this
+    val request = conversation.interactions[requestId] ?: return this
+    return copy(conversations = conversations + (runtimeId to conversation.copy(
+        interactions = conversation.interactions + (requestId to request.copy(responseError = message)),
+    )))
+}
+
+internal data class InteractionStatus(val text: String, val pending: Boolean, val requestId: String?)
+
+/** 原位短状态：账本中未结算的回答，或尚未过期的结果。 */
+internal fun RemoteState.interactionStatus(runtimeId: String, now: Long = System.currentTimeMillis()): InteractionStatus? {
+    val terminal = notificationProjections[runtimeId]?.takeIf { it.sessionId == runtimes[runtimeId]?.sessionId }
+        ?.interactionResultRequestIds().orEmpty()
+    return OperationKinds.respondStatus(ledger, runtimeId, excluding = terminal)
+        ?: interactionOutcomes[runtimeId]?.takeIf { now < it.expiresAt && it.requestId?.let(terminal::contains) != true }
+            ?.let { InteractionStatus(it.text, false, it.requestId) }
+}
 
 /**
  * ADR-0049 §6.2：气泡立即出现，输入框清空；附件上传完成且同会话前一条已写入后，按创建顺序写入通道。

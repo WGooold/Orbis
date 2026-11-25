@@ -27,6 +27,38 @@ data class NoticeSnapshot(
 data class NoticeProjection(val hostEpoch: String, val revision: Long, val sessionId: String?,
     val verification: String, val items: List<RuntimeNotice>, val complete: Boolean = true)
 
+internal val RuntimeNotice.isResponseOutcome: Boolean get() = lifecycle == "outcome" && (code == "interaction.submit" || code == "interaction.submit.rejected")
+internal val RuntimeNotice.isInteractionResult: Boolean get() = lifecycle == "outcome" && code == "interaction.result"
+private val RuntimeNotice.isConfirmedResponseFailure: Boolean get() = code == "interaction.submit.rejected" && severity == "error"
+
+// Older Hosts used the same error severity for rejections and uncertain results, with raw details.
+internal val RuntimeNotice.displaySeverity: String get() = when {
+    isResponseOutcome && !isConfirmedResponseFailure -> "warning"
+    else -> severity
+}
+internal val RuntimeNotice.displayMessage: String get() = when {
+    isResponseOutcome -> if (isConfirmedResponseFailure) L10n.tr("提交失败") else L10n.tr("回答结果未确认")
+    isInteractionResult -> L10n.tr(message)
+    else -> message
+}
+
+internal fun NoticeProjection.interactionResultRequestIds(): Set<String> =
+    items.filter { it.isInteractionResult }.mapNotNullTo(mutableSetOf()) { it.scope.requestId }
+
+/** Only hide a fallback when its matching request, visible short status, or Host terminal result owns the feedback. */
+internal fun RemoteState.chatNoticeProjection(runtimeId: String, sessionId: String?, now: Long = System.currentTimeMillis()): NoticeProjection? {
+    val projection = visibleNotificationProjection(runtimeId)?.takeIf { it.sessionId == sessionId } ?: return null
+    if (projection.items.none { it.isResponseOutcome }) return projection
+    val responding = OperationKinds.respondingRequestIds(ledger, runtimeId)
+    val displayed = conversations[runtimeId]?.interactions.orEmpty().values.filterNot { it.requestId in responding }
+    val inline = displayed.filter { it.responseError != null && !it.submitted && !isInteractionExpired(it, now) &&
+        isMobileSupportedInteractionKind(it.kind) }.map { it.requestId }
+    val shortStatus = if (displayed.isEmpty()) interactionStatus(runtimeId, now)?.requestId else null
+    val owners = notificationProjections[runtimeId]?.interactionResultRequestIds().orEmpty() + inline + listOfNotNull(shortStatus)
+    val items = projection.items.filterNot { notice -> notice.isResponseOutcome && notice.scope.requestId?.let(owners::contains) == true }
+    return if (items == projection.items) projection else projection.copy(items = items)
+}
+
 /** Independent of transport sequence and Session history versions. Only complete inventories replace. */
 internal fun RemoteState.withNotificationSnapshot(message: JsonObject, json: Json): RemoteState {
     val snapshot = runCatching { json.decodeFromJsonElement<NoticeSnapshot>(message) }.getOrNull() ?: return this

@@ -53,6 +53,7 @@ internal fun QuestionnairePanel(
     modifier: Modifier = Modifier.fillMaxWidth().height(360.dp),
     connected: Boolean = true,
     draftState: InteractionDraft? = null,
+    availabilityHint: String? = null,
 ) {
     // Secret answers must not be serialized into Android saved state.
     val draftSaver = remember(request.requestId) {
@@ -169,11 +170,19 @@ internal fun QuestionnairePanel(
                         }
                     }
                 }
-                if (expired) Text(L10n.tr("此提问已超时"), color = MaterialTheme.colorScheme.error)
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (!expired && !request.submitted && !submitting) {
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("interaction-response-error")) }
+                    if (!connected) Text(availabilityHint ?: L10n.tr("连接后可提交"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Text(
-                    if (submitting || request.submitted) L10n.tr("已提交，等待电脑确认…") else if (answers.size == questions.size) L10n.tr("答案已填好，可继续修改或提交")
-                    else L10n.tr("已回答 {0} / {1} 题", answers.size, questions.size),
+                    when {
+                        expired -> L10n.tr("已过期")
+                        request.submitted -> L10n.tr("已提交，等待处理结果…")
+                        submitting -> L10n.tr("正在发送…")
+                        answers.size == questions.size -> L10n.tr("答案已填好，可继续修改或提交")
+                        else -> L10n.tr("已回答 {0} / {1} 题", answers.size, questions.size)
+                    },
+                    color = if (expired) LocalOrbisPalette.current.warning else MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                 )

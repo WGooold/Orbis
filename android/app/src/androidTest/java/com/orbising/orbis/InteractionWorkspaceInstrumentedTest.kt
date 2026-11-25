@@ -4,9 +4,12 @@ package com.orbising.orbis
 
 import android.graphics.Bitmap
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.junit4.StateRestorationTester
+import androidx.lifecycle.ViewModelStore
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.Assert.*
@@ -29,7 +32,7 @@ class InteractionWorkspaceInstrumentedTest {
         val connected = mutableStateOf(true)
         val submissions = mutableListOf<Pair<String, String>>()
         compose.setContent { OrbisTheme { InteractionWorkspace(
-            requests.value, connected.value, emptySet(), null,
+            requests.value, connected.value, emptySet(),
             respondConfirm = { _, _ -> error("Unexpected confirm") },
             respondValue = { request, value -> submissions.add(request.requestId to value)
                 requests.value = requests.value.map { if (it.requestId == request.requestId) it.copy(submitted = true) else it } },
@@ -44,7 +47,7 @@ class InteractionWorkspaceInstrumentedTest {
         compose.onNodeWithText("Get-ChildItem D:/project").assertIsDisplayed()
         compose.runOnIdle { connected.value = false }
         compose.onNodeWithText("允许一次").assertIsNotEnabled()
-        compose.onNodeWithText("连接已断开，草稿已保留，连接后可重试").assertIsDisplayed()
+        compose.onNodeWithText("连接后可提交").assertIsDisplayed()
         compose.runOnIdle { connected.value = true }
         capture("mobile-controls-approval.png")
         compose.onNodeWithText("允许一次").performClick()
@@ -63,7 +66,7 @@ class InteractionWorkspaceInstrumentedTest {
         var cancellation = 0
         val answers = mutableListOf<List<QuestionnaireAnswer>>()
         compose.setContent { OrbisTheme { InteractionWorkspace(
-            listOf(request), true, emptySet(), null,
+            listOf(request), true, emptySet(),
             respondConfirm = { _, _ -> }, respondValue = { _, _ -> }, respondValues = { _, _ -> },
             respondQuestionnaire = { _, value -> if (value == null) cancellation++ else answers.add(value) }, onCancel = {},
         ) } }
@@ -77,6 +80,59 @@ class InteractionWorkspaceInstrumentedTest {
         capture("mobile-controls-questionnaire.png")
         compose.onNodeWithText("提交答案").performClick()
         compose.runOnIdle { assertEquals(listOf(QuestionnaireAnswer("scope", listOf("api"), "cache")), answers.single()) }
+    }
+
+    // MOBILE-INTERACTION-05: execution can wait before a request arrives without implying a desktop-only error.
+    @Test fun waitingForInteractionWithoutARequestShowsOnlyTheWaitingStateAcrossAgents() {
+        val app = IsolatedTestApplication(ApplicationProvider.getApplicationContext(), "interaction-waiting")
+        val owner = ViewModelStore()
+        val model = RemoteViewModel(app)
+        owner.put("interaction-waiting", model)
+        fun waiting(agentKind: String): RemoteState = RemoteState(
+            hostId = "fixture-host", e2eReady = true, connection = RelayConnection.ONLINE, selectedRuntimeId = agentKind,
+            runtimes = mapOf(agentKind to RuntimeSummary(agentKind, "Fixture", "/repo", "idle", "session-$agentKind", agentKind = agentKind)),
+        ).withModelFixture("execution", """{"phase":"waiting_local_interaction"}""")
+        val state = mutableStateOf(waiting("pi"))
+        try {
+            compose.setContent { OrbisTheme {
+                val runtime = state.value.runtimes.getValue(state.value.selectedRuntimeId!!)
+                AgentTheme(agentBrand(runtime.agentKind)) { ChatScreen(state.value, model) }
+            } }
+            val label = L10n.tr("等待交互")
+            val compactLabel = SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label)
+            for (kind in listOf("pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", KIMI_CODE_KIND,
+                KIMI_CODE_DESKTOP_KIND, "openclaw", "hermes", "opencode")) {
+                val projected = waiting(kind)
+                val conversation = projected.conversations.getValue(kind)
+                assertTrue(kind, conversation.waitingLocalInteraction)
+                assertTrue(kind, conversation.interactions.isEmpty())
+                compose.runOnIdle { state.value = projected }
+                compose.onNode(hasText(label) or compactLabel, useUnmergedTree = true).assertIsDisplayed()
+                compose.onNodeWithTag("chat-status-error").assertDoesNotExist()
+                compose.onNodeWithText(L10n.tr("请在电脑端完成交互")).assertDoesNotExist()
+            }
+        } finally {
+            compose.runOnIdle { owner.clear() }
+            app.dispose()
+        }
+    }
+
+    // MOBILE-INTERACTION-06: even an already-modeled unknown kind exposes no answer or link actions.
+    @Test fun aFutureKindShowsNeutralCopyWithoutOpeningASheetOrOfferingActions() {
+        val request = PendingInteraction("future", "test", "future-kind", "Future control", null,
+            listOf(InteractionOption("run", "Future option")), "Future input", externalUrl = "https://example.test/control",
+            confirmLabel = "Future confirm", cancelLabel = "Future cancel", responseError = "Unrelated error")
+        compose.setContent { OrbisTheme { InteractionWorkspace(
+            listOf(request), true, emptySet(),
+            respondConfirm = { _, _ -> error("Unexpected confirm") }, respondValue = { _, _ -> error("Unexpected value") },
+            respondValues = { _, _ -> error("Unexpected values") }, respondQuestionnaire = { _, _ -> error("Unexpected questionnaire") },
+            onCancel = { error("Unexpected cancel") },
+        ) } }
+        compose.onNodeWithText("Future control").assertIsDisplayed()
+        compose.onNodeWithText(L10n.tr("当前版本不支持此交互")).assertIsDisplayed()
+        compose.onNodeWithTag("session-control-sheet").assertDoesNotExist()
+        compose.onNodeWithTag("interaction-response-error").assertDoesNotExist()
+        compose.onNode(hasClickAction() or hasSetTextAction(), useUnmergedTree = true).assertDoesNotExist()
     }
 
     @Test fun permissionChangesWaitForConfirmationAndShowServerFailures() {

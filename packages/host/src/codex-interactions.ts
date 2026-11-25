@@ -112,7 +112,7 @@ export function prepareCodexInteraction(
         const rule = object(object(value.applyNetworkPolicyAmendment).network_policy_amendment);
         return { label: `${rule.action === "deny" ? "拒绝" : "允许"}并记住网络规则`, description: `目标：${text(rule.host)}\n此规则将用于后续网络请求。`, result: { decision } };
       }
-      return fail("服务端提供了暂不支持的批准选项，请在电脑端处理");
+      return fail("服务端提供了暂不支持的批准选项");
     });
     return select(base, network.host ? "批准网络访问" : isCommand ? "批准执行命令" : "批准修改文件",
       context.join("\n\n"), choices, decline, {
@@ -185,7 +185,7 @@ function prepareElicitation(params: RecordValue, base: Base): CodexInteraction {
       return response.value ? { action: "accept", content: null } : decline;
     } };
   }
-  if (params.mode !== "form" && params.mode !== undefined) return fail("此 MCP 表单需要在电脑端处理");
+  if (params.mode !== "form" && params.mode !== undefined) return fail("暂不支持这种 MCP 交互类型");
   const schema = object(params.requestedSchema);
   if (schema.type !== "object") return fail("无法识别 MCP 表单格式");
   const required = Array.isArray(schema.required) ? schema.required : [];

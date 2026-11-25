@@ -42,6 +42,7 @@ struct ChatScreenSnapshot {
     let notice: RuntimeNoticeProjection?
     let requests: [InteractionRequest]
     let responding: Set<String>
+    let interactionErrors: [String: String]
     let interactionText: String?
     let interactionPending: Bool
     let queue: [QueuedMessage]
@@ -87,8 +88,9 @@ struct ChatScreenSnapshot {
         historyRevision = source.historyRevision; historyPageRevision = source.historyPageRevision
         historyLoading = source.historyLoading.contains(id); historyError = source.historyErrors[id]
         hasOlder = source.hasOlderHistory[id] == true; actionFeedback = source.actionFeedback
-        notice = source.notifications.visibleProjection(id)
+        notice = source.chatNoticeProjection(id, sessionId: session)
         requests = source.interactions[id] ?? []; responding = source.respondingRequestIds(id)
+        interactionErrors = source.interactionErrors[id] ?? [:]
         let status = source.interactionStatus(id)
         interactionText = status?.text; interactionPending = status?.pending ?? false
         queue = source.queuePanelItems(id); queueCancellations = source.unconfirmedQueueCancellations(id)
@@ -254,6 +256,7 @@ struct ChatWorkspaceState: Equatable {
     let host: HostPairing?
     let requests: [InteractionRequest]
     let responding: Set<String>
+    let interactionErrors: [String: String]
     let interactionText: String?
     let interactionPending: Bool
     let queue: [QueuedMessage]
@@ -536,7 +539,7 @@ final class ChatScreenModel {
             transcript = .init(target: target, kind: s.kind, transcript: s.transcript, hasMessages: s.hasMessages, canSend: s.canSend, syncing: s.syncing, cached: s.cached, connection: s.connection, streaming: s.streaming, pending: s.pending, pendingActions: s.pendingActions, uploads: s.uploads, historyRevision: s.historyRevision, historyPageRevision: s.historyPageRevision, historyLoading: s.historyLoading, historyError: s.historyError, hasOlder: s.hasOlder, actionFeedback: s.actionFeedback, rewind: s.rewind, status: s.runtime?.status)
             composer = .init(target: target, kind: s.kind, canSend: s.canSend, cached: s.cached, connection: s.connection, draftRevision: s.draftRevision, commands: s.commands, pendingActions: s.pendingActions, attached: s.attached, preparing: s.preparing, contextReady: s.contextReady, cachedSession: s.cachedSession, cachedCodexResumeModes: s.cachedCodexResumeModes, activatingSessionId: s.activatingSessionId, runtime: s.runtime.map(ChatComposerRuntimeFacts.init), workingBranch: s.workingBranch.map(ChatWorkingBranch.init), inputError: s.inputError, menuErrors: s.menuErrors)
             notices = .init(target: target, notice: s.notice, connection: s.connection, launch: s.launch, isLaunchPage: s.isLaunchPage, supported: ["codex", "codexDesktop"].contains(s.runtime?.agentKind ?? ""))
-            workspace = .init(target: target, host: s.host, requests: s.requests, responding: s.responding, interactionText: s.interactionText, interactionPending: s.interactionPending, queue: s.queue, queueCancellations: s.queueCancellations, canSend: s.canSend)
+            workspace = .init(target: target, host: s.host, requests: s.requests, responding: s.responding, interactionErrors: s.interactionErrors, interactionText: s.interactionText, interactionPending: s.interactionPending, queue: s.queue, queueCancellations: s.queueCancellations, canSend: s.canSend)
         }
     }
     func waitForPending() async { while let pending = task { await pending.value } }

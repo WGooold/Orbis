@@ -92,6 +92,10 @@ import { relayBusinessDeviceURL, stopRelayBusinessTransports } from "./fixtures/
 // HERMES-COMPAT-01 / HOST-AGENT-START-01: optional independent release builds with their own dependencies.
 const hermesCompatReleaseRoot = process.env.ORBIS_HERMES_COMPAT_RELEASE_ROOT;
 const agentStartCompatReleaseRoot = process.env.ORBIS_AGENT_START_COMPAT_RELEASE_ROOT;
+const interactionCompatReleaseRoot = process.env.ORBIS_INTERACTION_COMPAT_RELEASE_ROOT;
+const releasedInteractionProtocol = interactionCompatReleaseRoot
+  ? await import(/* @vite-ignore */ pathToFileURL(join(interactionCompatReleaseRoot, "packages/protocol/dist/index.js")).href) as typeof import("@orbis/protocol")
+  : undefined;
 async function startAgentCompatRelay(dir: string, releaseRoot: string | undefined): Promise<RelayServer> {
   const startRelay = releaseRoot
     ? (await import(pathToFileURL(join(releaseRoot, "packages/relay/dist/index.js")).href) as typeof import("@orbis/relay")).createRelayServer
@@ -886,6 +890,13 @@ describe("host end-to-end over relay", () => {
       await device!.openChannel("relay", psk, hostId, hostId);
     }
   };
+  // Optional independent release Relay and strict decoder; no version negotiation or mobile UI is simulated here.
+  const startInteractionRelay = (dir: string): Promise<RelayServer> => interactionCompatReleaseRoot
+    ? startAgentCompatRelay(dir, interactionCompatReleaseRoot) : startRelay(dir);
+  const parseInteractionFrame = (frame: Record<string, unknown>) => {
+    releasedInteractionProtocol?.RelayToDeviceMessageSchema.parse(frame);
+    return RelayToDeviceMessageSchema.parse(frame);
+  };
   const readMatching = async (phone: TestDevice, predicate: (message: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> => {
     for (let count = 0; count < 100; count++) {
       const message = await phone.receiveMessage();
@@ -1119,13 +1130,16 @@ describe("host end-to-end over relay", () => {
     } finally { second.device.close(); }
   });
 
+  // MOBILE-INTERACTION-FEEDBACK-01: terminal events keep distinct feedback without re-announcing a remote answer.
   it.each([
-    { terminal: { type: "interaction.resolved", requestId: "answer", source: "remote" }, message: undefined },
-    { terminal: { type: "interaction.resolved", requestId: "answer", source: "local" }, message: "交互已在电脑端完成" },
-    { terminal: { type: "interaction.cancelled", requestId: "answer", reason: "timeout" }, message: "交互已超时" },
-    { terminal: { type: "interaction.cancelled", requestId: "answer", reason: "cancelled" }, message: "交互已取消" },
-  ] as const)("keeps only the appropriate interaction feedback for $terminal", async ({ terminal, message }) => {
-    stateDir = await mkdtemp(join(tmpdir(), "orbis-interaction-notices-")); relay = await startRelay(stateDir);
+    { label: "remote resolution", terminal: { type: "interaction.resolved", requestId: "answer", source: "remote" }, feedback: undefined },
+    { label: "local resolution", terminal: { type: "interaction.resolved", requestId: "answer", source: "local" }, feedback: { message: "交互已在电脑端完成", severity: "info", displayMs: 8_000 } },
+    { label: "ordinary cancel", terminal: { type: "interaction.cancelled", requestId: "answer", reason: "cancelled" }, feedback: { message: "交互请求已取消", severity: "info", displayMs: 8_000 } },
+    { label: "timeout", terminal: { type: "interaction.cancelled", requestId: "answer", reason: "timeout" }, feedback: { message: "交互请求已超时", severity: "warning", displayMs: 30_000 } },
+    { label: "disconnect", terminal: { type: "interaction.cancelled", requestId: "answer", reason: "disconnected" }, feedback: { message: "交互请求因连接断开而取消", severity: "warning", displayMs: 8_000 } },
+    { label: "owner close", terminal: { type: "interaction.cancelled", requestId: "answer", reason: "owner_closed" }, feedback: { message: "电脑端已结束此交互", severity: "warning", displayMs: 8_000 } },
+  ] as const)("keeps only the appropriate interaction feedback for $label", async ({ terminal, feedback }) => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-interaction-notices-")); relay = await startInteractionRelay(stateDir);
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
     await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
     await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
@@ -1142,19 +1156,99 @@ describe("host end-to-end over relay", () => {
       // Inspect every frame before the terminal event: a duplicate banner must never flash.
       for (;;) {
         const frame = await device.receiveMessage(true);
-        if (frame.type === "notification.snapshot" && message === undefined) expect(frame.notifications).toEqual([]);
+        if (frame.type === "notification.snapshot" && feedback === undefined) expect(frame.notifications).toEqual([]);
         if (frame.type === "runtime.event") { expect(frame.event).toEqual(terminal); break; }
       }
       device.sendData(JSON.stringify({ type: "notification.sync", protocolVersion: PROTOCOL_VERSION, runtimeId: "pi-answer" }));
       for (;;) {
         const frame = await device.receiveMessage(true);
         if (frame.type !== "notification.snapshot") continue;
-        if (message === undefined) expect(frame.notifications).toEqual([]);
-        else expect(frame.notifications).toEqual([expect.objectContaining({ code: "interaction.result", message,
-          scope: { requestId: "answer" }, severity: terminal.type === "interaction.cancelled" && terminal.reason === "timeout" ? "warning" : "info" })]);
+        parseInteractionFrame(frame);
+        if (feedback === undefined) expect(frame.notifications).toEqual([]);
+        else expect(frame.notifications).toEqual([expect.objectContaining({ code: "interaction.result",
+          scope: { requestId: "answer" }, ...feedback })]);
         break;
       }
     }
+  });
+
+  // The legacy fallback is device-private even when the request is absent. Only the receipt carries diagnostics.
+  it.each([
+    { label: "unconfirmed", receipt: { type: "command.result", commandId: "submit", ok: false, status: "unconfirmed", error: "Private unconfirmed detail" },
+      state: "unconfirmed", code: "interaction.submit", message: "回答结果未确认", severity: "warning" },
+    { label: "cancelled", receipt: { type: "command.result", commandId: "submit", ok: false, status: "cancelled", error: "Private cancelled detail" },
+      state: "cancelled", code: "interaction.submit", message: "回答结果未确认", severity: "warning" },
+    { label: "rejected", receipt: { type: "command.result", commandId: "submit", ok: false, status: "failure", error: "Private rejection detail" },
+      state: "failure", code: "interaction.submit.rejected", message: "提交失败", severity: "error" },
+    { label: "runtime error", receipt: { type: "runtime.error", commandId: "submit", recoverable: true, message: "Private runtime detail" },
+      state: "failure", code: "interaction.submit.rejected", message: "提交失败", severity: "error" },
+  ] as const)("keeps the interaction submission fallback concise for $label", async ({ receipt, state, code, message, severity }) => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-interaction-receipt-")); relay = await startInteractionRelay(stateDir);
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false });
+    await host.start(); const paired = await pairDevice({ relay, host }); device = paired.device;
+    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    await readMatching(device, frame => frame.type === "device.path");
+    const peer = await pairDevice({ relay, host });
+    try {
+      await peer.device.openChannel("relay", peer.pskRoot, peer.payload.hostId, peer.payload.hostId);
+      await readMatching(peer.device, frame => frame.type === "device.path");
+      const runtimeId = "pi-receipt";
+      const descriptor = host.loopback!.descriptor!;
+      runtime = await TestRuntime.connect({ url: descriptor.url, token: descriptor.token,
+        metadata: { runtimeId, name: "receipt", cwd: stateDir, status: "idle", sessionId: "s" } });
+      await runtime.next();
+      for (const phone of [device, peer.device]) await readMatching(phone, frame => frame.type === "runtime.online");
+      const requestId = "missing-request";
+      const command = { type: "interaction.respond", requestId, extensionId: "ask", response: { kind: "confirm", value: true } };
+      device.sendCommand(runtimeId, receipt.commandId, command);
+      await expect(runtime.next()).resolves.toMatchObject({ commandId: receipt.commandId, command });
+      runtime.publish(1, receipt);
+      const received = parseInteractionFrame(await readMatching(device, frame => frame.type === "runtime.event"));
+      expect(received).toMatchObject({ event: receipt });
+      const sync = JSON.stringify({ type: "notification.sync", protocolVersion: PROTOCOL_VERSION, runtimeId });
+      const readNotices = async (phone: TestDevice) => {
+        let frame: Record<string, unknown>;
+        do { frame = await phone.receiveMessage(true); } while (frame.type !== "notification.snapshot" || frame.runtimeId !== runtimeId);
+        const snapshot = parseInteractionFrame(frame);
+        if (snapshot.type !== "notification.snapshot") throw new Error("Expected a notification snapshot");
+        return snapshot;
+      };
+      device.sendData(sync);
+      const initial = await readNotices(device);
+      expect(initial.notifications).toEqual([expect.objectContaining({ code,
+        scope: { requestId, commandId: receipt.commandId }, message, severity })]);
+      peer.device.sendData(sync);
+      for (;;) {
+        const frame = await readNotices(peer.device);
+        expect(frame.notifications).toEqual([]);
+        if (frame.revision >= initial.revision) break;
+      }
+
+      const expectReceipt = async (state: string, detail: string) => {
+        device!.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "receipts",
+          scope: "device", domains: ["operations"] }));
+        expect(await device!.receiveReply("receipts")).toMatchObject({ type: "agent.state.snapshot", scope: "device", domains: [
+          { domain: "operations", value: { [receipt.commandId]: { requestId, state, detail } } },
+        ] });
+      };
+      await expectReceipt(state, receipt.type === "runtime.error" ? receipt.message : receipt.error);
+
+      if (state === "unconfirmed") {
+        // Definite evidence updates the same live fallback instead of leaving stale uncertainty or adding a second card.
+        const later = { type: "command.result", commandId: receipt.commandId, ok: false, status: "failure", error: "Late rejection" } as const;
+        const updated = [{ ...initial.notifications[0]!, code: "interaction.submit.rejected", severity: "error", message: "提交失败",
+          updatedAt: expect.any(Number) }];
+        runtime.publish(2, later);
+        for (;;) {
+          const frame = await device.receiveMessage(true);
+          if (frame.type === "notification.snapshot" && frame.runtimeId === runtimeId) expect(frame.notifications).toEqual(updated);
+          if (frame.type === "runtime.event") { expect(frame.event).toEqual(later); break; }
+        }
+        device.sendData(sync);
+        expect((await readNotices(device)).notifications).toEqual(updated);
+        await expectReceipt("failure", later.error);
+      }
+    } finally { peer.device.close(); }
   });
 
   it.each(["shared", "background"] as const)("%s history mode preserves encrypted preview/history/catchup and applied ACKs", async historyMode => {

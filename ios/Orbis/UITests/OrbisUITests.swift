@@ -1510,7 +1510,7 @@ final class OrbisUITests: XCTestCase {
         capture("upload-fail-restored", app: app)
     }
 
-    /// A1–A4（V07、V12、V22）：回答摘要、启动中与启动失败原位在浅 / 深色、XXXL、减少动画下语义一致，截图供 L4 审阅。
+    /// A1–A4（V07、V12、V22）：回答状态、启动中与启动失败原位在浅 / 深色、XXXL、减少动画下语义一致，截图供 L4 审阅。
     func testOptimisticStatesAcrossAppearances() {
         let appearances: [(String, Bool, [String])] = [
             ("light", false, []),
@@ -1527,7 +1527,8 @@ final class OrbisUITests: XCTestCase {
             allow.tap()
             let status = approval.descendants(matching: .any)["interaction-status"].firstMatch
             XCTAssertTrue(status.waitForExistence(timeout: 2), name)
-            XCTAssertTrue(status.label.contains("已允许"), name)
+            XCTAssertTrue(status.label.contains("正在发送…"), "\(name): \(status.label)")
+            XCTAssertFalse(status.label.contains("已允许"), name)
             XCTAssertEqual(composer.frame.minY, before.minY, accuracy: 1, name)
             capture("optimistic-respond-" + name, app: approval)
             approval.terminate()
@@ -4237,10 +4238,11 @@ final class OrbisUITests: XCTestCase {
         allow.tap()
         XCTAssertEqual(before.minY, composer.frame.minY, accuracy: 1)
         XCTAssertEqual(before.height, composer.frame.height, accuracy: 1)
-        // V07 r27 / V22：写入后面板立即收起，原位以覆盖式短状态显示摘要（回执前带处理中标记）。
+        // V07 r27 / V22：写入后面板立即收起，原位显示发送状态，不抢先宣布回答生效。
         let status = app.descendants(matching: .any)["interaction-status"].firstMatch
         XCTAssertTrue(status.waitForExistence(timeout: 2))
-        XCTAssertTrue(status.label.contains("已允许"), status.label)
+        XCTAssertTrue(status.label.contains("正在发送…"), status.label)
+        XCTAssertFalse(status.label.contains("已允许"))
         XCTAssertFalse(app.staticTexts["允许执行验证命令？"].exists)
         XCTAssertEqual(before.minY, composer.frame.minY, accuracy: 1)
         capture("approval-submitting", app: app)
@@ -4261,7 +4263,9 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(app.buttons["允许"].waitForExistence(timeout: 5), "A rejected answer must bring the request back")
         XCTAssertEqual(app.buttons["允许"].frame.minY, panelTop, accuracy: 1)
         XCTAssertFalse(status.exists)
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "回答未提交")).firstMatch.waitForExistence(timeout: 2))
+        let rejection = app.staticTexts["interaction-response-error"]
+        XCTAssertTrue(rejection.waitForExistence(timeout: 2))
+        XCTAssertTrue(rejection.label.contains("回答未提交"), rejection.label)
         XCTAssertEqual(before.minY, composer.frame.minY, accuracy: 1)
         capture("approval-rejected-restored", app: app)
     }

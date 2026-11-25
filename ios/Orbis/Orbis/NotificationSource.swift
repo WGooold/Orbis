@@ -93,8 +93,8 @@ struct NotificationSourceDirectory: Codable, Equatable, Sendable {
         hosts[hostId] ?? .fallback(hostId: hostId, language: language)
     }
     func body(category: String) -> String {
-        if language.hasPrefix("zh") { return category == "approval-requested" ? "有待处理的审批" : "任务已完成" }
-        return category == "approval-requested" ? "Approval needed" : "Task completed"
+        if language.hasPrefix("zh") { return category == "approval-requested" ? "有待处理的交互" : "任务已完成" }
+        return category == "approval-requested" ? "Interaction needed" : "Task completed"
     }
 
     struct Alert: Equatable {

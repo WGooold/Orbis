@@ -93,4 +93,29 @@ class InteractionPresentationTest {
         assertEquals("最多选择 3 项", interactionMultiSelectConstraintText(multiSelectRequest(maxSelections = 3)))
         assertEquals(null, interactionMultiSelectConstraintText(multiSelectRequest()))
     }
+
+    @Test
+    fun `interaction support is agent independent and unknown kinds remain non-actionable`() {
+        val question = PendingInteraction(
+            requestId = "question-1",
+            extensionId = "dsh",
+            kind = "questionnaire",
+            title = "需要你的回答",
+            description = null,
+            options = emptyList(),
+            placeholder = null,
+            questions = listOf(QuestionnaireQuestion(
+                id = "choice",
+                question = "选择一个方案",
+                options = listOf(InteractionOption("one", "方案一")),
+            )),
+        )
+
+        assertTrue(isMobileSupportedInteractionKind(question.kind))
+        assertTrue(isMobileSupportedInteractionKind("confirm"))
+        assertTrue(isMobileSupportedInteractionKind("select"))
+        assertTrue(isMobileSupportedInteractionKind("multi-select"))
+        assertTrue(isMobileSupportedInteractionKind("input"))
+        assertFalse(isMobileSupportedInteractionKind("future-kind"))
+    }
 }

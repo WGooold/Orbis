@@ -97,6 +97,46 @@ describe("Host notification lifecycle", () => {
     expect(h.items()).toHaveLength(1); expect(h.items("b")).toEqual([]);
     h.store.dismiss("runtime", "b", h.items()[0]!.notificationId); expect(h.items()).toHaveLength(1);
   });
+  // A terminal request makes earlier and later submission fallbacks stale, even after the result is dismissed or expires.
+  it("retires only submission fallbacks for the terminal request in the current Session", () => {
+    const h = make();
+    h.store.apply("runtime", source(0, [condition("sandbox")]));
+    const submit = (requestId: string, commandId: string) => h.store.outcome("runtime", {
+      code: "interaction.submit.rejected", occurrenceId: commandId, scope: { requestId, commandId },
+      lifecycle: "outcome", message: "提交失败", severity: "error",
+    }, "a");
+    submit("ended", "first"); submit("another", "active");
+    const fallback = h.items().find(item => item.scope.commandId === "first")!;
+    h.store.interactionTerminated("runtime", "ended");
+    expect(h.store.snapshot("runtime", "a").removedNotificationIds).toContain(fallback.notificationId);
+    expect(h.items().map(item => item.occurrenceId)).toEqual(["one", "active"]);
+    expect(h.items("b").map(item => item.code)).toEqual(["sandbox"]);
+
+    h.store.outcome("runtime", { code: "interaction.result", occurrenceId: "ended", scope: { requestId: "ended" },
+      lifecycle: "outcome", message: "交互请求已取消", severity: "info" });
+    h.advance(8001);
+    submit("ended", "late");
+    expect(h.items().map(item => item.occurrenceId)).toEqual(["one", "active"]);
+
+    h.store.attach("runtime", "new-session");
+    h.store.apply("runtime", source(0, [], { sessionId: "new-session" }));
+    submit("ended", "new-command");
+    expect(h.items().map(item => item.occurrenceId)).toEqual(["new-command"]);
+  });
+  // A late change of severity does not create a new card or undo the user's dismissal.
+  it.each(["dismissed", "expired"] as const)("does not revive a %s fallback on a late rejection", state => {
+    const h = make(); h.store.apply("runtime", source(0, []));
+    const base: NotificationInput = { code: "interaction.submit", occurrenceId: "command",
+      scope: { requestId: "request", commandId: "command" }, lifecycle: "outcome", severity: "warning", message: "回答结果未确认" };
+    h.store.outcome("runtime", base, "a");
+    const original = h.items()[0]!;
+    if (state === "dismissed") h.store.dismiss("runtime", "a", original.notificationId);
+    else h.advance(30_001);
+    h.store.outcome("runtime", { ...base, code: "interaction.submit.rejected", severity: "error", message: "提交失败" }, "a");
+    expect(h.items()).toEqual([]);
+    expect(h.items("b")).toEqual([]);
+    expect(h.store.snapshot("runtime", "a").removedNotificationIds).toContain(original.notificationId);
+  });
   it("temporary source loss marks existing conditions unknown without ending them", () => {
     const h = make(); h.store.apply("runtime", source(1, [condition("retry")])); h.store.offline("runtime");
     expect(h.items()[0]?.verification).toBe("unknown");

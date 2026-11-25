@@ -44,7 +44,7 @@ final class NotificationSourceTests: XCTestCase {
         XCTAssertEqual(Set(hosts["host"]!.keys), ["name", "compactName", "badge", "pairingKey"])
         let payload: [AnyHashable: Any] = ["orbis": ["v": 1, "hostId": "host", "category": "approval-requested", "eventId": "same"]]
         XCTAssertEqual(directory.alert(payload)?.title, "Work Mac")
-        XCTAssertEqual(directory.alert(payload)?.body, "Approval needed")
+        XCTAssertEqual(directory.alert(payload)?.body, "Interaction needed")
         directory.hosts = [:]; try directory.write(to: url)
         let removed = try XCTUnwrap(NotificationSourceDirectory.read(from: url))
         XCTAssertTrue(try XCTUnwrap(removed.alert(payload)?.title).hasPrefix("Computer "))

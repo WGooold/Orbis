@@ -239,8 +239,9 @@ class BottomSheetInstrumentedTest {
             questions = listOf(QuestionnaireQuestion("scope", "处理哪些目录？",
                 (0..12).map { InteractionOption("$it", "目录选项 $it") }, multiSelect = true)))
         compose.setContent { OrbisTheme {
-            InteractionWorkspace(listOf(request), true, emptySet(), null, { _, _ -> }, { _, _ -> },
-                { _, _ -> }, { _, _ -> }, {})
+            InteractionWorkspace(listOf(request), true, emptySet(),
+                respondConfirm = { _, _ -> }, respondValue = { _, _ -> }, respondValues = { _, _ -> },
+                respondQuestionnaire = { _, _ -> }, onCancel = {})
         } }
         compose.onNodeWithText("目录选项 12").performScrollTo().performClick()
         assertFullyVisible(compose.onNodeWithText("目录选项 12"))

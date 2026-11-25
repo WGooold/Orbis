@@ -9,9 +9,10 @@ struct AgentStateTests {
     @MainActor private final class Harness {
         let state = AgentState()
         var sent: [[String: Any]] = []
-        var runtime = RuntimeSummary(runtimeId: "runtime", name: "Agent", cwd: "/repo", status: "idle", sessionId: "session", agentKind: "pi")
+        var runtime: RuntimeSummary
         var projection: AgentProjection?
-        init() {
+        init(agentKind: String = "pi") {
+            runtime = RuntimeSummary(runtimeId: "runtime", name: "Agent", cwd: "/repo", status: "idle", sessionId: "session", agentKind: agentKind)
             state.send = { [weak self] in self?.sent.append($0); return true }
             state.didProject = { [weak self] _, _, domains in
                 guard let self, let projected = AgentProjection.make(runtime: self.runtime, hostId: "host", domains: domains,
@@ -30,7 +31,7 @@ struct AgentStateTests {
         func receive(_ domains: [[String: Any]], epoch: String = "epoch", unchanged: [String] = [], request: [String: Any]? = nil) {
             let read = request ?? self.request
             var payload: [String: Any] = ["type": "agent.state.snapshot", "scope": "agent", "requestId": read["requestId"]!,
-                "runtimeId": "runtime", "sessionId": "session", "agentKind": "pi", "modelEpoch": epoch,
+                "runtimeId": "runtime", "sessionId": "session", "agentKind": read["agentKind"] ?? "pi", "modelEpoch": epoch,
                 "domains": domains, "missing": [], "truncated": false, "unchanged": unchanged]
             payload["stateFormat"] = read["stateFormat"]
             state.consume(payload)
@@ -294,6 +295,17 @@ struct AgentStateTests {
         #expect(h.runtime.presentationStatus == "unknown")
     }
 
+    // Cross-Agent: local waiting does not imply a remote prompt or depend on the brand.
+    @Test(arguments: ["pi", "claude", "codex", "codexDesktop", "dsh", "dshDesktop", "kimiCode", "kimiCodeDesktop", "opencode", "openclaw", "hermes"])
+    func localWaitingUsesTheSharedLabelWithoutRemoteRequests(kind: String) {
+        let h = Harness(agentKind: kind)
+        h.receive([domain("execution", ["phase": "waiting_local_interaction"]),
+                   domain("interactions", [String: Any]())])
+        #expect(h.projection?.interactions.isEmpty == true)
+        #expect(h.runtime.presentationStatus == "waiting_local_interaction")
+        #expect(h.runtime.presentationTitle == L10n.tr("等待交互"))
+    }
+
     @Test func independentDomainsRestoreStatusModelContextAndOpaqueCapabilities() throws {
         let h = Harness()
         h.receive([domain("execution", ["phase": "waiting_local_interaction"])])
@@ -383,6 +395,36 @@ struct AgentStateTests {
         #expect(!h.state.beginEpoch("epoch"))
     }
 
+    // Future controls may use shapes this client cannot decode; only their display identity crosses the projection.
+    @Test func futureInteractionKindsProjectReadOnlyWithoutBlockingSiblingFacts() throws {
+        let h = Harness()
+        var link = question("future-link")
+        link["kind"] = "external-action"; link["externalUrl"] = "https://example.test/action"
+        link["description"] = "Unrecognized details"; link["submitted"] = true
+        var wizard = question("future-wizard")
+        wizard["kind"] = "wizard"; wizard["options"] = ["nested": ["next", "finish"]]
+        h.receive([domain("interactions", ["question": question(), "future-link": link, "future-wizard": wizard]),
+                   domain("execution", ["phase": "running"])])
+
+        #expect(h.runtime.status == "running")
+        #expect(h.state.snapshots["runtime"]?.error == nil)
+        let requests = try #require(h.projection?.interactions)
+        let supported = try #require(requests.first { $0.requestId == "question" })
+        #expect(supported.acceptsResponse(["kind": "select", "value": "yes"]))
+        #expect(requests.count == 3)
+        for (id, kind) in [("future-link", "external-action"), ("future-wizard", "wizard")] {
+            let request = try #require(requests.first { $0.requestId == id })
+            let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request))
+            let fields = try #require(encoded as? [String: Any])
+            #expect(Set(fields.keys) == InteractionRequest.readOnlyFields)
+            #expect(request.runtimeId == "runtime" && request.kind == kind && request.hasDisplayIdentity)
+            #expect(!request.validForModel)
+            #expect(!request.acceptsResponse(["kind": kind, "value": "yes"]))
+            #expect(!request.acceptsResponse(["kind": "select", "value": "yes"]))
+            #expect(!request.acceptsResponse(["kind": "cancel"]))
+        }
+    }
+
     @Test func interactionShapesAndAnswersAreValidatedWithoutRelyingOnTheView() throws {
         let h = Harness()
         h.receive([domain("interactions", ["question": question()])])
@@ -396,6 +438,8 @@ struct AgentStateTests {
         h.receive([domain("execution", ["phase": "running"]), domain("interactions", ["question": invalid], revision: 2)])
         #expect(h.runtime.status == "idle")
         #expect(h.projection?.interactions.first == request)
+        #expect(h.state.snapshots["runtime"]?.domains["interactions"]?.revision == 1)
+        #expect(h.state.snapshots["runtime"]?.error != nil)
     }
 
     @Test func questionnairesEnforceKnownValuesSelectionCardinalityAndOptionalText() throws {

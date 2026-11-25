@@ -530,10 +530,15 @@ struct AgentProjection {
                     var parsed: [InteractionRequest] = []
                     for (key, row) in rows {
                         guard var object = row.object, row["requestId"].string == key, !key.isEmpty,
-                              ["confirm", "select", "multi-select", "input", "questionnaire"].contains(row["kind"].string ?? "") else { return nil }
+                              let kind = row["kind"].string, !kind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, kind.utf8.count <= 128 else { return nil }
                         object["runtimeId"] = object["runtimeId"] ?? .string(runtime.runtimeId)
+                        let supported = InteractionRequest.supportsKind(kind)
+                        if !supported {
+                            // A future kind gets a read-only card; its controls and links are not interpreted.
+                            object = object.filter { InteractionRequest.readOnlyFields.contains($0.key) }
+                        }
                         guard var request: InteractionRequest = HostJSON.object(object).decoded(), request.runtimeId == runtime.runtimeId,
-                              request.validForModel else { return nil }
+                              request.hasDisplayIdentity, !supported || request.validForModel else { return nil }
                         if interactions.first(where: { $0.requestId == key })?.submitted == true { request.submitted = true }
                         parsed.append(request)
                     }
@@ -564,8 +569,21 @@ struct AgentProjection {
 }
 
 extension InteractionRequest {
+    static let readOnlyFields: Set<String> = ["runtimeId", "requestId", "extensionId", "kind", "title", "expiresAt"]
+
+    static func supportsKind(_ kind: String) -> Bool {
+        switch kind {
+        case "confirm", "select", "multi-select", "input", "questionnaire": return true
+        default: return false
+        }
+    }
+
+    var hasDisplayIdentity: Bool {
+        !requestId.isEmpty && !extensionId.isEmpty && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && expiresAt > 0
+    }
+
     var validForModel: Bool {
-        guard !requestId.isEmpty, !extensionId.isEmpty, !title.isEmpty, expiresAt > 0 else { return false }
+        guard hasDisplayIdentity else { return false }
         let options = options ?? []
         guard options.count <= 64, Set(options.map(\.value)).count == options.count,
               options.allSatisfy({ !$0.value.isEmpty }),

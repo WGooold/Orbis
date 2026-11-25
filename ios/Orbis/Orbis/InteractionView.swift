@@ -20,7 +20,8 @@ struct InteractionWorkspaceView: View, Equatable {
         let facts = model.workspace
         let requests = facts.requests.filter { !facts.responding.contains($0.requestId) }
         let status = facts.interactionText.map { (text: $0, pending: facts.interactionPending) }
-        let inline = requests.count == 1 && requests[0].kind == "confirm"
+        let actionable = requests.filter(\.validForModel)
+        let inline = requests.count == 1 && (requests[0].kind == "confirm" || actionable.isEmpty)
         // Sits inside ChatBottomOverlayRegion over the transcript so neither an empty slot nor an
         // arriving request moves the composer, while coordinating height with JumpToLatest and F3.
         Group {
@@ -74,20 +75,35 @@ struct InteractionWorkspaceView: View, Equatable {
                 .presentationContentInteraction(.scrolls)
                 .orbisSheet([.large])
         }
-        .onAppear { if !requests.isEmpty && !inline { open = true } }
+        .onAppear { if let first = actionable.first, !inline { selectedId = first.requestId; open = true } }
         .onChange(of: requests.map(\.requestId)) { old, next in
             if next.isEmpty { open = false; selectedId = nil }
             else if inline { open = false }
-            else if next.contains(where: { !old.contains($0) }) { open = true }
+            else if let added = actionable.first(where: { !old.contains($0.requestId) }) {
+                if !open { selectedId = added.requestId }
+                open = true
+            }
         }
         .onChange(of: model.workspace.identity) { _, _ in open = false }
     }
 
-    private func requestView(_ request: InteractionRequest, inSheet: Bool) -> some View {
-        let key = interactionDraftKey(host: model.workspace.host, sessionId: actions.sessionId, request: request)
-        return InteractionRequestView(actions: actions, connected: model.workspace.canSend, request: request, draft: drafts.value(for: key, request: request), onDraftChange: { drafts.save($0, for: key, request: request) }, inSheet: inSheet)
-            .id(key)
-            .frame(maxHeight: inSheet ? .infinity : nil, alignment: .top)
+    @ViewBuilder private func requestView(_ request: InteractionRequest, inSheet: Bool) -> some View {
+        if request.validForModel {
+            let key = interactionDraftKey(host: model.workspace.host, sessionId: actions.sessionId, request: request)
+            InteractionRequestView(actions: actions, connected: model.workspace.canSend, request: request,
+                responseError: model.workspace.interactionErrors[request.requestId], draft: drafts.value(for: key, request: request),
+                onDraftChange: { drafts.save($0, for: key, request: request) }, inSheet: inSheet)
+                .id(key)
+                .frame(maxHeight: inSheet ? .infinity : nil, alignment: .top)
+        } else {
+            let p = OrbisPalette(scheme)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(request.title).font(.orbisBody(.semibold)).lineLimit(2)
+                Text(L10n.tr("当前版本不支持此交互")).font(.orbisLabel()).foregroundStyle(p.secondary)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+                .neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.6, padding: OrbisRadius.cardPadding)
+                .accessibilityIdentifier("interaction-unsupported")
+        }
     }
 }
 
@@ -100,6 +116,7 @@ private struct InteractionRequestView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.orbisAccent) private var pageAccent
     let request: InteractionRequest
+    let responseError: String?
     let draft: InteractionDraftValue
     let onDraftChange: (InteractionDraftValue) -> Void
     let inSheet: Bool
@@ -110,6 +127,8 @@ private struct InteractionRequestView: View {
     @State private var notes: [String: String] = [:]
     @State private var questionPage = 0
     @State private var expanded = true
+    @State private var linkError = false
+    @State private var linkAttempt: UUID?
     private var draftValue: InteractionDraftValue {
         InteractionDraftValue(input: input, choices: choices, answers: answers, other: other, notes: notes, questionPage: questionPage)
     }
@@ -140,9 +159,10 @@ private struct InteractionRequestView: View {
                             Spacer(minLength: 0)
                             // One fixed status slot: submitting swaps the label for a spinner without reflowing the title.
                             ZStack(alignment: .trailing) {
-                                Text(expired ? L10n.tr("已过期") : L10n.tr("待确认")).font(.orbisCaption()).foregroundStyle(pageAccent ?? p.accent).opacity(pending ? 0 : 1)
-                                if pending { ProgressView().controlSize(.small) }
-                            }.accessibilityLabel(pending ? L10n.tr("已提交，等待电脑端确认") : expired ? L10n.tr("已过期") : L10n.tr("待确认"))
+                                Text(expired ? L10n.tr("已过期") : L10n.tr("待确认")).font(.orbisCaption())
+                                    .foregroundStyle(expired ? p.warning : pageAccent ?? p.accent).opacity(pending && !expired ? 0 : 1)
+                                if pending && !expired { ProgressView().controlSize(.small) }
+                            }.accessibilityLabel(expired ? L10n.tr("已过期") : pending ? L10n.tr("已提交，等待处理结果…") : L10n.tr("待确认"))
                             if request.kind != "confirm" {
                                 OrbisActionSymbol(systemName: "chevron.down").imageScale(.small).foregroundStyle(p.secondary)
                                     .rotationEffect(.degrees(expanded ? 180 : 0)).animation(.orbisCollapse, value: expanded)
@@ -191,7 +211,10 @@ private struct InteractionRequestView: View {
                     if let description = request.description { Text(description).font(.orbisLabel()) }
                     if let summary = request.argumentSummary { Text(summary).font(.orbisCaption(mono: true)).textSelection(.enabled) }
                     if let external = request.externalUrl, let url = URL(string: external), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
-                        OrbisTextButton(title: L10n.tr("在浏览器打开"), symbol: "safari") { openURL(url) }
+                        OrbisTextButton(title: L10n.tr("在浏览器打开"), symbol: "safari") { openLink(url) }
+                        if linkError {
+                            Text(L10n.tr("无法打开链接，请重试")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
+                        }
                     }
                     content
                 }.frame(maxWidth: .infinity, alignment: .leading)
@@ -200,8 +223,17 @@ private struct InteractionRequestView: View {
             .scrollBounceBehavior(.basedOnSize)
             .id(request.kind == "questionnaire" ? "question-\(currentQuestion?.id ?? "")" : "interaction-content")
             .accessibilityIdentifier(request.kind == "questionnaire" ? "questionnaire-answer-scroll" : "interaction-content-scroll")
-            if request.kind == "questionnaire" {
-                questionnaireProgress
+            if !expired {
+                if request.kind == "questionnaire" { questionnaireProgress }
+                if !pending {
+                    if let responseError {
+                        Text(responseError).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
+                            .accessibilityIdentifier("interaction-response-error")
+                    }
+                    if !connected {
+                        Text(L10n.tr("连接后可提交")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                    }
+                }
             }
             actionButtons(expired: expired)
         }
@@ -241,7 +273,7 @@ private struct InteractionRequestView: View {
     }
 
     private var questionnaireProgress: some View {
-        let title = pending ? L10n.tr("已提交，等待电脑确认…") : answeredQuestionCount == questions.count
+        let title = pending ? L10n.tr("已提交，等待处理结果…") : answeredQuestionCount == questions.count
             ? L10n.tr("答案已填好，可继续修改或提交")
             : L10n.tr("已回答 {0} / {1} 题", answeredQuestionCount, questions.count)
         return Text(title).font(.orbisCaption()).lineLimit(1)
@@ -272,6 +304,16 @@ private struct InteractionRequestView: View {
                 OrbisActionButton(title: request.extensionId == "opencode.permission" ? L10n.tr("允许一次") : (request.confirmLabel ?? (request.kind == "confirm" ? L10n.tr("允许") : L10n.tr("提交"))), symbol: "checkmark") { submit() }
                     .disabled(!valid)
             }.disabled(pending || expired || !connected)
+        }
+    }
+
+    private func openLink(_ url: URL) {
+        let attempt = UUID()
+        linkAttempt = attempt
+        linkError = false
+        openURL(url) { accepted in
+            guard linkAttempt == attempt else { return }
+            linkError = !accepted
         }
     }
 
@@ -358,7 +400,7 @@ private struct InteractionRequestView: View {
                 }
             }
         case "confirm": EmptyView()
-        default: Text(L10n.tr("此交互需要在电脑端完成。")).font(.orbisLabel()).foregroundStyle(OrbisPalette(scheme).secondary)
+        default: EmptyView()
         }
     }
 

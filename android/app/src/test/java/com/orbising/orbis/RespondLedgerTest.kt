@@ -73,17 +73,21 @@ class RespondLedgerTest {
     private fun status(state: RemoteState) = state.interactionStatus("a")
     private fun reconnect(state: RemoteState) = ready(state.markReconnecting()).copy(e2eReady = true).ledgerOpenConnection()
 
-    @Test fun answeringCollapsesAtOnceAndShowsTheSummaryUntilTheRequestLeaves() {
+    // MOBILE-INTERACTION-02: only settlement can display the actual answer summary.
+    @Test fun answeringCollapsesAtOnceAndOnlySettlementShowsTheAnswerSummary() {
         val start = setup()
         var (state, id) = respond(start, "approval", OperationKinds.confirmSummary(start.conversations.getValue("a").interactions.getValue("approval"), true))
+        assertEquals(LedgerPhase.Sent, state.ledger.operation(id)?.phase)
         assertEquals(listOf("pick"), visible(state))
-        assertEquals("已允许" to true, status(state)?.let { it.first to it.second })
+        assertEquals("正在发送…" to true, status(state)?.let { it.text to it.pending })
         state = result(state, id, ok = true)
-        // 成功回执后请求仍在清单里：面板不闪回。
+        // 成功回执后请求仍在清单里：面板不闪回，但仍在等待交互结果。
+        assertEquals(LedgerPhase.Accepted, state.ledger.operation(id)?.phase)
         assertEquals(listOf("pick"), visible(state))
+        assertEquals("已提交，等待处理结果…" to true, status(state)?.let { it.text to it.pending })
         state = interactions(state, request("pick", "select"))
         assertTrue(state.ledger.operations.isEmpty())
-        assertEquals("已允许" to false, status(state)?.let { it.first to it.second })
+        assertEquals("已允许" to false, status(state)?.let { it.text to it.pending })
     }
 
     @Test fun settledFeedbackExpiresWithoutAnOpenChatAndCannotReplayOnReentry() {
@@ -91,7 +95,7 @@ class RespondLedgerTest {
         val settled = interactions(result(sent, id, ok = true), request("pick", "select"))
         val deadline = settled.interactionOutcomes.getValue("a").expiresAt
         assertEquals(deadline, settled.nextOperationDeadline)
-        assertEquals("已提交", settled.interactionStatus("a", deadline - 1)?.first)
+        assertEquals("已提交", settled.interactionStatus("a", deadline - 1)?.text)
         // Even before the scheduler runs after a background pause, a new page must not show expired feedback.
         assertNull(settled.interactionStatus("a", deadline))
         val expired = settled.ledgerTick(deadline)
@@ -107,7 +111,7 @@ class RespondLedgerTest {
         val left = settled.copy(interactionOutcomes = settled.interactionOutcomes + ("b" to other)).clearInteractionOutcome("a")
         assertNull(status(left.copy(selectedRuntimeId = "a")))
         assertEquals(other, left.interactionOutcomes["b"])
-        assertEquals("已提交", status(sent.clearInteractionOutcome("a"))?.first)
+        assertEquals("正在发送…" to true, status(sent.clearInteractionOutcome("a"))?.let { it.text to it.pending })
         assertTrue(sent.clearInteractionOutcome("a").ledger.operations.isNotEmpty())
     }
 
@@ -144,15 +148,42 @@ class RespondLedgerTest {
         assertEquals("回答未提交：校验失败", state.conversations["a"]?.interactions?.get("approval")?.responseError)
     }
 
+    // MOBILE-INTERACTION-03: a local send failure belongs to one request, even when IDs repeat across runtimes.
+    @Test fun localSendFailureOnlyUpdatesItsOwnRequestAndIsClearedOnRetry() {
+        val approval = request("approval")
+        val pick = request("pick", "select").copy(responseError = "Other request error")
+        val other = RuntimeConversation(interactions = mapOf("approval" to approval.copy(responseError = "Other runtime error")))
+        val active = RuntimeConversation(operationError = "Composer message", interactions = mapOf("approval" to approval, "pick" to pick))
+        val start = setup().copy(conversations = mapOf("a" to active, "b" to other))
+        val message = "回答未发送，请检查连接后重试"
+        val failed = start.withInteractionResponseError("a", "approval", message)
+        assertEquals(start.copy(conversations = start.conversations + ("a" to active.copy(
+            interactions = active.interactions + ("approval" to approval.copy(responseError = message)),
+        ))), failed)
+        assertEquals(failed, failed.withInteractionResponseError("a", "missing", message))
+        assertEquals(failed, failed.withInteractionResponseError("missing", "approval", message))
+
+        val (retry, creation) = failed.createRespond("retry", "a", "approval", "已允许", System.currentTimeMillis())
+        assertTrue(creation is LedgerCreation.Created)
+        assertEquals(start.conversations, retry.conversations)
+
+        val failedDuringRetry = retry.withInteractionResponseError("a", "approval", message)
+        val (duplicate, conflict) = failedDuringRetry.createRespond("second", "a", "approval", "已拒绝", System.currentTimeMillis())
+        assertTrue(conflict is LedgerCreation.Conflict)
+        assertEquals(failedDuringRetry.conversations, duplicate.conversations)
+    }
+
     @Test fun aRequestHandledElsewhereShowsTheFactNotOurAnswer() {
         val state = interactions(respond(setup(), "approval", "已允许").first, request("pick", "select"))
         assertTrue(state.ledger.operations.isEmpty())
-        assertEquals("已处理", status(state)?.first)
+        assertEquals("已处理", status(state)?.text)
     }
 
     @Test fun disconnectShowsUnconfirmed() {
-        val state = respond(setup(), "approval", "已允许").first.markReconnecting()
-        assertEquals("已允许，未确认", status(state)?.first)
+        val (sent, id) = respond(setup(), "approval", "已允许")
+        val state = sent.markReconnecting()
+        assertEquals(LedgerPhase.Unknown, state.ledger.operation(id)?.phase)
+        assertEquals("回答结果未确认" to false, status(state)?.let { it.text to it.pending })
         assertEquals(listOf("pick"), visible(state))
     }
 
@@ -168,7 +199,7 @@ class RespondLedgerTest {
     @Test fun reconnectWithTheRequestGoneShowsHandled() {
         val state = interactions(reconnect(respond(setup(), "approval", "已允许").first), request("pick", "select"))
         assertTrue(state.ledger.operations.isEmpty())
-        assertEquals("已处理", status(state)?.first)
+        assertEquals("已处理", status(state)?.text)
     }
 
     @Test fun aRequestCanOnlyBeAnsweredOnceAtATime() {
@@ -177,8 +208,10 @@ class RespondLedgerTest {
     }
 
     @Test fun noReceiptWithinTheBudgetShowsUnconfirmedAndReads() {
-        val state = respond(setup(), "approval", "已允许").first.ledgerTick(System.currentTimeMillis() + 61_000)
-        assertEquals("已允许，未确认", status(state)?.first)
+        val (sent, id) = respond(setup(), "approval", "已允许")
+        val state = sent.ledgerTick(requireNotNull(sent.ledger.operation(id)?.deadline))
+        assertEquals(LedgerPhase.Unknown, state.ledger.operation(id)?.phase)
+        assertEquals("回答结果未确认" to false, status(state)?.let { it.text to it.pending })
         assertTrue(state.ledgerVerifyWanted)
     }
 }

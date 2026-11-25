@@ -3836,7 +3836,12 @@ class RelayReducer(
         val extensionId = request.string("extensionId") ?: return null
         val kind = request.string("kind") ?: return null
         val title = request.string("title") ?: return null
-        if (kind !in setOf("confirm", "select", "multi-select", "input", "questionnaire")) return null
+        if (!isMobileSupportedInteractionKind(kind)) {
+            // A new kind is display-only. Do not decode its controls or links with an older schema.
+            if (kind.isBlank() || kind.length > 128 || requestId.isBlank() || extensionId.isBlank() || title.isBlank() ||
+                listOf("kind", "requestId", "extensionId", "title").any { (request[it] as? JsonPrimitive)?.isString != true }) return null
+            return PendingInteraction(requestId, extensionId, kind, title, null, emptyList(), null)
+        }
         val interaction = runCatching {
             PendingInteraction(
                 requestId = requestId,
@@ -3905,7 +3910,7 @@ internal fun runtimeStatusText(status: String): String = when (status) {
     "background_commands" -> L10n.tr("空闲")
     "tasks_unknown" -> L10n.tr("后台任务状态待核对")
     "unknown" -> L10n.tr("状态待核对")
-    "waiting_local_interaction" -> L10n.tr("等待电脑端交互")
+    "waiting_local_interaction" -> L10n.tr("等待交互")
     else -> L10n.tr("未知状态")
 }
 

@@ -4467,24 +4467,34 @@ export class HostService {
     if (event.type === "interaction.resolved" || event.type === "interaction.cancelled") {
       this.#recordAgentDiagnostic(runtimeId, "interaction", event.type === "interaction.resolved" ? "Interaction resolved" : "Interaction cancelled");
       const wasPending = this.#interactionIds.get(runtimeId)?.delete(event.requestId);
+      this.#notifications.interactionTerminated(runtimeId, event.requestId);
       // App responses already have an in-place ledger summary (ADR-0049 §6.5).
       // Consume the terminal identity even when no additional banner is needed.
       if (wasPending && !(event.type === "interaction.resolved" && event.source === "remote")) {
-        const failed = event.type === "interaction.cancelled" && event.reason === "timeout";
+        const reason = event.type === "interaction.cancelled" ? event.reason : undefined;
         this.#notifications.outcome(runtimeId, { code: "interaction.result", occurrenceId: event.requestId,
-          scope: { requestId: event.requestId }, lifecycle: "outcome", severity: failed ? "warning" : "info",
-          message: event.type === "interaction.resolved" ? "交互已在电脑端完成"
-            : event.reason === "timeout" ? "交互已超时" : "交互已取消" });
+          scope: { requestId: event.requestId }, lifecycle: "outcome",
+          severity: reason === undefined || reason === "cancelled" ? "info" : "warning",
+          message: reason === undefined ? "交互已在电脑端完成" : {
+            cancelled: "交互请求已取消",
+            timeout: "交互请求已超时",
+            disconnected: "交互请求因连接断开而取消",
+            owner_closed: "电脑端已结束此交互",
+          }[reason],
+          // Disconnect and owner close keep the legacy cancellation lifetime.
+          displayMs: reason === "timeout" ? 30_000 : 8_000,
+        });
       }
     }
     if (event.type === "command.result" || (event.type === "runtime.error" && event.commandId !== undefined)) {
       const owner = this.#commandOwners.receive(runtimeId, event);
       if (owner !== undefined) {
-        // Retain the bounded receipt for duplicate terminal replies and device ownership.
+        // Keep the device-scoped fallback for legacy clients and absent request cards; details stay in the receipt.
         if (owner.requestId !== undefined && (event.type === "runtime.error" || !event.ok && event.status !== "pending")) {
-          this.#notifications.outcome(runtimeId, { code: "interaction.submit", occurrenceId: event.commandId!,
-            scope: { requestId: owner.requestId, commandId: event.commandId! }, lifecycle: "outcome", severity: "error",
-            message: event.type === "runtime.error" ? event.message : event.error ?? "回答未送达，请重新提交。" }, owner.deviceId);
+          const uncertain = event.type === "command.result" && (event.status === "unconfirmed" || event.status === "cancelled");
+          this.#notifications.outcome(runtimeId, { code: uncertain ? "interaction.submit" : "interaction.submit.rejected",
+            occurrenceId: event.commandId!, scope: { requestId: owner.requestId, commandId: event.commandId! }, lifecycle: "outcome",
+            severity: uncertain ? "warning" : "error", message: uncertain ? "回答结果未确认" : "提交失败" }, owner.deviceId);
         }
         this.#deviceViewFacts.settled(owner.deviceId, {
           operationId: event.commandId!,

@@ -31,6 +31,13 @@ internal fun interactionMultiSelectConstraintText(request: PendingInteraction): 
     else -> null
 }
 
+/** Keep the mobile support list aligned with InteractionWorkspace's actual render paths. */
+internal fun isMobileSupportedInteractionKind(kind: String): Boolean =
+    when (kind) {
+        "confirm", "select", "multi-select", "input", "questionnaire" -> true
+        else -> false
+    }
+
 /**
  * A far-future `expiresAt` (the runtime's "no timeout" sentinel, e.g.
  * `Number.MAX_SAFE_INTEGER`) and the missing-field `Long.MAX_VALUE` default both
