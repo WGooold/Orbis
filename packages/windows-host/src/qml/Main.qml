@@ -75,6 +75,12 @@ ApplicationWindow {
     }
     readonly property bool openClawReady: window.backendFor("openclaw")?.ready === true && host.desiredRunning
     readonly property string openClawStateText: openClawConnectionState("已连接")
+    readonly property string openClawRecovery: {
+        if (window.openClawReady || !host.desiredRunning || host.resumePending) return ""
+        const reason = window.backendFor("openclaw")?.reason
+        if (reason === "pairing_required") return "请在 OpenClaw 的设备列表批准 Orbis Host，再重新连接 Host。"
+        return !reason || reason === "starting" || reason === "backend_not_ready" || reason === "backend_not_attached" ? "" : reason
+    }
     function openClawConnectionState(connectedLabel) {
         return host.openClaw.invalid ? "配置无效"
             : !host.openClaw.url ? "待配置" : host.resumePending ? "正在重新连接"
@@ -2714,6 +2720,12 @@ ApplicationWindow {
                                                         objectName: "openClawInfo"
                                                         Accessible.name: "OpenClaw 连接方式说明"
                                                     }
+                                                }
+                                                Hint {
+                                                    visible: window.openClawRecovery.length > 0; Layout.fillWidth: true
+                                                    text: window.openClawRecovery
+                                                    color: Theme.warning
+                                                    wrapMode: Text.WordWrap
                                                 }
                                                 Hint {
                                                     visible: openClawInfoBtn.expanded; Layout.fillWidth: true

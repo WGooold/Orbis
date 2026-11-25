@@ -91,20 +91,32 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     val openCode = state.openCodeAvailability.takeIf { state.e2eReady && enabledAgentKinds?.contains("opencode") != false }
     val showOpenCode = openCode != null || (state.e2eReady && supported?.contains("opencode") == true)
     val canChooseOpenCode = state.e2eReady && openCode?.canStart != false && supported?.contains("opencode") == true
-    val canUseSelectedAgent = supported?.contains(kind) != false && (kind != "opencode" || canChooseOpenCode)
+    val canLaunchOpenClaw = state.canLaunchOpenClaw()
+    val openClawDiagnostic = state.openClawDraftDiagnostic()
+    val canUseSelectedAgent = when (kind) {
+        "opencode" -> canChooseOpenCode
+        "openclaw" -> canLaunchOpenClaw
+        else -> supported?.contains(kind) != false
+    }
     val config = state.sessionConfiguration.takeIf { it.agentKind == kind && it.cwd == cwd }
     LaunchedEffect(open, kind, cwd, state.e2eReady, state.supportsSessionConfiguration(kind), canUseSelectedAgent) {
         if (open && state.e2eReady && state.supportsSessionConfiguration(kind) && cwd.isNotBlank() && canUseSelectedAgent) onLoadConfiguration(kind, cwd)
     }
     val kinds = listOf("codex", "claude", "dsh", "openclaw", "pi", KIMI_CODE_KIND, "hermes", "opencode").filter {
-        (enabledAgentKinds == null || agentVariants(it).any(enabledAgentKinds::contains)) && when (it) { "opencode" -> showOpenCode; "hermes" -> supported?.contains("hermes") == true; "openclaw" -> state.canLaunchOpenClaw(); KIMI_CODE_KIND -> agentVariants(it).any { variant -> state.supportsKimiCode(variant) && (supported == null || variant in supported) }; else -> true }
+        (enabledAgentKinds == null || agentVariants(it).any(enabledAgentKinds::contains)) && when (it) {
+            "opencode" -> showOpenCode
+            "hermes" -> supported?.contains("hermes") == true
+            "openclaw" -> canLaunchOpenClaw || openClawDiagnostic != null
+            KIMI_CODE_KIND -> agentVariants(it).any { variant -> state.supportsKimiCode(variant) && (supported == null || variant in supported) }
+            else -> true
+        }
     }
     val allDisabled = enabledAgentKinds?.isEmpty() == true
     fun launchLabel(kind: String): String = if (state.unifiedCodexHistory && agentFamily(kind) == "codex") {
         codexModeTitle(if (kind == "codexDesktop") "desktop" else "terminal")
     } else agentVariantTitle(kind)
     val canStart = canUseSelectedAgent && cwd.isNotBlank() && state.canCreateSessionOn(state.hostId) &&
-        (kind != "openclaw" || state.canLaunchOpenClaw() && config?.snapshot != null && config.error == null) &&
+        (kind != "openclaw" || config?.snapshot != null && config.error == null) &&
         (agentFamily(kind) != KIMI_CODE_KIND || state.supportsKimiCode(kind) && config?.snapshot != null) &&
         (!importMode || config?.snapshot != null && config.requestId == null && config.error == null)
     val workDirectory = state.sessionBrowse?.takeUnless { it.forDownload }
@@ -138,7 +150,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     LaunchedEffect(workDirectory?.path) { if (!importMode && cwd.isBlank()) cwd = workDirectory?.path.orEmpty() }
     var allowUnavailableOpenCode by remember(state.hostId) { mutableStateOf(false) }
     var opened by remember(state.hostId) { mutableStateOf(false) }
-    LaunchedEffect(open, supported, kinds, canChooseOpenCode) {
+    val configInProgress = state.supportsSessionConfiguration(kind) && (config?.requestId != null || config?.error != null)
+    val retainOpenClawDraft = kind == "openclaw" && !canLaunchOpenClaw && (configInProgress || openClawDiagnostic != null)
+    LaunchedEffect(open, supported, kinds, canChooseOpenCode, retainOpenClawDraft) {
         if (!open) {
             opened = false
             allowUnavailableOpenCode = false
@@ -146,6 +160,9 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
         }
         val initialOpen = !opened
         opened = true
+        // Preserve the draft while inspecting a current diagnostic or waiting on its own configuration.
+        // Neither condition adds OpenClaw to the set of launchable agents.
+        if (retainOpenClawDraft) return@LaunchedEffect
         val next = reconcileDraftAgent(
             current = kind,
             supported = supported,
@@ -188,9 +205,16 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         val brand = agentBrand(agent)
                         val variants = agentVariants(agent)
                         val selected = family == agent
-                        val available = if (agent == "opencode") canChooseOpenCode
-                            else supported == null || variants.any { it in supported }
-                        val enabled = if (agent == "opencode") showOpenCode else available
+                        val available = when (agent) {
+                            "opencode" -> canChooseOpenCode
+                            "openclaw" -> canLaunchOpenClaw
+                            else -> supported == null || variants.any { it in supported }
+                        }
+                        val enabled = when (agent) {
+                            "opencode" -> showOpenCode
+                            "openclaw" -> available || openClawDiagnostic != null
+                            else -> available
+                        }
                         val chooseCodexVersion = versionsAvailable(agent)
                         Box(Modifier.size(48.dp).testTag("draft-agent-$agent").combinedClickable(
                             interactionSource = remember { MutableInteractionSource() }, indication = null,
@@ -241,9 +265,25 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Icon(OrbisSymbols.KeyboardArrowDown, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (!canUseSelectedAgent) {
+                if (kind == "openclaw") {
+                    // A reply to this draft takes precedence over the general backend diagnosis.
+                    val error = config?.error
+                    when {
+                        configInProgress && error != null -> {
+                            Text(L10n.hostText(error), Modifier.fillMaxWidth().testTag("draft-openclaw-config-error")
+                                .semantics { liveRegion = LiveRegionMode.Polite }, style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.error)
+                            NeumorphTextButton(L10n.tr("重试"), modifier = Modifier.testTag("draft-openclaw-config-retry"),
+                                enabled = canLaunchOpenClaw && state.canCreateSessionOn(state.hostId), onClick = { onLoadConfiguration(kind, cwd) })
+                        }
+                        configInProgress -> Text(L10n.tr("正在确认配置…"), style = MaterialTheme.typography.labelMedium)
+                        openClawDiagnostic != null -> Text(openClawDiagnostic, Modifier.fillMaxWidth().testTag("draft-openclaw-unavailable")
+                            .semantics { liveRegion = LiveRegionMode.Polite }, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                } else if (!canUseSelectedAgent) {
                     // Keep the draft, but do not show stale settings for a retired source.
-                } else if (state.supportsSessionConfiguration(kind) && kind != "openclaw") {
+                } else if (state.supportsSessionConfiguration(kind)) {
                     if (agentFamily(kind) != KIMI_CODE_KIND) {
                         val permissionSummary = config?.snapshot?.catalog?.permissions?.mapNotNull { setting ->
                             setting.options.firstOrNull { it.value == config.values.permissions[setting.id] }?.label
@@ -270,11 +310,6 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
                     config?.error?.let { StatusWithInfo(L10n.tr("设置未确认"), L10n.hostText(it), error = true) }
                     if (config?.requestId != null) Text(L10n.tr("正在确认配置…"), style = MaterialTheme.typography.labelMedium)
                     if (config?.error != null) NeumorphTextButton(L10n.tr("刷新"), onClick = { onLoadConfiguration(kind, cwd) })
-                } else if (kind == "openclaw") {
-                    config?.error?.let {
-                        StatusWithInfo(L10n.tr("设置未确认"), L10n.hostText(it), error = true)
-                        NeumorphTextButton(L10n.tr("刷新"), onClick = { onLoadConfiguration(kind, cwd) })
-                    }
                 } else StatusWithInfo(L10n.tr("电脑端默认"), L10n.tr("升级电脑端后可在此选择模型、思考深度和权限"))
                 config?.launchError?.let { error ->
                     val title = config.launchErrorTitle

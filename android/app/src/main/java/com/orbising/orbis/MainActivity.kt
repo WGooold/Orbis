@@ -5401,8 +5401,17 @@ internal fun LaunchNotice(launch: LaunchState, onRetry: () -> Unit, onBack: () -
     ) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val unconfirmed = launch.unconfirmed && !rejected
-            StatusWithInfo(if (unconfirmed) L10n.tr("启动未确认") else L10n.tr("启动失败"),
-                launch.failure ?: L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error = !unconfirmed)
+            val title = L10n.tr(if (unconfirmed) "启动未确认" else "启动失败")
+            val inlineDetail = openClawInlineLaunchDetail(launch.agentKind, launch.failure, unconfirmed)
+            if (inlineDetail == null) {
+                StatusWithInfo(title, launch.failure ?: L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error = !unconfirmed)
+            } else {
+                Text(title, style = MaterialTheme.typography.labelMedium,
+                    color = if (unconfirmed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
+                Text(inlineDetail, Modifier.fillMaxWidth().testTag("launch-openclaw-detail")
+                    .semantics { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite },
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (rejected && onAbandon != null) {
                     NeumorphTextButton(L10n.tr("返回新建"), onClick = onAbandon, enabled = !launch.endingWait, modifier = Modifier.testTag("launch-abandon"))

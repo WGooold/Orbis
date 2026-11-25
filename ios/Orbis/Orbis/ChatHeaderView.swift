@@ -80,9 +80,18 @@ struct ChatNoticesRegion: View, Equatable {
         Group {
             if let launch = facts.launch, facts.isLaunchPage, launch.failure != nil || launch.unconfirmed {
                 let unconfirmed = launch.unconfirmed && !launch.rejected
+                let title = L10n.tr(unconfirmed ? "启动未确认" : "启动失败")
                 VStack(alignment: .leading, spacing: 8) {
-                    OrbisStatusWithInfo(title: unconfirmed ? L10n.tr("启动未确认") : L10n.tr("启动失败"),
-                        message: launch.failure ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: !unconfirmed)
+                    if let detail = FeedbackText.openClawInlineLaunchDetail(agent: launch.agentKind, detail: launch.failure, unconfirmed: unconfirmed) {
+                        let palette = OrbisPalette(scheme)
+                        Text(title).font(.orbisCaption()).foregroundStyle(unconfirmed ? palette.secondary : palette.error)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(detail).font(.orbisCaption()).foregroundStyle(palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("launch-openclaw-detail")
+                    } else {
+                        OrbisStatusWithInfo(title: title,
+                            message: launch.failure ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: !unconfirmed)
+                    }
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 12) { launchActions(launch) }.fixedSize(horizontal: true, vertical: false)
                         VStack(alignment: .leading, spacing: 8) { launchActions(launch) }

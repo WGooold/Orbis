@@ -636,6 +636,7 @@ data class RemoteState(
     val codexDesktop: CodexDesktopAttach? = null,
     val unifiedCodexHistory: Boolean = false,
     val openCodeAvailability: OpenCodeAvailability? = null,
+    val openClawBackendAdvice: String? = null,
     /** Native backend modelProvider keys, keyed by agentKind; never Host-managed profile ids. */
     val currentProviders: Map<String, String> = emptyMap(),
     val providerCatalogs: Map<String, List<AgentProvider>> = emptyMap(),
@@ -1925,6 +1926,7 @@ internal fun RemoteState.markReconnecting(): RemoteState {
         currentProviders = emptyMap(),
         // 断开即没有加密通道：这条信息比 connection 更贴近「能不能干活」。
         e2eReady = false,
+        openClawBackendAdvice = null,
         runtimeCloseNegotiated = false,
         sessionBrowse = sessionBrowse?.takeUnless { it.forDownload && it.isLoading },
         agentEnablementAvailable = false, agentEnablementRevision = null, agentEnablementRows = emptyList(),
@@ -2287,6 +2289,7 @@ class RelayReducer(
                     launchableAgents = if (managedAgentView || openClawNegotiated || projectionChanged) launchableAgents else state.launchableAgents.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     codexDesktop = state.codexDesktop.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
                     openCodeAvailability = state.openCodeAvailability.takeIf { state.agentModelEpoch == message.string("modelEpoch") },
+                    openClawBackendAdvice = state.openClawBackendAdvice.takeIf { !projectionChanged && state.agentModelEpoch == message.string("modelEpoch") },
                     sessionListRequests = emptySet(),
                     sessionListRequestEpochs = emptyMap(),
                     runtimeSessionViews = runtimeViews,
@@ -2483,6 +2486,7 @@ class RelayReducer(
                     runtimes = emptyMap(),
                     codexDesktop = null,
                     openCodeAvailability = null,
+                    openClawBackendAdvice = null,
                     pendingCommands = emptyMap(),
                     commandResults = state.commandResults + interrupted.filterNot { it.isSessionSyncCommandId() }.associateWith {
                         CommandResult(ok = false, status = "cancelled")
@@ -2538,9 +2542,11 @@ class RelayReducer(
             "session.launch.result" -> state.withConfiguredLaunchResult(message)
             "session.configuration.result" -> {
                 val current = state.sessionConfiguration
-                if (message.string("requestId") != current.requestId) state else {
+                if (current.requestId == null || message.string("requestId") != current.requestId ||
+                    current.agentKind == "openclaw" && channel == null) state else {
                     val snapshot = json.decodeFromJsonElement<SessionConfigurationSnapshot>(message)
-                    state.copy(sessionConfiguration = current.copy(snapshot = snapshot, requestId = null, proposed = null, error = null, launchError = null, waitingForLaunchJournal = false))
+                    if (current.agentKind == "openclaw" && (snapshot.agentKind != current.agentKind || snapshot.cwd != current.cwd)) state
+                    else state.copy(sessionConfiguration = current.copy(snapshot = snapshot, requestId = null, proposed = null, error = null, launchError = null, waitingForLaunchJournal = false))
                 }
             }
             // Host 明确拒绝了一次范围请求（越界/读盘失败/身份变了）：这条 pull 传输以确定原因收场。
@@ -2589,8 +2595,17 @@ class RelayReducer(
         }
         val error = protocolErrorText(code, message.string("message"))
         if (requestId != null) {
-            if (requestId == next.sessionConfiguration.requestId)
-                next = next.copy(sessionConfiguration = next.sessionConfiguration.copy(requestId = null, error = error))
+            val configuration = next.sessionConfiguration
+            val openClaw = configuration.agentKind == "openclaw"
+            if (requestId == configuration.requestId && (!openClaw || channel != null)) {
+                val reason = if (openClaw) when (code) {
+                    "device_mismatch" -> L10n.tr("这台手机的配对已失效")
+                    "host_disabled" -> L10n.tr("这台电脑的连接已停用，请联系管理员")
+                    in CONNECTION_ACTION_PROTOCOL_CODES -> error
+                    else -> openClawConfigurationRejection(message.string("message"))
+                } else error
+                next = next.copy(sessionConfiguration = configuration.copy(requestId = null, error = reason))
+            }
             if (next.agentStateReads[requestId]?.scope == "agent") next = next.failHomeRead(requestId, error)
             if (requestId == next.agentProviders.requestId)
                 next = next.copy(agentProviders = next.agentProviders.stopOperation(error))

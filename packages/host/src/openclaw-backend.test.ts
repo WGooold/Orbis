@@ -1,6 +1,7 @@
 import { clawMessage } from "./openclaw-history.js";
 import { expect, test, vi } from "vitest";
 import { RuntimeWireEventSchema, type RuntimeEvent, type RuntimeMetadata } from "@orbis/protocol";
+import { GatewayClientRequestError, GatewayClientRequestTimeoutError } from "@openclaw/gateway-client";
 import { OpenClawBackend } from "./openclaw-backend.js";
 import type { OpenClawGatewayEvents, OpenClawMethod } from "./openclaw-gateway.js";
 
@@ -35,6 +36,41 @@ async function fixture(rpc: (method: OpenClawMethod, args: Record<string, unknow
   backend.start(); await vi.waitFor(() => expect(backend.isReady()).toBe(true));
   return { backend, request, runtimes, events, offline, connection, drop: () => { ready = false; connection.offline(); }, reconnect: () => { ready = true; connection.online(); } };
 }
+
+// OPENCLAW-RECOVERY-01: a successful hello is not session access. Retrying
+// a probe reuses the authenticated socket, and only a confirmed probe clears the issue.
+test.each([
+  [new GatewayClientRequestError({ code: "FORBIDDEN", message: "private-fixture" }), "session_access_denied"],
+  [new GatewayClientRequestError({ code: "INVALID_REQUEST", message: "private-fixture",
+    details: { code: "MISSING_SCOPE", missingScope: "operator.read", requiredScopes: ["operator.read"] } }), "session_access_denied"],
+  [new GatewayClientRequestTimeoutError({ method: "sessions.list", timeoutMs: 10_000, requestSent: true }), "session_check_timeout"],
+  [new Error("private-fixture: permission-looking prose"), "session_check_unconfirmed"],
+] as const)("classifies a failed session probe and recovers on user retry (%#)", async (failure, issue) => {
+  let access = false;
+  const log = vi.fn(), retryTransport = vi.fn(), diagnostic = vi.fn();
+  const backend = await OpenClawBackend.create({ url: "wss://gateway.example.test" }, "/unused", "host-a", {
+    ready: vi.fn(), catalog: vi.fn(), online: vi.fn(), offline: vi.fn(), event: vi.fn(), diagnostic, log,
+  }, async hooks => ({ ready: true, start: hooks.online, stop: async () => {}, retryLocal: retryTransport,
+    request: (async (method: OpenClawMethod) => {
+      if (method === "sessions.subscribe") return { subscribed: true };
+      if (!access) throw failure;
+      return { sessions: [] };
+    }) as import("./openclaw-backend.js").OpenClawConnection["request"],
+  }));
+  try {
+    backend.start();
+    await vi.waitFor(() => expect(backend.issue).toBe(issue));
+    expect(backend.isReady()).toBe(false);
+    expect(diagnostic).toHaveBeenCalledOnce();
+    expect(JSON.stringify(log.mock.calls)).not.toContain("private-fixture");
+    access = true;
+    await backend.retryLocal(() => {});
+    await vi.waitFor(() => expect(backend.isReady()).toBe(true));
+    expect(backend.issue).toBeUndefined();
+    expect(retryTransport).not.toHaveBeenCalled();
+    await expect(backend.sessionConfiguration("/work/remote")).resolves.toMatchObject({ models: [], permissions: [] });
+  } finally { await backend.stop(); }
+});
 
 // HOST-RUNNING-01: recent, idle, or archived Gateway records must not light up Host.
 test("reports native active runs without opening OpenClaw sessions", async () => {

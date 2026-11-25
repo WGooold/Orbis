@@ -338,6 +338,9 @@ final class HostConnection: ObservableObject {
         toastTimeout?.cancel(); toastTimeout = nil
         if preservingConnectionConditions { feedback.clearTransientPresentation() } else { feedback.clear() }
         objectErrors = [:]; composerErrors = [:]; sessionOperationErrors = [:]; menuErrors = [:]; historyErrors = [:]; queueErrors = [:]; interactionErrors = [:]
+        if openClawConfigurationCwd != nil {
+            configurationTimeout?.cancel(); sessionConfigurationRequest = nil; openClawConfigurationCwd = nil
+        }
         sessionConfigurationError = nil; sessionLaunchError = nil; configFailures = [:]; transfers.error = nil; transfers.clearUploadErrors()
         dismissBrowse(); toolContent.close(); menuOptions.cancel(); menuOptionsTimeout?.cancel()
     }
@@ -357,6 +360,16 @@ final class HostConnection: ObservableObject {
     @Published private(set) var supportedAgents: [String]?
     @Published private(set) var launchableAgents: [String]?
     @Published private(set) var openCodeAvailability: OpenCodeAvailability?
+    @Published private var openClawBackendAdvice: String?
+    var canLaunchOpenClaw: Bool {
+        (launchableAgents ?? supportedAgents)?.contains("openclaw") == true &&
+            openClawNegotiated && enabledAgentKinds?.contains("openclaw") != false
+    }
+    func openClawDraftDiagnostic(language: AppLanguage = AppLocalization.shared.language) -> String? {
+        guard connection == .secured, openClawNegotiated, enabledAgentKinds?.contains("openclaw") != false, !canLaunchOpenClaw,
+              let openClawBackendAdvice else { return nil }
+        return L10n.format(openClawBackendAdvice, language: language)
+    }
     @Published private(set) var sessionConfigurationSupported = false
     @Published private(set) var kimiCodeSupported = false {
         didSet { if oldValue != kimiCodeSupported { directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
@@ -371,6 +384,7 @@ final class HostConnection: ObservableObject {
     @Published private(set) var proposedSessionConfiguration: SessionConfigurationValues?
     @Published private(set) var sessionConfigurationRequest: String?
     @Published private(set) var sessionConfigurationError: String?
+    private(set) var openClawConfigurationCwd: String?
     @Published private(set) var sessionLaunchError: String? {
         didSet {
             sessionLaunchErrorIsValidation = false; sessionLaunchErrorAwaitsConnection = false
@@ -413,7 +427,9 @@ final class HostConnection: ObservableObject {
         configurationTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
             guard let self, self.sessionConfigurationRequest == id else { return }
-            self.sessionConfigurationRequest = nil; self.sessionConfigurationError = L10n.tr("配置未确认，请刷新核对")
+            self.sessionConfigurationRequest = nil
+            self.sessionConfigurationError = self.openClawConfigurationCwd == nil ? L10n.tr("配置未确认，请刷新核对")
+                : L10n.tr("未收到电脑回复，请检查连接后重试")
         }
     }
     var sessionConfigurationValues: SessionConfigurationValues { proposedSessionConfiguration ?? sessionConfiguration?.values ?? SessionConfigurationValues() }
@@ -426,10 +442,13 @@ final class HostConnection: ObservableObject {
     func loadSessionConfiguration(agent: String, cwd: String) {
         guard supportsSessionConfiguration(for: agent), connection == .secured, !cwd.isEmpty else { return }
         let id = UUID().uuidString
-        startConfigurationTimeout(id)
+        openClawConfigurationCwd = agent == "openclaw" ? cwd : nil
         sessionConfigurationRequest = id; sessionConfiguration = nil; proposedSessionConfiguration = nil; sessionConfigurationError = nil
-        if !transport.send(["type": "session.configuration.read", "protocolVersion": orbisProtocolVersion, "requestId": id, "agentKind": agent, "cwd": cwd]) {
-            sessionConfigurationRequest = nil; sessionConfigurationError = L10n.tr("配置未发送，请检查连接")
+        if transport.send(["type": "session.configuration.read", "protocolVersion": orbisProtocolVersion, "requestId": id, "agentKind": agent, "cwd": cwd]) {
+            startConfigurationTimeout(id)
+        } else {
+            configurationTimeout?.cancel(); sessionConfigurationRequest = nil
+            sessionConfigurationError = agent == "openclaw" ? L10n.tr("配置请求未发送，请检查连接后重试") : L10n.tr("配置未发送，请检查连接")
         }
     }
 
@@ -1401,9 +1420,14 @@ final class HostConnection: ObservableObject {
             self.updateSyncing()
             return true
         }
-        hostState.didProject = { [weak self] domains in
+        hostState.didProject = { [weak self] domains, missing in
             guard let self else { return }
             if domains["providers"] != nil { self.directoryViewRevision &+= 1; self.objectWillChange.send() }
+            if let backends = domains["backends"] {
+                self.openClawBackendAdvice = backends.availability == "ready" ? FeedbackText.openClawBackendAdvice(backends.value["backends"]) : nil
+            } else if missing.contains("backends") {
+                self.openClawBackendAdvice = nil
+            }
             if let backends = domains["backends"], backends.availability == "ready" {
                 // A missing list means unknown (no restriction), the same as Android; never "nothing can start".
                 self.supportedAgents = backends.value["agents"].isArray ? backends.value["agents"].array.compactMap(\.string) : nil
@@ -1678,7 +1702,7 @@ final class HostConnection: ObservableObject {
         interactions = [:]; queuedMessages = [:]; interactionOutcomes = [:]
         workingBranches = [:]; dismissPreview()
         actionTimeouts.values.forEach { $0.cancel() }; actionTimeouts = [:]; runtimeActions = [:]; composerActionDrafts = [:]; pendingActionIds = []; setActionFeedback(nil)
-        pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil; kimiCodeSupported = false; kimiCodeDesktopSupported = false; openCodeAvailability = nil
+        pathRTT = nil; commands = [:]; supportedAgents = nil; launchableAgents = nil; codexDesktop = nil; kimiCodeSupported = false; kimiCodeDesktopSupported = false; openCodeAvailability = nil; openClawBackendAdvice = nil
         dismissBrowse(); clearActivation()
         clearSyncs()
         transport.connect(pairing: pairing, identity: identity, receive: { [weak self] message, channel in
@@ -1700,7 +1724,11 @@ final class HostConnection: ObservableObject {
             if state != .secured { self.homeDirectoryReceived = false; self.defaultSessionSpawnMode = "tui"; self.filteredReady = nil; self.resetAgentEnablement(); self.importReady = false; self.finishExternalImport(.unconfirmed); self.finishExternalLaunch(.unconfirmed) }
             self.recordConnectionEvent(L10n.tr("连接：{0}", state.rawValue))
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
-            if state != .secured { self.openClawNegotiated = false; self.kimiCodeSupported = false; self.kimiCodeDesktopSupported = false; self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false) }
+            if state != .secured {
+                self.openClawNegotiated = false; self.openClawBackendAdvice = nil
+                self.kimiCodeSupported = false; self.kimiCodeDesktopSupported = false
+                self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false)
+            }
             if state == .offline || state == .connecting {
                 self.toolContent.close(); self.turnFileChanges.disconnected()
                 self.activePath = nil
@@ -3881,7 +3909,13 @@ final class HostConnection: ObservableObject {
         }
         if let requestId, requestId == sessionConfigurationRequest {
             configurationTimeout?.cancel()
-            sessionConfigurationRequest = nil; sessionConfigurationError = FeedbackText.reason(detail ?? L10n.tr("配置未确认")); owned = true
+            sessionConfigurationRequest = nil
+            if openClawConfigurationCwd != nil {
+                sessionConfigurationError = FeedbackText.openClawConfigurationRejection(detail, code: message["code"] as? String)
+            } else {
+                sessionConfigurationError = FeedbackText.reason(detail ?? L10n.tr("配置未确认"))
+            }
+            owned = true
         }
         if let requestId, requestId == activationRequestId { clearActivation(); owned = true }
         if let requestId, requestId == sessionListRequest {
@@ -4035,7 +4069,7 @@ final class HostConnection: ObservableObject {
             let projectionChanged = openClawNegotiated != admittedOpenClaw || unifiedCodexHistory != admittedCodex
             openClawNegotiated = admittedOpenClaw
             unifiedCodexHistory = admittedCodex
-            if projectionChanged { hostState.invalidateBackendProjection() }
+            if projectionChanged { openClawBackendAdvice = nil; hostState.invalidateBackendProjection() }
             let catalogWasConnected = hostState.connected
             historyWindowSupported = false
             historyInterest = HistoryWindowInterest()
@@ -4068,7 +4102,10 @@ final class HostConnection: ObservableObject {
             let selectedLeafChanged = next.first(where: { $0.runtimeId == selectedRuntimeId }).map { next in
                 runtimes.first(where: { $0.runtimeId == next.runtimeId })?.sessionLeafId != next.sessionLeafId
             } ?? false
-            if hostRestarted { setHistoryConnection(false); clearSyncs(); sourcePositions = [:]; appliedBaselines = [:] }
+            if hostRestarted {
+                openClawBackendAdvice = nil
+                setHistoryConnection(false); clearSyncs(); sourcePositions = [:]; appliedBaselines = [:]
+            }
             for runtime in next {
                 let previous = runtimes.first { $0.runtimeId == runtime.runtimeId }
                 if previous?.sessionId != runtime.sessionId || previous?.codexCatalogId != runtime.codexCatalogId {
@@ -4187,8 +4224,10 @@ final class HostConnection: ObservableObject {
             current.loading = false
             browse = current
         case "session.configuration.result":
-            guard message["requestId"] as? String == sessionConfigurationRequest,
+            guard let request = sessionConfigurationRequest, message["requestId"] as? String == request,
                   let snapshot: SessionConfigurationSnapshot = jsonDecode(message) else { return }
+            if let cwd = openClawConfigurationCwd, snapshot.agentKind != "openclaw" || snapshot.cwd != cwd { return }
+            configurationTimeout?.cancel(); openClawConfigurationCwd = nil
             sessionConfiguration = snapshot; proposedSessionConfiguration = nil; sessionConfigurationRequest = nil; sessionConfigurationError = nil
         case "session.launch.result":
             let journal = launchJournal

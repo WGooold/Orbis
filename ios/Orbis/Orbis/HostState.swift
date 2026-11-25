@@ -311,7 +311,7 @@ final class HostState: ObservableObject {
     @Published private(set) var diagnosticsError: String?
     var send: (([String: Any]) -> Bool)?
     var didChangeProviders: (() -> Void)?
-    var didProject: (([String: HostDomain]) -> Void)?
+    var didProject: (([String: HostDomain], Set<String>) -> Void)?
     var didChangeCatalog: (([SessionSummary], Set<String>) async -> Void)?
     @Published private(set) var catalogRange: HostCatalogRange?
     private var catalogRequest: HostCatalogRequest?
@@ -787,7 +787,7 @@ final class HostState: ObservableObject {
         pendingDomains.subtract(prepared.resolved)
         truncated = prepared.truncated; modelError = nil
         if prepared.accepted["providers"] != nil { reconcileQuotaProviders() }
-        didProject?(prepared.accepted)
+        didProject?(prepared.accepted, Set(prepared.absent.keys))
         if let catalog = prepared.accepted["catalog"] { await beginCatalog(catalog, prepared: prepared.catalog) }
         if prepared.accepted["catalog"] != nil { directoryReconcile.confirmed(Date()) }
         if pendingDomains.isEmpty { modelTimeout?.cancel() }

@@ -87,6 +87,7 @@ import { SessionConfigurationStore } from "./session-configuration-store.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
 import { OpenCodeServiceConnection, type OpenCodeClient } from "./opencode-service-connection.js";
 import { OpenClawBackend, type OpenClawConnection } from "./openclaw-backend.js";
+import { openClawAdvice } from "./openclaw-diagnostics.js";
 import { relayBusinessDeviceURL, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 
 // HERMES-COMPAT-01 / HOST-AGENT-START-01: optional independent release builds with their own dependencies.
@@ -3342,6 +3343,11 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       send({ type: "device.features", features: ["agent.openclaw"] });
       const available = await until(row => row.type === "device.ready" && (row.launchableAgents as string[]).includes("openclaw"));
       expect(available.agents).not.toContain("openclaw");
+      // A bad directory on the same computer must not start the local service.
+      send({ ...configuration, cwd: join(stateDir, "missing"), requestId: "claw-cold-invalid-cwd" });
+      expect(await until(row => row.requestId === "claw-cold-invalid-cwd")).toMatchObject({ type: "protocol.error",
+        code: "configuration_unavailable", message: openClawAdvice.work_directory_unavailable });
+      expect(start).not.toHaveBeenCalled();
       send({ type: "session.activate", requestId: "claw-wrong-source", target: { type: "resume", agentKind: "openclaw", sessionId: "openclaw:other:session" } });
       expect(await until(row => row.requestId === "claw-wrong-source")).toMatchObject({ code: "session_not_found" });
       expect(start).not.toHaveBeenCalled();
@@ -3358,6 +3364,33 @@ describe("host 进程激活（spec §8 的 M3 验收）", () => {
       expect(await until(row => row.requestId === "claw-resume")).toMatchObject({ type: "session.activated", sessionId });
       expect(start).toHaveBeenCalledOnce();
     } finally { create.mockRestore(); }
+  });
+
+  // OPENCLAW-RECOVERY-01: do not infer a missing CLI before discovery returns, or launch it to diagnose.
+  it("reports a closed OpenClaw port and confirmed CLI unavailability without starting Gateway", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-openclaw-unavailable-"));
+    relay = await startRelayLocal(stateDir);
+    const reserve = createServer();
+    await new Promise<void>((resolve, reject) => { reserve.once("error", reject); reserve.listen(0, "127.0.0.1", resolve); });
+    const address = reserve.address();
+    await new Promise<void>((resolve, reject) => reserve.close(error => error ? reject(error) : resolve()));
+    if (!address || typeof address === "string") throw new Error("No local fixture port");
+    let discovered: (installed: boolean) => void = () => {};
+    const discovery = new Promise<boolean>(resolve => { discovered = resolve; });
+    const start = vi.fn(async () => {});
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret",
+      stateDir, sessionsRoot: join(stateDir, "sessions"), reconnect: false, lan: false,
+      openClaw: { url: `ws://127.0.0.1:${address.port}` }, openClawLauncher: { available: () => discovery, start } });
+    await host.start();
+    const reports = async (reason: string) => vi.waitFor(() => expect(host!.readHostState(["backends"]).domains[0]?.value).toMatchObject({
+      backends: expect.arrayContaining([expect.objectContaining({ kind: "openclaw", ready: false, launchable: false, reason })]),
+    }));
+    try {
+      await reports(openClawAdvice.local_port_closed);
+      discovered(false);
+      await reports(openClawAdvice.local_cli_unavailable);
+      expect(start).not.toHaveBeenCalled();
+    } finally { discovered(false); }
   });
 
   // HOST-AGENT-START-01: a negotiated draft starts the shared service, without loosening receipt visibility.

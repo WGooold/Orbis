@@ -166,12 +166,15 @@ internal fun RemoteState.withAgentStateSnapshot(
     val confirmed = changed.toMutableMap()
     for (element in (message["unchanged"] as? JsonArray).orEmpty()) {
         val name = (element as? JsonPrimitive)?.contentOrNull ?: continue
-        if (name in domains || read != null && name !in read.domains) continue
+        if (name in domains || name == "backends" && name in missing || read != null && name !in read.domains) continue
         merged[name]?.let { confirmed[name] = it }
     }
     val projected = if (scope == "agent") ranged.applyAgentDomainProjection(message.string("runtimeId"), message.string("sessionId"), confirmed, json,
         staticIdentity = message.string("stateFormat") in setOf("compact-v1", "compact-v2"), parseInteraction = parseInteraction)
-        else if (scope == "host") ranged.applyHostDomainProjection(confirmed, json) else ranged
+        else if (scope == "host") {
+            val host = if ("backends" in missing && (read == null || "backends" in read.domains)) ranged.copy(openClawBackendAdvice = null) else ranged
+            host.applyHostDomainProjection(confirmed, json)
+        } else ranged
     projected.agentProjectionFailure?.let { failure -> return cleared.rejectedSnapshot(key, scope, requestId, failure) }
     val settled = if (read?.subscribe == true) projected.copy(agentStateReads = projected.agentStateReads +
         (requestId to read.copy(pendingDomains = read.pendingDomains - confirmed.keys - missing.keys))) else projected

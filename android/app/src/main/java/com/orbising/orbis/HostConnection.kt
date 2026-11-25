@@ -168,12 +168,12 @@ internal class HostConnection(
         val current = mutableState.value
         if (!current.supportsSessionConfiguration(kind) || cwd.isBlank()) return
         val request = UUID.randomUUID().toString()
-        configurationTimeout(request)
         updateState { it.copy(sessionConfiguration = SessionConfigurationState(kind, cwd, requestId = request)) }
-        if (!relay.sendDeviceMessage(buildJsonObject {
+        if (relay.sendDeviceMessage(buildJsonObject {
             put("type", "session.configuration.read"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", request)
             put("agentKind", kind); put("cwd", cwd)
-        })) updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(requestId = null, error = L10n.tr("配置未发送，请检查连接"))) }
+        })) configurationTimeout(request)
+        else updateState { it.failConfigurationTransport(request, timedOut = false, legacyError = L10n.tr("配置未发送，请检查连接")) }
     }
 
     fun saveSessionConfiguration(values: SessionConfigurationValues) {
@@ -181,20 +181,19 @@ internal class HostConnection(
         val snapshot = config.snapshot ?: return
         if (snapshot.agentKind == "openclaw" || !mutableState.value.supportsSessionConfiguration(snapshot.agentKind)) return
         val request = UUID.randomUUID().toString()
-        configurationTimeout(request)
         updateState { it.copy(sessionConfiguration = config.copy(requestId = request, proposed = values, error = null, launchError = null, waitingForLaunchJournal = false)) }
-        if (!relay.sendDeviceMessage(buildJsonObject {
+        if (relay.sendDeviceMessage(buildJsonObject {
             put("type", "session.configuration.save"); put("protocolVersion", PROTOCOL_VERSION); put("requestId", request)
             put("agentKind", snapshot.agentKind); put("cwd", snapshot.cwd); put("binding", snapshot.binding); put("revision", snapshot.revision)
             put("values", values.payload())
-        })) updateState { it.copy(sessionConfiguration = it.sessionConfiguration.copy(requestId = null, error = L10n.tr("配置未确认，请检查连接"))) }
+        })) configurationTimeout(request)
+        else updateState { it.failConfigurationTransport(request, timedOut = false, legacyError = L10n.tr("配置未确认，请检查连接")) }
     }
 
     private fun configurationTimeout(request: String) {
         scope.launch {
             delay(20_000)
-            updateState { current -> if (current.sessionConfiguration.requestId != request) current else current.copy(
-                sessionConfiguration = current.sessionConfiguration.copy(requestId = null, error = L10n.tr("配置未确认，请刷新核对"))) }
+            updateState { it.failConfigurationTransport(request, timedOut = true, legacyError = L10n.tr("配置未确认，请刷新核对")) }
         }
     }
 

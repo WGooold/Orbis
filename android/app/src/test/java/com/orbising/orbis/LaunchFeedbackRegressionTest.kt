@@ -79,6 +79,20 @@ class LaunchFeedbackRegressionTest {
         assertNull(RemoteState().composerFailure(null, userMessageInputError("/help")!!).sessionConfiguration.launchErrorTitle)
     }
 
+    // OPENCLAW-DRAFT-FEEDBACK-01: only OpenClaw promotes exact, localized guidance out of the info dialog.
+    @Test fun `OpenClaw launch shows safe inline host advice and separates outcome fallbacks`() {
+        val safe = "缺少 OpenClaw Gateway 令牌。请在电脑的 Orbis Host → OpenClaw 填入 Gateway 令牌并应用。"
+        val unconfirmed = "OpenClaw Gateway 未确认这次启动。请先核对原启动和会话列表，不要直接再次创建。"
+        fun openClaw(detail: String?, unknown: Boolean) =
+            openClawInlineLaunchDetail("openclaw", detail, unconfirmed = unknown, language = AppLanguage.English)
+        assertNull(openClawInlineLaunchDetail("codex", safe, unconfirmed = false))
+        assertEquals("OpenClaw Gateway token missing. On your computer, open Orbis Host → OpenClaw, enter the Gateway token, and apply the change.", openClaw(safe, false))
+        assertEquals("OpenClaw Gateway did not confirm this launch. Check the previous launch and the session list before creating another session.", openClaw(unconfirmed, true))
+        assertEquals("Check the previous launch and first message before starting another session.", openClaw("$unconfirmed\n调试数据 fixture-secret", true))
+        assertEquals("Check the previous launch and first message before starting another session.", openClaw(null, true))
+        assertEquals("Check the Orbis Host diagnostics on your computer, then return to the new-session draft.", openClaw("内部 OpenClaw 错误 fixture-secret", false))
+    }
+
     // SC97 / LAUNCH-FEEDBACK-01: a first sentence is owned by the new-session card before any runtime exists.
     @Test fun `first sentence validation stays on its new session draft`() {
         val failure = userMessageInputError("/help")!!

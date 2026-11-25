@@ -61,19 +61,46 @@ internal object LocalizationCatalog {
         "DeepSeek 网页版" to "DeepSeek Web",
         "E2eConnectOptions 必须且只能选择普通连接或配对模式之一" to "E2eConnectOptions requires exactly one connection or pairing mode",
         "HEAD，{0}（分离）" to "HEAD, {0} (detached)",
+        "Host 无法用当前 OpenClaw CLI 启动 Gateway。请在电脑手动启动 Gateway，或确认已安装 OpenClaw 2026.11.5。" to "Host could not use the current OpenClaw CLI to start the Gateway. Start the Gateway on the computer or verify that OpenClaw 2026.11.5 is installed.",
+        "Host 无法确认本机 OpenClaw Gateway 端口状态。请在电脑检查 Gateway 是否已启动及端口是否正确。" to "Host could not check the local OpenClaw Gateway port. On the computer, make sure the Gateway is running and the port is correct.",
         "Host 无法连接 OpenCode 共享服务。请检查电脑上的服务状态和认证配置。" to "Host cannot connect to the OpenCode shared service. Check the service status and authentication settings on your computer.",
         "Host 未报告进行中的切换" to "Host has not reported a pending switch",
+        "Host 未能确认 OpenClaw Gateway 已接入。请在电脑核对 Gateway 地址、运行状态，再重新连接 Host。" to "Host could not confirm a connection to OpenClaw Gateway. Check the Gateway address and status on the computer, then reconnect Host.",
+        "Host 未能确认本机 OpenClaw Gateway 已启动。请在电脑检查 Gateway 状态和端口后重试。" to "Host could not confirm that the local OpenClaw Gateway started. Check the Gateway status and port on the computer, then try again.",
         "Host 模型领域格式无效：" to "Invalid Host model domain: ",
         "Host 模型领域格式无效：{0}" to "Invalid Host model domain: {0}",
         "JSON 不可编码" to "JSON cannot be encoded",
         "JSON 不是对象" to "JSON is not an object",
+        "Kimi Code Web" to "Kimi Code Web",
+        "Kimi Code 桌面版" to "Kimi Code Desktop",
         "M月d日" to "MMM d",
+        "OpenClaw Gateway 与 Orbis Host 的版本不兼容。请在电脑检查两者版本，使用支持的版本后重新连接 Host。" to "The OpenClaw Gateway and Orbis Host versions are incompatible. Check both versions, use a supported version, then reconnect Host.",
+        "OpenClaw Gateway 令牌不匹配。此连接由环境变量管理，请在电脑更新 ORBIS_OPENCLAW_TOKEN，再重启 Host。" to "The OpenClaw Gateway token does not match. This connection is managed by environment variables. Update ORBIS_OPENCLAW_TOKEN and restart Host.",
+        "OpenClaw Gateway 令牌不匹配。请在电脑的 Orbis Host → OpenClaw 核对令牌并重新应用。" to "The OpenClaw Gateway token does not match. Check the token in Orbis Host → OpenClaw on your computer and apply it again.",
+        "OpenClaw Gateway 已启动，等待在 OpenClaw 中批准 Orbis Host" to "The Gateway started. Approve Orbis Host in the OpenClaw device list, then reconnect Host.",
+        "OpenClaw Gateway 拒绝了 Orbis Host 的设备令牌。请在电脑核对 Gateway 令牌，再重新连接 Host。" to "OpenClaw Gateway rejected the Orbis Host device token. Check the Gateway token on the computer, then reconnect Host.",
+        "OpenClaw Gateway 拒绝了当前认证方式。请在电脑核对 Gateway 是否支持令牌认证，或联系 Gateway 管理员。" to "OpenClaw Gateway rejected this authentication method. Check whether the Gateway supports token authentication or contact the Gateway administrator.",
+        "OpenClaw Gateway 暂时限制了认证请求。请稍等一会儿再重试。" to "OpenClaw Gateway has temporarily rate-limited authentication. Wait a moment and try again.",
+        "OpenClaw Gateway 未及时回复会话检查。请等待 Gateway 就绪后重试；若仍失败，请查看 Gateway 诊断。" to "OpenClaw Gateway did not reply to the session check in time. Wait until it is ready and retry. If this persists, check the Gateway diagnostics.",
+        "OpenClaw Gateway 未授予所需的会话权限。请检查 Orbis Host 在 Gateway 上的授权，或联系 Gateway 管理员。" to "OpenClaw Gateway did not grant the required session access. Check the permissions for Orbis Host on the Gateway or contact its administrator.",
+        "OpenClaw Gateway 未提供所需的会话接口。请核对 Gateway 版本或联系管理员，再重新连接 Host。" to "OpenClaw Gateway does not provide the required session methods. Check the Gateway version or contact its administrator, then reconnect Host.",
+        "OpenClaw Gateway 未确认会话可访问。请在电脑查看 Gateway 诊断，再重新连接 Host。" to "OpenClaw Gateway did not confirm session access. Check the Gateway diagnostics on the computer, then reconnect Host.",
+        "OpenClaw Gateway 未确认这次启动。请先核对原启动和会话列表，不要直接再次创建。" to "OpenClaw Gateway did not confirm this launch. Check the previous launch and the session list before creating another session.",
+        "OpenClaw Gateway 未能恢复此会话。请先刷新会话列表；若仍失败，请检查电脑端 Gateway 的状态和授权。" to "OpenClaw Gateway could not reopen this session. Refresh the session list first. If this persists, check Gateway status and permissions on the computer.",
+        "OpenClaw Gateway 未配置所需的令牌。请先在 Gateway 所在电脑修正认证配置，再在 Orbis Host 设置匹配的令牌。" to "The Gateway itself is missing its required token. Fix authentication on the computer running the Gateway, then set the matching token in Orbis Host.",
+        "OpenClaw Gateway 正在初始化。请等 Gateway 就绪后重试。" to "OpenClaw Gateway is initializing. Wait until it is ready and try again.",
+        "OpenClaw Gateway 的 TLS 校验失败。请在电脑核对远程地址和证书，修正后重新连接 Host。" to "TLS verification for OpenClaw Gateway failed. Check the remote address and certificate on the computer, then reconnect Host.",
+        "OpenClaw Host 配置无效。请在电脑的 Orbis Host → OpenClaw 核对地址；如由环境变量管理，请检查 Host 的启动配置。" to "The OpenClaw Host configuration is invalid. Check the address in Orbis Host → OpenClaw, or check the Host startup configuration if it is managed by environment variables.",
+        "OpenClaw 工作目录不可用。请在 App 重新选择电脑上存在且可访问的工作目录。" to "The OpenClaw working directory is unavailable. In the app, select an accessible directory on the computer.",
+        "OpenClaw 的设备申请已被拒绝或过期。请重新连接 Host，再在 OpenClaw 的设备列表处理新申请。" to "The OpenClaw device request was rejected or expired. Reconnect Host and review the new request in the OpenClaw device list.",
+        "OpenClaw 等待设备批准。请在 OpenClaw 的设备列表批准 Orbis Host，再重新连接 Host。" to "OpenClaw is waiting for device approval. Approve Orbis Host in the OpenClaw device list, then reconnect Host.",
         "OpenCode 共享服务未运行。请在电脑上启动 OpenCode。" to "The OpenCode shared service is not running. Start OpenCode on your computer.",
         "OpenCode 实时连接未就绪。请稍后再试。" to "The OpenCode live connection is not ready. Try again shortly.",
         "OpenCode 当前不可用。请检查电脑上的服务状态。" to "OpenCode is unavailable. Check the service status on your computer.",
         "OpenCode 服务注册地址无效。请检查电脑上的 OpenCode 服务配置。" to "The OpenCode service registration address is invalid. Check the OpenCode service configuration on your computer.",
         "OpenCode 版本不兼容。请在电脑上使用 Host 支持的版本。" to "This OpenCode version is incompatible. Use a version supported by Host on your computer.",
         "Orbis Host 无权读取电脑端文件" to "Orbis Host cannot read this file on the computer",
+        "Orbis Host 无法读取或保存 OpenClaw 设备身份。请检查电脑上 Host 状态目录的权限，再重新连接 Host。" to "Orbis Host could not read or save its OpenClaw device credentials. Check permissions on the Host state directory, then reconnect Host.",
         "Orbis 交互请求" to "Orbis interaction request",
         "Orbis 会话" to "Orbis session",
         "Orbis 协议版本不兼容，请同时更新手机 App 和电脑 Host。" to "Incompatible Orbis protocol. Update both the app and the computer's Host.",
@@ -134,6 +161,7 @@ internal object LocalizationCatalog {
         "{0} 个文件正在下载" to "{0} files downloading",
         "{0} 个目录" to "{0} directories",
         "{0} 个目录，{1} 个会话" to "Folders: {0}, sessions: {1}",
+        "{0} 个运行中" to "{0} running",
         "{0} 个配置" to "{0} profiles",
         "{0} 台" to "{0} computers",
         "{0} 已在其他设备停用" to "{0} was disabled on another device",
@@ -141,6 +169,8 @@ internal object LocalizationCatalog {
         "{0} 已完成" to "{0} completed",
         "{0} 帧不加密，请用 PlaintextEnvelope" to "{0} frames are unencrypted; use PlaintextEnvelope",
         "{0} 帧不属于明文帧" to "{0} is not a plaintext frame",
+    )
+    private fun part1(): Map<String, String> = mapOf(
         "{0} 帧不是密文，请用 PlaintextEnvelope" to "{0} is not an encrypted frame; use PlaintextEnvelope",
         "{0} 必须是 {1} 字节" to "{0} must be {1} bytes",
         "{0} 必须是 {1} 字节，实际 {2}" to "{0} must be {1} bytes; got {2}",
@@ -169,8 +199,6 @@ internal object LocalizationCatalog {
         "{0}（分离 HEAD）" to "{0} (detached HEAD)",
         "{0}（已读取）" to "{0} loaded",
         "{0}（当前使用）" to "{0} (in use)",
-    )
-    private fun part1(): Map<String, String> = mapOf(
         "{0}（清单不完整）" to "{0} (incomplete list)",
         "{0}（状态待核对）" to "{0} (status unconfirmed)",
         "{0}，" to "{0}, ",
@@ -293,6 +321,8 @@ internal object LocalizationCatalog {
         "中继服务器地址必须使用 wss://，或使用本地/局域网 ws:// 地址" to "Use a wss:// relay address, or a local/LAN ws:// address",
         "中继认证失败，请重新连接。" to "Relay authentication failed. Reconnect.",
         "中继返回缺少设备凭据" to "Relay response is missing device credentials",
+    )
+    private fun part2(): Map<String, String> = mapOf(
         "中继配对失败，请在电脑端重新生成二维码。" to "Relay pairing failed. Generate a new QR code on the computer.",
         "书签" to "Bookmark",
         "书签：{0}" to "Bookmark: {0}",
@@ -321,8 +351,6 @@ internal object LocalizationCatalog {
         "仅保存到此设备" to "Save on this device only",
         "仅将本次识别文字发送到自定义 API" to "Only this transcript is sent to your custom API",
         "仅用户" to "User only",
-    )
-    private fun part2(): Map<String, String> = mapOf(
         "仅记录 Codex 文件工具变更" to "Only Codex file tool changes are recorded",
         "仅记录部分范围" to "Only part of the scope is recorded",
         "今天 HH:mm" to "'Today' HH:mm",
@@ -445,6 +473,8 @@ internal object LocalizationCatalog {
         "全部 {0} 个" to "All {0}",
         "关" to "Off",
         "关闭" to "Close",
+    )
+    private fun part3(): Map<String, String> = mapOf(
         "关闭 {0} 个会话？" to "Close {0} sessions?",
         "关闭会尝试停止当前回合；不能确认所有后台任务都会停止。" to "Closing will try to stop the current turn. Some background tasks may continue.",
         "关闭会话未发送，请连接电脑后重试" to "The close request was not sent. Connect to your computer and try again.",
@@ -473,8 +503,6 @@ internal object LocalizationCatalog {
         "其他答案" to "Other answer",
         "内容不完整" to "Incomplete content",
         "内容存在缺失范围，未导出不完整文件" to "Content has gaps. An incomplete file was not exported.",
-    )
-    private fun part3(): Map<String, String> = mapOf(
         "内容存在缺失范围，未导出不完整文件。" to "Content has gaps. An incomplete file was not exported.",
         "内容已截断" to "Content truncated",
         "内容暂不可显示" to "Content cannot be displayed",
@@ -597,6 +625,8 @@ internal object LocalizationCatalog {
         "压缩中，{0}" to "Compacting, {0}",
         "原生报告的可读目录：{0}。" to "Native readable directories: {0}.",
         "原生报告的可读目录：没有额外目录。" to "Native readable directories: no additional directories.",
+    )
+    private fun part4(): Map<String, String> = mapOf(
         "原生报告的额外可写目录：{0}。" to "Native additional writable directories: {0}.",
         "原生报告的额外可写目录：没有额外目录。" to "Native additional writable directories: none.",
         "原生权限预设：{0}。预设名称只标识配置，实际范围以原生报告的权限事实为准。" to "Native permission preset: {0}. The name only identifies a configuration; the effective scope is determined by native permission facts.",
@@ -625,8 +655,6 @@ internal object LocalizationCatalog {
         "发送文件到电脑" to "Send files to computer",
         "发送消息" to "Send message",
         "发送第一句话" to "Send the first message",
-    )
-    private fun part4(): Map<String, String> = mapOf(
         "发送结果待核对" to "Send result unconfirmed",
         "发送队列已满，请稍后重试。" to "Send queue is full. Try again shortly.",
         "取消" to "Cancel",
@@ -749,6 +777,8 @@ internal object LocalizationCatalog {
         "子代理 · {0} 项" to "Subagents · {0}",
         "子代理 · {0} 项 · 清单不完整" to "Subagents · {0} · Incomplete list",
         "子代理 · {0} 项 · 状态待核对" to "Subagents · {0} · Status unconfirmed",
+    )
+    private fun part5(): Map<String, String> = mapOf(
         "子代理运行中" to "Subagents running",
         "子任务 · {0} 项" to "Subtasks · {0}",
         "存入 Orbis" to "Save to Orbis",
@@ -777,8 +807,6 @@ internal object LocalizationCatalog {
         "审批：未知；当前审批行为尚未确认。" to "Approval: unknown. The current approval behavior has not been confirmed.",
         "密文短于认证标签长度" to "Ciphertext is shorter than the authentication tag",
         "对方 X25519 公钥必须是 {0} 字节" to "Peer X25519 public key must be {0} bytes",
-    )
-    private fun part5(): Map<String, String> = mapOf(
         "导入内容超过大小或数量上限" to "The import exceeds the size or item limit",
         "导入的内容：" to "Imported content:",
         "导入草稿" to "Import drafts",
@@ -805,6 +833,7 @@ internal object LocalizationCatalog {
         "尚未读取会话状态" to "Session status not loaded",
         "尚未读取到供应商清单，请刷新后重试" to "Provider list not loaded. Refresh and try again.",
         "尚未连接到电脑，连接建立后才能操作会话" to "Not connected to the computer. Connect before using session actions.",
+        "尚未配置 OpenClaw Gateway。请在电脑的 Orbis Host → OpenClaw 保存本机端口或远程地址。" to "OpenClaw Gateway is not configured. On your computer, open Orbis Host → OpenClaw and save a local port or remote address.",
         "局域网" to "LAN",
         "局域网发送队列已满" to "LAN send queue is full",
         "局域网密钥未建立" to "LAN key is not established",
@@ -900,6 +929,8 @@ internal object LocalizationCatalog {
         "已断开" to "Disconnected",
         "已显示完整差异" to "Full diff displayed",
         "已暂停" to "Paused",
+    )
+    private fun part6(): Map<String, String> = mapOf(
         "已暂停，{0}" to "Paused, {0}",
         "已暂停，可在下载页面继续" to "Paused. Resume from Downloads.",
         "已暂停，可重新发送（{0}%）" to "Paused. You can send again ({0}%).",
@@ -929,8 +960,6 @@ internal object LocalizationCatalog {
         "已配对" to "Paired",
         "已配对电脑" to "Paired computers",
         "已配对电脑 {0} 台" to "{0} paired computers",
-    )
-    private fun part6(): Map<String, String> = mapOf(
         "已配对的电脑" to "Paired computer",
         "应用" to "Apply",
         "应用到下一轮" to "Apply to the next turn",
@@ -943,6 +972,7 @@ internal object LocalizationCatalog {
         "开始新的 Codex 会话" to "Start a new Codex session",
         "开始语音输入" to "Start voice input",
         "异常" to "Error",
+        "引用到输入框" to "Insert into message",
         "引用来源暂不可显示" to "Source unavailable",
         "强制使用 QUIC；准备失败时保留当前连接并报告错误" to "Always use QUIC; if preparation fails, keep the current connection and report an error.",
         "强制使用 WS" to "Always use WS",
@@ -1051,6 +1081,8 @@ internal object LocalizationCatalog {
         "扫码配对" to "Scan to pair",
         "批量移除已停止：" to "Bulk removal stopped: ",
         "批量移除已停止：{0}" to "Bulk removal stopped: {0}",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "拒绝" to "Deny",
         "拨盘转动 {0} 格" to "Dial turned {0} detents",
         "按路径下载" to "Download by path",
@@ -1081,8 +1113,6 @@ internal object LocalizationCatalog {
         "撤回未确认" to "Withdrawal unconfirmed",
         "撤回请求未发送，请连接电脑后重试" to "The recall request was not sent. Connect to your computer and try again.",
         "撤回请求未发送：中继服务器当前离线" to "Withdrawal not sent: relay is offline",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "撤销" to "Undo",
         "撤销设备失败（HTTP {0}）" to "Device revocation failed (HTTP {0})",
         "播放" to "Play",
@@ -1203,6 +1233,8 @@ internal object LocalizationCatalog {
         "暂时无法读取此轮文件变化。" to "This turn's file changes are temporarily unavailable.",
         "暂时无法读取轮次差异，请稍后重试" to "This turn's diff is temporarily unavailable. Try again shortly.",
         "暂时无法连接电脑，请检查网络并确认电脑上的 Orbis Host 已打开" to "Could not connect to the computer. Check the network and make sure Orbis Host is running.",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "更换会话" to "Change session",
         "更新" to "Update",
         "更新电脑端后可发送导入内容" to "Update Orbis on your computer to send imports",
@@ -1233,8 +1265,6 @@ internal object LocalizationCatalog {
         "未发送" to "Not sent",
         "未听清，请再试一次" to "No speech detected. Please try again.",
         "未启用" to "Disabled",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "未启用供应商" to "Provider disabled",
         "未安装" to "Not installed",
         "未完成" to "Incomplete",
@@ -1247,6 +1277,7 @@ internal object LocalizationCatalog {
         "未捕获完整的轮次前后版本" to "Full before-and-after versions were not captured",
         "未接入" to "Not connected",
         "未收到新会话确认" to "No confirmation from the new session yet",
+        "未收到电脑回复，请检查连接后重试" to "No reply from the computer. Check the connection and try again.",
         "未收到电脑确认" to "No confirmation from the computer yet",
         "未核对" to "Not checked",
         "未生效" to "Not applied",
@@ -1285,6 +1316,9 @@ internal object LocalizationCatalog {
         "本地首屏存在缺口，等待源端恢复" to "Initial local page has gaps. Waiting for source recovery.",
         "本地首屏存在缺口，请连接后重试" to "Initial local page has gaps. Connect and try again.",
         "本地首屏读取失败" to "Initial local page read failed",
+        "本机 Gateway 端口未监听，且 Host 找不到兼容的 OpenClaw CLI。请在电脑手动启动 Gateway，或安装 OpenClaw 2026.11.5 后重试。" to "Nothing is listening on the local Gateway port, and Host could not find a compatible OpenClaw CLI. Start the Gateway on the computer or install OpenClaw 2026.11.5 and try again.",
+        "本机 OpenClaw Gateway 启动失败。请在电脑启动 Gateway，检查 OpenClaw 给出的错误后重试。" to "The local OpenClaw Gateway failed to start. Start it on the computer, review the error from OpenClaw, and try again.",
+        "本机 OpenClaw Gateway 端口未监听。请在电脑启动 Gateway，并核对 Orbis Host 中的端口。" to "Nothing is listening on the local OpenClaw Gateway port. Start the Gateway on the computer and check the port in Orbis Host.",
         "本机 deviceId {0}" to "Local deviceId {0}",
         "本机尚无缓存" to "No local cache yet",
         "本机缓存" to "Local cache",
@@ -1351,6 +1385,8 @@ internal object LocalizationCatalog {
         "核对会话状态" to "Check session status",
         "核对原启动" to "Check previous launch",
         "核对结果" to "Check result",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "核对送达状态" to "Check delivery status",
         "核对配置" to "Check configuration",
         "桌面启动" to "Open in Desktop",
@@ -1385,8 +1421,6 @@ internal object LocalizationCatalog {
         "正在加载更早的历史…" to "Loading earlier history…",
         "正在加载预览" to "Loading preview",
         "正在压缩上下文。" to "Context is being compacted.",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "正在去除口癖" to "Removing filler words",
         "正在发送" to "Sending",
         "正在发送…" to "Sending…",
@@ -1432,6 +1466,8 @@ internal object LocalizationCatalog {
         "正在重新连接" to "Reconnecting",
         "正在预览" to "Previewing",
         "此 Host 不支持这个状态领域" to "This Host does not support this state domain",
+        "此 OpenClaw 会话在当前 Gateway 上不可用。请刷新会话列表，或先在 OpenClaw 恢复已归档的会话。" to "This OpenClaw session is unavailable on the current Gateway. Refresh the session list, or restore the archived session in OpenClaw first.",
+        "此 OpenClaw 地址只能接入已运行的 Gateway。请在 Gateway 所在电脑启动服务，再重新连接 Host。" to "This OpenClaw address requires an already running Gateway. Start it on its computer, then reconnect Host.",
         "此交互需要在电脑端完成。" to "Complete this interaction on the computer.",
         "此会话属于 {0}，当前使用 {1}。请在设置页切换到 {2}，再打开会话。" to "This session belongs to {0}, but {1} is active. Switch to {2} in Settings, then open the session.",
         "此会话正在运行，请从会话列表进入" to "This session is running. Open it from the session list.",
@@ -1501,6 +1537,8 @@ internal object LocalizationCatalog {
         "清单未读到" to "List not loaded",
         "清单被截断" to "List truncated",
         "清单里没有这个领域" to "This domain is absent from the list",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "清空已读并继续" to "Clear loaded content and continue",
         "清除搜索" to "Clear search",
         "清除筛选" to "Clear filters",
@@ -1537,8 +1575,6 @@ internal object LocalizationCatalog {
         "电脑上的原文件不受影响。" to "Original files on the computer are unaffected.",
         "电脑供应商" to "Computer provider",
         "电脑尚未报告这个状态领域" to "The computer has not reported this state domain",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "电脑尚未核对" to "Not yet checked by computer",
         "电脑尚未核对可用命令，请稍后重试" to "The computer has not checked available commands. Try again shortly.",
         "电脑尚未核对此 Agent 的供应商配置" to "The computer has not checked this Agent's provider configuration",
@@ -1576,6 +1612,8 @@ internal object LocalizationCatalog {
         "电脑端无法完成读取" to "Computer could not complete the read",
         "电脑端暂不支持" to "Not yet supported by computer",
         "电脑端未能完成请求，请重试" to "Your computer could not complete the request. Try again.",
+        "电脑端未能确认 OpenClaw 配置。请在电脑检查 Orbis Host 的状态和诊断，再重试。" to "Your computer could not confirm the OpenClaw configuration. Check Orbis Host status and diagnostics on the computer, then try again.",
+        "电脑端未能确认 OpenClaw 配置，请检查电脑端 Orbis 后重试" to "Your computer could not confirm the OpenClaw configuration. Check Orbis on your computer and try again.",
         "电脑端正在处理，请稍后重试。" to "Computer is processing. Try again shortly.",
         "电脑端正在统计，请稍后重试" to "Computer is checking changes. Try again shortly.",
         "电脑端没有接受这条消息" to "Computer did not accept this message",
@@ -1651,6 +1689,8 @@ internal object LocalizationCatalog {
         "等待确认" to "Awaiting confirmation",
         "答案已填好，可继续修改或提交" to "Answers are ready. You can edit or submit them.",
         "筛选会话：{0}" to "Filter sessions: {0}",
+    )
+    private fun part11(): Map<String, String> = mapOf(
         "筛选历史" to "Filter history",
         "简体中文" to "Simplified Chinese",
         "管理供应商" to "Manage providers",
@@ -1674,6 +1714,8 @@ internal object LocalizationCatalog {
         "缓存历史" to "Cached history",
         "编辑文件和运行命令前会请求权限" to "Requests permission before editing files or running commands",
         "编辑这条消息并重新开始" to "Edit this message and restart",
+        "缺少 OpenClaw Gateway 令牌。此连接由环境变量管理，请在电脑为 Orbis Host 设置 ORBIS_OPENCLAW_TOKEN，再重启 Host。" to "OpenClaw Gateway token missing. This connection is managed by environment variables. Set ORBIS_OPENCLAW_TOKEN for Orbis Host and restart Host.",
+        "缺少 OpenClaw Gateway 令牌。请在电脑的 Orbis Host → OpenClaw 填入 Gateway 令牌并应用。" to "OpenClaw Gateway token missing. On your computer, open Orbis Host → OpenClaw, enter the Gateway token, and apply the change.",
         "缺席原因：" to "Reason for absence: ",
         "缺席没有给原因，不能当成 0 条" to "No reason for absence; cannot assume zero records",
         "缺席没有给原因，不能当成完整目录" to "No reason for absence; cannot assume a complete catalog",
@@ -1689,8 +1731,6 @@ internal object LocalizationCatalog {
         "聊天" to "Chats",
         "聊天记录已更新，正在重新同步" to "Chat history updated. Syncing again.",
         "聊天记录已更新，请连接后重新同步" to "Chat history updated. Connect to sync again.",
-    )
-    private fun part11(): Map<String, String> = mapOf(
         "联网操作受沙箱限制，可否申请放行取决于审批策略。" to "Network operations are restricted by the sandbox. Whether access can be requested depends on the approval policy.",
         "自动" to "Auto",
         "自动审查" to "Automatic review",
@@ -1771,6 +1811,7 @@ internal object LocalizationCatalog {
         "请同时更新手机和电脑端 Orbis" to "Update Orbis on both your phone and computer",
         "请在电脑上启动 Orbis Host，打开后 APP 会自动重新连上" to "Start Orbis Host on the computer. The app will reconnect automatically.",
         "请在电脑端完成交互" to "Complete this interaction on the computer",
+        "请在电脑端查看 Orbis Host 的诊断，再返回新建。" to "Check the Orbis Host diagnostics on your computer, then return to the new-session draft.",
         "请在系统设置中允许相机权限，或返回粘贴配对内容。" to "Allow camera access in system settings, or go back to paste the pairing data.",
         "请在系统设置中允许麦克风和语音识别" to "Allow microphone and speech recognition in Settings",
         "请在系统设置中允许麦克风权限" to "Allow microphone access in Settings",
@@ -1786,6 +1827,7 @@ internal object LocalizationCatalog {
         "请输入 {0}–{1} 个字符" to "Enter {0}–{1} characters",
         "请选择 {0}–{1} 项" to "Select {0}–{1} items",
         "请选择新的导出文件路径。" to "Choose a new export file path.",
+        "请选择电脑上存在的绝对工作目录" to "Select an existing working directory on the computer.",
         "请重试" to "Try again",
         "请重试。" to "Try again.",
         "读取下一段差异" to "Load next diff section",
@@ -1799,6 +1841,8 @@ internal object LocalizationCatalog {
         "读取归属已失效" to "Read ownership expired",
         "读取归属已经失效" to "Read ownership expired",
         "读取记录未发送，当前连接没有端到端加密通道" to "Record request not sent: no encrypted channel available",
+    )
+    private fun part12(): Map<String, String> = mapOf(
         "读取请求未送达。" to "Read request was not delivered.",
         "读取超时，请重试。" to "Read timed out. Try again.",
         "谁来处理审批" to "Who reviews approvals",
@@ -1841,8 +1885,6 @@ internal object LocalizationCatalog {
         "运行中 · {0}" to "Running · {0}",
         "运行中 · {0} 个子任务" to "Running · {0} subtasks",
         "运行中 · 子任务待核对" to "Running · subtasks need checking",
-    )
-    private fun part12(): Map<String, String> = mapOf(
         "运行中也可修改，生效范围由电脑端确认" to "You can change settings while running; the computer confirms when they take effect.",
         "运行中，{0}" to "Running, {0}",
         "运行中，后台任务待核对" to "Running, background tasks need checking",
@@ -1938,7 +1980,6 @@ internal object LocalizationCatalog {
         "选择此 Codex 会话的模型" to "Select the model for this Codex session",
         "选择电脑" to "Select computer",
         "选择电脑上的文件" to "Select a file on the computer",
-        "引用到输入框" to "Insert into message",
         "选择这个目录" to "Choose this directory",
         "通知状态待核对" to "Notification status needs checking",
         "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。" to "Some sessions cannot be closed remotely, or commands are not ready. Try again shortly.",
@@ -1952,6 +1993,8 @@ internal object LocalizationCatalog {
         "配对响应格式无效或主机身份不匹配" to "Invalid pairing response or Host identity mismatch",
         "配对失败（HTTP {0}{1}）" to "Pairing failed (HTTP {0}{1})",
         "配对失败，请检查中继服务器地址、配对码和网络连接" to "Pairing failed. Check the relay address, pairing code and network.",
+    )
+    private fun part13(): Map<String, String> = mapOf(
         "配对未完成，请确认电脑上的配对窗口仍打开后重试" to "Pairing did not complete. Keep the pairing window open on your computer and try again.",
         "配对未完成：连接在电脑确认之前断开。请确认电脑上的配对窗口还开着，再扫一次" to "Pairing incomplete: disconnected before the computer confirmed. Make sure its pairing window is open and scan again.",
         "配对材料无效，请重新扫码" to "Invalid pairing material. Scan again.",
@@ -1970,6 +2013,7 @@ internal object LocalizationCatalog {
         "配置未确认" to "Configuration unconfirmed",
         "配置未确认，请刷新核对" to "Configuration is unconfirmed. Refresh to check.",
         "配置未确认，请检查连接" to "Configuration is unconfirmed. Check your connection.",
+        "配置请求未发送，请检查连接后重试" to "The configuration request was not sent. Check the connection and try again.",
         "配额不可用" to "Quota unavailable",
         "配额数据格式无法识别，请升级 Host 后重试" to "Unrecognized quota format. Update Host and try again.",
         "配额查询失败，请重试" to "Quota check failed. Try again.",
@@ -1994,8 +2038,6 @@ internal object LocalizationCatalog {
         "重置时间：" to "Resets at: ",
         "重试" to "Retry",
         "重试上传" to "Retry upload",
-    )
-    private fun part13(): Map<String, String> = mapOf(
         "重试历史加载" to "Retry history load",
         "重试工具清单" to "Retry tool inventory",
         "重试读取" to "Retry loading",
@@ -2098,6 +2140,31 @@ internal object LocalizationCatalog {
     )
     val hostExact: Set<String> = setOf(
         "Claude Code 报告的权限模式",
+        "Host 无法用当前 OpenClaw CLI 启动 Gateway。请在电脑手动启动 Gateway，或确认已安装 OpenClaw 2026.11.5。",
+        "Host 无法确认本机 OpenClaw Gateway 端口状态。请在电脑检查 Gateway 是否已启动及端口是否正确。",
+        "Host 未能确认 OpenClaw Gateway 已接入。请在电脑核对 Gateway 地址、运行状态，再重新连接 Host。",
+        "Host 未能确认本机 OpenClaw Gateway 已启动。请在电脑检查 Gateway 状态和端口后重试。",
+        "OpenClaw Gateway 与 Orbis Host 的版本不兼容。请在电脑检查两者版本，使用支持的版本后重新连接 Host。",
+        "OpenClaw Gateway 令牌不匹配。此连接由环境变量管理，请在电脑更新 ORBIS_OPENCLAW_TOKEN，再重启 Host。",
+        "OpenClaw Gateway 令牌不匹配。请在电脑的 Orbis Host → OpenClaw 核对令牌并重新应用。",
+        "OpenClaw Gateway 已启动，等待在 OpenClaw 中批准 Orbis Host",
+        "OpenClaw Gateway 拒绝了 Orbis Host 的设备令牌。请在电脑核对 Gateway 令牌，再重新连接 Host。",
+        "OpenClaw Gateway 拒绝了当前认证方式。请在电脑核对 Gateway 是否支持令牌认证，或联系 Gateway 管理员。",
+        "OpenClaw Gateway 暂时限制了认证请求。请稍等一会儿再重试。",
+        "OpenClaw Gateway 未及时回复会话检查。请等待 Gateway 就绪后重试；若仍失败，请查看 Gateway 诊断。",
+        "OpenClaw Gateway 未授予所需的会话权限。请检查 Orbis Host 在 Gateway 上的授权，或联系 Gateway 管理员。",
+        "OpenClaw Gateway 未提供所需的会话接口。请核对 Gateway 版本或联系管理员，再重新连接 Host。",
+        "OpenClaw Gateway 未确认会话可访问。请在电脑查看 Gateway 诊断，再重新连接 Host。",
+        "OpenClaw Gateway 未确认这次启动。请先核对原启动和会话列表，不要直接再次创建。",
+        "OpenClaw Gateway 未能恢复此会话。请先刷新会话列表；若仍失败，请检查电脑端 Gateway 的状态和授权。",
+        "OpenClaw Gateway 未配置所需的令牌。请先在 Gateway 所在电脑修正认证配置，再在 Orbis Host 设置匹配的令牌。",
+        "OpenClaw Gateway 正在初始化。请等 Gateway 就绪后重试。",
+        "OpenClaw Gateway 的 TLS 校验失败。请在电脑核对远程地址和证书，修正后重新连接 Host。",
+        "OpenClaw Host 配置无效。请在电脑的 Orbis Host → OpenClaw 核对地址；如由环境变量管理，请检查 Host 的启动配置。",
+        "OpenClaw 工作目录不可用。请在 App 重新选择电脑上存在且可访问的工作目录。",
+        "OpenClaw 的设备申请已被拒绝或过期。请重新连接 Host，再在 OpenClaw 的设备列表处理新申请。",
+        "OpenClaw 等待设备批准。请在 OpenClaw 的设备列表批准 Orbis Host，再重新连接 Host。",
+        "Orbis Host 无法读取或保存 OpenClaw 设备身份。请检查电脑上 Host 状态目录的权限，再重新连接 Host。",
         "不可信操作先询问",
         "不申请审批",
         "不询问",
@@ -2145,6 +2212,7 @@ internal object LocalizationCatalog {
         "审批：按需询问。由 Codex 判断何时申请额外授权。",
         "审批：未知；当前审批行为尚未确认。",
         "将此 Codex 会话分支为新会话",
+        "尚未配置 OpenClaw Gateway。请在电脑的 Orbis Host → OpenClaw 保存本机端口或远程地址。",
         "工作区内可修改；越界操作仍需单次批准。",
         "工作区写入",
         "工作区可写",
@@ -2165,18 +2233,26 @@ internal object LocalizationCatalog {
         "文件访问范围",
         "未知",
         "未预先允许的操作直接拒绝",
+        "本机 Gateway 端口未监听，且 Host 找不到兼容的 OpenClaw CLI。请在电脑手动启动 Gateway，或安装 OpenClaw 2026.11.5 后重试。",
+        "本机 OpenClaw Gateway 启动失败。请在电脑启动 Gateway，检查 OpenClaw 给出的错误后重试。",
+        "本机 OpenClaw Gateway 端口未监听。请在电脑启动 Gateway，并核对 Orbis Host 中的端口。",
         "权限模式",
         "权限设置尚未确认，请稍后重试",
         "权限设置正在保存，请稍后重试",
         "权限配置存在问题",
         "查看或设置 Codex 会话显示名称",
+        "此 OpenClaw 会话在当前 Gateway 上不可用。请刷新会话列表，或先在 OpenClaw 恢复已归档的会话。",
+        "此 OpenClaw 地址只能接入已运行的 Gateway。请在 Gateway 所在电脑启动服务，再重新连接 Host。",
         "浏览此会话历史并回退到指定位置",
         "由 Codex 判断何时申请额外授权。",
         "由 Codex 自动审查风险并决定是否允许。",
         "由 DSH 自动审查操作，审查仍可能拒绝。",
         "由分类器批准或拒绝权限请求",
         "由我处理",
+        "电脑端未能确认 OpenClaw 配置。请在电脑检查 Orbis Host 的状态和诊断，再重试。",
         "编辑文件和运行命令前会请求权限",
+        "缺少 OpenClaw Gateway 令牌。此连接由环境变量管理，请在电脑为 Orbis Host 设置 ORBIS_OPENCLAW_TOKEN，再重启 Host。",
+        "缺少 OpenClaw Gateway 令牌。请在电脑的 Orbis Host → OpenClaw 填入 Gateway 令牌并应用。",
         "网络访问",
         "网络：允许联网。",
         "网络：受限；是否能申请放行取决于审批策略。",
@@ -2189,6 +2265,7 @@ internal object LocalizationCatalog {
         "计划模式",
         "设置思考强度",
         "设置此 Codex 会话的思考强度",
+        "请选择电脑上存在的绝对工作目录",
         "谁来处理审批",
         "跳过权限检查",
         "这里修改的是当前会话的持久权限设置，不会改变其他会话或新会话默认值。允许一次（once）只批准当前操作，不会修改会话权限。",
