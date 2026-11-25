@@ -69,7 +69,8 @@ class SessionHostOwnershipTest {
         assertFalse(ready.copy(hostId = null).canCreateSessionOn(null))
         assertFalse(ready.copy(e2eReady = false).canCreateSessionOn("host-1"))
         assertFalse(ready.copy(connection = RelayConnection.OFFLINE).canCreateSessionOn("host-1"))
-        assertFalse(ready.copy(sessionActivateRequests = setOf("pending")).canCreateSessionOn("host-1"))
+        // An in-flight activation does not block a distinct new session launch; the launch ledger owns it.
+        assertTrue(ready.copy(sessionActivateRequests = setOf("pending")).canCreateSessionOn("host-1"))
         val relayOnly = reducer.reduce(paired, """{"type":"device.ready","deviceId":"device","runtimes":[]}""")
         assertFalse(relayOnly.canCreateSessionOn("host-1"))
     }
