@@ -1326,7 +1326,8 @@ export class HostService {
         this.#markRuntimeOffline(runtime.runtimeId, reason);
         this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: runtime.runtimeId, reason });
       }
-      if (kind === "dshDesktop") this.#options.onDshDesktopOffline?.(reason);
+      // A single Session leaving (archived, removed, quit) reports here too while the connection stays ready.
+      if (kind === "dshDesktop" && !dsh.isReady()) this.#options.onDshDesktopOffline?.(reason);
       this.#broadcastDeviceReady();
     };
     this.#backends.push(dsh);

@@ -6,6 +6,9 @@ import { createRelayServer, type RelayServer } from "@orbis/relay";
 import { HostService, type HostServiceOptions } from "./host-service.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import type { DshConnection } from "./dsh-client.js";
+import { DshDesktopLifecycle } from "./dsh-desktop-lifecycle.js";
+import type { DshWebConnection } from "./dsh-web-client.js";
+import { DSH_DESKTOP_FLAVOR } from "./dsh-web-runtime.js";
 
 const roots: string[] = [];
 const hosts: HostService[] = [];
@@ -38,7 +41,7 @@ function runtime() {
   return { value, client, start, stop };
 }
 
-async function host(options: Pick<HostServiceOptions, "recoverDshRuntime" | "ensureDshRuntime" | "log">) {
+async function host(options: Pick<HostServiceOptions, "recoverDshRuntime" | "ensureDshRuntime" | "recoverDshDesktopRuntime" | "dshDesktopStatus" | "onDshDesktopOffline" | "log">) {
   const root = await mkdtemp(join(tmpdir(), "orbis-dsh-recovery-")); roots.push(root);
   const relay = await createRelayServer({ runtimeCredentials: ["runtime-secret"], adminToken: "owner-secret" }); relays.push(relay);
   const value = await HostService.create({ ...options, stateDir: root, sessionsRoot: join(root, "sessions"),
@@ -116,5 +119,68 @@ describe("automatic DSH bridge recovery", () => {
     expect(await pending).toBeUndefined();
     await stopping;
     expect(f.stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ADR-0076 DSH-DESKTOP-01: `onOffline` reports both a single Session leaving and the whole connection ending.
+// Only the latter ends the Desktop attachment; a Session leaving used to pin the tier at `error` for good,
+// because the still-ready backend short-circuits every recovery path.
+describe("Desktop attachment tier", () => {
+  function desktop(root: string) {
+    let workspace: (value: unknown) => void = () => {};
+    const row = (sessionId: string) => ({ sessionId, cwd: root, agentAvailable: true, running: true, updatedAt: 1000 });
+    const client: DshWebConnection = {
+      onEvent: undefined, onExit: undefined, onReconnect: undefined,
+      request: (async (method: string) => method === "session/list" ? { items: [row("first"), row("second")] } : {}) as DshWebConnection["request"],
+      respondEvent: vi.fn(async () => {}), stop: vi.fn(async () => {}),
+      subscribe(method, _args, frame) {
+        if (method === "workspace/follow") { workspace = frame; queueMicrotask(() => frame({ type: "baseline", value: { archivedSessionIds: [] } })); }
+        if (method === "session/follow") queueMicrotask(() => frame({ type: "snapshot", header: { createdAt: 1000 }, cursor: -1, records: [], assistantStream: { revision: 0 } }));
+        return () => {};
+      },
+    };
+    const value = new DshRuntime(client, undefined, { flavor: DSH_DESKTOP_FLAVOR });
+    runtimes.push(value);
+    return { value, client, archive: (...ids: string[]) => workspace({ type: "archived", archivedSessionIds: ids }),
+      ids: () => value.directoryEntries().map(item => item.runtimeId).sort() };
+  }
+
+  async function attached() {
+    const root = await mkdtemp(join(tmpdir(), "orbis-dsh-desktop-tier-")); roots.push(root);
+    const first = desktop(root), next = desktop(root);
+    const connect = vi.fn<() => Promise<DshRuntime>>().mockResolvedValueOnce(first.value).mockResolvedValueOnce(next.value);
+    const states: string[] = [];
+    const lifecycle = new DshDesktopLifecycle({ stateDir: root, platform: "darwin", connect,
+      findInstallation: async () => ({ root: "/x", executable: "/x", archive: "/y", version: "0.2.2-rc.2" }),
+      isRunning: async () => true, readEndpoint: async () => ({ url: "http://127.0.0.1:4000/", descriptor: {} as never }),
+      prepareProtocol: async () => ({ packageEntry: "/p", dshVersion: "0.2.2-rc.2", fingerprint: "f", files: 1 }),
+      onStatusChange: status => { states.push(status.state); } });
+    const value = await host({ recoverDshDesktopRuntime: () => lifecycle.connectExisting(),
+      dshDesktopStatus: () => lifecycle.status, onDshDesktopOffline: reason => lifecycle.noteOffline(reason) });
+    expect(await value.recoverDshRuntime("dshDesktop")).toBe(first.value);
+    await vi.waitFor(() => expect(first.ids()).toEqual(["dsh-desktop:first", "dsh-desktop:second"]));
+    expect(lifecycle.status.state).toBe("attached");
+    return { value, first, next, connect, lifecycle, states };
+  }
+
+  it.each(["archived in Desktop", "removed from Desktop", "closed from the App"])("stays attached when one Session is %s", async how => {
+    const f = await attached();
+    if (how === "archived in Desktop") f.first.archive("first");
+    else if (how === "removed from Desktop") f.first.client.onEvent?.({ type: "emit", event: "api-session/removed", args: ["first"] });
+    else f.first.value.dispatchCommand("dsh-desktop:first", "quit", { type: "slash.execute", name: "quit", args: "" });
+    await vi.waitFor(() => expect(f.first.ids()).toEqual(["dsh-desktop:second"]));
+    await f.lifecycle.probe();
+    expect(f.first.value.isReady()).toBe(true);
+    expect(f.states).toEqual(["attached"]);
+    expect(f.connect).toHaveBeenCalledOnce();
+  });
+
+  it("reports a lost connection and attaches again through recovery", async () => {
+    const f = await attached();
+    f.first.client.onExit?.("Desktop 已退出");
+    expect(f.lifecycle.status).toMatchObject({ state: "error", reason: expect.stringContaining("Desktop 已退出") });
+    expect(await f.value.recoverDshRuntime("dshDesktop")).toBe(f.next.value);
+    expect(f.lifecycle.status.state).toBe("attached");
+    expect(f.connect).toHaveBeenCalledTimes(2);
   });
 });
