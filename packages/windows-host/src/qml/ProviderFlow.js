@@ -1,6 +1,20 @@
 // Shared by the QML editor and its behavioral tests. No Host/native writes.
+var nativeKinds = ["opencode", "openclaw", "hermes", "kimiCode"]
+function isNative(kind) { return nativeKinds.indexOf(kind) >= 0 }
+// The provider's identifier is its key in the Agent's own file, next to other enabled providers.
+function ownsKey(kind) { return kind === "pi" || isNative(kind) }
+function nativeFile(kind) { return ({opencode: "opencode.json", openclaw: "openclaw.json", hermes: "config.yaml", kimiCode: "config.toml"})[kind] || "models.json" }
+function hasMaxTokens(kind) { return kind !== "hermes" && kind !== "kimiCode" }
+function apiFormats(kind) {
+    var common = ["openai-completions", "openai-responses", "anthropic-messages"]
+    return kind === "opencode" ? common.concat(["google-generative-ai", "bedrock-converse-stream"])
+        : kind === "hermes" ? common.concat(["bedrock-converse-stream"])
+        : kind === "kimiCode" ? ["kimi"].concat(common, ["google-generative-ai", "vertexai"])
+        : [""].concat(common, ["google-generative-ai", "bedrock-converse-stream"])
+}
+
 function newModel(kind, id, name) {
-    var model = {id: id || "", name: name || id || "", input: ["text"], contextWindow: kind === "dsh" ? 262144 : "", maxTokens: kind === "dsh" ? 32768 : ""}
+    var model = {id: id || "", name: name || id || "", input: ["text"], contextWindow: kind === "dsh" ? 262144 : kind === "kimiCode" ? 131072 : "", maxTokens: kind === "dsh" ? 32768 : ""}
     if (kind === "dsh") model.reasoningEfforts = defaultReasoningEfforts()
     else model.reasoning = false
     return model

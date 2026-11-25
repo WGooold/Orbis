@@ -16,20 +16,23 @@ import { CodexProxy, type ProxySnapshot } from "./codex-proxy.js";
 import { defaultProxyPreferences, proxyPreferences, proxyRoute, projectProxy, restoreProxy, upstreamFormat, validateCodexRouting, type ProxyPreferences, type ProxyTakeover } from "./provider-proxy-config.js";
 import { publicProviderAuthentication, publicProviderHealth, publicProviderRouting, publicProviderUsage } from "./provider-public-state.js";
 import type { UsageSnapshot } from "./provider-usage-cache.js";
+import { isNativeProviderKind, kimiOfficial, nativeProviderFile, nativeProviderRoot, openCodeV2, readNativeProviders, selectNativeProvider, validateNativeProvider, writeNativeProvider, type NativeLive, type NativeProviderKind } from "./provider-native.js";
 export { ProviderError } from "./provider-error.js";
 
 type ObjectValue = Record<string, unknown>;
 export type ProviderMetadata = { category?: string; notes?: string; websiteUrl?: string; icon?: string; sortIndex?: number; commonConfigEnabled?: boolean; usageScript?: UsageScript; authBinding?: { source: "managed_account"; authProvider: "codex_oauth"; accountId?: string } | null };
-export type ProviderProfile = { id: string; kind: AgentKind; name: string; config: ObjectValue } & ProviderMetadata;
-export type ProviderSummary = { id: string; kind: AgentKind; name: string; enabled: boolean; mode: "exclusive" | "additive"; official?: boolean; subscriptionSupported?: boolean; globalDefault?: boolean; category?: string | undefined; notes?: string | undefined; websiteUrl?: string | undefined; icon?: string | undefined; sortIndex?: number | undefined };
+export type ProviderProfile = { id: string; kind: AgentKind; name: string; config: ObjectValue; nativeFormat?: "v2" } & ProviderMetadata;
+export type ProviderSummary = { id: string; kind: AgentKind; name: string; enabled: boolean; mode: "exclusive" | "additive"; official?: boolean; subscriptionSupported?: boolean; globalDefault?: boolean; canSetDefault?: boolean; readOnly?: boolean; category?: string | undefined; notes?: string | undefined; websiteUrl?: string | undefined; icon?: string | undefined; sortIndex?: number | undefined };
 type Store = { version: 1; providers: ProviderProfile[]; current: Partial<Record<AgentKind, string>>; codexPreferences?: CodexPreferences; managedAuth?: ManagedAuthMarker; proxyPreferences?: ProxyPreferences; proxyToken?: string; proxyTakeover?: ProxyTakeover };
 type FileChange = { path: string; before: string | null; after: string | null };
-export type ProviderPaths = { codex: string; pi: string; dsh: string; claude?: string };
+export type ProviderPaths = { codex: string; pi: string; dsh: string; claude?: string } & Partial<Record<NativeProviderKind, string>>;
 /** `liveEdit` 表示这次 apply 改的是当前已经在用的那个供应商，而不是切换到另一个。 */
 export type ProviderHooks = { beforeApply?: (kind: AgentKind, hotSwitch: boolean, liveEdit: boolean) => Promise<void>; afterApply?: (kind: AgentKind, hotSwitch: boolean, liveEdit: boolean) => Promise<void>; proxyStatus?: () => void };
 const object = (value: unknown): value is ObjectValue => value !== null && typeof value === "object" && !Array.isArray(value);
 const json = (value: unknown): string => JSON.stringify(value, null, 2) + "\n";
 const kinds = ["pi", "codex", "dsh", "claude"] as const;
+/** Several providers live side by side in the Agent's own file, keyed by their identifier. */
+const additive = (kind: AgentKind): boolean => kind === "pi" || isNativeProviderKind(kind);
 function sameManagedIdentity(marker: ManagedAuthMarker | undefined, auth: unknown): boolean {
   if (!marker || !object(auth) || !object(auth.tokens)) return false;
   const accountId = typeof auth.tokens.account_id === "string" ? auth.tokens.account_id : "";
@@ -51,6 +54,7 @@ function subscriptionSupported(profile: ProviderProfile): boolean {
 function officialProvider(profile: ProviderProfile): boolean {
   if (profile.category === "official" || profile.category === "cn_official") return true;
   if (profile.kind === "claude") return claudeOfficial(profile.config);
+  if (profile.kind === "kimiCode") return kimiOfficial(profile.config);
   if (profile.kind === "codex") return codexOfficial(profile.config);
   return false;
 }
@@ -86,6 +90,10 @@ export function agentKind(value: unknown): (typeof kinds)[number] {
   if (!kinds.includes(value as (typeof kinds)[number])) throw new ProviderError("未知 Agent");
   return value as (typeof kinds)[number];
 }
+/** Provider management covers more Agents than installation does. */
+export function providerKind(value: unknown): (typeof kinds)[number] | NativeProviderKind {
+  return isNativeProviderKind(value) ? value : agentKind(value);
+}
 const missing = (error: unknown): boolean => object(error) && error.code === "ENOENT";
 async function read(path: string): Promise<string | null> {
   try { return await readFile(path, "utf8"); } catch (error) { if (missing(error)) return null; throw error; }
@@ -110,6 +118,8 @@ function validateConfig(kind: AgentKind, config: unknown): asserts config is Obj
     catalogSpecs(config);
     upstreamFormat(config);
     validateCodexRouting(config);
+  } else if (isNativeProviderKind(kind)) {
+    validateNativeProvider(kind, config);
   } else if (kind === "claude") {
     validateClaudeConfig(config);
   } else if (kind === "pi") {
@@ -123,7 +133,9 @@ function validateConfig(kind: AgentKind, config: unknown): asserts config is Obj
 
 /** CC Switch semantics: Codex snapshots/backfill, Pi additive native nodes. No remote credentials. */
 export class ProviderManager {
-  readonly paths: ProviderPaths & { claude: string };
+  readonly paths: Required<ProviderPaths>;
+  /** The Host may attach Kimi Code at a configured home. */
+  kimiHome: string | undefined;
   readonly #file: string;
   readonly #journal: string;
   readonly #hooks: ProviderHooks;
@@ -136,11 +148,17 @@ export class ProviderManager {
   #queue: Promise<unknown> = Promise.resolve();
   #subscriptionQueries = new Map<string, Promise<SubscriptionQuota>>();
   constructor(stateDir: string, paths?: ProviderPaths, hooks: ProviderHooks = {}) {
-    this.paths = paths ? { ...paths, claude: paths.claude ?? join(dirname(paths.codex), "claude") } : {
+    // An explicit root (QA, tests) must never fall through to the user's own files.
+    const kimiHome = (): string | undefined => this.kimiHome;
+    const beside = (name: string): string => join(dirname(paths!.codex), name);
+    this.paths = paths ? { claude: beside("claude"), opencode: beside("opencode"), openclaw: beside("openclaw"), hermes: beside("hermes"), kimiCode: beside("kimi-code"), ...paths } : {
       codex: process.env.CODEX_HOME || join(homedir(), ".codex"),
       pi: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"),
       dsh: process.env.DSH_HOME || join(homedir(), ".dsh"),
       claude: process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"),
+      // Resolved on use: the desktop Host adopts the login shell's environment after this object exists.
+      get opencode() { return nativeProviderRoot("opencode"); }, get openclaw() { return nativeProviderRoot("openclaw"); },
+      get hermes() { return nativeProviderRoot("hermes"); }, get kimiCode() { return kimiHome() ?? nativeProviderRoot("kimiCode"); },
     };
     this.#file = join(stateDir, "providers.json");
     this.#journal = join(stateDir, "providers-transaction.json");
@@ -226,6 +244,7 @@ export class ProviderManager {
       if (root.providers !== undefined && !object(root.providers)) throw new ProviderError("Pi providers 必须是对象");
       return root;
     }
+    if (isNativeProviderKind(kind)) return readNativeProviders(kind, await readNative(nativeProviderFile(kind, this.paths[kind])));
     const patch = await readNative(join(this.paths.dsh, "cordis.patch.yml")) ?? "";
     const value = { patch, env: {} };
     validateConfig(kind, value); return value;
@@ -233,7 +252,18 @@ export class ProviderManager {
   async #sync(store: Store, kind: AgentKind): Promise<ObjectValue> {
     const live = await this.#live(kind);
     if (kind === "codex") await this.#oauth.adopt(store.managedAuth, live.auth);
-    if (kind === "pi") {
+    if (isNativeProviderKind(kind)) {
+      const native = live as NativeLive;
+      for (const [id, config] of Object.entries(native.providers)) {
+        const existing = store.providers.find(p => p.kind === kind && p.id === id);
+        const profile: ProviderProfile = existing ?? { id, kind, name: id, config };
+        profile.config = config;
+        if (kind === "opencode" && typeof config.name === "string" && config.name.trim()) profile.name = config.name;
+        if (kind === "kimiCode" && kimiOfficial(config)) { profile.category = "official"; if (profile.name === id) profile.name = "Kimi 官方账号"; }
+        if (native.v2.includes(id)) profile.nativeFormat = "v2"; else delete profile.nativeFormat;
+        if (!existing) store.providers.push(profile);
+      }
+    } else if (kind === "pi") {
       this.#piDefault = await this.#readPiDefault();
       for (const [id, config] of Object.entries(object(live.providers) ? live.providers : {})) {
         if (!object(config)) throw new ProviderError("Pi 供应商节点必须是对象");
@@ -272,13 +302,15 @@ export class ProviderManager {
     return live;
   }
   #summaries(store: Store, kind: AgentKind, live: ObjectValue): ProviderSummary[] {
+    const native = isNativeProviderKind(kind) ? live as NativeLive : undefined;
     return store.providers.filter(p => p.kind === kind).sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0)).map(p => ({
       id: p.id, kind, name: p.name, category: p.category, notes: p.notes, websiteUrl: p.websiteUrl, icon: p.icon, sortIndex: p.sortIndex,
-      enabled: kind === "pi" ? Object.hasOwn(object(live.providers) ? live.providers : {}, p.id) : store.current[kind] === p.id,
-      mode: kind === "pi" ? "additive" : "exclusive",
+      enabled: additive(kind) ? Object.hasOwn(object(live.providers) ? live.providers : {}, p.id) : store.current[kind] === p.id,
+      mode: additive(kind) ? "additive" : "exclusive",
       official: officialProvider(p),
       subscriptionSupported: store.current[kind] === p.id && subscriptionSupported(p),
-      globalDefault: kind === "pi" && p.id === this.#piDefault,
+      globalDefault: native ? p.id === native.defaultId : kind === "pi" && p.id === this.#piDefault,
+      ...(native ? { canSetDefault: p.id !== native.defaultId, readOnly: native.readOnly.includes(p.id) } : {}),
     }));
   }
   list(kind: AgentKind): Promise<ProviderSummary[]> {
@@ -405,9 +437,9 @@ export class ProviderManager {
       if (kind === "codex" && !profile.category) profile.category = codexOfficial(config) ? "official" : "custom";
       if (kind === "claude") profile.category = claudeOfficial(config) ? "official" : "custom";
       if (kind === "codex" && store.proxyPreferences?.queue.includes(profile.id)) proxyRoute(profile);
-      if (kind === "pi" && (create || Object.hasOwn(profile.config, "name"))) profile.config.name = name.trim();
+      if ((kind === "pi" || kind === "opencode") && (create || Object.hasOwn(profile.config, "name"))) profile.config.name = name.trim();
       if (existing) Object.assign(existing, profile); else store.providers.push(profile);
-      if (active || (create && addToLive && (kind === "pi" || !store.current[kind]))) await this.#apply(store, profile, live, true, active === true);
+      if (active || (create && addToLive && (additive(kind) || !store.current[kind]))) await this.#apply(store, profile, live, true, active === true);
       else await atomicWrite(this.#file, json(store));
       return this.#summaries(store, kind, await this.#live(kind));
     });
@@ -559,11 +591,16 @@ export class ProviderManager {
       const store = await this.#load(); const live = await this.#sync(store, kind);
       const source = store.providers.find(p => p.kind === kind && p.id === id);
       if (!source) throw new ProviderError("供应商不存在，请刷新列表");
-      let copyId = kind === "pi" ? `${id}-copy` : randomUUID();
-      if (kind === "pi") for (let suffix = 2; store.providers.some(p => p.kind === kind && p.id === copyId); suffix++) copyId = `${id}-copy-${suffix}`;
+      let copyId = additive(kind) ? `${id}-copy` : randomUUID();
+      if (additive(kind)) for (let suffix = 2; store.providers.some(p => p.kind === kind && p.id === copyId); suffix++) copyId = `${id}-copy-${suffix}`;
       if (copyId.length > 128) throw new ProviderError("供应商标识过长，无法复制；请先缩短标识");
       const copy = { ...structuredClone(source), id: copyId, name: `${source.name} 副本`.slice(0, 80) };
-      if (kind === "pi" && Object.hasOwn(copy.config, "name")) copy.config.name = copy.name;
+      if ((kind === "pi" || kind === "opencode") && Object.hasOwn(copy.config, "name")) copy.config.name = copy.name;
+      // Kimi model keys are global: a copy needs its own.
+      if (kind === "kimiCode" && object(copy.config.models)) copy.config.models = Object.fromEntries(Object.entries(copy.config.models).map(([key, model]) => {
+        const rest = object(model) ? { ...model } : {}; delete rest.provider;
+        return [`${copyId}/${key.startsWith(`${id}/`) ? key.slice(id.length + 1) : key}`, rest];
+      }));
       const ordered = store.providers.filter(p => p.kind === kind).sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0));
       ordered.splice(ordered.indexOf(source) + 1, 0, copy);
       ordered.forEach((profile, index) => { profile.sortIndex = index; });
@@ -577,7 +614,7 @@ export class ProviderManager {
       const store = await this.#load(); const live = await this.#sync(store, kind);
       const profile = store.providers.find(p => p.kind === kind && p.id === id);
       if (!profile) throw new ProviderError("供应商不存在，请在 Host 配置后刷新");
-      if (!enabled && kind !== "pi") throw new ProviderError("请切换到其他供应商后再删除当前配置");
+      if (!enabled && !additive(kind)) throw new ProviderError("请切换到其他供应商后再删除当前配置");
       if (this.#summaries(store, kind, live).find(p => p.id === id)?.enabled !== enabled) await this.#apply(store, profile, live, enabled);
       else await atomicWrite(this.#file, json(store));
       return this.#summaries(store, kind, await this.#live(kind));
@@ -587,7 +624,7 @@ export class ProviderManager {
     return this.#run(async () => {
       const store = await this.#load(); const live = await this.#sync(store, kind);
       const active = this.#summaries(store, kind, live).find(p => p.id === id)?.enabled;
-      if (active && kind !== "pi") throw new ProviderError("请先切换到其他供应商，再删除当前配置");
+      if (active && !additive(kind)) throw new ProviderError("请先切换到其他供应商，再删除当前配置");
       if (kind === "codex" && store.proxyPreferences?.queue.includes(id)) throw new ProviderError("Remove this provider from the failover queue before deleting it");
       store.providers = store.providers.filter(p => p.kind !== kind || p.id !== id);
       if (active) {
@@ -598,24 +635,44 @@ export class ProviderManager {
       return this.#summaries(store, kind, await this.#live(kind));
     });
   }
+  /** Enable a provider if needed, then make it the one the Agent uses by default. */
+  setDefault(kind: AgentKind, id: string): Promise<ProviderSummary[]> {
+    return this.#run(async () => {
+      if (!isNativeProviderKind(kind)) throw new ProviderError("此 Agent 不支持设置默认供应商");
+      const store = await this.#load(); const live = await this.#sync(store, kind);
+      const profile = store.providers.find(p => p.kind === kind && p.id === id);
+      if (!profile) throw new ProviderError("供应商不存在，请刷新列表");
+      await this.#apply(store, profile, live, true, false, true);
+      return this.#summaries(store, kind, await this.#live(kind));
+    });
+  }
   async environment(kind: AgentKind): Promise<NodeJS.ProcessEnv> {
     const store = await this.#load();
     const env = store.providers.find(p => p.kind === kind && p.id === store.current[kind])?.config.env;
     return kind === "dsh" ? { ...process.env, ...(object(env) ? env as Record<string, string> : {}), DSH_HOME: this.paths.dsh, ORBIS_DSH_PROVIDER_ENV: JSON.stringify(object(env) ? env : {}) } : { ...process.env };
   }
-  async #apply(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean, liveEdit = false): Promise<void> {
+  async #apply(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean, liveEdit = false, asDefault = false): Promise<void> {
     const running = this.#proxy.running;
-    try { await this.#applyTransaction(store, profile, live, enabled, liveEdit); }
+    try { await this.#applyTransaction(store, profile, live, enabled, liveEdit, asDefault); }
     catch (error) { if (!running) await this.#proxy.stop(); throw error; }
   }
-  async #applyTransaction(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean, liveEdit: boolean): Promise<void> {
-    validateConfig(profile.kind, profile.config);
+  async #applyTransaction(store: Store, profile: ProviderProfile, live: ObjectValue, enabled: boolean, liveEdit: boolean, asDefault: boolean): Promise<void> {
+    if (enabled) validateConfig(profile.kind, profile.config);
     const takeover = profile.kind === "codex" && store.proxyPreferences?.enabled === true && !codexOfficial(profile.config) && !this.#suspending;
     const hotSwitch = !!(takeover && store.proxyTakeover && this.#proxy.running);
     if (profile.kind === "codex" && upstreamFormat(profile.config) !== "responses" && !takeover && !this.#suspending) throw new ProviderError("Enable Codex local routing before activating this API format");
     await this.#hooks.beforeApply?.(profile.kind, hotSwitch, liveEdit);
     const desired: { path: string; after: string | null }[] = [];
-    if (profile.kind === "pi") {
+    if (isNativeProviderKind(profile.kind)) {
+      const kind = profile.kind, path = nativeProviderFile(kind, this.paths[kind]);
+      const before = this.#revisions.get(path) ?? null, present = Object.hasOwn((live as NativeLive).providers, profile.id);
+      // Choosing a default must not rewrite a node the Agent or the user already owns.
+      const source = asDefault && present ? before
+        : writeNativeProvider(kind, before, profile.id, enabled ? profile.config : undefined, profile.nativeFormat === "v2");
+      const after = asDefault ? selectNativeProvider(kind, source, profile.id) : source;
+      if (kind === "opencode" && enabled && !present && openCodeV2(profile.config)) profile.nativeFormat = "v2";
+      if (after !== before) desired.push({ path, after });
+    } else if (profile.kind === "pi") {
       const providers = { ...(object(live.providers) ? live.providers : {}) };
       if (enabled) Object.defineProperty(providers, profile.id, { value: profile.config, enumerable: true, configurable: true, writable: true }); else delete providers[profile.id];
       desired.push({ path: join(this.paths.pi, "models.json"), after: json({ ...live, providers }) });

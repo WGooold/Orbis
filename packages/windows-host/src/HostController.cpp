@@ -280,12 +280,13 @@ static QPair<QString, QString> activityFor(const QString &method, const QJsonObj
     if (method.startsWith("provider.")) {
         if (method == "provider.save") return { "provider", "正在保存供应商" };
         if (method == "provider.saveCodexPreferences") return { "provider", "正在保存通用配置" };
+        if (method == "provider.default") return { "provider", "正在设置默认供应商" };
         if (method == "provider.switch") return { "provider", "正在切换供应商" };
         if (method == "provider.remove") return { "provider", "正在删除供应商" };
         if (method == "provider.open") return { "provider", "正在打开供应商" };
         if (method == "provider.copy") return { "provider", "正在复制供应商" };
-        if (method == "provider.piDefault") return { "provider", "正在保存默认供应商" };
-        return { "provider", "正在读取供应商配置" };
+        // Reads have their own kind: an empty list shows as loading, and the list caption only names changes.
+        return { "providerList", "正在读取供应商配置" };
     }
     return {};
 }
@@ -1276,6 +1277,9 @@ void HostController::selectCodexEntry(const QString &entry) {
         setMessage("已切换到 Codex " + value.toObject().value("version").toString()); detectAgents();
     });
 }
+static bool isNativeProviderKind(const QString &kind) {
+    return QStringList{"opencode", "openclaw", "hermes", "kimiCode"}.contains(kind);
+}
 void HostController::setProviders(const QVariantList &providers) {
     if (m_providers == providers) return;
     m_providers = providers; emit providersChanged();
@@ -1284,17 +1288,8 @@ void HostController::setProviderPresets(const QVariantList &presets) {
     if (m_providerPresets == presets) return;
     m_providerPresets = presets; emit providerPresetsChanged();
 }
-void HostController::refreshAgentProviders(const QString &kind) {
-    if (!m_bridgeReady || !QStringList{"codex", "dsh", "claude", "pi"}.contains(kind)) return;
-    if (m_providerKind != kind) {
-        m_providerKind = kind; setProviders({}); setProviderPresets({}); ++m_draftGeneration; emit changed();
-    }
-    const auto generation = m_draftGeneration;
-    command("provider.list", {{"kind", kind}}, [this, kind, generation](const QJsonValue &value) {
-        if (m_providerKind == kind && generation == m_draftGeneration) setProviders(value.toArray().toVariantList());
-    });
-}
 void HostController::loadProviders(const QString &kind) {
+    if (!m_bridgeReady) return;
     if (m_providerKind != kind) { setProviders({}); setProviderPresets({}); ++m_draftGeneration; }
     m_providerKind = kind; emit changed();
     command("provider.list", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
@@ -1403,7 +1398,15 @@ void HostController::switchProvider(const QString &id, bool enabled) {
     command("provider.switch", {{"kind", kind}, {"id", id}, {"enabled", enabled}}, [this, kind](const QJsonValue &value) {
         if (kind != m_providerKind) return;
         setProviders(value.toArray().toVariantList());
-        setMessage(kind == "pi" ? "Pi 显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : "供应商已切换。请重新打开会话；独立终端也需重启。");
+        setMessage(isNativeProviderKind(kind) ? "供应商已更新。请重新打开会话；已运行的服务可能需要重启。" : kind == "pi" ? "Pi 显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : "供应商已切换。请重新打开会话；独立终端也需重启。");
+    });
+}
+void HostController::setDefaultProvider(const QString &id) {
+    const auto kind = m_providerKind;
+    command("provider.default", {{"kind", kind}, {"id", id}}, [this, kind](const QJsonValue &value) {
+        if (kind != m_providerKind) return;
+        setProviders(value.toArray().toVariantList());
+        setMessage("默认供应商已更新。请重新打开会话；已运行的服务可能需要重启。");
     });
 }
 void HostController::removeProvider(const QString &id) {

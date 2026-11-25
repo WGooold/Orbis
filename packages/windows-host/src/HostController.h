@@ -235,7 +235,6 @@ public:
     Q_INVOKABLE void confirmAgentReviews();
     Q_INVOKABLE void dismissAgentReviews();
     Q_INVOKABLE void refreshAgentChoices();
-    Q_INVOKABLE void refreshAgentProviders(const QString &kind);
     Q_INVOKABLE void saveAgyCredential(const QString &key);
     Q_INVOKABLE void retryAgySetup();
     Q_INVOKABLE void removeAgyCredential();
@@ -272,6 +271,7 @@ public:
     Q_INVOKABLE void openProvider(const QString &id);
     Q_INVOKABLE void saveProvider(const QVariantMap &draft);
     Q_INVOKABLE void switchProvider(const QString &id, bool enabled);
+    Q_INVOKABLE void setDefaultProvider(const QString &id);
     Q_INVOKABLE void removeProvider(const QString &id);
     Q_INVOKABLE void copyProvider(const QString &id);
     Q_INVOKABLE void restartDshServer();

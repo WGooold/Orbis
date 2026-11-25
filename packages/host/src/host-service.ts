@@ -147,6 +147,7 @@ import { loadOpenClawConfig, openClawUrl, type OpenClawConfig } from "./openclaw
 import { localOpenClawPort, waitForOpenClawAttachment, type OpenClawLocalLauncher } from "./openclaw-local-launch.js";
 import { LocalAgentStart, LocalAgentStartTimeout } from "./local-agent-start.js";
 import { openClawAdvice, OpenClawSetupError } from "./openclaw-diagnostics.js";
+import { isNativeProviderKind } from "./provider-native.js";
 import { OPENCLAW_PREFIX } from "./openclaw-history.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
@@ -1742,7 +1743,9 @@ export class HostService {
   changeProvider<T>(kind: AgentKind, operation: () => Promise<T>, mode: "switch" | "save" = "switch"): Promise<T> {
     const current = this.#providerCurrent(kind);
     const requireCurrent = () => { if (!current()) throw new ProviderError("此 Agent 未启用"); };
-    const operationId = this.#beginSharedOperation("provider.change", kind);
+    // PROVIDER-NATIVE-01: these kinds are managed on the computer only; older Apps never receive them as provider groups.
+    const publicKind = isNativeProviderKind(kind) ? null : kind;
+    const operationId = this.#beginSharedOperation("provider.change", publicKind);
     // Changes stay ordered among themselves; the gate only holds back new launches of this provider group.
     const result = this.#providerMutation.then(() => this.#providerGate.exclusive(providerGroup(kind), async () => {
       this.#providerChanging = kind;
@@ -1766,7 +1769,7 @@ export class HostService {
         // 不含配置内容或凭据——诊断记录永远不装秘密（ADR-0032 模块 23）。
         this.recordDiagnostic({
           scope: "host",
-          agentKind: kind,
+          agentKind: publicKind,
           sessionId: null,
           category: "provider",
           severity: "error",
@@ -1782,6 +1785,7 @@ export class HostService {
   }
 
   announceProviderChange(kind: AgentKind, exceptDeviceId?: string): void {
+    if (isNativeProviderKind(kind)) return;
     for (const id of this.#links.keys()) if (id !== exceptDeviceId) {
       this.#sendJsonToDevice(id, { type: "provider.changed", protocolVersion: PROTOCOL_VERSION, kind }, "ctl");
     }
@@ -1877,7 +1881,7 @@ export class HostService {
 
   #providerCurrent(kind: AgentKind): () => boolean {
     const current = this.#sourceCurrent(kind);
-    const desktopKind = kind === "codex" ? "codexDesktop" : kind === "dsh" ? "dshDesktop" : undefined;
+    const desktopKind = kind === "codex" ? "codexDesktop" : kind === "dsh" ? "dshDesktop" : kind === KIMI_KIND ? KIMI_DESKTOP_KIND : undefined;
     if (!desktopKind) return current;
     const desktop = this.#sourceCurrent(desktopKind);
     return () => current() || desktop();

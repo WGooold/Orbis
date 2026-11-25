@@ -7,6 +7,8 @@ import { setToml } from "./provider-toml.js";
 import { catalogSpecs } from "./provider-catalog.js";
 import { upstreamFormat, validateCodexRouting } from "./provider-proxy-config.js";
 import { claudeOfficial } from "./provider-claude.js";
+import { isNativeProviderKind } from "./provider-native.js";
+import { applyNativeProviderFields, nativeProviderFields, newNativeProviderConfig } from "./provider-native-form.js";
 
 type Obj = Record<string, unknown>;
 const isObject = (value: unknown): value is Obj => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -15,6 +17,7 @@ const dshDefaultSelection = (rows: Obj[]): Obj => object((rows.find(row => row.i
 export type ProviderFields = { baseUrl: string; apiKey: string; model: string; api: string; providerKey: string; headers?: Record<string, string>; compat?: Obj; models?: Obj[]; catalog?: Obj[]; reasoningEffort?: string; routing?: Obj; claude?: { apiKeyField: string; haiku: string; sonnet: string; opus: string } };
 export function providerFields(profile: ProviderProfile, allowIncomplete = false): ProviderFields {
   const config = profile.config;
+  if (isNativeProviderKind(profile.kind)) return nativeProviderFields(profile.kind, profile.id, config);
   if (profile.kind === "claude") {
     const env = object(config.env);
     const apiKeyField = Object.hasOwn(env, "ANTHROPIC_API_KEY") ? "ANTHROPIC_API_KEY" : "ANTHROPIC_AUTH_TOKEN";
@@ -44,7 +47,7 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
   if (!isObject(previous) || !isObject(fields) || [fields.model, fields.providerKey, fields.baseUrl, fields.apiKey, fields.api].some(value => typeof value !== "string")) throw new ProviderError("供应商表单格式无效");
   if (fields.headers !== undefined && (!isObject(fields.headers) || !Object.values(fields.headers).every(value => typeof value === "string"))) throw new ProviderError("请求头必须是字符串映射");
   const official = (kind === "codex" && codexOfficial(previous) && fields.providerKey === "openai") || (kind === "claude" && claudeOfficial(previous));
-  if (validateRequired && kind !== "pi" && kind !== "claude" && !official && !fields.model.trim()) throw new ProviderError("请填写供应商支持的模型 ID");
+  if (validateRequired && kind !== "pi" && kind !== "claude" && !isNativeProviderKind(kind) && !official && !fields.model.trim()) throw new ProviderError("请填写供应商支持的模型 ID");
   if ((validateRequired && !fields.providerKey.trim()) || fields.providerKey.length > 128 || ["__proto__", "prototype", "constructor"].includes(fields.providerKey)) throw new ProviderError("请填写有效的供应商标识");
   if (fields.baseUrl) {
     let url: URL;
@@ -52,6 +55,7 @@ export function applyProviderFields(kind: AgentKind, previous: Obj, fields: Prov
     if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw new ProviderError("API 地址须为 HTTP(S)，且不能在地址中包含密码");
   }
   const config = structuredClone(previous);
+  if (isNativeProviderKind(kind)) return applyNativeProviderFields(kind, fields.providerKey, config, fields, fields.models === undefined ? [] : normalizeModels("pi", fields.models, fields, create, validateRequired), create);
   if (kind === "claude") {
     if (fields.api !== "anthropic-messages") throw new ProviderError("Claude Code 供应商需要 Anthropic Messages 接口");
     const env = { ...object(config.env) };
@@ -198,6 +202,7 @@ function normalizeModels(kind: "pi" | "dsh", models: Obj[], fields: ProviderFiel
   });
 }
 export function newProviderConfig(kind: AgentKind): Obj {
+  if (isNativeProviderKind(kind)) return newNativeProviderConfig(kind);
   if (kind === "claude") return { env: { ANTHROPIC_BASE_URL: "", ANTHROPIC_AUTH_TOKEN: "" } };
   return kind === "codex" ? { auth: { OPENAI_API_KEY: "" }, config: "model_provider = \"custom\"\nmodel = \"\"\n\n[model_providers.custom]\nname = \"custom\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n" }
     : kind === "pi" ? { baseUrl: "", apiKey: "", api: "openai-completions", models: [{ id: "" }] }

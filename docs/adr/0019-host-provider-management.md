@@ -4,6 +4,10 @@ Date: 2026-09-24
 
 Status: accepted
 
+2026-11-25 PROVIDER-NATIVE-01：OpenCode、OpenClaw、Hermes 与 Kimi Code（含桌面版）接入桌面 Host 供应商管理，字段归属、默认供应商与移除约束参照 CC Switch `fa4a237`。四者均为叠加式，只改本机原生文件中的对应节点；Gateway 或 SSH 指向远程主机时不提供。手机协议不变，旧 App 不会收到新的供应商分组。实现见 [provider-native.ts](../../packages/host/src/provider-native.ts)，验证见 [provider-native.test.ts](../../packages/host/src/provider-native.test.ts)；待用户验证。
+
+2026-11-25 HOST-PROVIDER-INLINE-01：桌面 Host 取消独立的供应商配置页，目录的切换、编辑、复制、删除、连通检测、排序、搜索，以及 Codex 账号与通用配置均在 Agent 详情的供应商列表完成。实现见 [Main.qml](../../packages/windows-host/src/qml/Main.qml)，验证见 [OverviewRowHoverTest.cpp](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp)；待用户验证。
+
 2026-11-08：手机供应商管理改为独立根页面，使用 Agent / 配置双圈、停稳后显式应用和双周期配额；Pi 继续按原生能力叠加启用。配置权威、凭据与事务保持由 Host 管理，确认文案说明真实重载与重新打开后果。页面与验证入口见 [ADR-0070](0070-unified-design-and-interaction.md)，旧横向选择与配额翻面不再作为当前界面依据。
 
 2026-10-30：供应商管理扩展至 Claude Code 原生 `settings.json`；配对设备和桌面 Host 可按当前官方配置查询 Claude/Codex 的 5 小时与周订阅配额。查询仅返回标准化百分比和重置时间，凭据仍由 Host 保管。

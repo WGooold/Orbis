@@ -19,7 +19,7 @@ export class KeyedLanes {
 }
 
 /** Provider settings of one group are shared by the terminal and desktop flavours of an agent. */
-export const providerGroup = (kind: string): string => kind === "codexDesktop" ? "codex" : kind === "dshDesktop" ? "dsh" : kind;
+export const providerGroup = (kind: string): string => kind === "codexDesktop" ? "codex" : kind === "dshDesktop" ? "dsh" : kind === "kimiCodeDesktop" ? "kimiCode" : kind;
 
 const ANY_GROUP = "\u0000any";
 

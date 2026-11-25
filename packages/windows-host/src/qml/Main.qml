@@ -266,7 +266,6 @@ ApplicationWindow {
     }
     function showAgentBatch() { batchInstallDialog.open() }
     function closeAgentDialogs() { installDialog.close(); batchInstallDialog.close() }
-    property bool providersOpen: false
     property string selectedAgent: "codex"
     property var selectedAgents: []
     property string agentSelectionAnchor: ""
@@ -442,8 +441,12 @@ ApplicationWindow {
         if (statusDetail && meta.error && statusDetail !== meta.error) return statusDetail + "\n" + meta.error
         return statusDetail || meta.error || ""
     }
-    readonly property string inlineListOwner: page === 2 && detailPowered && !providersOpen ? detailProviderGroup : ""
-    onInlineListOwnerChanged: if (inlineListOwner) host.refreshAgentProviders(inlineListOwner)
+    readonly property string inlineListOwner: page === 2 && detailPowered && host.bridgeReady ? detailProviderGroup : ""
+    // Deferred: loading notifies host state that this owner is itself bound to.
+    onInlineListOwnerChanged: { providerSearch.text = ""; Qt.callLater(loadInlineProviders) }
+    function loadInlineProviders() { if (inlineListOwner) host.loadProviders(inlineListOwner) }
+    readonly property bool canEditProviders: canEditAgent && detailPowered && !detailChange && detailProviderGroup.length > 0 && host.providerKind === detailProviderGroup
+    readonly property bool canReorderProviders: canEditProviders && host.providers.length > 1 && providerSearch.text.trim().length === 0
     function formatVersion(version) {
         const text = String(version || "").trim()
         if (!text) return ""
@@ -462,7 +465,11 @@ ApplicationWindow {
     function providerGroup(kind) {
         return kind === "codexDesktop" ? "codex"
             : kind === "dshDesktop" ? "dsh"
-            : ["codex", "claude", "pi", "dsh"].includes(kind) ? kind : ""
+            : kind === "kimiCodeDesktop" ? "kimiCode"
+            // A remote Agent reads its own computer's configuration, not this one's.
+            : kind === "hermes" && !!host.hermesRemote.host ? ""
+            : kind === "openclaw" && !!host.openClaw.url && !/^wss?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/.test(host.openClaw.url) ? ""
+            : ["codex", "claude", "pi", "dsh"].concat(ProviderFlow.nativeKinds).includes(kind) ? kind : ""
     }
     function twinKind(kind) {
         return ({codex: "codexDesktop", codexDesktop: "codex", dsh: "dshDesktop", dshDesktop: "dsh"})[kind] || ""
@@ -530,12 +537,12 @@ ApplicationWindow {
             selectedAgents = kind === detailKind && !selectedAgents.length ? [kind] : values.includes(kind) ? values.filter(id => id !== kind) : values.concat(kind)
             agentSelectionAnchor = kind
         } else { selectedAgents = []; agentSelectionAnchor = kind }
-        selectedAgent = kind; providersOpen = false; previewProviderId = ""
+        selectedAgent = kind; previewProviderId = ""
     }
     function goAgent(kind) {
         selectPage(2)
         if (kind) chooseAgent(kind, 0)
-        else { providersOpen = false; selectedAgents = [] }
+        else selectedAgents = []
         if (scroll.contentItem) scroll.contentItem.contentY = 0
     }
     function agentStatus(row) {
@@ -578,7 +585,8 @@ ApplicationWindow {
     function askProvider(row) {
         if (!detailPowered || !detailProviderGroup || host.providerKind !== detailProviderGroup || host.busy || detailChange || !row) return
         if (row.enabled) {
-            if (row.mode === "additive") { window.removeProviderId = row.id; removeProviderDialog.open() }
+            if (ProviderFlow.isNative(detailProviderGroup)) { if (row.canSetDefault) host.setDefaultProvider(row.id) }
+            else if (row.mode === "additive") { window.removeProviderId = row.id; removeProviderDialog.open() }
         } else if (row.mode === "additive" || window.groupSessionCount(detailProviderGroup) === 0) host.switchProvider(row.id, true)
         else { agentProviderConfirm.profile = row; agentProviderConfirm.group = detailProviderGroup; agentProviderConfirm.open() }
     }
@@ -586,9 +594,14 @@ ApplicationWindow {
     property bool loadingProviderDraft: false
     property string pendingPresetId: ""
     property string draggedProviderId: ""
-    readonly property bool officialProvider: ["codex", "claude"].indexOf(providerDraft.kind) >= 0 && providerDraft.official === true
+    readonly property bool officialProvider: ["codex", "claude", "kimiCode"].indexOf(providerDraft.kind) >= 0 && providerDraft.official === true
     readonly property var visibleProviders: host.providers.filter(function(p) { return ProviderFlow.matchesProvider(p, providerSearch.text) })
     function changePreset(id) { if (id === (providerDraft.presetId || "custom")) { presetExpanded.checked = false; return } if (providerFormDirty) { pendingPresetId = id; changePresetDialog.open() } else host.presetProvider(id) }
+    function isDefaultProvider(id) { return (host.providerKind === "pi" && host.piDefaultProvider === id) || host.providers.some(row => row.id === id && row.globalDefault === true) }
+    function providerSubtitle(row) {
+        const details = [row.notes, row.websiteUrl].filter(text => !!text)
+        return details.length ? details.join(" · ") : row.category === "official" || row.official ? "官方配置" : row.id
+    }
     function moveProvider(source, target) { var ids = ProviderFlow.reorderedIds(host.providers, source, target); if (ids !== null) host.reorderProviders(ids) }
     function acceptDiscoveredModels() {
         var selected = fetchedModels.filter(function(model) { return model.selected })
@@ -647,7 +660,7 @@ ApplicationWindow {
         providerKey.text = draft.fields.providerKey
         providerUrl.text = draft.fields.baseUrl; providerApiKey.text = draft.fields.apiKey
         providerModel.text = draft.fields.model || (window.providerDraft.kind === "codex" ? "gpt-5.6-sol" : "")
-        providerApi.model = window.providerDraft.kind === "claude" ? ["anthropic-messages"] : window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"]
+        providerApi.model = window.providerDraft.kind === "claude" ? ["anthropic-messages"] : window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ProviderFlow.apiFormats(window.providerDraft.kind)
         if (providerApi.find(draft.fields.api) < 0) providerApi.model = providerApi.model.concat([draft.fields.api])
         providerApi.currentIndex = Math.max(0, providerApi.find(draft.fields.api))
         var claude = draft.fields.claude || {}
@@ -659,7 +672,7 @@ ApplicationWindow {
         // Keep an independent JS draft, just like rows created by addProviderModel().
         window.providerModels = window.providerDraft.kind === "codex" ? [] : JSON.parse(JSON.stringify(draft.fields.models || []))
         window.explicitProviderModels = draft.fields.models !== undefined
-        if (draft.create && window.providerDraft.kind === "pi") window.providerModels = window.providerModels.map(function(model) { return !model.id ? Object.assign(ProviderFlow.newModel("pi"), model) : model })
+        if (draft.create && ProviderFlow.ownsKey(window.providerDraft.kind)) window.providerModels = window.providerModels.map(function(model) { return !model.id ? Object.assign(ProviderFlow.newModel(window.providerDraft.kind), model) : model })
         codexReasoning.currentIndex = Math.max(0, codexReasoning.find(draft.fields.reasoningEffort || "high"))
         providerJson.text = JSON.stringify(draft.config, null, 2)
         var advanced = draft.config || {}
@@ -720,15 +733,15 @@ ApplicationWindow {
     function buildProviderDraft(basic) {
         var configText = basic ? providerJson.text : window.advancedConfigText()
         if (configText === null) return null
-        var draft = {kind: window.providerDraft.kind, id: window.providerDraft.kind === "pi" ? providerKey.text.trim() : window.providerDraft.id, name: providerName.text, config: configText, create: !!window.providerDraft.create, addToLive: providerAddToLive.checked,
+        var draft = {kind: window.providerDraft.kind, id: ProviderFlow.ownsKey(window.providerDraft.kind) ? providerKey.text.trim() : window.providerDraft.id, name: providerName.text, config: configText, create: !!window.providerDraft.create, addToLive: providerAddToLive.checked,
             metadata: {category: window.officialProvider ? "official" : providerCategory.text, notes: providerNotes.text, websiteUrl: providerWebsite.text, icon: providerIcon.text, sortIndex: Number(providerOrder.text || "0"), commonConfigEnabled: providerCommon.checked}}
         if (draft.kind === "codex") draft.metadata.authBinding = providerAccount.currentValue ? {source:"managed_account",authProvider:"codex_oauth",accountId:providerAccount.currentValue === "$default" ? "" : providerAccount.currentValue} : null
         if (basic) {
             draft.fields = {providerKey: providerKey.text.trim(), baseUrl: providerUrl.text.trim(), apiKey: providerApiKey.text, model: providerModel.text.trim(), api: providerApi.currentText}
             if (draft.kind === "claude") draft.fields.claude = {apiKeyField: claudeCredential.currentText, haiku: claudeHaiku.text.trim(), sonnet: claudeSonnet.text.trim(), opus: claudeOpus.text.trim()}
             if (draft.kind === "codex") draft.fields.reasoningEffort = codexReasoning.currentText
-            if (draft.kind === "pi" || (draft.kind === "dsh" && window.explicitProviderModels)) draft.fields.models = window.providerModels
-            if (draft.kind === "pi" || draft.kind === "codex") {
+            if (ProviderFlow.ownsKey(draft.kind) || (draft.kind === "dsh" && window.explicitProviderModels)) draft.fields.models = window.providerModels
+            if (ProviderFlow.ownsKey(draft.kind) || draft.kind === "codex") {
                 try {
                     draft.fields.headers = JSON.parse(piHeaders.text || "{}")
                     if (draft.kind === "pi") draft.fields.compat = JSON.parse(piCompat.text || "{}")
@@ -756,11 +769,6 @@ ApplicationWindow {
     }
     onVisibleChanged: if (visible) host.refreshRegistrationPolicy()
     function selectPage(index) { if (page !== index) { page = index; if (window.motionEnabled) { pageContent.entryProgress = 0; pageArrival.restart() } } if (index === 3) settingsPane.load() }
-    function openProviders(kind) {
-        if (detailProviderGroup !== kind || !detailPowered) { selectPage(2); chooseAgent(window.agentEnabled(kind) ? kind : kind === "codex" ? "codexDesktop" : kind, 0) }
-        if (!detailPowered || detailProviderGroup !== kind) return
-        selectPage(2); providersOpen = true; providerSearch.text = ""; host.loadProviders(kind)
-    }
     function closeProviderEditor() { providerDialog.close() }
     function requestCloseProviderEditor() { if (providerFormDirty) discardProviderDialog.open(); else closeProviderEditor() }
     function setProviderEditorMode(nativeMode) {
@@ -1208,6 +1216,65 @@ ApplicationWindow {
             cornerRadius: 20; inset: softTool.down || softTool.checked
             focused: softTool.activeFocus; disabled: !softTool.enabled; hovered: softTool.hovered
         }
+    }
+    // Quiet in-list controls: one flat target that only gains a fill under the pointer.
+    component RowToolButton: ToolButton {
+        id: rowTool
+        property string symbol: "more_horiz"
+        property string label: ""
+        implicitWidth: 36; implicitHeight: 36
+        hoverEnabled: true
+        Accessible.name: label
+        ToolTip.visible: hovered && label.length > 0; ToolTip.text: label; ToolTip.delay: 500
+        contentItem: Item {
+            SymbolIcon {
+                anchors.centerIn: parent; width: Theme.iconSm; height: Theme.iconSm
+                name: rowTool.symbol; color: !rowTool.enabled ? Theme.inkFaint : rowTool.hovered ? Theme.ink : Theme.inkMuted
+                scale: rowTool.down ? 0.94 : 1
+                Behavior on scale { enabled: window.motionEnabled; NumberAnimation { duration: rowTool.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
+            }
+        }
+        background: Rectangle { radius: Theme.radiusXs; color: rowTool.hovered && rowTool.enabled ? Theme.surfaceTop : "transparent"; border.width: rowTool.visualFocus ? 1 : 0; border.color: Theme.accent }
+    }
+    component RowTextButton: AbstractButton {
+        id: rowText
+        property string symbol: ""
+        implicitHeight: 40; implicitWidth: rowTextContent.implicitWidth + 20
+        hoverEnabled: true
+        Accessible.name: text
+        contentItem: Item {
+            RowLayout {
+                id: rowTextContent
+                anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 8
+                SymbolIcon { visible: rowText.symbol.length > 0; name: rowText.symbol; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs; color: rowTextLabel.color }
+                Label { id: rowTextLabel; text: rowText.text; color: !rowText.enabled ? Theme.inkFaint : rowText.hovered ? Theme.ink : Theme.inkMuted; font.pixelSize: Theme.caption; font.weight: Font.DemiBold; Accessible.ignored: true }
+            }
+        }
+        background: Rectangle { radius: Theme.radiusSm; color: rowText.hovered && rowText.enabled ? Theme.surfaceLift : "transparent"; border.width: rowText.visualFocus ? 1 : 0; border.color: Theme.accent }
+    }
+    component SoftMenuItem: MenuItem {
+        id: softMenuItem
+        property bool danger: false
+        implicitHeight: visible ? 40 : 0
+        leftPadding: 14; rightPadding: 14
+        contentItem: Label { text: softMenuItem.text; verticalAlignment: Text.AlignVCenter; font.pixelSize: Theme.label; color: !softMenuItem.enabled ? Theme.inkFaint : softMenuItem.danger ? Theme.danger : Theme.ink }
+        background: Rectangle { radius: Theme.radiusXs; color: softMenuItem.highlighted && softMenuItem.enabled ? Theme.surfaceTop : "transparent" }
+    }
+    component QuotaMeter: RowLayout {
+        id: meter
+        property string label: ""
+        property var remaining
+        visible: remaining !== undefined && remaining !== null
+        spacing: 6
+        Label { text: meter.label; color: Theme.inkMuted; font.pixelSize: Theme.caption }
+        Rectangle {
+            Layout.fillWidth: true; Layout.minimumWidth: 28; Layout.preferredWidth: 60; Layout.preferredHeight: 5; radius: 2.5; color: Theme.hairline
+            Rectangle {
+                width: parent.width * Math.max(0, Math.min(1, Number(meter.remaining || 0) / 100)); height: parent.height; radius: 2.5
+                color: Number(meter.remaining) <= 20 ? Theme.warning : Theme.agent(window.detailKind)
+            }
+        }
+        Label { text: (meter.remaining || 0) + "%"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
     }
     component InfoHintButton: SoftToolButton {
         property bool expanded: false
@@ -2119,7 +2186,6 @@ ApplicationWindow {
                                                 Menu {
                                                     id: agentMenu
                                                     MenuItem { text: railRow.change && railRow.change.withdrawable ? "撤回排队" : railRow.modelData.enabled ? "停用" : "启用"; enabled: window.canEditAgent && (!railRow.change || railRow.change.withdrawable); onTriggered: window.flipAgent(railRow.kind) }
-                                                    MenuItem { text: "供应商配置"; visible: !!window.providerGroup(railRow.kind); enabled: railRow.modelData.enabled && !host.busy; onTriggered: window.openProviders(window.providerGroup(railRow.kind)) }
                                                     MenuItem { text: "复制诊断信息"; onTriggered: host.copyDiagnostics() }
                                                 }
                                                 RowLayout {
@@ -2445,17 +2511,34 @@ ApplicationWindow {
                                             Hint { text: window.installationStage(); Layout.fillWidth: true }
                                             ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
                                         }
+                                        // HOST-PROVIDER-INLINE-01: the Agent detail owns the whole provider catalog; there is no second-level page.
                                         ColumnLayout {
+                                            id: providerSection
+                                            objectName: "agentProviderSection"
                                             visible: !!window.detailProviderGroup; Layout.fillWidth: true; spacing: 8
+                                            readonly property var rows: host.providerKind === window.detailProviderGroup ? window.visibleProviders : []
+                                            readonly property int total: host.providerKind === window.detailProviderGroup ? host.providers.length : 0
                                             RowLayout {
-                                                visible: !window.providersOpen; Layout.fillWidth: true; spacing: 8
+                                                Layout.fillWidth: true; spacing: 8
                                                 Heading { text: "供应商" }
-                                                Hint { visible: host.providerKind === window.detailProviderGroup && host.providers.length > 0; text: host.providers.length + " 个配置"; font.pixelSize: Theme.caption; color: Theme.inkFaint }
-                                                Item { Layout.fillWidth: true }
-                                                ActionButton { objectName: "openAgentProviders"; text: "供应商配置"; enabled: window.canEditAgent && !window.detailChange; onClicked: window.openProviders(window.detailProviderGroup) }
+                                                Label {
+                                                    objectName: "agentProviderCount"
+                                                    Layout.fillWidth: true; elide: Text.ElideRight
+                                                    text: window.activity.kind === "provider" ? window.activityText
+                                                        : providerSection.total === 0 ? "" : providerSearch.text.trim() ? providerSection.rows.length + " / " + providerSection.total : providerSection.total + " 个配置"
+                                                    font.pixelSize: Theme.caption; color: Theme.inkFaint
+                                                }
+                                                RowToolButton { objectName: "refreshAgentProviders"; symbol: "refresh"; label: "刷新供应商"; enabled: window.canEditProviders; onClicked: host.loadProviders(window.detailProviderGroup) }
+                                            }
+                                            Field {
+                                                id: providerSearch
+                                                objectName: "providerSearch"
+                                                visible: providerSection.total > 5 || text.length > 0
+                                                marksProviderDirty: false
+                                                Layout.fillWidth: true; implicitHeight: Theme.controlHeight
+                                                placeholderText: "搜索名称、标识、备注或网站"; Accessible.name: "搜索供应商"
                                             }
                                             Item {
-                                                visible: !window.providersOpen
                                                 Layout.fillWidth: true
                                                 implicitHeight: inlineProviderColumn.implicitHeight + 12
                                                 Surface {
@@ -2466,189 +2549,152 @@ ApplicationWindow {
                                                     id: inlineProviderColumn
                                                     x: 6; y: 6; width: parent.width - 12; spacing: 2
                                                     Hint {
-                                                        visible: host.providerKind === window.detailProviderGroup && host.providers.length === 0
-                                                        text: window.activityKinds.indexOf("providerList") >= 0 ? "正在读取供应商" : "没有可用供应商"
+                                                        visible: providerSection.rows.length === 0
+                                                        text: providerSection.total > 0 ? "没有匹配的供应商" : host.providerKind !== window.detailProviderGroup || window.activityKinds.indexOf("providerList") >= 0 ? "正在读取供应商" : "没有可用供应商"
                                                         Layout.margins: 8
                                                     }
                                                     Repeater {
-                                                        model: !window.providersOpen && host.providerKind === window.detailProviderGroup ? host.providers : []
+                                                        model: providerSection.rows
                                                         delegate: Item {
                                                             id: providerRow
+                                                            objectName: "providerRow-" + modelData.id
                                                             required property var modelData
+                                                            required property int index
+                                                            readonly property bool additive: modelData.mode === "additive"
+                                                            readonly property bool multi: ProviderFlow.isNative(window.detailProviderGroup)
+                                                            readonly property bool engaged: providerHover.hovered || activeFocus || window.previewProviderId === modelData.id
+                                                            readonly property bool checking: host.checkingProviderIds.indexOf(modelData.id) >= 0
                                                             readonly property var quota: host.providerQuotas[window.detailProviderGroup + ":" + modelData.id] || null
-                                                            Layout.fillWidth: true; Layout.preferredHeight: 52
+                                                            Layout.fillWidth: true
+                                                            implicitHeight: providerRowContent.implicitHeight + 16
+                                                            z: dragMouse.drag.active ? 1 : 0
                                                             activeFocusOnTab: true
                                                             Accessible.role: Accessible.ListItem; Accessible.name: modelData.name + (modelData.enabled ? "，使用中" : "")
                                                             Accessible.onPressAction: window.previewProviderId = modelData.id
                                                             Keys.onReturnPressed: window.askProvider(modelData)
-                                                            Rectangle { anchors.fill: parent; radius: Theme.radiusSm; color: providerHover.hovered || window.previewProviderId === providerRow.modelData.id ? Theme.surfaceLift : "transparent"; border.width: providerRow.activeFocus ? 1 : 0; border.color: Theme.accent }
+                                                            Rectangle {
+                                                                anchors.fill: parent; radius: Theme.radiusSm
+                                                                color: providerRow.engaged ? Theme.surfaceLift : "transparent"
+                                                                border.width: providerDrop.containsDrag ? 2 : providerRow.activeFocus ? 1 : 0; border.color: Theme.accent
+                                                            }
                                                             HoverHandler { id: providerHover }
                                                             TapHandler { onTapped: window.previewProviderId = providerRow.modelData.id; onDoubleTapped: window.askProvider(providerRow.modelData) }
-                                                            RowLayout {
-                                                                anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 10
-                                                                Item {
-                                                                    Layout.preferredWidth: 14; Layout.preferredHeight: 14
-                                                                    Label { anchors.centerIn: parent; visible: providerRow.modelData.enabled; text: "▸"; color: Theme.agent(window.detailKind); Accessible.ignored: true }
-                                                                    Rectangle { anchors.centerIn: parent; visible: !providerRow.modelData.enabled; width: 6; height: 6; radius: 3; color: Theme.hairline }
-                                                                }
-                                                                ColumnLayout {
-                                                                    Layout.fillWidth: true; spacing: 1
-                                                                    Label { text: providerRow.modelData.name; color: Theme.ink; font.weight: providerRow.modelData.enabled ? Font.DemiBold : Font.Normal; elide: Text.ElideRight; Layout.fillWidth: true }
-                                                                    Label { text: providerRow.modelData.category === "official" || providerRow.modelData.official ? "官方配置" : "已保存的配置"; color: Theme.inkMuted; font.pixelSize: Theme.caption; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                            TapHandler { acceptedButtons: Qt.RightButton; onTapped: providerMenu.showFor(providerRow, null) }
+                                                            DropArea {
+                                                                id: providerDrop
+                                                                anchors.fill: parent; keys: ["provider-card"]; enabled: window.canReorderProviders
+                                                                onDropped: function(drop) { window.moveProvider(window.draggedProviderId, providerRow.modelData.id); drop.acceptProposedAction() }
+                                                            }
+                                                            ColumnLayout {
+                                                                id: providerRowContent
+                                                                x: 6; y: 8; width: parent.width - 10; spacing: 4
+                                                                RowLayout {
+                                                                    Layout.fillWidth: true; spacing: 4
+                                                                    Item {
+                                                                        Layout.preferredWidth: 22; Layout.preferredHeight: 36
+                                                                        Label { anchors.centerIn: parent; visible: providerRow.modelData.enabled && !providerDrag.visible; text: "▸"; color: Theme.agent(window.detailKind); Accessible.ignored: true }
+                                                                        Rectangle { anchors.centerIn: parent; visible: !providerRow.modelData.enabled && !providerDrag.visible; width: 6; height: 6; radius: 3; color: Theme.hairline }
+                                                                        SymbolIcon {
+                                                                            id: providerDrag
+                                                                            objectName: "providerDragHandle-" + providerRow.modelData.id
+                                                                            anchors.centerIn: parent; width: Theme.iconSm; height: Theme.iconSm
+                                                                            visible: window.canReorderProviders && (providerRow.engaged || dragMouse.pressed)
+                                                                            name: "more_horiz"; rotation: 90; color: Theme.inkMuted
+                                                                            Drag.active: dragMouse.drag.active; Drag.source: providerRow; Drag.keys: ["provider-card"]; Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
+                                                                        }
+                                                                        MouseArea {
+                                                                            id: dragMouse
+                                                                            anchors.fill: parent; enabled: window.canReorderProviders; preventStealing: true
+                                                                            cursorShape: Qt.OpenHandCursor; drag.target: providerDrag; drag.axis: Drag.YAxis
+                                                                            onPressed: { window.draggedProviderId = providerRow.modelData.id; providerDrag.anchors.centerIn = undefined }
+                                                                            onReleased: { providerDrag.Drag.drop(); providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                                                                            onCanceled: { providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                                                                        }
+                                                                    }
+                                                                    ColumnLayout {
+                                                                        Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 1
+                                                                        Label { objectName: "providerName-" + providerRow.modelData.id; text: providerRow.modelData.name; color: Theme.ink; font.weight: providerRow.modelData.enabled ? Font.DemiBold : Font.Normal; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                                        Label {
+                                                                            text: (providerRow.modelData.globalDefault && !providerRow.multi ? "全局默认 · " : "") + window.providerSubtitle(providerRow.modelData)
+                                                                            textFormat: Text.PlainText
+                                                                            color: Theme.inkMuted; font.pixelSize: Theme.caption; elide: Text.ElideRight; maximumLineCount: 1; Layout.fillWidth: true
+                                                                            HoverHandler { id: providerNoteHover }
+                                                                            ToolTip.visible: providerNoteHover.hovered && truncated; ToolTip.text: text; ToolTip.delay: 500
+                                                                        }
+                                                                    }
+                                                                    // One fixed slot: hovering swaps its content without re-eliding the name.
+                                                                    Item {
+                                                                        id: providerSlot
+                                                                        readonly property bool offersAction: providerRow.engaged && (!providerRow.modelData.enabled || (providerRow.multi ? providerRow.modelData.canSetDefault === true : providerRow.additive))
+                                                                        Layout.preferredWidth: providerRow.multi ? 76 : 64; Layout.preferredHeight: 36; Layout.leftMargin: 4
+                                                                        Label {
+                                                                            anchors.right: parent.right; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter
+                                                                            visible: !providerSlot.offersAction
+                                                                            text: providerRow.checking ? "检测中" : !providerRow.modelData.enabled ? "" : providerRow.multi && providerRow.modelData.globalDefault ? "默认" : providerRow.additive ? "已启用" : "使用中"
+                                                                            color: providerRow.checking ? Theme.inkMuted : Theme.success; font.pixelSize: Theme.caption; font.weight: Font.DemiBold
+                                                                        }
+                                                                        ActionButton {
+                                                                            objectName: "providerSwitch-" + providerRow.modelData.id
+                                                                            anchors.fill: parent; font.pixelSize: Theme.label
+                                                                            visible: providerSlot.offersAction
+                                                                            text: providerRow.modelData.enabled ? (providerRow.multi ? "设为默认" : "移出") : providerRow.additive ? "启用" : "切换"
+                                                                            primary: !providerRow.modelData.enabled || providerRow.multi
+                                                                            enabled: window.canEditProviders; loading: providerRow.checking
+                                                                            onClicked: window.askProvider(providerRow.modelData)
+                                                                        }
+                                                                    }
+                                                                    RowToolButton { objectName: "providerEdit-" + providerRow.modelData.id; symbol: "edit"; label: "编辑"; Accessible.name: "编辑 " + providerRow.modelData.name; enabled: window.canEditProviders && providerRow.modelData.readOnly !== true; onClicked: host.editProvider(providerRow.modelData.id) }
+                                                                    RowToolButton { id: providerMore; objectName: "providerMore-" + providerRow.modelData.id; symbol: "more_horiz"; label: "更多"; Accessible.name: providerRow.modelData.name + " 更多操作"; onClicked: providerMenu.showFor(providerRow, providerMore) }
                                                                 }
                                                                 RowLayout {
-                                                                    visible: providerRow.modelData.enabled && providerRow.quota !== null
-                                                                    spacing: 10
-                                                                    RowLayout {
-                                                                        visible: providerRow.quota && providerRow.quota.fiveHour !== undefined
-                                                                        spacing: 5
-                                                                        Label { text: "5 小时"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
-                                                                        Rectangle {
-                                                                            Layout.preferredWidth: 44; Layout.preferredHeight: 5; radius: 2.5; color: Theme.hairline
-                                                                            Rectangle {
-                                                                                width: parent.width * Math.max(0, Math.min(1, Number(providerRow.quota ? providerRow.quota.fiveHour : 0) / 100))
-                                                                                height: parent.height; radius: 2.5
-                                                                                color: Number(providerRow.quota ? providerRow.quota.fiveHour : 100) <= 20 ? Theme.warning : Theme.agent(window.detailKind)
-                                                                            }
-                                                                        }
-                                                                        Label { text: (providerRow.quota ? providerRow.quota.fiveHour : 0) + "%"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
-                                                                    }
-                                                                    RowLayout {
-                                                                        visible: providerRow.quota && providerRow.quota.sevenDay !== undefined
-                                                                        spacing: 5
-                                                                        Label { text: "7 天"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
-                                                                        Rectangle {
-                                                                            Layout.preferredWidth: 44; Layout.preferredHeight: 5; radius: 2.5; color: Theme.hairline
-                                                                            Rectangle {
-                                                                                width: parent.width * Math.max(0, Math.min(1, Number(providerRow.quota ? providerRow.quota.sevenDay : 0) / 100))
-                                                                                height: parent.height; radius: 2.5
-                                                                                color: Theme.agent(window.detailKind)
-                                                                            }
-                                                                        }
-                                                                        Label { text: (providerRow.quota ? providerRow.quota.sevenDay : 0) + "%"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
-                                                                    }
-                                                                }
-                                                                SoftToolButton {
-                                                                    objectName: "providerQuotaRefresh-" + providerRow.modelData.id
-                                                                    symbol: "refresh"
-                                                                    Accessible.name: "刷新配额"
-                                                                    ToolTip.visible: hovered
-                                                                    ToolTip.text: "刷新配额"
-                                                                    visible: providerRow.modelData.enabled && providerRow.modelData.subscriptionSupported === true
-                                                                    enabled: !host.busy && !window.detailChange
-                                                                    onClicked: host.querySubscription(providerRow.modelData.id)
-                                                                }
-                                                                Label { visible: providerRow.modelData.enabled && !(providerRow.modelData.mode === "additive" && (providerHover.hovered || providerRow.activeFocus || window.previewProviderId === providerRow.modelData.id)); text: "使用中"; color: Theme.success; font.pixelSize: Theme.caption; font.weight: Font.DemiBold }
-                                                                ActionButton { text: providerRow.modelData.enabled ? "移出" : "切换"; visible: (!providerRow.modelData.enabled || providerRow.modelData.mode === "additive") && (providerHover.hovered || providerRow.activeFocus || window.previewProviderId === providerRow.modelData.id); enabled: !host.busy && !window.detailChange; onClicked: window.askProvider(providerRow.modelData) }
-                                                            }
-                                                        }
-                                                    }
-                                                    AbstractButton {
-                                                        Layout.fillWidth: true; implicitHeight: 40
-                                                        hoverEnabled: true
-                                                        enabled: window.canEditAgent && !host.busy && !window.detailChange
-                                                        Accessible.name: "添加供应商"
-                                                        onClicked: { window.openProviders(window.detailProviderGroup); host.editProvider("") }
-                                                        background: Rectangle {
-                                                            radius: Theme.radiusSm
-                                                            color: parent.hovered ? Theme.surfaceLift : "transparent"
-                                                        }
-                                                        contentItem: RowLayout {
-                                                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
-                                                            SymbolIcon { name: "add"; width: 16; height: 16; color: Theme.inkMuted }
-                                                            Label { text: "添加供应商"; color: Theme.inkMuted; font.pixelSize: Theme.caption; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        ColumnLayout {
-                                            visible: window.providersOpen; Layout.fillWidth: true; spacing: 12
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                ActionButton { text: "‹ 供应商"; onClicked: window.providersOpen = false }
-                                                Item { Layout.fillWidth: true }
-                                            }
-                                            Flow {
-                                                Layout.fillWidth: true; spacing: 14
-                                                ActionButton { text: "刷新"; enabled: !host.busy; onClicked: host.loadProviders(host.providerKind) }
-                                                ActionButton { text: "通用配置"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: host.loadCodexPreferences() }
-                                                ActionButton { text: "账号管理"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: { host.clearMessage(); host.oauthAccount("list"); oauthDialog.open() } }
-                                                ActionButton { text: "添加供应商"; symbol: "add"; primary: true; enabled: !host.busy; onClicked: host.editProvider("") }
-                                            }
-                                            RowLayout { Layout.fillWidth: true
-                                                Field { id: providerSearch; objectName: "providerSearch"; Layout.fillWidth: true; placeholderText: "搜索名称、标识、备注或网站"; Accessible.name: "搜索供应商" }
-                                                Hint { text: String(window.visibleProviders.length) + " / " + host.providers.length }
-                                            }
-                                            Card {
-                                                visible: host.providers.length === 0; Layout.fillWidth: true
-                                                ColumnLayout { anchors.fill: parent; spacing: 12
-                                                    Heading { text: "添加第一个供应商" }
-                                                }
-                                            }
-                                            Hint { visible: host.providers.length > 0 && window.visibleProviders.length === 0; text: "没有匹配的供应商"; Layout.fillWidth: true }
-                                            Repeater {
-                                                model: window.providersOpen ? window.visibleProviders : []
-                                                delegate: Card {
-                                                    id: providerCard
-                                                    objectName: "providerCard-" + modelData.id
-                                                    required property var modelData
-                                                    required property int index
-                                                    Layout.fillWidth: true
-                                                    contentWidth: availableWidth
-                                                    contentHeight: providerCardContent.implicitHeight
-                                                    Item {
-                                                        width: parent.width; height: providerCardContent.implicitHeight
-                                                        Rectangle { anchors.fill: parent; color: "transparent"; border.color: Theme.accent; border.width: 2; radius: Theme.radiusLg; visible: providerDrop.containsDrag }
-                                                        DropArea { id: providerDrop; anchors.fill: parent; keys: ["provider-card"]; enabled: !host.busy && providerSearch.text.trim().length === 0
-                                                            onDropped: function(drop) { window.moveProvider(window.draggedProviderId, providerCard.modelData.id); drop.acceptProposedAction() }
-                                                        }
-                                                        ColumnLayout { id: providerCardContent; width: parent.width; spacing: 12
-                                                          RowLayout { Layout.fillWidth: true; spacing: 12
-                                                            Item { Layout.preferredWidth: 30; Layout.preferredHeight: 40
-                                                                SymbolIcon { id: providerDrag; objectName: "providerDragHandle-" + modelData.id; anchors.centerIn: parent; name: "more_horiz"; width: Theme.iconMd; height: Theme.iconMd; rotation: 90; color: dragMouse.enabled ? Theme.inkMuted : Theme.inkFaint
-                                                                    Drag.active: dragMouse.drag.active; Drag.source: providerCard; Drag.keys: ["provider-card"]; Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
-                                                                    MouseArea { id: dragMouse; anchors.fill: parent; enabled: !host.busy && providerSearch.text.trim().length === 0; cursorShape: Qt.OpenHandCursor; drag.target: providerDrag
-                                                                        onPressed: { window.draggedProviderId = modelData.id; providerDrag.anchors.centerIn = undefined }
-                                                                        onReleased: { providerDrag.Drag.drop(); providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
-                                                                        onCanceled: { providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                                                                    visible: providerRow.modelData.enabled && (providerRow.quota !== null || providerRow.modelData.subscriptionSupported === true)
+                                                                    Layout.fillWidth: true; Layout.leftMargin: 26; spacing: 10
+                                                                    Label { visible: providerRow.quota === null; text: "配额"; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.fillWidth: true }
+                                                                    QuotaMeter { label: "5 小时"; remaining: providerRow.quota ? providerRow.quota.fiveHour : undefined; Layout.fillWidth: true }
+                                                                    QuotaMeter { label: "7 天"; remaining: providerRow.quota ? providerRow.quota.sevenDay : undefined; Layout.fillWidth: true }
+                                                                    RowToolButton {
+                                                                        objectName: "providerQuotaRefresh-" + providerRow.modelData.id
+                                                                        Layout.preferredHeight: 28
+                                                                        symbol: "refresh"; label: "刷新配额"
+                                                                        visible: providerRow.modelData.enabled && providerRow.modelData.subscriptionSupported === true
+                                                                        enabled: window.canEditProviders
+                                                                        onClicked: host.querySubscription(providerRow.modelData.id)
                                                                     }
                                                                 }
                                                             }
-                                                            ColumnLayout { Layout.fillWidth: true
-                                                                Heading { text: modelData.name; font.pixelSize: Theme.body; color: Theme.agent(modelData.kind || host.providerKind); Layout.fillWidth: true; elide: Text.ElideRight }
-                                                                Hint { text: (modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用") + (modelData.globalDefault ? "（Pi 全局默认）" : ""); color: modelData.enabled ? Theme.success : Theme.inkMuted }
-                                                                Hint { text: modelData.notes || ""; visible: text.length > 0; Layout.fillWidth: true }
-                                                            }
-                                                          }
-                                                          Flow { Layout.fillWidth: true; spacing: 6
-                                                            ActionButton { text: modelData.enabled ? (modelData.mode === "additive" ? "移除" : "已在用") : "启用"; primary: !modelData.enabled; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: window.askProvider(modelData) }
-                                                            ActionButton { text: "编辑"; enabled: !host.busy; onClicked: host.editProvider(modelData.id) }
-                                                            ActionButton { text: "复制"; enabled: !host.busy; onClicked: host.copyProvider(modelData.id) }
-                                                            ActionButton { text: "删除"; danger: true; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: { window.deleteProviderId = modelData.id; deleteProviderDialog.open() } }
-                                                          }
-                                                          Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
-                                                          Flow { Layout.fillWidth: true; spacing: 6
-                                                            ActionButton { text: "检测连通"; loading: host.checkingProviderIds.indexOf(modelData.id) >= 0; visible: modelData.category !== "official"; enabled: !host.busy && host.checkingProviderIds.indexOf(modelData.id) < 0; onClicked: host.checkProvider(modelData.id) }
-                                                            SoftToolButton {
-                                                                objectName: "providerManagerQuotaRefresh-" + modelData.id
-                                                                symbol: "refresh"
-                                                                Accessible.name: "刷新配额"
-                                                                ToolTip.visible: hovered
-                                                                ToolTip.text: "刷新配额"
-                                                                visible: modelData.enabled && modelData.subscriptionSupported === true
-                                                                enabled: !host.busy
-                                                                onClicked: host.querySubscription(modelData.id)
-                                                            }
-                                                            SoftToolButton { symbol: "arrow_upward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index > 0; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index - 1].id); ToolTip.visible: hovered; ToolTip.text: "上移" }
-                                                            SoftToolButton { symbol: "arrow_downward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index + 1 < window.visibleProviders.length; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index + 1].id); ToolTip.visible: hovered; ToolTip.text: "下移" }
-                                                          }
                                                         }
+                                                    }
+                                                    Rectangle { visible: providerSection.rows.length > 0; Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10; Layout.topMargin: 2; Layout.bottomMargin: 2; implicitHeight: 1; color: Theme.hairline }
+                                                    RowLayout {
+                                                        Layout.fillWidth: true; spacing: 2
+                                                        RowTextButton { objectName: "addAgentProvider"; text: "添加供应商"; symbol: "add"; Layout.fillWidth: true; enabled: window.canEditProviders; onClicked: host.editProvider("") }
+                                                        RowTextButton { objectName: "codexProviderAccounts"; text: "账号管理"; visible: window.detailProviderGroup === "codex"; enabled: window.canEditProviders; onClicked: { host.clearMessage(); host.oauthAccount("list"); oauthDialog.open() } }
+                                                        RowTextButton { objectName: "codexProviderPreferences"; text: "通用配置"; visible: window.detailProviderGroup === "codex"; enabled: window.canEditProviders; onClicked: host.loadCodexPreferences() }
                                                     }
                                                 }
                                             }
-                                            Hint { visible: host.busy; text: "正在处理供应商配置…"; Layout.fillWidth: true }
-                                        }
-
+                                            // Shared by every row: list refreshes rebuild the delegates and must not act on a stale position.
+                                            Menu {
+                                                id: providerMenu
+                                                objectName: "providerMenu"
+                                                property string providerId: ""
+                                                readonly property int rowIndex: window.visibleProviders.findIndex(row => row.id === providerId)
+                                                readonly property var row: rowIndex >= 0 ? window.visibleProviders[rowIndex] : ({})
+                                                readonly property bool actionable: window.canEditProviders && rowIndex >= 0
+                                                function showFor(item, anchor) {
+                                                    providerId = item.modelData.id; window.previewProviderId = providerId
+                                                    if (anchor) popup(anchor, anchor.width - width, anchor.height); else popup()
+                                                }
+                                                padding: 6
+                                                background: Surface { implicitWidth: 168; anchors.fill: parent; anchors.margins: -16; margin: 16; cornerRadius: Theme.radiusMd; surface: Theme.surfaceBase; shadowScale: 0.8 }
+                                                SoftMenuItem { objectName: "providerMenuDefault"; text: "设为默认"; visible: providerMenu.row.canSetDefault === true; enabled: providerMenu.actionable; onTriggered: host.setDefaultProvider(providerMenu.providerId) }
+                                                SoftMenuItem { objectName: "providerMenuCopy"; text: "复制"; enabled: providerMenu.actionable; onTriggered: host.copyProvider(providerMenu.providerId) }
+                                                SoftMenuItem { objectName: "providerMenuCheck"; text: "检测连通"; visible: providerMenu.row.category !== "official"; enabled: providerMenu.actionable && host.checkingProviderIds.indexOf(providerMenu.providerId) < 0; onTriggered: host.checkProvider(providerMenu.providerId) }
+                                                SoftMenuItem { objectName: "providerMenuUp"; text: "上移"; enabled: window.canReorderProviders && providerMenu.rowIndex > 0; onTriggered: window.moveProvider(providerMenu.providerId, window.visibleProviders[providerMenu.rowIndex - 1].id) }
+                                                SoftMenuItem { objectName: "providerMenuDown"; text: "下移"; enabled: window.canReorderProviders && providerMenu.rowIndex >= 0 && providerMenu.rowIndex + 1 < window.visibleProviders.length; onTriggered: window.moveProvider(providerMenu.providerId, window.visibleProviders[providerMenu.rowIndex + 1].id) }
+                                                SoftMenuItem { objectName: "providerMenuRemove"; text: "移出"; visible: ProviderFlow.isNative(window.detailProviderGroup) && providerMenu.row.enabled === true; enabled: providerMenu.actionable && providerMenu.row.readOnly !== true; onTriggered: { window.removeProviderId = providerMenu.providerId; removeProviderDialog.open() } }
+                                                SoftMenuItem { objectName: "providerMenuDelete"; text: "删除"; danger: true; enabled: providerMenu.actionable && providerMenu.row.readOnly !== true && (!providerMenu.row.enabled || providerMenu.row.mode === "additive"); onTriggered: { window.deleteProviderId = providerMenu.providerId; deleteProviderDialog.open() } }
+                                            }
                                         }
                                         ColumnLayout {
                                             objectName: "agentRunningSessions"
@@ -3466,9 +3512,9 @@ ApplicationWindow {
                 }
                 Label { text: "名称"; color: Theme.inkMuted }
                 Field { id: providerName; objectName: "providerName"; Layout.fillWidth: true; maximumLength: 80; placeholderText: "例如：工作账号 / 自建 API" }
-                Label { text: "供应商标识"; visible: window.providerDraft.kind === "pi" || providerDetails.checked; color: Theme.inkMuted }
-                Field { id: providerKey; visible: window.providerDraft.kind === "pi" || providerDetails.checked; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: window.providerDraft.kind !== "pi" || !!window.providerDraft.create }
-                Hint { visible: window.providerDraft.kind === "pi"; text: window.providerDraft.create ? "标识对应 models.json 的节点；保存后不可修改。" : "标识固定；修改名称不会更改模型引用。"; Layout.fillWidth: true }
+                Label { text: "供应商标识"; visible: ProviderFlow.ownsKey(window.providerDraft.kind) || providerDetails.checked; color: Theme.inkMuted }
+                Field { id: providerKey; visible: ProviderFlow.ownsKey(window.providerDraft.kind) || providerDetails.checked; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: !ProviderFlow.ownsKey(window.providerDraft.kind) || !!window.providerDraft.create }
+                Hint { visible: ProviderFlow.ownsKey(window.providerDraft.kind); text: window.providerDraft.create ? "标识对应 " + ProviderFlow.nativeFile(window.providerDraft.kind) + " 的节点；保存后不可修改。" : "标识固定；修改名称不会更改模型引用。"; Layout.fillWidth: true }
                 Label { text: "ChatGPT 登录来源"; visible: window.officialProvider && window.providerDraft.kind === "codex"; color: Theme.inkMuted }
                 ProviderComboBox { id: providerAccount; visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
                 RowLayout { visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true
@@ -3494,7 +3540,7 @@ ApplicationWindow {
                     Field { id: providerWebsite; Layout.fillWidth: true; placeholderText: "供应商网站" }
                     Field { id: providerNotes; Layout.fillWidth: true; placeholderText: "备注"; maximumLength: 4000 }
                 }
-                SoftSwitch { id: providerAddToLive; text: window.providerDraft.kind === "pi" ? "保存后立即启用" : "没有当前供应商时自动启用"; visible: !!window.providerDraft.create }
+                SoftSwitch { id: providerAddToLive; text: ProviderFlow.ownsKey(window.providerDraft.kind) ? "保存后立即启用" : "没有当前供应商时自动启用"; visible: !!window.providerDraft.create }
                 RowLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true
                     SoftSwitch { id: providerCommon; text: "使用 Codex 通用配置" }
                     Item { Layout.fillWidth: true }
@@ -3518,8 +3564,8 @@ ApplicationWindow {
                         Field { id: claudeSonnet; Layout.fillWidth: true; placeholderText: "Sonnet 模型 ID（留空使用原生默认）" }
                         Field { id: claudeOpus; Layout.fillWidth: true; placeholderText: "Opus 模型 ID（留空使用原生默认）" }
                     }
-                    Label { text: "默认模型"; visible: window.providerDraft.kind !== "pi"; color: Theme.inkMuted }
-                    RowLayout { visible: window.providerDraft.kind !== "pi"; Layout.fillWidth: true; spacing: 12
+                    Label { text: "默认模型"; visible: !ProviderFlow.ownsKey(window.providerDraft.kind); color: Theme.inkMuted }
+                    RowLayout { visible: !ProviderFlow.ownsKey(window.providerDraft.kind); Layout.fillWidth: true; spacing: 12
                         Field { id: providerModel; objectName: "providerDefaultModel"; Layout.fillWidth: true; placeholderText: "填写模型 ID，或从模型列表选择" }
                         ActionButton { objectName: "fetchDefaultModel"; text: host.providerModelsLoading ? "获取中…" : "获取模型列表"; visible: window.providerDraft.kind === "codex" && !window.officialProvider; enabled: !host.busy && !host.providerModelsLoading && providerUrl.text.trim().length > 0; onClicked: window.requestProviderModels(-2) }
                     }
@@ -3553,10 +3599,10 @@ ApplicationWindow {
                         Label { text: "请求覆盖（headers / body）"; color: Theme.inkMuted }
                         SoftTextArea { id: providerRequestOverrides; Layout.fillWidth: true; Layout.preferredHeight: 90; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                     }
-                    SoftSwitch { id: providerTransportDetails; marksProviderDirty: false; text: "请求头与兼容配置"; visible: !window.officialProvider && ["pi", "codex"].indexOf(window.providerDraft.kind) >= 0 }
+                    SoftSwitch { id: providerTransportDetails; marksProviderDirty: false; text: "请求头与兼容配置"; visible: !window.officialProvider && (window.providerDraft.kind === "codex" || ProviderFlow.ownsKey(window.providerDraft.kind)) }
                     Label { text: "请求头（JSON 对象）"; visible: providerTransportDetails.visible && providerTransportDetails.checked; color: Theme.inkMuted }
                     SoftTextArea { id: piHeaders; visible: providerTransportDetails.visible && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
-                    ColumnLayout { visible: window.providerDraft.kind === "pi" || window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 8
+                    ColumnLayout { visible: ProviderFlow.ownsKey(window.providerDraft.kind) || window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 8
                         Label { text: "兼容参数（JSON 对象）"; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; color: Theme.inkMuted }
                         SoftTextArea { id: piCompat; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                         RowLayout { Layout.fillWidth: true
@@ -3584,12 +3630,12 @@ ApplicationWindow {
                                     ActionButton { text: "删除"; danger: true; enabled: !host.providerModelsLoading; onClicked: window.deleteProviderModel(index) }
                                 }
                                 RowLayout { Layout.fillWidth: true
-                                    SoftCheckBox { text: "推理"; visible: window.providerDraft.kind === "pi"; checked: modelData.reasoning === true; onToggled: window.updateProviderModel(index, "reasoning", checked) }
+                                    SoftCheckBox { text: "推理"; visible: ProviderFlow.ownsKey(window.providerDraft.kind) && window.providerDraft.kind !== "hermes"; checked: modelData.reasoning === true; onToggled: window.updateProviderModel(index, "reasoning", checked) }
                                     SoftCheckBox { text: "图像输入"; checked: Array.isArray(modelData.input) && modelData.input.indexOf("image") >= 0; onToggled: window.updateProviderModel(index, "input", checked ? ["text", "image"] : ["text"]) }
                                     Label { text: "上下文"; color: Theme.inkMuted }
                                     Field { Layout.fillWidth: true; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: window.providerDraft.kind === "pi" ? "128000" : window.providerDraft.kind === "dsh" ? "262144" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "contextWindow", text) }
-                                    Label { text: "最大输出"; color: Theme.inkMuted }
-                                    Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: window.providerDraft.kind === "pi" ? "16384" : window.providerDraft.kind === "dsh" ? "32768" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "maxTokens", text) }
+                                    Label { text: "最大输出"; visible: ProviderFlow.hasMaxTokens(window.providerDraft.kind); color: Theme.inkMuted }
+                                    Field { visible: ProviderFlow.hasMaxTokens(window.providerDraft.kind); Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: window.providerDraft.kind === "pi" ? "16384" : window.providerDraft.kind === "dsh" ? "32768" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "maxTokens", text) }
                                 }
                                 SoftTextArea { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updateProviderModel(index, "thinkingLevelMap", text) }
                                 ColumnLayout { visible: window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 6
@@ -3637,7 +3683,7 @@ ApplicationWindow {
                     }
                 }
                 ColumnLayout { visible: advancedProvider.checked; Layout.fillWidth: true; spacing: 10
-                    Hint { text: window.providerDraft.kind === "codex" ? "Codex 的 auth.json、config.toml 和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "dsh" ? "DSH 的 patch YAML、环境变量和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "claude" ? "Claude Code：供应商环境变量、模型和认证配置。" : "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
+                    Hint { text: window.providerDraft.kind === "codex" ? "Codex 的 auth.json、config.toml 和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "dsh" ? "DSH 的 patch YAML、环境变量和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "claude" ? "Claude Code：供应商环境变量、模型和认证配置。" : "完整的 " + ProviderFlow.nativeFile(window.providerDraft.kind) + " 供应商节点。"; Layout.fillWidth: true }
                     ColumnLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true; spacing: 8
                         Label { text: "auth.json（JSON 对象或 null）"; color: Theme.inkMuted }
                         SoftTextArea { id: providerAuthJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
@@ -3654,8 +3700,8 @@ ApplicationWindow {
                         Label { text: "其他字段（JSON 对象，可留空）"; color: Theme.inkMuted }
                         SoftTextArea { id: dshExtraJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                     }
-                    ColumnLayout { visible: ["pi", "claude"].indexOf(window.providerDraft.kind) >= 0; Layout.fillWidth: true
-                        Hint { text: window.providerDraft.kind === "claude" ? "Claude Code：settings.json 中的供应商 env、模型和认证字段。Hooks、权限与共享设置保持不变。" : "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
+                    ColumnLayout { visible: window.providerDraft.kind === "claude" || ProviderFlow.ownsKey(window.providerDraft.kind); Layout.fillWidth: true
+                        Hint { text: window.providerDraft.kind === "claude" ? "Claude Code：settings.json 中的供应商 env、模型和认证字段。Hooks、权限与共享设置保持不变。" : "完整的 " + ProviderFlow.nativeFile(window.providerDraft.kind) + " 供应商节点。"; Layout.fillWidth: true }
                         SoftTextArea { id: providerJson; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas"; color: Theme.ink }
                     }
                 }
@@ -3772,14 +3818,14 @@ ApplicationWindow {
         onAccepted: window.acceptDiscoveredModels()
     }
     SoftDialog {
-        id: removeProviderDialog; title: "从 Pi 移除供应商？"; anchors.centerIn: parent; modal: true; width: 440
-        Label { width: parent.width; text: "仅移除 models.json 中的节点，卡片和最新配置仍保留。" + (host.piDefaultProvider === window.removeProviderId ? "\n这是 Pi 的全局默认供应商。" : ""); wrapMode: Text.WordWrap }
+        id: removeProviderDialog; title: "移出供应商？"; anchors.centerIn: parent; modal: true; width: 440
+        Label { width: parent.width; text: "仅移除 " + ProviderFlow.nativeFile(host.providerKind) + " 中的节点，卡片和最新配置仍保留。" + (window.isDefaultProvider(window.removeProviderId) ? "\n这是当前的默认供应商。" : ""); wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.switchProvider(window.removeProviderId, false)
     }
     SoftDialog {
         id: deleteProviderDialog; title: "删除供应商？"; anchors.centerIn: parent; modal: true; width: 410
-        Label { width: parent.width; text: host.providerKind === "pi" ? "删除卡片和 models.json 中的对应供应商。" + (host.piDefaultProvider === window.deleteProviderId ? "\n这是 Pi 的全局默认供应商。" : "") : "删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
+        Label { width: parent.width; text: ProviderFlow.ownsKey(host.providerKind) ? "删除卡片和 " + ProviderFlow.nativeFile(host.providerKind) + " 中的对应供应商。" + (window.isDefaultProvider(window.deleteProviderId) ? "\n这是当前的默认供应商。" : "") : "删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.removeProvider(window.deleteProviderId)
     }

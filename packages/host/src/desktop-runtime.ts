@@ -55,7 +55,9 @@ import { adoptLoginShellEnvironment, adoptWindowsEnvironment } from "./login-she
 import { agentInstallRoot } from "./agent-root.js";
 import { PiCommandCancelledError, installMacPiCommand, piCommandStatus, refreshMacPiCommand, removeMacPiCommand, syncWindowsPiCommand } from "./pi-command.js";
 import { existsSync } from "node:fs";
-import { ProviderManager, ProviderError, agentKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
+import { ProviderManager, ProviderError, agentKind, providerKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
+import { isNativeProviderKind, kimiOfficial, openCodeV2 } from "./provider-native.js";
+import { nativeProviderPresets } from "./provider-native-presets.js";
 import { installAgentPackage, activateManagedAgent, activeManagedEntry, findAgentCopies, fetchNpmLatestVersion, agentPackages, queryAgentStatus, recommendedAgentVersion, extractAgentVersion, compareAgentVersions, installationSource, type AgentInstallProgress, type AgentInstallStatus, type LocalAgent } from "./agent-installation.js";
 import { randomUUID } from "node:crypto";
 import { newProviderConfig, providerFields, applyProviderFields, type ProviderFields } from "./provider-form.js";
@@ -88,7 +90,7 @@ async function loopbackPortAlive(value: unknown): Promise<boolean> {
   });
 }
 
-const providerPresets = [...existingProviderPresets, ...claudeProviderPresets];
+const providerPresets = [...existingProviderPresets, ...claudeProviderPresets, ...nativeProviderPresets];
 
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
@@ -268,6 +270,7 @@ export class DesktopRuntime {
     if (!this.#qa) {
       await adoptLoginShellEnvironment(line => this.log(line));
       await adoptWindowsEnvironment();
+      this.#providers.kimiHome = (await loadKimiCodeConfig(this.#stateDir).catch(() => undefined))?.kimiCodeHome;
     }
     this.#applyAgentOverrides(settings.agentEntryOverrides);
     // DMG / portable installs have no installer hook. Registration runs in the background (HOST-PREP-04):
@@ -1566,18 +1569,18 @@ export class DesktopRuntime {
   }
 
   async listProviders(kind: string): Promise<(ProviderSummary & { usage?: UsageSnapshot | undefined })[]> {
-    return (await this.#providers.list(agentKind(kind))).map(profile => ({ ...profile, usage: this.#usage.get(kind, profile.id) }));
+    return (await this.#providers.list(providerKind(kind))).map(profile => ({ ...profile, usage: this.#usage.get(kind, profile.id) }));
   }
   piDefaultProvider(): Promise<string> { return this.#providers.piDefaultProvider(); }
   async checkProvider(kind: string, id: string): Promise<unknown> {
-    const selected = agentKind(kind);
+    const selected = providerKind(kind);
     const current = await this.#requireProviderEnabled(selected);
     const { baseUrl } = providerFields(await this.#providers.get(selected, id));
     current();
     return checkProviderEndpoint(baseUrl);
   }
   async fetchProviderModels(params: Record<string, unknown>): Promise<unknown> {
-    await this.#requireProviderEnabled(agentKind(params.kind));
+    await this.#requireProviderEnabled(providerKind(params.kind));
     if (params.fields && typeof params.fields === "object") {
       const fields = params.fields as ProviderFields;
       if ([fields.baseUrl, fields.apiKey, fields.api].some(value => typeof value !== "string")) throw new ProviderError("模型查询配置无效");
@@ -1587,12 +1590,12 @@ export class DesktopRuntime {
     return fetchProviderModels(preview.fields);
   }
   async querySubscription(kind: string, id: string): ReturnType<ProviderManager["querySubscription"]> {
-    const selected = agentKind(kind);
+    const selected = providerKind(kind);
     const current = await this.#requireProviderEnabled(selected);
     return this.#providers.querySubscription(selected, id, current);
   }
   async queryProviderUsage(kind: string, id: string): Promise<unknown> {
-    const selected = agentKind(kind);
+    const selected = providerKind(kind);
     const current = await this.#requireProviderEnabled(selected);
     const profile = await this.#providers.get(selected, id);
     current();
@@ -1600,7 +1603,7 @@ export class DesktopRuntime {
     return this.#usage.refresh(profile);
   }
   async saveProviderUsage(kind: string, id: string, script: unknown): Promise<void> {
-    const selected = agentKind(kind);
+    const selected = providerKind(kind);
     await this.#requireProviderEnabled(selected);
     await this.#providers.updateMetadata(selected, id, { usageScript: script });
     this.#usage.invalidate(kind, id);
@@ -1608,32 +1611,32 @@ export class DesktopRuntime {
     void this.#usage.tick().catch(() => {});
   }
   async providerUsageTemplate(kind: string, id: string, template: string, baseUrl: string): Promise<unknown> {
-    const profile = await this.#providers.get(agentKind(kind), id);
+    const profile = await this.#providers.get(providerKind(kind), id);
     return usageTemplate(template, baseUrl || providerFields(profile).baseUrl);
   }
-  getProvider(kind: string, id: string): ReturnType<ProviderManager["get"]> { return this.#providers.get(agentKind(kind), id); }
+  getProvider(kind: string, id: string): ReturnType<ProviderManager["get"]> { return this.#providers.get(providerKind(kind), id); }
   oauth(operation: string, id: string): Promise<unknown> { return this.#providers.oauth(operation, id); }
   providerPresets(kind: string): unknown {
-    return providerPresets.filter(p => p.kind === agentKind(kind)).map(p => ({ id: p.id, name: p.name, category: p.category, websiteUrl: p.websiteUrl, requiresOAuth: p.requiresOAuth === true, requiresProxy: p.apiFormat !== undefined && !["responses", "openai_responses"].includes(p.apiFormat) }));
+    return providerPresets.filter(p => p.kind === providerKind(kind)).map(p => ({ id: p.id, name: p.name, category: p.category, websiteUrl: p.websiteUrl, requiresOAuth: p.requiresOAuth === true, requiresProxy: p.apiFormat !== undefined && !["responses", "openai_responses"].includes(p.apiFormat) }));
   }
   async providerDraft(kind: string, id?: string, presetId?: string): Promise<unknown> {
-    const selected = agentKind(kind);
-    const profile: ProviderProfile = id ? await this.#providers.get(selected, id) : { kind: selected, id: selected === "pi" ? "" : randomUUID(), name: "", config: newProviderConfig(selected) };
+    const selected = providerKind(kind);
+    const profile: ProviderProfile = id ? await this.#providers.get(selected, id) : { kind: selected, id: selected === "pi" || isNativeProviderKind(selected) ? "" : randomUUID(), name: "", config: newProviderConfig(selected) };
     if (presetId && !id) {
       const preset = providerPresets.find(p => p.id === presetId && p.kind === selected);
       if (!preset) throw new ProviderError("供应商预设不存在");
       if (preset.requiresOAuth) throw new ProviderError("此预设依赖其他托管 OAuth 账号，尚未接入");
       Object.assign(profile, { config: structuredClone(preset.config), name: preset.name, category: preset.category, websiteUrl: preset.websiteUrl, ...(preset.icon ? { icon: preset.icon } : {}) });
       if (selected === "codex") profile.config.apiFormat = preset.apiFormat === "openai_chat" ? "openai_chat" : "responses";
-      if (selected === "pi") profile.id = preset.providerKey ?? "";
+      if (selected === "pi" || isNativeProviderKind(selected)) profile.id = preset.providerKey ?? "";
     }
     const fields = providerFields(profile);
-    const official = selected === "codex" ? codexOfficial(profile.config) : selected === "claude" && claudeOfficial(profile.config);
-    const nativeOnly = selected === "codex" ? !official && ["openai", "ollama", "lmstudio", "amazon-bedrock", "amazon-bedrock-runtime"].includes(fields.providerKey) : selected === "claude" ? Object.entries(profile.config.env ?? {}).some(([key, value]) => claudeProtocolSelectors.includes(key) && ["1", "true"].includes(String(value).toLowerCase())) : selected === "dsh" && fields.providerKey === "";
+    const official = selected === "codex" ? codexOfficial(profile.config) : selected === "claude" ? claudeOfficial(profile.config) : selected === "kimiCode" && kimiOfficial(profile.config);
+    const nativeOnly = selected === "codex" ? !official && ["openai", "ollama", "lmstudio", "amazon-bedrock", "amazon-bedrock-runtime"].includes(fields.providerKey) : selected === "claude" ? Object.entries(profile.config.env ?? {}).some(([key, value]) => claudeProtocolSelectors.includes(key) && ["1", "true"].includes(String(value).toLowerCase())) : selected === "dsh" ? fields.providerKey === "" : selected === "opencode" && openCodeV2(profile.config, profile.nativeFormat === "v2");
     return { ...profile, fields, official, nativeOnly, presetId: presetId ?? "custom", create: !id, accounts: selected === "codex" ? await this.#providers.oauth("list") : [] };
   }
   providerPreview(params: Record<string, unknown>): unknown {
-    const kind = agentKind(params.kind);
+    const kind = providerKind(params.kind);
     let config: unknown;
     try { config = typeof params.config === "string" ? JSON.parse(params.config) : params.config; } catch { throw new ProviderError("原生 JSON 格式无效"); }
     if (!config || typeof config !== "object" || Array.isArray(config)) throw new ProviderError("配置必须是对象");
@@ -1663,13 +1666,13 @@ export class DesktopRuntime {
     return this.#service ? this.#service.changeProvider("codex", work) : work();
   }
   async reorderProviders(kind: string, ids: unknown): Promise<ProviderSummary[]> {
-    await this.#requireProviderEnabled(agentKind(kind));
-    const result = await this.#providers.reorder(agentKind(kind), ids);
-    this.#service?.announceProviderChange(agentKind(kind));
+    await this.#requireProviderEnabled(providerKind(kind));
+    const result = await this.#providers.reorder(providerKind(kind), ids);
+    this.#service?.announceProviderChange(providerKind(kind));
     return result;
   }
-  async mutateProvider(kind: string, operation: "save" | "switch" | "remove" | "copy", params: Record<string, unknown>): Promise<ProviderSummary[]> {
-    const selected = agentKind(kind);
+  async mutateProvider(kind: string, operation: "save" | "switch" | "remove" | "copy" | "default", params: Record<string, unknown>): Promise<ProviderSummary[]> {
+    const selected = providerKind(kind);
     await this.#requireProviderEnabled(selected);
     if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
     const work = async (): Promise<ProviderSummary[]> => {
@@ -1682,6 +1685,7 @@ export class DesktopRuntime {
         result = await this.#providers.save(selected, String(params.id ?? ""), String(params.name ?? ""), config, params.create === true, params.addToLive !== false, providerMetadata(params.metadata ?? {}));
       }
       else if (operation === "switch") result = await this.#providers.switch(selected, String(params.id), params.enabled !== false);
+      else if (operation === "default") result = await this.#providers.setDefault(selected, String(params.id));
       else if (operation === "copy") result = await this.#providers.copy(selected, String(params.id));
       else result = await this.#providers.remove(selected, String(params.id));
       if (operation === "save" || operation === "remove") this.#usage.invalidate(selected, String(params.id));
@@ -1720,7 +1724,7 @@ export class DesktopRuntime {
   #providerCurrent(kind: AgentKind): () => boolean {
     const lease = this.#agentEnablement.lease(kind);
     const desktop = kind === "codex" ? this.#agentEnablement.lease("codexDesktop")
-      : kind === "dsh" ? this.#agentEnablement.lease("dshDesktop") : undefined;
+      : kind === "dsh" ? this.#agentEnablement.lease("dshDesktop") : kind === KIMI_KIND ? this.#agentEnablement.lease(KIMI_DESKTOP_KIND) : undefined;
     return () => lease?.isCurrent() === true || desktop?.isCurrent() === true;
   }
 
@@ -1729,6 +1733,10 @@ export class DesktopRuntime {
     const current = this.#providerCurrent(kind);
     const requireCurrent = () => { if (!current()) throw new ProviderError("请先在 Agent 设置中启用此接入"); };
     requireCurrent();
+    // A remote Agent reads its own computer's file; editing the local one would silently do nothing.
+    const remote = kind === "hermes" ? (await readHermesRemoteGatewaySettings(this.#stateDir)).host
+      : kind === "openclaw" ? (await readOpenClawDesktopSettings(this.#stateDir)).url.replace(/^wss?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/, "") : "";
+    if (remote) throw new ProviderError("此 Agent 运行在远程主机，请在该主机上配置供应商");
     return requireCurrent;
   }
 

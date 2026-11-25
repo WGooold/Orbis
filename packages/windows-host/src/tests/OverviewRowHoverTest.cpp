@@ -102,6 +102,18 @@ const agents = [
   { kind: "openclaw", label: "OpenClaw", enabled: true }
 ];
 let currentAgents = agents;
+const nativeKinds = ["opencode", "openclaw", "hermes", "kimiCode"];
+let nativeProviders = [
+  { id: "relay", name: "Relay", mode: "additive", enabled: true, globalDefault: true, canSetDefault: false, websiteUrl: "https:\/\/relay.example" },
+  { id: "spare", name: "Spare", mode: "additive", enabled: true, globalDefault: false, canSetDefault: true },
+  { id: "overlay", name: "Overlay", mode: "additive", enabled: true, globalDefault: false, canSetDefault: true, readOnly: true }
+];
+let providers = [
+  { id: "openai", name: "OpenAI Official", kind: "codex", mode: "exclusive", category: "official", enabled: true, subscriptionSupported: true,
+    websiteUrl: "https:\/\/platform.openai.com", notes: "官方 ChatGPT 托管登录与原生 CLI 配置" },
+  { id: "openrouter", name: "OpenRouter Aggregator Gateway", kind: "codex", mode: "exclusive", category: "aggregator", enabled: false, subscriptionSupported: false,
+    websiteUrl: "https:\/\/openrouter.ai/api/v1/responses", notes: "备用中转节点，支持多模型路由与连通性检测" }
+];
 const launchStatus = (kind, state, ready) => ({ event: "status", ...(kind === "kimiCode" ? { kimiCodeState: state } : {}), model: { domains: [{ domain: "backends", value: {
   backends: [{ kind, ready, launchable: true, runtimeCount: 0, reason: state }]
 } }] } });
@@ -203,32 +215,28 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     setTimeout(() => { out(launchStatus(params.kind, "connected", true)); out({ id, result: {} }); }, 360);
     return;
   }
+  if (method === "provider.default") {
+    nativeProviders = nativeProviders.map(row => ({ ...row, enabled: row.enabled || row.id === params.id, globalDefault: row.id === params.id, canSetDefault: row.id !== params.id }));
+    out({ id, result: nativeProviders });
+    return;
+  }
+  if (method === "provider.draft" && nativeKinds.includes(params.kind)) {
+    out({ id, result: { id: "", kind: params.kind, name: "", config: {}, create: true, presetId: "custom", official: false, nativeOnly: false, accounts: [],
+      fields: { providerKey: "", baseUrl: "", apiKey: "", model: "", api: "openai-completions", headers: {}, models: [{ id: "model-a", name: "Model A", input: ["text"], contextWindow: 1000 }] } } });
+    return;
+  }
   if (method === "provider.list") {
-    out({
-      id,
-      result: [
-        {
-          id: "openai",
-          name: "OpenAI Official",
-          kind: "codex",
-          category: "official",
-          enabled: true,
-          subscriptionSupported: true,
-          websiteUrl: "https:\/\/platform.openai.com",
-          notes: "官方 ChatGPT 托管登录与原生 CLI 配置"
-        },
-        {
-          id: "openrouter",
-          name: "OpenRouter Aggregator Gateway",
-          kind: "codex",
-          category: "aggregator",
-          enabled: false,
-          subscriptionSupported: false,
-          websiteUrl: "https:\/\/openrouter.ai/api/v1/responses",
-          notes: "备用中转节点，支持多模型路由与连通性检测"
-        }
-      ]
-    });
+    out({ id, result: nativeKinds.includes(params.kind) ? nativeProviders : providers });
+    return;
+  }
+  if (method === "provider.reorder") {
+    providers = params.ids.map(target => providers.find(row => row.id === target));
+    out({ id, result: providers });
+    return;
+  }
+  if (method === "provider.copy") {
+    providers = providers.concat({ ...providers.find(row => row.id === params.id), id: params.id + "-copy", enabled: false });
+    out({ id, result: providers });
     return;
   }
   if (method === "provider.presets") {
@@ -613,7 +621,7 @@ private slots:
         auto *integrationSection = findVisualItem(detail, "agentIntegrationSection");
         auto *codexPrestart = findVisualItem(detail, "codexPrestartSwitch");
         auto *twinChip = findVisualItem(detail, "twinAgentChip");
-        auto *openProvidersBtn = findVisualItem(detail, "openAgentProviders");
+        auto *providerSection = findVisualItem(detail, "agentProviderSection");
         auto *detailLatch = findVisualItem(detail, "detailAgentLatch");
         auto *detailTitle = findVisualItem(detail, "agentDetailTitle");
         auto *detailVersion = findVisualItem(detail, "agentDetailVersion");
@@ -622,9 +630,9 @@ private slots:
         auto *detailNotice = findVisualItem(detail, "agentDetailNotice");
         auto *codexRailDot = findVisualItem(rail, "agentRailUpdateDot-codex");
         auto *piRailDot = findVisualItem(rail, "agentRailUpdateDot-pi");
-        QVERIFY(rail && detail && integrationSection && codexPrestart && twinChip && openProvidersBtn && detailLatch && detailTitle &&
+        QVERIFY(rail && detail && integrationSection && codexPrestart && twinChip && providerSection && detailLatch && detailTitle &&
                 detailVersion && detailVersionState && detailInstall && detailNotice && codexRailDot && piRailDot);
-        QTRY_VERIFY(integrationSection->isVisible() && codexPrestart->isVisible() && twinChip->isVisible() && openProvidersBtn->isVisible());
+        QTRY_VERIFY(integrationSection->isVisible() && codexPrestart->isVisible() && twinChip->isVisible() && providerSection->isVisible());
         auto *socket = findVisualItem(detailLatch, "agentLatchSocket");
         auto *knobFace = findVisualItem(detailLatch, "agentLatchKnobFace");
         QVERIFY(socket && knobFace);
@@ -689,7 +697,7 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(twinChip, "clicked"));
         QCOMPARE(window->property("selectedAgent").toString(), QString("codexDesktop"));
         QCOMPARE(window->property("detailProviderGroup").toString(), QString("codex"));
-        QVERIFY(openProvidersBtn->isVisible());
+        QVERIFY(providerSection->isVisible());
         QVERIFY(QMetaObject::invokeMethod(twinChip, "clicked"));
         QCOMPARE(window->property("selectedAgent").toString(), QString("codex"));
 
@@ -699,33 +707,162 @@ private slots:
         QCOMPARE(window->property("detailProviderGroup").toString(), QString("dsh"));
         QVERIFY(detailVersion->isVisible());
         QCOMPARE(detailVersion->property("text").toString(), QString("· v0.2.2-rc.2"));
-        QTRY_VERIFY(openProvidersBtn->isVisible());
+        QTRY_VERIFY(providerSection->isVisible());
         QTRY_COMPARE(controller.providerKind(), QString("dsh"));
         QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("codex")), Q_ARG(QVariant, 0)));
 
-        // Opening provider configuration inside the two-column Agent page must keep the rail and detail
-        // widths stable instead of feeding providerCard's childrenRect width back into RowLayout.
+        // HOST-PROVIDER-INLINE-01: every catalog action works on the first-level list; a missing second page must
+        // not strand an action, and no row may outgrow the two-column page or move its name under the pointer.
         const qreal railWidthBefore = rail->width();
         const qreal detailWidthBefore = detail->width();
-        QVERIFY(QMetaObject::invokeMethod(openProvidersBtn, "clicked"));
-        QTRY_COMPARE(window->property("providersOpen").toBool(), true);
         QTRY_COMPARE(controller.providers().size(), 2);
-        QQuickItem *officialCard = nullptr;
-        QQuickItem *customCard = nullptr;
-        QTRY_VERIFY((officialCard = findVisualItem(detail, "providerCard-openai")) && officialCard->isVisible() &&
-                    (customCard = findVisualItem(detail, "providerCard-openrouter")) && customCard->isVisible());
-        auto *quotaRefresh = findVisualItem(officialCard, "providerManagerQuotaRefresh-openai");
+        QVERIFY(findVisualItem(detail, "openAgentProviders") == nullptr);
+        QQuickItem *officialRow = nullptr;
+        QQuickItem *customRow = nullptr;
+        QTRY_VERIFY((officialRow = findVisualItem(detail, "providerRow-openai")) && officialRow->isVisible() &&
+                    (customRow = findVisualItem(detail, "providerRow-openrouter")) && customRow->isVisible());
+        for (const auto &name : {"addAgentProvider", "codexProviderAccounts", "codexProviderPreferences", "refreshAgentProviders"}) {
+            auto *action = findVisualItem(detail, name);
+            QVERIFY2(action && action->isVisible(), name);
+            QTRY_VERIFY2(action->isEnabled(), name);
+            const auto bounds = action->mapRectToItem(providerSection, action->boundingRect());
+            QVERIFY2(bounds.left() >= -0.5 && bounds.right() <= providerSection->width() + 0.5, name);
+        }
+        QVERIFY(!findVisualItem(detail, "providerSearch")->isVisible());
+        auto *quotaRefresh = findVisualItem(officialRow, "providerQuotaRefresh-openai");
         QVERIFY(quotaRefresh && quotaRefresh->isVisible());
-        QCOMPARE(quotaRefresh->property("symbol").toString(), QString("refresh"));
         QCOMPARE(quotaRefresh->property("text").toString(), QString());
         auto *quotaAccessible = QAccessible::queryAccessibleInterface(quotaRefresh);
         QVERIFY(quotaAccessible);
         QCOMPARE(quotaAccessible->text(QAccessible::Name), QString("刷新配额"));
+        controller.m_providerQuotas.insert("codex:openai", QVariantMap{{"fiveHour", 100}, {"sevenDay", 100}});
+        emit controller.providersChanged();
         QTest::qWait(80);
         QVERIFY2(qAbs(rail->width() - railWidthBefore) <= 0.5 && qAbs(detail->width() - detailWidthBefore) <= 0.5,
-                 qPrintable(QString("Opening provider cards shifted rail/detail width: rail %1 -> %2, detail %3 -> %4")
-                                .arg(railWidthBefore).arg(rail->width())
-                                .arg(detailWidthBefore).arg(detail->width())));
+                 "Provider rows shifted rail/detail width");
+        QTRY_VERIFY((officialRow = findVisualItem(detail, "providerRow-openai")) && (customRow = findVisualItem(detail, "providerRow-openrouter")));
+        quotaRefresh = findVisualItem(officialRow, "providerQuotaRefresh-openai");
+        for (auto *item : {quotaRefresh, findVisualItem(officialRow, "providerMore-openai"), findVisualItem(customRow, "providerMore-openrouter")}) {
+            QVERIFY(item && item->isVisible());
+            QVERIFY(item->mapRectToItem(providerSection, item->boundingRect()).right() <= providerSection->width() + 0.5);
+        }
+
+        // Engaging a row reveals its switch action in place: the name keeps its width and the row its height.
+        auto *customName = findVisualItem(customRow, "providerName-openrouter");
+        auto *customSwitch = findVisualItem(customRow, "providerSwitch-openrouter");
+        QVERIFY(customName && customSwitch && !customSwitch->isVisible());
+        QVERIFY2(customName->width() >= 100, qPrintable(QString("provider name squeezed to %1").arg(customName->width())));
+        const qreal nameWidth = customName->width(), rowHeight = customRow->height();
+        window->setProperty("previewProviderId", "openrouter");
+        QTRY_VERIFY(customSwitch->isVisible() && customSwitch->isEnabled());
+        QCOMPARE(customName->width(), nameWidth);
+        QCOMPARE(customRow->height(), rowHeight);
+
+        const auto screenshot = [&](const QString &suffix) {
+            const auto base = qEnvironmentVariable("ORBIS_PROVIDER_INLINE_SCREENSHOT");
+            if (!base.isEmpty()) window->grabWindow().save(QString("%1-%2-%3.png").arg(base).arg(windowWidth).arg(suffix));
+        };
+        auto *pageFlick = qobject_cast<QQuickItem *>(scroll->property("contentItem").value<QObject *>());
+        pageFlick->setProperty("contentY", qBound(0.0, providerSection->mapToItem(pageFlick, QPointF()).y() + pageFlick->property("contentY").toReal() - 300,
+                                                  qMax(0.0, pageFlick->property("contentHeight").toReal() - pageFlick->height())));
+        QTest::qWait(80);
+        screenshot("list");
+
+        // The shared menu keeps copy / reorder / delete reachable and refuses to delete the profile in use.
+        auto *menu = window->findChild<QObject *>("providerMenu");
+        QVERIFY(menu);
+        const auto menuItem = [&](const char *name) { return menu->findChild<QObject *>(name); };
+        const auto openMenu = [&](const QString &id) {
+            auto *more = findVisualItem(detail, "providerMore-" + id);
+            return more && QMetaObject::invokeMethod(more, "clicked") && QTest::qWaitFor([&] { return menu->property("opened").toBool(); }, 2000);
+        };
+        QVERIFY(openMenu("openrouter"));
+        for (const auto &name : {"providerMenuCopy", "providerMenuCheck", "providerMenuUp", "providerMenuDown", "providerMenuDelete"})
+            QVERIFY2(menuItem(name), name);
+        QVERIFY(menuItem("providerMenuCheck")->property("visible").toBool());
+        QVERIFY(menuItem("providerMenuDelete")->property("enabled").toBool());
+        QVERIFY(menuItem("providerMenuUp")->property("enabled").toBool() && !menuItem("providerMenuDown")->property("enabled").toBool());
+        QTest::qWait(80);
+        screenshot("menu");
+        QVERIFY(QMetaObject::invokeMethod(menuItem("providerMenuUp"), "triggered"));
+        QVERIFY(QMetaObject::invokeMethod(menu, "close"));
+        QTRY_COMPARE(controller.providers().first().toMap().value("id").toString(), QString("openrouter"));
+        QTRY_VERIFY(!controller.busy() && !menu->property("visible").toBool());
+        QVERIFY(openMenu("openai"));
+        QVERIFY(!menuItem("providerMenuDelete")->property("enabled").toBool());
+        QVERIFY(!menuItem("providerMenuCheck")->property("visible").toBool());
+        QVERIFY(QMetaObject::invokeMethod(menuItem("providerMenuCopy"), "triggered"));
+        QVERIFY(QMetaObject::invokeMethod(menu, "close"));
+        QTRY_COMPARE(controller.providers().size(), 3);
+        QTRY_VERIFY(!controller.busy() && !menu->property("visible").toBool());
+
+        // Dragging a row's handle reorders the list in place.
+        auto *dragFrom = findVisualItem(detail, "providerDragHandle-openai-copy");
+        auto *dragTo = findVisualItem(detail, "providerDragHandle-openrouter");
+        QVERIFY(dragFrom && dragTo);
+        const auto from = dragFrom->mapToScene(QPointF(dragFrom->width() / 2, dragFrom->height() / 2)).toPoint();
+        const auto to = dragTo->mapToScene(QPointF(dragTo->width() / 2, dragTo->height() / 2)).toPoint();
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from);
+        for (int step = 1; step <= 8; ++step) QTest::mouseMove(window, from + (to - from) * step / 8, 20);
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to, 20);
+        QTRY_COMPARE(controller.providers().first().toMap().value("id").toString(), QString("openai-copy"));
+        QTRY_VERIFY(!controller.busy());
+
+        // A long catalog offers search; filtering blocks reordering, and leaving the Agent clears it.
+        QVariantList many;
+        for (int index = 0; index < 7; ++index)
+            many.append(QVariantMap{{"id", QString("p%1").arg(index)}, {"name", QString("供应商 %1").arg(index)}, {"mode", "exclusive"}, {"enabled", index == 0}});
+        controller.setProviders(many);
+        auto *search = findVisualItem(detail, "providerSearch");
+        QTRY_VERIFY(search->isVisible());
+        screenshot("search");
+        search->setProperty("text", "p3");
+        QTRY_COMPARE(findVisualItem(detail, "agentProviderCount")->property("text").toString(), QString("1 / 7"));
+        QVERIFY(!window->property("canReorderProviders").toBool());
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("pi")), Q_ARG(QVariant, 0)));
+        QTRY_COMPARE(search->property("text").toString(), QString());
+        QTRY_COMPARE(controller.providerKind(), QString("pi"));
+        QTRY_VERIFY(!controller.busy());
+        QVERIFY(!findVisualItem(detail, "codexProviderAccounts")->isVisible());
+
+        // PROVIDER-NATIVE-01: the remaining Agents manage their own providers here too; a remote Agent's file is not this computer's.
+        for (const auto &kind : {"opencode", "openclaw", "hermes", "kimiCode"}) {
+            QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString(kind)), Q_ARG(QVariant, 0)));
+            QTRY_COMPARE(controller.providerKind(), QString(kind));
+            QTRY_VERIFY2(providerSection->isVisible() && controller.providers().size() == 3 && !controller.busy(), kind);
+            QTRY_VERIFY(findVisualItem(detail, "providerEdit-overlay"));
+            QVERIFY(!findVisualItem(detail, "providerEdit-overlay")->isEnabled());
+            QVERIFY(findVisualItem(detail, "providerEdit-spare")->isEnabled());
+            const bool spareDefault = std::any_of(controller.providers().cbegin(), controller.providers().cend(), [](const QVariant &row) {
+                return row.toMap().value("id") == "spare" && row.toMap().value("globalDefault").toBool(); });
+            const QString other = spareDefault ? "relay" : "spare";
+            window->setProperty("previewProviderId", other);
+            auto *setDefault = findVisualItem(detail, "providerSwitch-" + other);
+            QTRY_VERIFY2(setDefault && setDefault->isVisible() && setDefault->isEnabled(), kind);
+            QCOMPARE(setDefault->property("text").toString(), QString("设为默认"));
+            screenshot(QString("native-") + kind);
+            QVERIFY(QMetaObject::invokeMethod(setDefault, "clicked"));
+            QTRY_VERIFY(std::any_of(controller.providers().cbegin(), controller.providers().cend(), [&other](const QVariant &row) {
+                return row.toMap().value("id") == other && row.toMap().value("globalDefault").toBool(); }));
+            QTRY_VERIFY(!controller.busy());
+            auto *add = findVisualItem(detail, "addAgentProvider");
+            QVERIFY(QMetaObject::invokeMethod(add, "clicked"));
+            auto *nameField = window->findChild<QQuickItem *>("providerName");
+            QTRY_VERIFY2(nameField && nameField->isVisible(), kind);
+            QTRY_COMPARE(window->property("providerModels").toList().size(), 1);
+            QTest::qWait(60);
+            screenshot(QString("editor-") + kind);
+            QVERIFY(QMetaObject::invokeMethod(window, "closeProviderEditor"));
+            QTRY_VERIFY(!nameField->isVisible());
+        }
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("openclaw")), Q_ARG(QVariant, 0)));
+        controller.m_openClaw.insert("url", "wss:/" "/gateway.example.com"); emit controller.openClawChanged();
+        QTRY_VERIFY(!providerSection->isVisible());
+        controller.m_openClaw.insert("url", ""); emit controller.openClawChanged();
+        QTRY_VERIFY(providerSection->isVisible());
+        QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("pi")), Q_ARG(QVariant, 0)));
+        QTRY_COMPARE(controller.providerKind(), QString("pi"));
+        QTRY_VERIFY(!controller.busy());
 
         QJsonArray disabledAgents;
         for (const auto &agent : controller.agentEnablement().value("agents").toList()) {
@@ -935,6 +1072,7 @@ private slots:
         QVERIFY(!engine.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
         QVERIFY(window);
+        window->resize(1180, 1200); // The provider list sits above the connection card; keep both in the pointer viewport.
         QVERIFY(QTest::qWaitForWindowExposed(window));
         QTRY_VERIFY(controller.bridgeReady() && !controller.busy() && !controller.agents().isEmpty());
         const QString localUrl = "ws://127.0.0.1:18789";
