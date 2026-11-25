@@ -62,7 +62,7 @@ jobs:
           remote_file="/tmp/orbis-wechat-qr-$QR_SHA256.png"
           ssh_opts=(-i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20)
           scp -P "$PORT" "${ssh_opts[@]}" "$LOCAL_IMAGE" "$TARGET:$remote_file"
-          ssh -p "$PORT" "${ssh_opts[@]}" "$TARGET" "bash -s -- '$QR_SHA256'" < deploy/remote-publish-wechat-qr.sh
+          ssh -p "$PORT" "${ssh_opts[@]}" "$TARGET" "bash -s -- '$QR_SHA256'" < scripts/publish-wechat-qr.sh
 
       - name: Verify public image digest
         shell: bash
