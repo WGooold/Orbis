@@ -1096,7 +1096,7 @@ private final class PreviewTransport: OrbisTransport {
                         let firstOptions: [[String: Any]] = (1...12).map { index in
                             ["value": "choice-\(index)", "label": "长选项 \(index)", "description": "用于验证回答卡片在内容超出可视区域时仍可独立滚动。"]
                         }
-                        let questions: [[String: Any]] = [
+                        var questions: [[String: Any]] = [
                             ["id": "preference", "header": "偏好", "question": "请选择一个偏好", "options": firstOptions,
                              "multiSelect": false, "allowOther": true, "allowNotes": true, "secret": false],
                             ["id": "details", "header": "补充", "question": "是否还需要补充说明？", "options": [
@@ -1104,6 +1104,9 @@ private final class PreviewTransport: OrbisTransport {
                                 ["value": "no", "label": "不需要", "description": "无需填写其他内容。"],
                              ], "multiSelect": false, "allowOther": false, "allowNotes": false, "secret": false],
                         ]
+                        if ProcessInfo.processInfo.arguments.contains("--preview-questionnaire-single") {
+                            questions = Array(questions.prefix(1))
+                        }
                         rows.append(["runtimeId": runtime, "requestId": "preview-questionnaire", "extensionId": "preview",
                                      "kind": "questionnaire", "title": "回答问题", "expiresAt": expires, "questions": questions])
                     } else {

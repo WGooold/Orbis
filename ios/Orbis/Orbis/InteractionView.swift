@@ -67,9 +67,12 @@ struct InteractionWorkspaceView: View, Equatable {
                     }.padding(.horizontal, 16)
                 }
                 if let request = requests.first(where: { $0.requestId == selectedId }) ?? requests.first {
-                    requestView(request, inSheet: true)
-                        .padding(.horizontal, 16).padding(.bottom, compactHeight ? 8 : 20)
-                        .frame(maxHeight: .infinity, alignment: .top)
+                    // Keep long forms inside the sheet's real viewport so only the answer list scrolls.
+                    GeometryReader { proxy in
+                        requestView(request, inSheet: true)
+                            .padding(.horizontal, 16).padding(.bottom, compactHeight ? 8 : 20)
+                            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+                    }
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .foregroundStyle(OrbisPalette(scheme).text)
@@ -249,20 +252,26 @@ private struct InteractionRequestView: View {
                     if !expired { questionnaireProgress.fixedSize() }
                     actionButtons(expired: expired)
                 }
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
             } else {
-                if !expired {
-                    if request.kind == "questionnaire" { questionnaireProgress }
-                    if !pending {
-                        if let responseError {
-                            Text(responseError).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
-                                .accessibilityIdentifier("interaction-response-error")
-                        }
-                        if !connected {
-                            Text(L10n.tr("连接后可提交")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                VStack(alignment: .leading, spacing: 12) {
+                    if !expired {
+                        if request.kind == "questionnaire" { questionnaireProgress }
+                        if !pending {
+                            if let responseError {
+                                Text(responseError).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
+                                    .accessibilityIdentifier("interaction-response-error")
+                            }
+                            if !connected {
+                                Text(L10n.tr("连接后可提交")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                            }
                         }
                     }
+                    actionButtons(expired: expired)
                 }
-                actionButtons(expired: expired)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
             }
         }
         .frame(maxHeight: inSheet ? .infinity : nil, alignment: .top)
