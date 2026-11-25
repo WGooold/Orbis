@@ -315,6 +315,7 @@ export const RUNTIME_VIEW_CLOSE_FEATURE = "runtime.view-close.v1";
 export const RUNTIME_VIEW_CLOSE_CAPABILITY = "orbis-exit-view";
 export const HOST_FEATURE_IMPORT_TARGET = "external-import.target-v1";
 export const DEVICE_FEATURE_OPENCODE = "agent.opencode";
+export const DEVICE_FEATURE_AGY = "agent.agy";
 const DeviceFeatureSchema = z.string().min(1).max(64).regex(/^[a-z][A-Za-z0-9.-]*$/);
 
 /**

@@ -240,6 +240,17 @@ export class RecoverableSessionSource {
     this.#touch();
   }
 
+  /** Drop an adapter-owned live twin that did not become confirmed history. */
+  discardLiveMessage(id: string): void {
+    const item = this.#messages.get(id);
+    if (!item) return;
+    this.#messages.delete(id);
+    this.#forgetMessageOrder(id, item);
+    this.#messageRevs.delete(id);
+    this.#messageBytes.delete(id);
+    this.#touch();
+  }
+
   #nextRev(): number {
     this.#revision += 1;
     return this.#revision;

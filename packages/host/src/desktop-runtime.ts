@@ -13,6 +13,9 @@ import { agentVersionRequirements } from "./agent-version-requirements.js";
 import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
+import { agyLocallyAllowed, openAgyProfile } from "./agy-client.js";
+import { AgyRuntime } from "./agy-runtime.js";
+import { agySubmissionFence } from "./agy-submission-fence.js";
 import { createOpenCodeLocalLauncher, OPENCODE_TUI_ENV_KEYS, prepareOpenCodeTerminalLaunch } from "./opencode-local-launch.js";
 import { OpenCodeServiceConnection } from "./opencode-service-connection.js";
 import { configureOpenCodeTuiTabs, openCodeTuiTabsInstalled } from "./opencode-tui-tabs-install.js";
@@ -221,7 +224,7 @@ export class DesktopRuntime {
       const keepKimi = this.#legacyKimiEnabled ?? kimi?.kimiCodeEnabled;
       const legacyKimiKind = kimi?.kimiCodeSource === "desktop" ? KIMI_DESKTOP_KIND : KIMI_KIND;
       return { ...(openClaw.url ? { openclaw: true } : {}), ...(keepKimi === undefined ? {} : { [legacyKimiKind]: keepKimi }), ...(this.#legacyDshEnabled ? { dsh: true } : {}), ...(this.#legacyCodexEnabled ? { codex: true } : {}), ...(this.#legacyPiEnabled ? { pi: true } : {}), ...(this.#legacyClaudeEnabled ? { claude: true } : {}) };
-    }), snapshot => {
+    }, kind => kind !== "agy" || (!this.#qa && agyLocallyAllowed())), snapshot => {
       if (!snapshot.agents.some(row => row.kind === "dshDesktop" && row.enabled)) this.#cancelDshDesktopOpen();
       if (!this.#agentEnablement.allows("claude")) this.#claudeIntegrationAbort?.abort();
       if (this.#poll) this.#prepareClaudeIntegration();
@@ -908,6 +911,7 @@ export class DesktopRuntime {
       };
       let relayAuthenticated = false;
       const service = await HostService.create({
+        ...(!this.#qa && agyLocallyAllowed() ? { createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(this.#stateDir, signal), hostId, agySubmissionFence(this.#stateDir)) } : {}),
         ...(this.#qa ? {} : { createKimiCodeRuntime, kimiCodeDesktopSupported: supportsKimiDesktop, openClawLauncher: createOpenClawLocalLauncher(),
           createOpenCodeConnection: () => new OpenCodeServiceConnection({ launcher: createOpenCodeLocalLauncher() }) }),
         agentEnablement: this.#agentEnablement,
@@ -1693,7 +1697,7 @@ export class DesktopRuntime {
   }
 
   async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {
-    const startLocal = kind === "opencode" || kind === "openclaw" || kind === "hermes";
+    const startLocal = kind === "agy" || kind === "opencode" || kind === "openclaw" || kind === "hermes";
     if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop" || kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND || startLocal)) throw new Error("QA Host 不打开正式 Agent 会话");
     const source = AgentKindSchema.safeParse(kind);
     if (source.success) await this.#requireAgentEnabled(source.data);
@@ -1734,7 +1738,8 @@ export class DesktopRuntime {
       requireCurrent();
       const service = this.#service;
       if (!this.#desired || !service) throw new Error("请先启动 Host，再启动 Agent");
-      if (kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND) await service.startKimiCode(kind);
+      if (kind === "agy") await service.startAgy();
+      else if (kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND) await service.startKimiCode(kind);
       else await service.startLocalAgent(kind);
       return;
     }

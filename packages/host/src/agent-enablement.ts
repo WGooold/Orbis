@@ -15,6 +15,7 @@ export const agentEnablementCatalog = {
   kimiCode: { label: "Kimi Code Web" },
   kimiCodeDesktop: { label: "Kimi Code 桌面版" },
   opencode: { label: "OpenCode" },
+  agy: { label: "Antigravity CLI" },
   hermes: { label: "Hermes Agent" },
   openclaw: { label: "OpenClaw" },
 } as const satisfies Record<AgentKind, { label: string }>;
@@ -64,13 +65,16 @@ export type AgentEnablementResult = {
  */
 export class AgentEnablementStore {
   readonly #directory: string;
+  readonly #expose: (kind: AgentKind) => boolean;
   readonly #legacyChoices: () => Promise<Readonly<Partial<Record<AgentKind, boolean>>>>;
   #data: File | undefined;
   #queue: Promise<unknown> = Promise.resolve();
 
-  constructor(directory: string, legacyChoices = async (): Promise<Readonly<Partial<Record<AgentKind, boolean>>>> => ({})) {
+  constructor(directory: string, legacyChoices = async (): Promise<Readonly<Partial<Record<AgentKind, boolean>>>> => ({}),
+    expose: (kind: AgentKind) => boolean = () => true) {
     this.#directory = directory;
     this.#legacyChoices = legacyChoices;
+    this.#expose = expose;
   }
 
   read(): Promise<AgentEnablementSnapshot> {
@@ -110,7 +114,7 @@ export class AgentEnablementStore {
     verify: (disabling: readonly AgentKind[], revision: number) => void): Promise<AgentEnablementResult> {
     return this.#serial(async () => {
       const data = await this.#load();
-      if (!stillAuthorized()) throw new Error("Agent settings request is no longer authorized");
+      if (!stillAuthorized() || kinds.some(kind => !this.#expose(kind))) throw new Error("Agent settings request is no longer authorized");
       const changed = kinds.filter(kind => !Object.hasOwn(data.choices, kind) || data.choices[kind] !== enabled);
       // Duplicate delivery after a successful commit is already satisfied. A stale
       // write with a different target must never undo a newer edit.
@@ -121,7 +125,7 @@ export class AgentEnablementStore {
       const next = fileSchema.parse({ ...data, revision: data.revision + 1, choices });
       // Review all of the affected sources at the same revision before replacing anything.
       await this.#commit(next, () => {
-        if (!stillAuthorized()) throw new Error("Agent settings request is no longer authorized");
+        if (!stillAuthorized() || kinds.some(kind => !this.#expose(kind))) throw new Error("Agent settings request is no longer authorized");
         if (!enabled) verify(changed.filter(kind => data.choices[kind] === true), data.revision);
       });
       return { status: "applied", snapshot: this.#snapshot(next) };
@@ -131,7 +135,7 @@ export class AgentEnablementStore {
   #snapshot(data: File): AgentEnablementSnapshot {
     return {
       revision: data.revision,
-      agents: agentEnablementOrder.map(kind => ({ kind, ...agentEnablementCatalog[kind], enabled: Object.hasOwn(data.choices, kind) && data.choices[kind] === true })),
+      agents: agentEnablementOrder.filter(this.#expose).map(kind => ({ kind, ...agentEnablementCatalog[kind], enabled: Object.hasOwn(data.choices, kind) && data.choices[kind] === true })),
     };
   }
 
