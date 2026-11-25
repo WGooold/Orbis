@@ -611,6 +611,134 @@ struct LaunchLedgerTests {
         #expect(fixture.host.selectedRuntimeId == "openclaw:runtime")
     }
 
+    // OPENCLAW-DRAFT-FEEDBACK-01: safe Host replies and local send failure are distinct,
+    // scoped to the current read's directory, and never admit a launch by themselves.
+    @Test func openClawConfigurationFeedbackBelongsToTheCurrentRead() async throws {
+        let fixture = Fixture()
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": [],
+            "hostFeatures": ["device.features", "agent.openclaw"], "deviceFeatures": ["agent.dshDesktop", "agent.openclaw"],
+            "dshDesktop": NSNull(), "agents": ["openclaw"], "launchableAgents": ["openclaw"]])
+        fixture.transport.accepting = false
+        fixture.host.loadSessionConfiguration(agent: "openclaw", cwd: "/repo/app")
+        #expect(fixture.host.sessionConfigurationRequest == nil)
+        #expect(fixture.host.sessionConfigurationError == L10n.tr("配置请求未发送，请检查连接后重试"))
+        fixture.transport.accepting = true
+        fixture.host.loadSessionConfiguration(agent: "openclaw", cwd: "/repo/other")
+        let id = try #require(fixture.host.sessionConfigurationRequest)
+        #expect(fixture.host.openClawConfigurationCwd == "/repo/other")
+        let safe = "缺少 OpenClaw Gateway 令牌。请在电脑的 Orbis Host → OpenClaw 填入 Gateway 令牌并应用。"
+        func reject(_ request: String, _ detail: String) async {
+            await fixture.transport.emit(["type": "protocol.error", "requestId": request,
+                "code": "configuration_unavailable", "message": detail])
+        }
+        await reject("stale", safe)
+        #expect(fixture.host.sessionConfigurationRequest == id)
+        #expect(fixture.host.sessionConfigurationError == nil)
+        await reject(id, safe)
+        #expect(fixture.host.sessionConfigurationRequest == nil)
+        #expect(fixture.host.sessionConfigurationError == L10n.hostText(safe))
+        #expect(!fixture.host.createSession(agentKind: "openclaw", cwd: "/repo/other", firstMessage: "hello"))
+        #expect(fixture.transport.sent.allSatisfy { $0["type"] as? String != "session.launch" })
+        #expect(fixture.transport.userMessages.isEmpty)
+        fixture.host.loadSessionConfiguration(agent: "openclaw", cwd: "/repo/other")
+        let retry = try #require(fixture.host.sessionConfigurationRequest)
+        await reject(id, safe)
+        await fixture.transport.emit(["type": "session.configuration.result", "requestId": retry, "agentKind": "openclaw", "cwd": "/repo/app",
+            "binding": "gateway-defaults", "revision": 0, "values": [:],
+            "catalog": ["binding": "gateway-defaults", "defaults": [:], "models": [], "permissions": []]])
+        #expect(fixture.host.sessionConfigurationRequest == retry)
+        #expect(fixture.host.sessionConfiguration == nil)
+        await reject(retry, "上游错误 token=fixture-secret")
+        #expect(fixture.host.sessionConfigurationError == L10n.tr("电脑端未能确认 OpenClaw 配置，请检查电脑端 Orbis 后重试"))
+    }
+
+    // OPENCLAW-DRAFT-FEEDBACK-01: no raw Host details on the launch page, including an exact line followed by debug data.
+    @Test func openClawLaunchDisplaysOnlyExactLocalizedHostAdvice() {
+        let safe = "缺少 OpenClaw Gateway 令牌。请在电脑的 Orbis Host → OpenClaw 填入 Gateway 令牌并应用。"
+        let unconfirmed = "OpenClaw Gateway 未确认这次启动。请先核对原启动和会话列表，不要直接再次创建。"
+        func detail(_ value: String?, unconfirmed: Bool) -> String? {
+            FeedbackText.openClawInlineLaunchDetail(agent: "openclaw", detail: value, unconfirmed: unconfirmed, language: .english)
+        }
+        #expect(FeedbackText.openClawInlineLaunchDetail(agent: "codex", detail: safe, unconfirmed: false) == nil)
+        #expect(detail(safe, unconfirmed: false) == "OpenClaw Gateway token missing. On your computer, open Orbis Host → OpenClaw, enter the Gateway token, and apply the change.")
+        #expect(detail(unconfirmed, unconfirmed: true) == "OpenClaw Gateway did not confirm this launch. Check the previous launch and the session list before creating another session.")
+        #expect(detail(unconfirmed + "\n调试数据 fixture-secret", unconfirmed: true) == "Check the previous launch and first message before starting another session.")
+        #expect(detail(nil, unconfirmed: true) == "Check the previous launch and first message before starting another session.")
+        #expect(detail("内部 OpenClaw 错误 fixture-secret", unconfirmed: false) == "Check the Orbis Host diagnostics on your computer, then return to the new-session draft.")
+    }
+
+    // OPENCLAW-DRAFT-DIAGNOSTIC-01: current authenticated backends can explain a source that cannot start.
+    @Test func openClawDraftDiagnosticNeedsCurrentAuthenticatedBackendsAndDoesNotGrantLaunchability() async throws {
+        let fixture = Fixture()
+        let host = fixture.host
+        let ready: [String: Any] = ["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": [],
+            "hostFeatures": ["device.features", "agent.openclaw", "agent.enablement.v1"],
+            "deviceFeatures": ["agent.dshDesktop", "agent.openclaw", "agent.enablement.v1"],
+            "dshDesktop": NSNull(), "agents": ["codex"], "launchableAgents": ["codex"]]
+        await fixture.transport.emit(ready)
+        let request = try #require(fixture.transport.sent.last { $0["type"] as? String == "agent.state.request" && $0["scope"] as? String == "host" })
+        func snapshot(revision: Int, rows: [[String: Any]], availability: String = "ready", missing: Bool = false) -> [String: Any] {
+            let backends: [String: Any] = ["domain": "backends", "modelEpoch": "epoch", "revision": revision, "availability": availability,
+                "completeness": "complete", "checkedAt": revision,
+                "source": ["producer": "host", "sourceId": "host", "sourceEpoch": "epoch", "sourceRevision": revision],
+                "value": ["backends": rows, "agents": ["codex"], "launchableAgents": ["codex"]]]
+            return ["type": "agent.state.snapshot", "requestId": request["requestId"]!, "scope": "host", "modelEpoch": "epoch",
+                "stateFormat": request["stateFormat"] ?? NSNull(), "domains": missing ? [] : [backends],
+                "missing": missing ? [["domain": "backends", "reason": "no_state"]] : [], "truncated": false]
+        }
+        let action = "OpenClaw Gateway 令牌不匹配。请在电脑的 Orbis Host → OpenClaw 核对令牌并重新应用。"
+        let blocked: [String: Any] = ["kind": "openclaw", "ready": false, "reason": action]
+        func advice() -> String? { host.openClawDraftDiagnostic(language: .english) }
+        let update = snapshot(revision: 1, rows: [blocked])
+        #expect(advice() == nil)
+        fixture.transport.receive?(update, nil)
+        await fixture.store.waitForPendingEvents()
+        #expect(advice() == nil)
+        await fixture.transport.emit(update)
+        #expect(advice() == "The OpenClaw Gateway token does not match. Check the token in Orbis Host → OpenClaw on your computer and apply it again.")
+        #expect(host.launchableAgents == ["codex"])
+        #expect(!host.canLaunchOpenClaw)
+        #expect(!host.createSession(agentKind: "openclaw", cwd: "/repo/app", firstMessage: "not sent"))
+        #expect(!fixture.transport.sent.contains { ["session.configuration.read", "session.configuration.save", "session.launch", "session.activate"].contains($0["type"] as? String ?? "") })
+        await fixture.transport.emit(snapshot(revision: 2, rows: [], missing: true))
+        #expect(advice() == nil)
+        await fixture.transport.emit(snapshot(revision: 3, rows: [blocked]))
+        #expect(advice() != nil)
+        await fixture.transport.emit(snapshot(revision: 4, rows: [blocked], availability: "unavailable"))
+        #expect(advice() == nil)
+        await fixture.transport.emit(snapshot(revision: 5, rows: [blocked]))
+        #expect(advice() != nil)
+        await fixture.transport.emit(snapshot(revision: 6, rows: []))
+        await fixture.transport.emit(update) // Neither a missing row nor a newer revision can be undone by this old update.
+        #expect(advice() == nil)
+        await fixture.transport.emit(snapshot(revision: 7, rows: [blocked]))
+        #expect(advice() != nil)
+        let policy = try #require(fixture.transport.sent.last { $0["type"] as? String == "agent.enablement.read" }?["requestId"])
+        await fixture.transport.emit(["type": "agent.enablement.snapshot", "requestId": policy,
+            "snapshot": ["revision": 1, "agents": [["kind": "openclaw", "label": "OpenClaw", "enabled": false]]]])
+        #expect(host.enabledAgentKinds == [])
+        #expect(advice() == nil)
+        fixture.transport.state?(.offline, nil)
+        #expect(advice() == nil)
+        await fixture.transport.emit(ready)
+        await fixture.transport.emit(update) // Even the exact old authenticated subscription is retired.
+        #expect(advice() == nil)
+    }
+
+    @Test func openClawBackendAdviceMapsPairingAndNeverUsesRawSentinels() {
+        func row(ready: HostJSON = .bool(false), reason: HostJSON) -> HostJSON {
+            .array([.object(["kind": .string("openclaw"), "ready": ready, "reason": reason])])
+        }
+        let action = "OpenClaw Gateway 令牌不匹配。请在电脑的 Orbis Host → OpenClaw 核对令牌并重新应用。"
+        #expect(FeedbackText.openClawBackendAdvice(row(reason: .string(action))) == action)
+        #expect(FeedbackText.openClawBackendAdvice(row(reason: .string("pairing_required"))) == "OpenClaw 等待设备批准。请在 OpenClaw 的设备列表批准 Orbis Host，再重新连接 Host。")
+        #expect(FeedbackText.openClawBackendAdvice(row(ready: .bool(true), reason: .string(action))) == nil)
+        #expect(FeedbackText.openClawBackendAdvice(row(ready: .string("false"), reason: .string(action))) == nil)
+        for reason: HostJSON in [.string("starting"), .string("backend_not_ready"), .string(action + "\nfixture-secret"), .null] {
+            #expect(FeedbackText.openClawBackendAdvice(row(reason: reason)) == "所选助手尚未就绪，请在电脑端检查")
+        }
+    }
+
     @Test func configuredLaunchReopensWithTheOriginalIdentityAndDoesNotResendTheFirstSentence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-configured-recovery-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

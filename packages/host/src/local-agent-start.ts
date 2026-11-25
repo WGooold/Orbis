@@ -8,6 +8,9 @@ import { agentCommandForEntry, cliSearchDirs, findExternalAgentEntries, stopAgen
 
 const exec = promisify(execFile);
 export type StartGuard = { signal: AbortSignal; check: () => void };
+export class LocalAgentStartTimeout extends Error {
+  constructor() { super("本机服务启动或接入超时，请稍后重试"); }
+}
 
 /** Coalesce explicit callers without letting a retired owner grant permission to spawn. */
 export class LocalAgentStart {
@@ -30,7 +33,7 @@ export class LocalAgentStart {
         };
         this.#pending = Promise.resolve().then(() => work({ signal, check })).catch(error => {
           if (this.#lifetime.signal.aborted) throw new Error("启动已取消");
-          if (deadline.aborted) throw new Error("本机服务启动或接入超时，请稍后重试");
+          if (deadline.aborted) throw new LocalAgentStartTimeout();
           throw error;
         }).finally(() => { this.#pending = undefined; changed(); });
         changed();

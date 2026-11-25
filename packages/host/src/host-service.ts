@@ -10,7 +10,8 @@
  * 会话目录聚合、进程激活能力（`browse` / L1 / L2）见 `sessions.ts` / `spawner.ts`（spec §8）。
  */
 import { homedir, hostname } from "node:os";
-import { readFile, rename, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, normalize } from "node:path";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -140,9 +141,10 @@ import type { DshRuntime } from "./dsh-runtime.js";
 import { DSH_DESKTOP_KIND, OPENCODE_KIND, OPENCODE_RUNTIME_PREFIX, policyAgentViews, allowsAgent, allowsAgentIdentity, allowsAgentRequest, allowsRuntime, applyDeviceViewEpoch, deviceAgentView,
   hiddenKinds, negotiatedAgentFeature, projectAgentMessage, projectBackendDomain, type AgentView } from "./device-agent-visibility.js";
 import { OpenClawBackend } from "./openclaw-backend.js";
-import { loadOpenClawConfig, type OpenClawConfig } from "./openclaw-gateway.js";
-import { localOpenClawPort, type OpenClawLocalLauncher } from "./openclaw-local-launch.js";
-import { LocalAgentStart } from "./local-agent-start.js";
+import { loadOpenClawConfig, openClawUrl, type OpenClawConfig } from "./openclaw-gateway.js";
+import { localOpenClawPort, waitForOpenClawAttachment, type OpenClawLocalLauncher } from "./openclaw-local-launch.js";
+import { LocalAgentStart, LocalAgentStartTimeout } from "./local-agent-start.js";
+import { openClawAdvice, OpenClawSetupError } from "./openclaw-diagnostics.js";
 import { OPENCLAW_PREFIX } from "./openclaw-history.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
@@ -396,7 +398,8 @@ export class HostService {
    */
   #backends: AgentBackend[];
   #openClaw: OpenClawBackend | undefined;
-  #openClawStart: { startup: LocalAgentStart; installed: boolean } | undefined;
+  #openClawSetupIssue: "configuration_invalid" | "host_state_unavailable" | "connect_unconfirmed" | undefined;
+  #openClawStart: { startup: LocalAgentStart; local: boolean; installed: boolean | undefined } | undefined;
   readonly #managedDshLaunchable = new Set<DshKind>();
   readonly #managedCodexLaunchable = new Set<"codex" | "codexDesktop">();
   readonly #managedAgents = new AgentLifecycleRegistry({
@@ -720,17 +723,26 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#openCodeBackend ? [OPENCODE_KIND] as const : []), ...KIMI_KINDS.filter(kind => this.#kimi[kind] !== undefined || this.#managedPolicy && !this.#disabledSources.has(kind) && (kind !== KIMI_DESKTOP_KIND || this.#options.kimiCodeDesktopSupported === true)), ...(this.#openClaw ? [OPENCLAW_KIND] : [])];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#openCodeBackend ? [OPENCODE_KIND] as const : []), ...KIMI_KINDS.filter(kind => this.#kimi[kind] !== undefined || this.#managedPolicy && !this.#disabledSources.has(kind) && (kind !== KIMI_DESKTOP_KIND || this.#options.kimiCodeDesktopSupported === true))];
+    // A configured Gateway can fail before a backend exists. Project its diagnosis,
+    // not an Agent or launch capability. Unconfigured hosts still have no row.
+    if (this.#openClaw || this.#openClawSetupIssue) kinds.push(OPENCLAW_KIND);
     if (this.#hermes?.installed) kinds.push("hermes");
     const openCodeReason = this.#opencodeConnection?.starting ? "starting" : this.#opencodeConnection?.status.state === "unavailable" ? this.#opencodeConnection.status.reason : "event_stream_unavailable";
+    const clawIssue = this.#openClaw?.issue ?? this.#openClawSetupIssue;
+    const openClawReason = this.#openClawStart?.startup.starting ? "starting"
+      : clawIssue === "pairing_required" ? clawIssue
+      : clawIssue === "local_port_closed" && this.#openClawStart?.installed === false
+        ? openClawAdvice.local_cli_unavailable
+        : clawIssue ? openClawAdvice[clawIssue] : "backend_not_ready";
     facts.backends({ backends: kinds.filter(kind => !this.#disabledSources.has(kind)).map(kind => {
       const backend = this.#backends.find(candidate => candidate.kind === kind);
-      return { kind, ready: backend?.isReady() ?? false, launchable: launchableAgents.includes(kind),
+      const ready = backend?.isReady() ?? false;
+      return { kind, ready, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
-        reason: backend?.isReady() ? null : kind === OPENCODE_KIND ? openCodeReason : kind === "hermes" && this.#hermes?.starting ? "starting" : backend === undefined ? "backend_not_attached"
-          : isKimiKind(kind) ? this.#kimi[kind]?.reason ?? "backend_not_ready"
-          : kind === OPENCLAW_KIND ? this.#openClawStart?.startup.starting ? "starting" : this.#openClaw?.pairingEpoch ? "pairing_required" : "backend_not_ready"
-          : "backend_not_ready" };
+        reason: ready ? null : kind === OPENCLAW_KIND ? openClawReason : kind === OPENCODE_KIND ? openCodeReason
+          : kind === "hermes" && this.#hermes?.starting ? "starting" : backend === undefined ? "backend_not_attached"
+          : isKimiKind(kind) ? this.#kimi[kind]?.reason ?? "backend_not_ready" : "backend_not_ready" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
     const catalog = this.#hostStateFacts.read();
     const candidates = [...(this.#catalogCache?.sessions ?? []), ...runtimes];
@@ -1543,18 +1555,38 @@ export class HostService {
         await connection.ensure(() => current() && this.#opencodeConnection === connection, () => backend.isReady());
         return;
       }
-      const backend = this.#openClaw, startup = this.#openClawStart?.startup, launcher = this.#options.openClawLauncher;
-      if (!backend) throw new Error("请先在 Host 中配置 OpenClaw Gateway");
-      if (localOnly && localOpenClawPort(backend.url) === undefined) throw new Error("远程 OpenClaw Gateway 只接入已有服务");
-      if (backend.isReady()) return;
-      if (!launcher || !startup) throw new Error("OpenClaw Gateway 未连接，请检查已配置的地址和认证");
-      const admitted = () => current() && this.#openClaw === backend && !this.#disabledSources.has(kind);
-      await startup.run(admitted, () => { if (this.#openClaw === backend) this.#broadcastDeviceReady(); }, async guard => {
-        await launcher.start(backend.url, guard, { ready: () => backend.isReady(), pairingEpoch: () => backend.pairingEpoch,
-          retry: () => backend.retryLocal(guard.check) });
-        if (!backend.isReady()) throw new Error("OpenClaw Gateway 尚未完成接入");
+      await this.#ensureOpenClaw(current, localOnly);
+    } catch (error) {
+      if (error instanceof AgentLaunchRevoked) throw error;
+      throw new ActivationError("agent_unsupported", describeError(error));
+    }
+  }
+
+  async #ensureOpenClaw(current: () => boolean, localOnly: boolean): Promise<void> {
+    const backend = this.#openClaw, launch = this.#openClawStart, launcher = this.#options.openClawLauncher;
+    if (!backend || !launch) throw new OpenClawSetupError(this.#openClawSetupIssue ?? "configuration_missing");
+    if (localOnly && !launch.local) throw new OpenClawSetupError("attach_only");
+    if (backend.isReady()) return;
+    const admitted = () => current() && this.#openClaw === backend && !this.#disabledSources.has(OPENCLAW_KIND);
+    try {
+      await launch.startup.run(admitted, () => { if (this.#openClaw === backend) this.#broadcastDeviceReady(OPENCLAW_KIND); }, async guard => {
+        const attachment = { ready: () => backend.isReady(), issue: () => backend.issue, retry: () => backend.retryLocal(guard.check) };
+        if (launch.local && launcher) await launcher.start(backend.url, guard, attachment);
+        else {
+          const outcome = await waitForOpenClawAttachment(guard, attachment);
+          if (outcome !== "ready") throw new OpenClawSetupError(outcome);
+        }
+        if (!backend.isReady()) throw new OpenClawSetupError(backend.issue ?? "connect_unconfirmed");
       });
-    } catch (error) { throw new ActivationError("agent_unsupported", describeError(error)); }
+    } catch (error) {
+      if (!admitted()) throw new AgentLaunchRevoked();
+      if (error instanceof OpenClawSetupError) throw error;
+      // Never forward CLI, SDK, or filesystem exception text to the phone.
+      const issue = backend.issue;
+      if (error instanceof LocalAgentStartTimeout && launch.local && launcher && (!issue || issue === "local_port_closed"))
+        throw new OpenClawSetupError("local_start_unconfirmed");
+      throw new OpenClawSetupError(issue ?? "connect_unconfirmed");
+    }
   }
 
   async #ensureKimiReady(kind: KimiKind, current: () => boolean, sessionId?: string): Promise<void> {
@@ -1974,7 +2006,7 @@ export class HostService {
     if ((this.#managedPolicy ? this.#managedDshLaunchable.has("dsh") : this.#options.dshLaunchable === true) && !agents.includes("dsh")) agents.push("dsh");
     for (const kind of KIMI_KINDS) if (this.#kimi[kind]?.canLaunch() && !agents.includes(kind)) agents.push(kind);
     if (this.#opencodeConnection?.launchable && !agents.includes(OPENCODE_KIND)) agents.push(OPENCODE_KIND);
-    if ((this.#openClawStart?.installed || this.#openClawStart?.startup.starting) && !agents.includes(OPENCLAW_KIND)) agents.push(OPENCLAW_KIND);
+    if (this.#openClawStart?.local && (this.#openClawStart.installed || this.#openClawStart.startup.starting && this.#options.openClawLauncher) && !agents.includes(OPENCLAW_KIND)) agents.push(OPENCLAW_KIND);
     // A Desktop whose version cannot be attached is not offered as launchable (DSH-DESKTOP-01).
     if (this.#hermes?.installed && !agents.includes("hermes")) agents.push("hermes");
     const desktop = this.#dshDesktopSnapshot()?.state;
@@ -2565,6 +2597,7 @@ export class HostService {
     const startup = this.#openClawStart?.startup;
     startup?.cancel();
     this.#openClawStart = undefined;
+    this.#openClawSetupIssue = undefined;
     if (!backend) return;
     this.#openClaw = undefined;
     this.#backends = this.#backends.filter(item => item !== backend);
@@ -2578,15 +2611,28 @@ export class HostService {
 
   async #startOpenClaw(current = (): boolean => true): Promise<void> {
     if (this.#options.openClaw === false || this.#openClaw || this.#providerFactsClosing) return;
+    const active = () => current() && !this.#providerFactsClosing;
+    const report = (issue?: "configuration_invalid" | "host_state_unavailable" | "connect_unconfirmed") => {
+      if (!active() || issue === this.#openClawSetupIssue) return;
+      this.#openClawSetupIssue = issue;
+      if (issue) this.#options.log?.(openClawAdvice[issue]);
+      this.refreshHostFacts();
+    };
+    let config: OpenClawConfig | undefined;
     try {
-      const config = this.#options.openClaw ?? await loadOpenClawConfig(this.#stateDir);
-      if (!config || !current() || this.#providerFactsClosing) return;
+      config = this.#options.openClaw ?? await loadOpenClawConfig(this.#stateDir);
+      if (config) config = { ...config, url: openClawUrl(config.url) };
+    } catch { report("configuration_invalid"); return; }
+    if (!active()) return;
+    if (!config) { report(undefined); return; }
+    try {
       const backend = await OpenClawBackend.create(config, this.#stateDir, this.hostId, {
         ready: () => {
           this.#desktopPresence.delete(backend);
-          if (current()) { this.#invalidateCatalog(); this.#broadcastDeviceReady(); }
+          if (active() && this.#openClaw === backend) { this.#invalidateCatalog(); this.#broadcastDeviceReady(OPENCLAW_KIND); }
         },
-        catalog: () => { if (current()) this.#invalidateCatalog(); },
+        diagnostic: () => { if (active() && this.#openClaw === backend) this.refreshHostFacts(); },
+        catalog: () => { if (active()) this.#invalidateCatalog(); },
         online: runtime => {
           if (!current()) return;
           this.#agentFacts.observe(runtime.runtimeId, { type: "runtime.metadata", metadata: runtime });
@@ -2601,23 +2647,22 @@ export class HostService {
         event: (runtimeId, event) => { if (current()) this.#publishRuntimeEvent(runtimeId, event); },
         ...(this.#options.log ? { log: this.#options.log } : {}),
       });
-      if (!current() || this.#providerFactsClosing) { await backend.stop(); return; }
+      if (!active()) { await backend.stop(); return; }
+      const launch = { startup: new LocalAgentStart(), local: localOpenClawPort(config.url) !== undefined, installed: undefined as boolean | undefined };
       this.#openClaw = backend;
+      this.#openClawSetupIssue = undefined;
+      this.#openClawStart = launch;
       this.#backends.push(backend);
       backend.start();
       const launcher = this.#options.openClawLauncher;
-      if (launcher && localOpenClawPort(config.url) !== undefined) {
-        const launch: { startup: LocalAgentStart; installed: boolean } = { startup: new LocalAgentStart(), installed: false };
-        this.#openClawStart = launch;
+      if (launcher && launch.local) {
         void launcher.available(config.url).then(installed => {
-          if (!current() || this.#openClawStart !== launch || this.#providerFactsClosing) return;
+          if (!active() || this.#openClawStart !== launch) return;
           launch.installed = installed;
-          this.#broadcastDeviceReady();
+          this.#broadcastDeviceReady(OPENCLAW_KIND);
         }).catch(() => undefined);
       }
-    } catch {
-      this.#options.log?.("OpenClaw Gateway setup failed; check Orbis state file permissions and the configured loopback endpoint");
-    }
+    } catch { report(this.#openClaw ? "connect_unconfirmed" : "host_state_unavailable"); }
   }
 
   async #startDshBackend(kind: DshKind): Promise<void> {
@@ -3627,6 +3672,10 @@ export class HostService {
     if ((kind === "codex" || kind === "codexDesktop") && !backend?.isReady()) await this.#ensureManagedCodex(kind);
     if (!current()) throw new AgentLaunchRevoked();
     backend = this.#backends.find(item => item.kind === kind);
+    if (kind === OPENCLAW_KIND && !backend?.isReady()) {
+      const issue = this.#openClaw ? this.#openClaw.issue ?? "connect_unconfirmed" : this.#openClawSetupIssue ?? "configuration_missing";
+      throw new SessionConfigurationError("configuration_unavailable", openClawAdvice[issue]);
+    }
     if (!backend?.isReady() || !backend.sessionConfiguration) throw new SessionConfigurationError("configuration_unavailable", "当前后端尚未提供新建配置，请检查电脑端连接");
     return backend;
   }
@@ -3702,13 +3751,29 @@ export class HostService {
         // LAUNCH-QUEUE-01: held until native creation settles, so a provider change cannot rewrite its settings mid-start.
         releaseProvider = await this.#providerGate.enter(providerGroup(message.agentKind));
       }
-        if (isKimiKind(kind) && message.type !== "session.configuration.save" && !this.#kimi[kind]?.isReady()) {
+      if (kind === OPENCLAW_KIND) {
+        // A loopback Gateway uses this computer's filesystem, even when it is
+        // already ready. A remote Gateway resolves paths on its own machine.
+        const url = this.#openClaw?.url;
+        if (url?.startsWith("ws://") && (!isAbsolute(message.cwd) || !await stat(message.cwd).then(async info => {
+              if (!info.isDirectory()) return false;
+              await access(message.cwd, constants.R_OK | constants.X_OK);
+              return true;
+            }).catch(() => false))) {
+          throw new SessionConfigurationError("configuration_unavailable", openClawAdvice.work_directory_unavailable);
+        }
+        if (message.type !== "session.configuration.save") {
+          try { await this.#ensureSharedAgent(kind, current); }
+          catch (error) { throw new SessionConfigurationError("configuration_unavailable", describeError(error)); }
+        }
+      }
+      if (isKimiKind(kind) && message.type !== "session.configuration.save" && !this.#kimi[kind]?.isReady()) {
         // A selected draft or explicit new session may start its Kimi source; passive reads may not.
         await kimiLocalDirectory(message.cwd);
         try { await this.#ensureKimiReady(kind, current); }
         catch (error) { throw new SessionConfigurationError("configuration_unavailable", describeError(error)); }
       }
-      if ((kind === OPENCODE_KIND || kind === OPENCLAW_KIND || kind === "hermes") && message.type !== "session.configuration.save" &&
+      if ((kind === OPENCODE_KIND || kind === "hermes") && message.type !== "session.configuration.save" &&
           !this.#backends.some(backend => backend.kind === kind && backend.isReady())) {
         if (!isAbsolute(message.cwd) || !await stat(message.cwd).then(info => info.isDirectory(), () => false))
           throw new SessionConfigurationError("configuration_unavailable", "请选择电脑上存在的绝对工作目录");
@@ -3770,28 +3835,33 @@ export class HostService {
         this.#invalidateCatalog();
       } catch (error) {
         // Native create may already have happened. Unknown is retained and never automatically re-created.
+        const failed = error instanceof ClaudeStartupBlocked || error instanceof KimiLaunchBlocked || error instanceof AgentLaunchRevoked;
         await ledger.update(deviceId, message.launchId, {
-          phase: error instanceof ClaudeStartupBlocked || error instanceof KimiLaunchBlocked || error instanceof AgentLaunchRevoked ? "failed" : "unknown", error: describeError(error).slice(0, 2000) });
+          phase: failed ? "failed" : "unknown",
+          error: !failed && kind === OPENCLAW_KIND ? openClawAdvice.launch_unconfirmed : describeError(error).slice(0, 2000) });
       }
       await sendLaunch(message.launchId);
     } catch (error) {
       if (!current()) return;
+      const detail = kind === OPENCLAW_KIND && !(error instanceof SessionConfigurationError || error instanceof ActivationError)
+        ? openClawAdvice.configuration_unconfirmed : describeError(error);
       if (message.type === "session.launch") {
         // All native effects are inside the inner try. A rejected preflight has
         // no native side effect, while a stored operation remains recoverable.
         try {
           const record = await ledger.result(deviceId, message.launchId, message.requestId);
+          if (!current()) return;
           if (record && !(error instanceof SessionConfigurationError && error.code === "launch_id_conflict")) {
             this.#sendToDevice(deviceId, record); return;
           }
           if (!record) {
-            await ledger.reject(deviceId, message, describeError(error).slice(0, 2000));
+            await ledger.reject(deviceId, message, detail.slice(0, 2000));
             await sendLaunch(message.launchId); return;
           }
         } catch { /* Storage is unreadable; never claim authoritative absence. */ }
       }
-      this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId,
-        code: error instanceof SessionConfigurationError ? error.code : "session_configuration_failed", message: describeError(error) });
+      if (current()) this.#sendToDevice(deviceId, { type: "protocol.error", requestId: message.requestId,
+        code: error instanceof SessionConfigurationError ? error.code : "session_configuration_failed", message: detail });
     } finally { releaseProvider?.(); }
   }
 
@@ -3924,6 +3994,13 @@ export class HostService {
   ): Promise<void> {
     const requestId = message.requestId;
     if (!this.#allowsDeviceRequest(deviceId, message)) { this.#rejectAgentFeature(deviceId, message); return; }
+    const isOpenClaw = message.type === "session.activate"
+      ? (message.target.type === "resume" ? resumeAgentKind(message.target) : message.target.agentKind) === OPENCLAW_KIND
+      : message.type === "session.archive" && message.agentKind === OPENCLAW_KIND;
+    const sourceCurrent = isOpenClaw ? this.#sourceCurrent(OPENCLAW_KIND) : () => true;
+    const requestLink = this.#links.get(deviceId), requestEpoch = this.#deviceViewEpochs.get(deviceId);
+    const openClawCurrent = () => sourceCurrent() && !!requestLink?.active && requestLink === this.#links.get(deviceId) &&
+      requestEpoch === this.#deviceViewEpochs.get(deviceId) && this.#allowsDeviceRequest(deviceId, message);
     const sharedOperationId = message.type === "session.activate" ? this.#beginSharedOperation("session.activate",
       message.target.agentKind ?? null, message.target.type === "resume" ? message.target.sessionId : null)
       : message.type === "session.archive" ? this.#beginSharedOperation("session.archive", message.agentKind, message.sessionId) : undefined;
@@ -4051,8 +4128,11 @@ export class HostService {
       const target = message.target;
       const link = this.#links.get(deviceId), epoch = this.#deviceViewEpochs.get(deviceId);
       const requireLaunch = (kind: AgentKind) => {
-        const sourceCurrent = this.#sourceCurrent(kind);
-        return () => { if (!sourceCurrent() || !link?.active || link !== this.#links.get(deviceId) || epoch !== this.#deviceViewEpochs.get(deviceId)) throw new AgentLaunchRevoked(); };
+        const source = this.#sourceCurrent(kind);
+        return () => {
+          if (kind === OPENCLAW_KIND ? !openClawCurrent() : !source() || !link?.active || link !== this.#links.get(deviceId) || epoch !== this.#deviceViewEpochs.get(deviceId))
+            throw new AgentLaunchRevoked();
+        };
       };
       if (target.type === "new" && isKimiKind(target.agentKind)) throw new ActivationError("agent_unsupported", "请使用可恢复的 Kimi Code 启动请求");
       const legacyDesktopId = target.type === "resume" && target.sessionId.startsWith("kimi-code:desktop-");
@@ -4129,9 +4209,10 @@ export class HostService {
       if ((resumeKind === "hermes" || resumeKind === OPENCODE_KIND || resumeKind === OPENCLAW_KIND) &&
           !this.#backends.some(backend => backend.kind === resumeKind && backend.isReady())) {
         if (resumeKind === OPENCLAW_KIND && this.#openClaw && !this.#openClaw.matchesSessionSource(target.sessionId))
-          throw new ActivationError("session_not_found", "此会话不属于当前 OpenClaw Gateway");
+          throw new ActivationError("session_not_found", openClawAdvice.no_session);
         const current = this.#sourceCurrent(resumeKind);
-        await this.#ensureSharedAgent(resumeKind, () => current() && !!link?.active && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId));
+        await this.#ensureSharedAgent(resumeKind, resumeKind === OPENCLAW_KIND ? openClawCurrent
+          : () => current() && !!link?.active && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId));
       }
       if (resumeKind === "codex" && this.#backends.every(backend => backend.kind !== "codex" || !backend.isReady())) await this.#ensureManagedCodex("codex");
       if (resumeKind === "codexDesktop" && this.#backends.every(backend => backend.kind !== "codexDesktop" || !backend.isReady())) {
@@ -4158,6 +4239,7 @@ export class HostService {
           const requireCurrent = requireLaunch(backend.kind);
           requireCurrent();
           const activated = await backend.activate({ type: "resume", sessionId: target.sessionId }, { ...context, requireCurrent });
+          if (backend.kind === OPENCLAW_KIND) requireCurrent();
           // 恢复会话会把它带进活跃 thread 目录（Codex），同样要失效缓存。
           this.#invalidateCatalog();
           this.#sendActivated(deviceId, requestId, backend.kind, activated);
@@ -4167,18 +4249,15 @@ export class HostService {
           throw error;
         }
       }
-      throw new ActivationError("session_not_found", `找不到会话 ${target.sessionId}（可能已被删除）`);
+      throw new ActivationError("session_not_found", isOpenClaw ? openClawAdvice.no_session : `找不到会话 ${target.sessionId}（可能已被删除）`);
     } catch (error) {
       sharedOperationFailed = true;
       const code = error instanceof ActivationError || error instanceof SessionArchiveError ? error.code : "session_request_failed";
       failureCode = code;
-      this.#sendToDevice(deviceId, {
-        type: "protocol.error",
-        code,
-        message: describeError(error),
-        requestId,
-      });
-      this.#options.log?.(`设备 ${deviceId} 的会话请求失败（${message.type}）：${describeError(error)}`);
+      const detail = isOpenClaw && message.type === "session.activate" && !(error instanceof ActivationError)
+        ? openClawAdvice.resume_unconfirmed : describeError(error);
+      if (!isOpenClaw || openClawCurrent()) this.#sendToDevice(deviceId, { type: "protocol.error", code, message: detail, requestId });
+      this.#options.log?.(`设备 ${deviceId} 的会话请求失败（${message.type}）：${detail}`);
     } finally {
       this.#settleSharedOperation(sharedOperationId, sharedOperationFailed ? "failed" : "succeeded");
       if (receipted) this.#deviceViewFacts.settled(deviceId, {

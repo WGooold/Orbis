@@ -18,6 +18,7 @@ import { HostService as SourceHostService } from "./host-service.js";
 import { agentEnablementCatalog, agentEnablementOrder, AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
 import { CLAUDE_BRIDGE_CAPABILITIES, CLAUDE_BRIDGE_VERSION } from "./claude-mods-bridge.js";
 import type { OpenClawConfig } from "./openclaw-gateway.js";
+import { openClawAdvice } from "./openclaw-diagnostics.js";
 
 // Optional additional oracle from an unchanged installed release. Native require
 // preserves its own dependency resolution, outside Vitest's current-source aliases.
@@ -98,12 +99,13 @@ class OldPhone {
     this.channel = new wireCrypto.E2eChannel({ keys: handshake.keys, role: "device" });
     this.frame(hs(confirm));
   }
-  async take(type: string, requestId?: string): Promise<Record<string, unknown>> {
+  async take(type: string, requestId?: string, where: (message: Record<string, unknown>) => boolean = () => true): Promise<Record<string, unknown>> {
+    const matches = (message: Record<string, unknown>) => message.type === type && (!requestId || message.requestId === requestId) && where(message);
     await vi.waitFor(() => {
       expect(this.errors).toEqual([]);
-      expect(this.messages.some(m => m.type === type && (!requestId || m.requestId === requestId))).toBe(true);
+      expect(this.messages.some(matches)).toBe(true);
     }, { timeout: 5_000 });
-    return this.messages.splice(this.messages.findIndex(m => m.type === type && (!requestId || m.requestId === requestId)), 1)[0]!;
+    return this.messages.splice(this.messages.findIndex(matches), 1)[0]!;
   }
 }
 
@@ -557,6 +559,39 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     expect(await app.take("session.list.result", "after-disable")).toMatchObject({ sessions: [] });
   });
 
+  // OPENCLAW-RECOVERY-01: show a broken saved configuration without granting any launch capability.
+  it.skipIf(!!compatibleRoot).each([true, false])("projects OpenClaw setup failure only for a configured, negotiated source (configured=%s)", async configured => {
+    const sensitive = "private-fixture-path";
+    await setup(configured ? { url: `ws://gateway.example.test/${sensitive}` } : false);
+    const old = await connect(18, "relay");
+    const app = await connect(19, "lan");
+    app.request({ type: "device.features", features: ["agent.openclaw"] });
+    expect(await app.take("device.ready")).toMatchObject({ deviceFeatures: ["agent.openclaw"] });
+    if (configured) await vi.waitFor(() => expect(host.readHostState(["backends"]).domains[0]?.value).toMatchObject({
+      backends: expect.arrayContaining([expect.objectContaining({ kind: "openclaw", reason: openClawAdvice.configuration_invalid })]),
+    }));
+    for (const [phone, diagnostic] of [[old, false], [app, configured]] as const) {
+      phone.request({ type: "agent.state.request", scope: "host", domains: ["backends"], requestId: "broken-config" });
+      const snapshot = await phone.take("agent.state.snapshot", "broken-config");
+      expect(snapshot.domains).toEqual([expect.objectContaining({ domain: "backends" })]);
+      const domains = snapshot.domains as Array<{ value: { agents: string[]; launchableAgents: string[]; backends: Array<{ kind: string }> } }>;
+      const { value } = domains[0]!;
+      expect(value.agents).not.toContain("openclaw");
+      expect(value.launchableAgents).not.toContain("openclaw");
+      expect(value.backends.find(row => row.kind === "openclaw")).toEqual(diagnostic
+        ? { kind: "openclaw", ready: false, launchable: false, reason: openClawAdvice.configuration_invalid, runtimeCount: 0 }
+        : undefined);
+      expect(JSON.stringify(snapshot)).not.toContain(sensitive);
+      if (phone === old) for (const protocol of releaseProtocols) protocol.HostBackendsStateSchema.parse(value);
+    }
+    if (configured) {
+      app.request({ type: "device.features", features: [] });
+      await app.take("device.ready", undefined, row => row.deviceFeatures === undefined);
+      app.request({ type: "agent.state.request", scope: "host", domains: ["backends"], requestId: "after-feature-withdrawal" });
+      expect(JSON.stringify(await app.take("agent.state.snapshot", "after-feature-withdrawal"))).not.toContain("openclaw");
+    }
+  });
+
   // OPENCLAW-02: exercise the SDK, Host and Relay together with a synthetic Gateway.
   // The same device ID can reconnect from an older App without inheriting its old capability.
   it("keeps OpenClaw private to the negotiated App view, including after rollback", async () => {
@@ -567,12 +602,18 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
       "sessions.patch", "chat.history", "chat.send", "chat.abort"];
     const rows: Array<{ key: string; sessionId: string; spawnedCwd: string; archived: boolean }> = [];
     const requests: string[] = [];
-    let loseCreateReceipt = true;
+    const privateDiagnostic = "fixture-token-from-untrusted-Gateway-diagnostic";
+    let needsToken = !compatibleRoot, loseCreateReceipt = true;
     gateway.on("connection", socket => {
       socket.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "isolated-fixture", ts: Date.now() } }));
       socket.on("message", raw => {
         const { id, method, params } = JSON.parse(raw.toString()); requests.push(method);
         let payload: unknown;
+        if (method === "connect" && needsToken) {
+          socket.send(JSON.stringify({ type: "res", id, ok: false, error: { code: "INVALID_REQUEST", message: privateDiagnostic,
+            details: { code: "AUTH_TOKEN_MISSING", remediationHint: privateDiagnostic } } }));
+          return;
+        }
         if (method === "connect") payload = { type: "hello-ok", protocol: 4, server: { version: "fixture", connId: "fixture" },
           features: { methods, events: [] }, snapshot: { presence: [], health: {}, stateVersion: { presence: 0, health: 0 }, uptimeMs: 0 },
           auth: { role: "operator", scopes: ["operator.read", "operator.write"] },
@@ -605,7 +646,8 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
     });
     try {
       await setup({ url: `ws://127.0.0.1:${address.port}`, token: "fixture-only" });
-      await vi.waitFor(() => expect(requests).toContain("sessions.list"));
+      await vi.waitFor(() => expect(requests).toContain(compatibleRoot ? "sessions.list" : "connect"));
+      const configRead = { type: "session.configuration.read", agentKind: "openclaw", cwd: directory };
       const released = await connect(18, "relay");
       const modern = await connect(19, "lan");
       released.request({ type: "device.features", features: ["agent.dshDesktop"] });
@@ -613,19 +655,62 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
       expect(legacyReady).not.toHaveProperty("deviceFeatures");
       for (const protocol of releaseProtocols) protocol.RelayToDeviceMessageSchema.parse({ ...legacyReady, protocolVersion: protocol.PROTOCOL_VERSION });
       modern.request({ type: "device.features", features: ["agent.openclaw"] });
-      const negotiated = await modern.take("device.ready");
-      expect(negotiated).toMatchObject({ deviceFeatures: ["agent.openclaw"], launchableAgents: expect.arrayContaining(["openclaw"]) });
+      let negotiated = await modern.take("device.ready");
+      expect(negotiated).toMatchObject({ deviceFeatures: ["agent.openclaw"] });
       expect(negotiated).not.toHaveProperty("dshDesktop");
 
-      modern.request({ type: "session.configuration.read", requestId: "options", agentKind: "openclaw", cwd: directory });
+      if (needsToken) {
+        // OPENCLAW-RECOVERY-01: the real SDK error crosses the encrypted boundary
+        // as a safe, correlated next step, but unnegotiated peers never see it.
+        expect(negotiated.launchableAgents).not.toContain("openclaw");
+        modern.request({ ...configRead, requestId: "missing-token-draft" });
+        expect(await modern.take("protocol.error", "missing-token-draft")).toMatchObject({
+          code: "configuration_unavailable", message: openClawAdvice.token_missing,
+        });
+        modern.request({ type: "agent.state.request", scope: "host", domains: ["backends"], requestId: "current-diagnostic" });
+        expect(await modern.take("agent.state.snapshot", "current-diagnostic")).toMatchObject({ domains: [{ domain: "backends",
+          value: { backends: expect.arrayContaining([{ kind: "openclaw", ready: false, launchable: false, runtimeCount: 0,
+            reason: openClawAdvice.token_missing }]) } }] });
+        const failedLaunch = { type: "session.launch", agentKind: "openclaw", cwd: directory, launchId: "blocked-identity",
+          binding: "fixture", revision: 0, values: {}, spawnMode: "headless" };
+        modern.request({ ...failedLaunch, requestId: "blocked-start" });
+        expect(await modern.take("session.launch.result", "blocked-start")).toMatchObject({ phase: "failed", error: openClawAdvice.token_missing });
+        released.request({ ...configRead, requestId: "hidden-draft" });
+        const hidden = await released.take("protocol.error", "hidden-draft");
+        expect(hidden).toMatchObject({ code: "agent_feature_required" });
+        for (const protocol of releaseProtocols) protocol.RelayToDeviceMessageSchema.parse(hidden);
+        released.request({ type: "agent.state.request", scope: "host", domains: ["backends"], requestId: "local-diagnostic-hidden" });
+        expect(JSON.stringify(await released.take("agent.state.snapshot", "local-diagnostic-hidden"))).not.toContain("openclaw");
+        expect(JSON.stringify(released.messages)).not.toContain(openClawAdvice.token_missing);
+        expect(JSON.stringify(modern.messages)).not.toContain(privateDiagnostic);
+        expect(requests).not.toContain("sessions.create");
+
+        // The fixture now admits the same identity after fixing Gateway auth.
+        needsToken = false;
+        modern.request({ ...configRead, requestId: "retry-after-auth" });
+        expect(await modern.take("session.configuration.result", "retry-after-auth")).toMatchObject({ agentKind: "openclaw" });
+        await vi.waitFor(() => expect(host.readHostState(["backends"]).domains[0]?.value).toMatchObject({ agents: expect.arrayContaining(["openclaw"]) }));
+        modern.request({ type: "device.features", features: ["agent.openclaw"] });
+        negotiated = await modern.take("device.ready", undefined, row => (row.launchableAgents as string[]).includes("openclaw"));
+        modern.request({ ...failedLaunch, requestId: "retry-same-id" });
+        expect(await modern.take("session.launch.result", "retry-same-id")).toMatchObject({ phase: "failed", error: openClawAdvice.token_missing });
+        expect(requests).not.toContain("sessions.create");
+        modern.request({ ...configRead, cwd: join(directory, "no-such-directory"), requestId: "invalid-dir" });
+        expect(await modern.take("protocol.error", "invalid-dir")).toMatchObject({
+          code: "configuration_unavailable", message: openClawAdvice.work_directory_unavailable,
+        });
+      }
+      expect(negotiated.launchableAgents).toContain("openclaw");
+      modern.request({ ...configRead, requestId: "options" });
       const options = await modern.take("session.configuration.result", "options");
       expect(options).toMatchObject({ catalog: { models: [], permissions: [] } });
       const launch = { type: "session.launch", requestId: "start", launchId: "launch-1", agentKind: "openclaw", cwd: directory,
         binding: options.binding, revision: options.revision, values: {}, spawnMode: "headless" };
+      const connectCount = requests.filter(method => method === "connect").length;
       modern.request(launch);
       expect(await modern.take("session.launch.result", "start")).toMatchObject({ phase: "preparing" });
-      expect(await modern.take("session.launch.result", "start")).toMatchObject({ phase: "unknown" });
-      await vi.waitFor(() => expect(requests.filter(method => method === "connect")).toHaveLength(2), { timeout: 5000 });
+      expect(await modern.take("session.launch.result", "start")).toMatchObject({ phase: "unknown", ...(compatibleRoot ? {} : { error: openClawAdvice.launch_unconfirmed }) });
+      await vi.waitFor(() => expect(requests.filter(method => method === "connect")).toHaveLength(connectCount + 1), { timeout: 5000 });
       await vi.waitFor(() => expect(host.readHostState(["backends"]).domains[0]?.value).toMatchObject({ agents: expect.arrayContaining(["openclaw"]) }));
       modern.request({ type: "session.launch.read", requestId: "recover", launchId: "launch-1" });
       const recovered = await modern.take("session.launch.result", "recover");

@@ -686,19 +686,25 @@ struct SessionDraftView: View {
     }
     private var openCode: OpenCodeAvailability? { owner.connection == .secured && owner.enabledAgentKinds?.contains("opencode") != false ? owner.openCodeAvailability : nil }
     private var showsOpenCode: Bool { openCode != nil || (owner.connection == .secured && allowed.contains("opencode")) }
+    private var openClawDiagnostic: String? { owner.openClawDraftDiagnostic() }
     private var agentChoices: [String] {
-        let all = ["codex", "claude", "dsh", "pi"] + [kimiCodeKind, "openclaw", "hermes"].filter { allowed.contains($0) || $0 == kimiCodeKind && agentVariants($0).contains(where: allowed.contains) } + (showsOpenCode ? ["opencode"] : [])
+        let available = [kimiCodeKind, "openclaw", "hermes"].filter { kind in
+            allowed.contains(kind) || (kind == kimiCodeKind && agentVariants(kind).contains(where: allowed.contains)) ||
+                (kind == "openclaw" && openClawDiagnostic != nil)
+        }
+        let all = ["codex", "claude", "dsh", "pi"] + available + (showsOpenCode ? ["opencode"] : [])
         guard let enabled = owner.enabledAgentKinds else { return all }
         return all.filter { agentVariants($0).contains(where: enabled.contains) }
     }
     private func canChoose(_ kind: String) -> Bool {
-        (kind != "opencode" || (owner.connection == .secured && openCode?.canStart != false)) && agentVariants(kind).contains(where: allowed.contains)
+        if kind == "openclaw" { return owner.canLaunchOpenClaw }
+        return (kind != "opencode" || (owner.connection == .secured && openCode?.canStart != false)) && agentVariants(kind).contains(where: allowed.contains)
     }
     private func canSelect(_ kind: String) -> Bool {
-        canChoose(kind) || (kind == "opencode" && showsOpenCode)
+        canChoose(kind) || (kind == "opencode" && showsOpenCode) || (kind == "openclaw" && openClawDiagnostic != nil)
     }
     private var canUseSelectedAgent: Bool {
-        owner.enabledAgentKinds?.contains(agent) != false && (agent != "opencode" || canChoose("opencode"))
+        owner.enabledAgentKinds?.contains(agent) != false && (!["opencode", "openclaw"].contains(agent) || canChoose(agent))
     }
     /// Both native entries of this family can start here, so the variant is a real choice.
     private var hasVariants: Bool { agentVariants(family).count > 1 && agentVariants(family).filter(allowed.contains).count > 1 }
@@ -706,6 +712,16 @@ struct SessionDraftView: View {
     private var hasMessage: Bool { onImportSubmit != nil || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var configuration: SessionConfigurationSnapshot? {
         owner.sessionConfiguration.flatMap { $0.agentKind == agent && $0.cwd == currentPath ? $0 : nil }
+    }
+    private var ownsOpenClawConfigurationRead: Bool {
+        agent == "openclaw" && owner.supportsSessionConfiguration(for: agent) &&
+            owner.openClawConfigurationCwd != nil && owner.openClawConfigurationCwd == currentPath
+    }
+    private var hasOpenClawConfigurationFeedback: Bool {
+        ownsOpenClawConfigurationRead && (owner.sessionConfigurationRequest != nil || owner.sessionConfigurationError != nil)
+    }
+    private var retainsOpenClawDraft: Bool {
+        agent == "openclaw" && !canChoose("openclaw") && (hasOpenClawConfigurationFeedback || openClawDiagnostic != nil)
     }
     private var configurationModel: SessionConfigurationModel? {
         configuration?.catalog.models.first { $0.value == owner.sessionConfigurationValues.model }
@@ -758,9 +774,22 @@ struct SessionDraftView: View {
                     Spacer(minLength: 0); Image(systemName: "chevron.down").font(.orbisCaption())
                 }.foregroundStyle(p.secondary).frame(minHeight: 48).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("draft-directory")
-            if !canUseSelectedAgent {
+            if agent == "openclaw" {
+                // A reply to this draft takes precedence over the general backend diagnosis.
+                if hasOpenClawConfigurationFeedback, let error = owner.sessionConfigurationError {
+                    Text(L10n.hostText(error)).font(.orbisCaption()).foregroundStyle(p.error)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("draft-openclaw-config-error")
+                    OrbisMotionButton { loadConfiguration() } label: { Text(L10n.tr("重试")) }.buttonStyle(.plain)
+                        .disabled(owner.connection != .secured || !canChoose(family))
+                } else if hasOpenClawConfigurationFeedback {
+                    Text(L10n.tr("正在确认配置…")).font(.orbisCaption()).foregroundStyle(p.secondary)
+                } else if let message = openClawDiagnostic {
+                    Text(message).font(.orbisCaption()).foregroundStyle(p.secondary)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("draft-openclaw-unavailable")
+                }
+            } else if !canUseSelectedAgent {
                 // Keep the draft without settings belonging to a retired or unavailable source.
-            } else if owner.supportsSessionConfiguration(for: agent) && agent != "openclaw" {
+            } else if owner.supportsSessionConfiguration(for: agent) {
                 if agentFamily(agent) != kimiCodeKind {
                     // S55 / SC79: the model owns a row; permission text cannot resize either value.
                     VStack(spacing: 8) {
@@ -779,11 +808,6 @@ struct SessionDraftView: View {
                     OrbisMotionButton { loadConfiguration() } label: { Text(L10n.tr("刷新")) }.buttonStyle(.plain)
                 } else if owner.sessionConfigurationRequest != nil {
                     Text(L10n.tr("正在确认配置…")).font(.orbisCaption()).foregroundStyle(p.secondary)
-                }
-            } else if agent == "openclaw" {
-                if let error = owner.sessionConfigurationError {
-                    OrbisStatusWithInfo(title: L10n.tr("设置未确认"), message: L10n.hostText(error), error: true)
-                    OrbisMotionButton { loadConfiguration() } label: { Text(L10n.tr("刷新")) }.buttonStyle(.plain)
                 }
             } else {
                 OrbisStatusWithInfo(title: L10n.tr("电脑端默认"), message: L10n.tr("升级电脑端后可在此选择模型、思考深度和权限"))
@@ -853,6 +877,9 @@ struct SessionDraftView: View {
             }
             .onChange(of: allowed) { _, _ in reconcileAgent(preferLaunchable: false) }
             .onChange(of: agentChoices) { _, _ in reconcileAgent(preferLaunchable: false) }
+            .onChange(of: retainsOpenClawDraft) { wasRetained, isRetained in
+                if wasRetained && !isRetained && agent == "openclaw" { reconcileAgent(preferLaunchable: false) }
+            }
             .onChange(of: presetCwd) { _, value in if let value { path = value } }
             .onChange(of: path) { _, value in if onImportSubmit == nil { owner.editDraft(value ?? "", for: pathRuntime) } }
             .onChange(of: closeRequest) { _, _ in cancel() }
@@ -891,6 +918,8 @@ struct SessionDraftView: View {
         }
     }
     private func reconcileAgent(preferLaunchable: Bool) {
+        // Retain the selected draft while its read is pending or failed; Start still requires availability.
+        if retainsOpenClawDraft { return }
         let next = reconcileDraftAgent(
             current: agent,
             allowed: allowed,

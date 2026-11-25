@@ -3,21 +3,24 @@ import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { createHash, createPrivateKey, createPublicKey, generateKeyPair, randomUUID, sign } from "node:crypto";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { GatewayClient, type DeviceAuthTokenRecord, type DeviceIdentity, type GatewayClientRequestOptions } from "@openclaw/gateway-client";
+import { GatewayClient, GatewayClientRequestError, type DeviceAuthTokenRecord, type DeviceIdentity, type GatewayClientRequestOptions } from "@openclaw/gateway-client";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "@openclaw/gateway-protocol/client-info";
-import { readPairingConnectErrorDetails } from "@openclaw/gateway-protocol/connect-error-details";
+import { ConnectErrorDetailCodes, readConnectErrorDetailCode } from "@openclaw/gateway-protocol/connect-error-details";
 import type { EventFrame } from "@openclaw/gateway-protocol/frame-guards";
+import { isRetryableGatewayStartupUnavailableError } from "@openclaw/gateway-protocol/startup-unavailable";
 import { PROTOCOL_VERSION } from "@openclaw/gateway-protocol/version";
+import { openClawConnectIssue, OpenClawSetupError, type OpenClawIssue } from "./openclaw-diagnostics.js";
 
 const SCOPES = ["operator.read", "operator.write"];
 const generateEd25519 = promisify(generateKeyPair);
 const METHODS = ["sessions.list", "sessions.create", "sessions.subscribe", "sessions.messages.subscribe", "sessions.messages.unsubscribe", "sessions.patch",
   "chat.history", "chat.send", "chat.abort"] as const;
 export type OpenClawMethod = typeof METHODS[number];
-export type OpenClawConfig = Readonly<{ url: string; token?: string }>;
+export type OpenClawConfig = Readonly<{ url: string; token?: string; environment?: true }>;
 export type OpenClawGatewayEvents = {
   online: () => void;
   offline: () => void;
+  diagnostic?: () => void;
   event: (event: Pick<EventFrame, "event" | "payload">) => void;
   gap: () => void;
   log?: (message: string) => void;
@@ -49,7 +52,7 @@ export async function loadOpenClawConfig(stateDir: string, env: NodeJS.ProcessEn
   // An environment-selected endpoint must never inherit a file's token for a different Gateway.
   if (env.ORBIS_OPENCLAW_URL !== undefined) {
     const token = env.ORBIS_OPENCLAW_TOKEN?.trim();
-    return { url: openClawUrl(env.ORBIS_OPENCLAW_URL), ...(token ? { token } : {}) };
+    return { url: openClawUrl(env.ORBIS_OPENCLAW_URL), ...(token ? { token } : {}), environment: true };
   }
   const text = await readPrivate(join(stateDir, "openclaw-gateway.json"));
   if (text === undefined) return undefined;
@@ -58,7 +61,7 @@ export async function loadOpenClawConfig(stateDir: string, env: NodeJS.ProcessEn
   const config = openClawRecord(raw);
   if (!config || typeof config.url !== "string" || config.token !== undefined && typeof config.token !== "string") throw new Error("Invalid openclaw-gateway.json");
   const token = (env.ORBIS_OPENCLAW_TOKEN ?? config.token)?.trim();
-  return { url: openClawUrl(config.url), ...(token ? { token } : {}) };
+  return { url: openClawUrl(config.url), ...(token ? { token } : {}), ...(env.ORBIS_OPENCLAW_TOKEN === undefined ? {} : { environment: true }) };
 }
 
 /** OPENCLAW-04: the desktop bridge returns only the endpoint and whether a token is set. */
@@ -147,7 +150,7 @@ export class OpenClawGateway {
   #client: GatewayClient;
   readonly #makeClient: () => GatewayClient;
   #connectionGeneration = 0;
-  #pairingEpoch = 0;
+  #issue: OpenClawIssue | undefined;
   #ready = false;
   #stopped = false;
 
@@ -180,43 +183,72 @@ export class OpenClawGateway {
     this.#makeClient = () => {
       const generation = this.#connectionGeneration;
       const current = () => !this.#stopped && generation === this.#connectionGeneration;
+      let diagnosed = false;
+      const report = (issue: OpenClawIssue) => {
+        if (!current()) return;
+        diagnosed = true;
+        if (this.#issue === issue) return;
+        this.#issue = issue;
+        events.log?.(`OpenClaw Gateway: ${issue}`);
+        events.diagnostic?.();
+      };
+      const environment = config.environment === true;
+      const endpoint = new URL(config.url);
+      const host = endpoint.hostname.replace(/^\[|\]$/g, "");
+      const port = Number(endpoint.port || (endpoint.protocol === "wss:" ? "443" : "80"));
       return new GatewayClient({ url: config.url, ...(config.token ? { token: config.token } : {}),
         clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT, clientDisplayName: "Orbis Host", mode: GATEWAY_CLIENT_MODES.BACKEND,
         role: "operator", ...(requestedScopes ? { scopes: requestedScopes } : {}), deviceIdentity: identity, requestTimeoutMs: 10_000,
-        minProtocol: PROTOCOL_VERSION, maxProtocol: PROTOCOL_VERSION,
+        minProtocol: PROTOCOL_VERSION, maxProtocol: PROTOCOL_VERSION, notifyOnStartupRetry: true,
         hostDeps: {
+          beforeConnect: () => { diagnosed = false; },
           publicKeyRawBase64UrlFromPem: pem => rawKey(createPublicKey(pem)).toString("base64url"),
           signDevicePayload: (pem, payload) => sign(null, Buffer.from(payload), createPrivateKey(pem)).toString("base64url"),
-          loadDeviceAuthToken: () => stored(),
-          storeDeviceAuthToken: ({ token, scopes, expectedToken }) => updateStored(expectedToken, () => writePrivate(tokenFile, JSON.stringify({ token, scopes }))),
+          loadDeviceAuthToken: () => stored().catch(() => { throw new OpenClawSetupError("host_state_unavailable"); }),
+          storeDeviceAuthToken: ({ token, scopes, expectedToken }) => updateStored(expectedToken, () => writePrivate(tokenFile, JSON.stringify({ token, scopes })))
+            .catch(() => { throw new OpenClawSetupError("host_state_unavailable"); }),
           clearDeviceAuthToken: ({ expectedToken }) => updateStored(expectedToken, () => unlink(tokenFile).catch((error: NodeJS.ErrnoException) => {
             if (error.code !== "ENOENT") throw error;
           })),
         },
         onHelloOk: hello => {
           if (!current()) return;
-          const granted = hello.auth.scopes;
-          const sessionAccess = SCOPES.every(scope => granted.includes(scope)) ||
-            (requestedScopes === undefined && granted.includes("operator.admin"));
-          if (hello.protocol !== PROTOCOL_VERSION || hello.auth.role !== "operator" || !sessionAccess ||
-              !METHODS.every(method => hello.features.methods.includes(method))) {
-            events.log?.("OpenClaw Gateway did not grant the required operator scopes or chat methods");
-            this.#client.stop(); return;
-          }
+          const frame = openClawRecord(hello), auth = openClawRecord(frame?.auth), features = openClawRecord(frame?.features);
+          const scopes = auth?.scopes, methods = features?.methods;
+          const issue = frame?.type !== "hello-ok" || !Number.isInteger(frame.protocol) ? "connect_unconfirmed"
+            : frame.protocol !== PROTOCOL_VERSION ? "version_incompatible"
+            : !Array.isArray(scopes) || !Array.isArray(methods) ? "connect_unconfirmed"
+            : auth?.role !== "operator" || !(SCOPES.every(scope => scopes.includes(scope)) ||
+              (requestedScopes === undefined && scopes.includes("operator.admin"))) ? "session_access_denied"
+            : !METHODS.every(method => methods.includes(method)) ? "session_methods_unavailable" : undefined;
+          if (issue) { report(issue); this.#client.stop(); return; }
+          this.#issue = undefined;
           this.#ready = true;
           events.online();
         },
         onConnectError: error => {
           if (!current()) return;
-          // Never print the upstream error or close reason: those are server-controlled.
-          const pairing = readPairingConnectErrorDetails(openClawRecord(error)?.details);
-          const id = pairing?.requestId;
-          if (pairing) {
-            this.#pairingEpoch++;
-            events.log?.(typeof id === "string" && /^[\w-]{1,128}$/.test(id) ? `OpenClaw device approval required: ${id}` : "OpenClaw device approval required");
-          } else events.log?.("OpenClaw Gateway connection failed");
+          const issue = error instanceof OpenClawSetupError ? error.issue : openClawConnectIssue(error, environment);
+          // Let the SDK finish its optional retry with a stored device token before
+          // declaring the shared token mismatched. No retry policy is changed here.
+          if (issue === "token_mismatch" || issue === "environment_token_mismatch") return;
+          if (issue) { report(issue); return; }
+          const socketError = error as NodeJS.ErrnoException & { address?: string; port?: number };
+          if (!(error instanceof GatewayClientRequestError) && (host === "127.0.0.1" || host === "::1") &&
+              socketError.code === "ECONNREFUSED" && socketError.syscall === "connect" && socketError.address === host && socketError.port === port) {
+            report("local_port_closed");
+          } else if (!diagnosed) report("connect_unconfirmed");
         },
-        onClose: () => { if (current() && this.#ready) { this.#ready = false; events.offline(); } },
+        onReconnectPaused: ({ detailCode }) => {
+          if (detailCode === ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH) report(environment ? "environment_token_mismatch" : "token_mismatch");
+        },
+        onClose: (_code, _reason, info) => {
+          if (!current()) return;
+          if (isRetryableGatewayStartupUnavailableError(info?.connectError)) report("starting");
+          else if (!diagnosed && readConnectErrorDetailCode(openClawRecord(info?.connectError)?.details) !== ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH)
+            report("connect_unconfirmed");
+          if (this.#ready) { this.#ready = false; events.offline(); }
+        },
         onGap: () => { if (current() && this.ready) events.gap(); },
         onEvent: event => { if (current() && this.ready) events.event(event); },
       });
@@ -226,12 +258,14 @@ export class OpenClawGateway {
   }
   readonly #drainTokenWrites: () => Promise<void>;
   get ready(): boolean { return this.#ready && !this.#stopped && this.#client.connected; }
-  get pairingEpoch(): number { return this.#pairingEpoch; }
+  get issue(): OpenClawIssue | undefined { return this.#stopped ? undefined : this.#issue; }
   start(): void { if (!this.#stopped) this.#client.start(); }
-  /** Explicit local startup can wake a disconnected SDK client out of its reconnect backoff. */
+  /** Explicit attach can wake a disconnected SDK client out of its reconnect backoff. */
   async retryLocal(current: () => void): Promise<void> {
+    current();
     if (this.#stopped || this.ready) return;
     const generation = ++this.#connectionGeneration;
+    this.#issue = undefined;
     try { await this.#client.stopAndWait(); }
     finally {
       if (!this.#stopped && generation === this.#connectionGeneration) {

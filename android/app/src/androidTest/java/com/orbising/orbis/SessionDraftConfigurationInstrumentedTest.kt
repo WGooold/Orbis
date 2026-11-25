@@ -24,6 +24,98 @@ class SessionDraftConfigurationInstrumentedTest {
 
     @Test fun englishLongPermissionsKeepValuesVisibleWithLargerText() = checkConfigurationWidth(AppLanguage.English, 1.3f)
 
+    // OPENCLAW-DRAFT-STATUS-01: pending config keeps Start disabled but must expose why.
+    @Test fun openClawShowsConfigurationReadWhileLaunchButtonWaits() {
+        AppLocalization.select(AppLanguage.Chinese)
+        val waiting = RemoteState(hostId = "draft-host", e2eReady = true, connection = RelayConnection.ONLINE,
+            supportedAgents = setOf("openclaw"), launchableAgents = setOf("openclaw"),
+            sessionConfigurationSupported = true, openClawNegotiated = true,
+            sessionConfiguration = SessionConfigurationState("openclaw", "/fixture", requestId = "openclaw-config"))
+        val state = androidx.compose.runtime.mutableStateOf(waiting)
+        compose.setContent { OrbisTheme {
+            SessionDraftCard(state.value, true, "/fixture", {}, {}, {}, drafts = SessionDraftStore(),
+                onSubmit = { _, _, _, _, _ -> false })
+        } }
+
+        compose.onNodeWithText("正在确认配置…").assertIsDisplayed()
+        compose.onNodeWithTag("draft-send").assertIsNotEnabled()
+
+        val catalog = SessionConfigurationCatalog("gateway-defaults")
+        compose.runOnIdle { state.value = state.value.copy(sessionConfiguration = SessionConfigurationState("openclaw", "/fixture",
+            snapshot = SessionConfigurationSnapshot("openclaw", "/fixture", "gateway-defaults", 0, SessionConfigurationValues(), catalog))) }
+        compose.waitForIdle()
+        compose.onNodeWithText("正在确认配置…").assertDoesNotExist()
+        compose.onNodeWithTag("draft-send").assertIsEnabled()
+    }
+
+    // OPENCLAW-DRAFT-FEEDBACK-01: the blocked draft shows next steps without tapping info,
+    // even if an authenticated availability update precedes the failure from its pending read.
+    @Test fun openClawConfigurationFailureRemainsOnTheSelectedDraft() {
+        AppLocalization.select(AppLanguage.Chinese)
+        val draftStore = SessionDraftStore().apply {
+            draft("draft-host").agent.value = "openclaw"
+            draft("draft-host").cwd.value = "/fixture"
+        }
+        val waiting = RemoteState(hostId = "draft-host", e2eReady = true, connection = RelayConnection.ONLINE,
+            supportedAgents = setOf("codex"), launchableAgents = setOf("codex", "openclaw"),
+            sessionConfigurationSupported = true, openClawNegotiated = true,
+            sessionConfiguration = SessionConfigurationState("openclaw", "/fixture", requestId = "active"))
+        val state = androidx.compose.runtime.mutableStateOf(waiting)
+        val reads = mutableListOf<Pair<String, String>>()
+        compose.setContent { OrbisTheme {
+            SessionDraftCard(state.value, true, "/fixture", {}, {}, {}, drafts = draftStore,
+                onLoadConfiguration = { agent, cwd -> reads.add(agent to cwd) },
+                onSubmit = { _, _, _, _, _ -> false })
+        } }
+        compose.onNodeWithText("正在确认配置…").assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(launchableAgents = setOf("codex"),
+            openClawBackendAdvice = "所选助手尚未就绪，请在电脑端检查") }
+        compose.onNodeWithText("正在确认配置…").assertIsDisplayed()
+        compose.onNodeWithTag("draft-openclaw-unavailable").assertDoesNotExist()
+        compose.onNodeWithTag("draft-send").assertIsNotEnabled()
+
+        val reason = "缺少 OpenClaw Gateway 令牌。请在电脑的 Orbis Host → OpenClaw 填入 Gateway 令牌并应用。"
+        compose.runOnIdle {
+            state.value = RelayReducer().reduce(state.value,
+                """{"type":"protocol.error","requestId":"active","code":"configuration_unavailable","message":"$reason"}""", channel = "ctl")
+        }
+        compose.onNodeWithText(reason).assertIsDisplayed()
+        compose.onNodeWithTag("draft-openclaw-config-error").assertIsDisplayed()
+        compose.onNodeWithTag("draft-openclaw-unavailable").assertDoesNotExist()
+        compose.onNodeWithText("设置未确认").assertDoesNotExist()
+        compose.onNodeWithText("重试").assertIsDisplayed()
+        compose.onNodeWithTag("draft-openclaw-config-retry").assertIsNotEnabled()
+        compose.onNodeWithTag("draft-send").assertIsNotEnabled()
+
+        compose.runOnIdle { state.value = state.value.copy(launchableAgents = waiting.launchableAgents) }
+        compose.onNodeWithTag("draft-openclaw-config-retry").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals("openclaw" to "/fixture", reads.last()) }
+        compose.onNodeWithTag("draft-send").assertIsNotEnabled()
+    }
+
+    // OPENCLAW-DRAFT-DIAGNOSTIC-01: selecting a diagnostic never requests settings or starts OpenClaw.
+    @Test fun diagnosticChoiceCanBeInspectedWithoutReadingOrStartingOpenClaw() {
+        AppLocalization.select(AppLanguage.Chinese)
+        val reason = "OpenClaw 等待设备批准。请在 OpenClaw 的设备列表批准 Orbis Host，再重新连接 Host。"
+        val state = androidx.compose.runtime.mutableStateOf(RemoteState(hostId = "draft-host", e2eReady = true,
+            connection = RelayConnection.ONLINE, launchableAgents = setOf("codex"), openClawNegotiated = true,
+            sessionConfigurationSupported = true, openClawBackendAdvice = reason))
+        val reads = mutableListOf<String>()
+        val drafts = SessionDraftStore()
+        compose.setContent { OrbisTheme {
+            SessionDraftCard(state.value, true, "/fixture", {}, {}, {}, drafts = drafts,
+                onLoadConfiguration = { agent, _ -> reads.add(agent) }, onSubmit = { _, _, _, _, _ -> false })
+        } }
+        compose.onNodeWithTag("draft-openclaw-unavailable").assertDoesNotExist()
+        compose.onNodeWithTag("draft-agent-openclaw").assertIsEnabled().performClick()
+        compose.onNodeWithTag("draft-openclaw-unavailable").assertIsDisplayed()
+        compose.onNodeWithText(reason).assertIsDisplayed()
+        compose.onNodeWithTag("draft-send").assertIsNotEnabled()
+        compose.runOnIdle { assertFalse("openclaw" in reads); state.value = state.value.copy(openClawBackendAdvice = null) }
+        compose.onNodeWithTag("draft-agent-openclaw").assertDoesNotExist()
+        compose.onNodeWithTag("draft-openclaw-unavailable").assertDoesNotExist()
+    }
+
     private fun checkConfigurationWidth(language: AppLanguage, fontScale: Float) {
         AppLocalization.select(language)
         val model = "GPT-5.4"

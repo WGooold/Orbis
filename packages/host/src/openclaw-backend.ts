@@ -9,6 +9,7 @@ import {
 } from "@orbis/protocol";
 import type { AgentActivateContext, AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch, NativeRunningSession } from "./agent-backend.js";
 import { OpenClawGateway, openClawRecord, openClawUrl, type OpenClawConfig, type OpenClawGatewayEvents, type OpenClawMethod } from "./openclaw-gateway.js";
+import { openClawAdvice, openClawSessionCheckIssue, type OpenClawIssue } from "./openclaw-diagnostics.js";
 import { clawHash, clawInt, clawMessage, clawText, clawTime, OPENCLAW_PREFIX, readClawHistory, type ClawHistoryPage } from "./openclaw-history.js";
 import { ActivationError } from "./spawner.js";
 import { exitViewCapability, matchesViewExit } from "./shared-session-view.js";
@@ -36,12 +37,12 @@ type Session = {
 
 type HiddenView = { ref: SessionRef; idle: boolean; activeRunIds?: string[]; inFlightRunId?: string };
 type OpenClawBackendCallbacks = {
-  ready: () => void; catalog: () => void; online: (runtime: RuntimeMetadata) => void;
+  ready: () => void; diagnostic?: () => void; catalog: () => void; online: (runtime: RuntimeMetadata) => void;
   offline: (runtimeId: string, reason: string) => void; event: (runtimeId: string, event: RuntimeEvent) => void;
   log?: (message: string) => void;
 };
 /** The deliberately small seam used by transport tests. Production uses the official SDK. */
-export type OpenClawConnection = Pick<OpenClawGateway, "request" | "ready" | "start" | "stop"> & Partial<Pick<OpenClawGateway, "pairingEpoch" | "retryLocal">>;
+export type OpenClawConnection = Pick<OpenClawGateway, "request" | "ready" | "start" | "stop"> & Partial<Pick<OpenClawGateway, "issue" | "retryLocal">>;
 
 export class OpenClawBackend implements AgentBackend {
   readonly kind = "openclaw";
@@ -55,6 +56,7 @@ export class OpenClawBackend implements AgentBackend {
   #stopped = false;
   #generation = 0;
   #retry: ReturnType<typeof setTimeout> | undefined;
+  #sessionIssue: OpenClawIssue | undefined;
   #transport!: OpenClawConnection;
   readonly #namespace: string;
   readonly #runPrefix: string;
@@ -63,7 +65,8 @@ export class OpenClawBackend implements AgentBackend {
     connect: (events: OpenClawGatewayEvents) => Promise<OpenClawConnection> = events => OpenClawGateway.create(config, stateDir, events)): Promise<OpenClawBackend> {
     const backend = new OpenClawBackend(openClawUrl(config.url), hostId, callbacks);
     backend.#transport = await connect({ online: () => void backend.#handshake(), offline: () => backend.#disconnect(),
-      gap: () => backend.#gap(), event: event => backend.#event(event), ...(callbacks.log ? { log: callbacks.log } : {}) });
+      diagnostic: () => callbacks.diagnostic?.(), gap: () => backend.#gap(), event: event => backend.#event(event),
+      ...(callbacks.log ? { log: callbacks.log } : {}) });
     return backend;
   }
 
@@ -78,8 +81,22 @@ export class OpenClawBackend implements AgentBackend {
     await this.#transport.stop();
   }
   isReady(): boolean { return this.#ready && this.#transport.ready && !this.#stopped; }
-  get pairingEpoch(): number { return this.#transport.pairingEpoch ?? 0; }
-  async retryLocal(current: () => void): Promise<void> { await this.#transport.retryLocal?.(current); }
+  get issue(): OpenClawIssue | undefined {
+    return this.#stopped || this.isReady() ? undefined : this.#transport.ready ? this.#sessionIssue : this.#transport.issue;
+  }
+  async retryLocal(current: () => void): Promise<void> {
+    current();
+    if (this.#stopped || this.isReady()) return;
+    if (this.#transport.ready) {
+      // A failed permission/session probe can be retried once on explicit user action.
+      // Don't duplicate an ongoing probe or rebuild an authenticated connection.
+      if (this.#retry) {
+        clearTimeout(this.#retry); this.#retry = undefined;
+        this.#sessionIssue = undefined;
+        void this.#handshake();
+      }
+    } else await this.#transport.retryLocal?.(current);
+  }
   matchesSessionSource(id: string): boolean { return id.startsWith(this.#namespace) && /^[A-Za-z0-9_-]{43}$/u.test(id.slice(this.#namespace.length)); }
   ownsRuntime(runtimeId: string): boolean { return this.#sessions.has(runtimeId); }
   catalogComplete(): boolean { return this.#coverage.get(false) === true && this.#coverage.get(true) === true; }
@@ -121,24 +138,31 @@ export class OpenClawBackend implements AgentBackend {
     const generation = ++this.#generation;
     try {
       const subscription = openClawRecord(await this.#transport.request("sessions.subscribe", {}));
+      if (generation !== this.#generation || this.#stopped || !this.#transport.ready) return;
       if (subscription?.subscribed !== true) throw new Error("Subscription not acknowledged");
       const probe = openClawRecord(await this.#transport.request("sessions.list", { limit: 1 }));
       if (!Array.isArray(probe?.sessions)) throw new Error("Catalog not confirmed");
       if (generation !== this.#generation || this.#stopped || !this.#transport.ready) return;
+      this.#sessionIssue = undefined;
       this.#ready = true; this.callbacks.ready();
       for (const ref of this.#resume.values()) {
         if (generation !== this.#generation || !this.isReady()) break;
         try { await this.#attach(ref); } catch { /* Old session was not confirmed; never replace it with another. */ }
       }
-    } catch {
+    } catch (error) {
       if (generation !== this.#generation || this.#stopped || !this.#transport.ready) return;
-      this.callbacks.log?.("OpenClaw Gateway session access is not ready");
-      this.#retry = setTimeout(() => void this.#handshake(), 15_000); this.#retry.unref();
+      const issue = openClawSessionCheckIssue(error);
+      this.#retry = setTimeout(() => { this.#retry = undefined; void this.#handshake(); }, 15_000); this.#retry.unref();
+      if (this.#sessionIssue !== issue) {
+        this.#sessionIssue = issue;
+        this.callbacks.log?.(`OpenClaw Gateway: ${issue}`);
+        this.callbacks.diagnostic?.();
+      }
     }
   }
 
   #disconnect(): void {
-    ++this.#generation; clearTimeout(this.#retry); this.#retry = undefined;
+    ++this.#generation; clearTimeout(this.#retry); this.#retry = undefined; this.#sessionIssue = undefined;
     this.#ready = false; this.#coverage.clear();
     for (const session of [...this.#sessions.values()]) this.#detach(session, "OpenClaw Gateway disconnected", !this.#stopped);
     if (!this.#stopped) this.callbacks.ready();
@@ -224,7 +248,7 @@ export class OpenClawBackend implements AgentBackend {
   }
 
   async #find(id: string): Promise<SessionRef> {
-    if (!id.startsWith(this.#namespace)) throw new ActivationError("session_not_found", "Not an OpenClaw session on this Gateway");
+    if (!id.startsWith(this.#namespace)) throw new ActivationError("session_not_found", openClawAdvice.no_session);
     const found = this.#refs.get(id) ?? [...this.#sessions.values()].find(item => item.ref.id === id)?.ref;
     if (found) return found;
     await Promise.all([this.catalog(), this.catalog(true)]);
@@ -234,14 +258,14 @@ export class OpenClawBackend implements AgentBackend {
   }
 
   async sessionConfiguration(cwd: string): Promise<SessionConfigurationCatalog> {
-    if (!this.isReady()) throw new ActivationError("agent_unsupported", "OpenClaw Gateway is offline");
-    if (!localPath(cwd)) throw new ActivationError("cwd_missing", "OpenClaw requires an absolute workspace path");
+    if (!this.isReady()) throw new ActivationError("agent_unsupported", openClawAdvice[this.issue ?? "connect_unconfirmed"]);
+    if (!localPath(cwd)) throw new ActivationError("cwd_missing", openClawAdvice.work_directory_unavailable);
     return { binding: `${this.#namespace}defaults`, defaults: { permissions: {} }, models: [], permissions: [] };
   }
 
   async activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
-    if (target.type === "resume" && !target.sessionId.startsWith(this.#namespace)) throw new ActivationError("session_not_found", "Not an OpenClaw session on this Gateway");
-    if (!this.isReady()) throw new ActivationError("agent_unsupported", "OpenClaw Gateway is offline");
+    if (target.type === "resume" && !target.sessionId.startsWith(this.#namespace)) throw new ActivationError("session_not_found", openClawAdvice.no_session);
+    if (!this.isReady()) throw new ActivationError("agent_unsupported", openClawAdvice[this.issue ?? "connect_unconfirmed"]);
     let ref: SessionRef;
     if (target.type === "new") {
       await this.sessionConfiguration(target.cwd);

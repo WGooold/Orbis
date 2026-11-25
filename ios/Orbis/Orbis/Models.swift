@@ -938,6 +938,38 @@ enum FeedbackText {
         default: nil
         }
     }
+    /// OPENCLAW-DRAFT-FEEDBACK-01: never show unrecognized text from an older Host's gateway.
+    static func openClawConfigurationRejection(_ detail: String?, code: String?) -> String {
+        switch protocolCondition(code) {
+        case .pairing: return L10n.tr("这台手机的配对已失效")
+        case .version: return L10n.tr("版本不兼容，请更新手机和电脑端 Orbis")
+        case .other: return L10n.tr("这台电脑的连接已停用，请联系管理员")
+        case .computerClosed, nil: break
+        }
+        return localizedOpenClawHostAdvice(detail) ?? L10n.tr("电脑端未能确认 OpenClaw 配置，请检查电脑端 Orbis 后重试")
+    }
+    private static func trustedOpenClawHostAdvice(_ detail: String?) -> String? {
+        guard let detail, LocalizationCatalog.hostExact.contains(detail),
+              detail.contains("OpenClaw") || detail == "请选择电脑上存在的绝对工作目录" else { return nil }
+        return detail
+    }
+    private static func localizedOpenClawHostAdvice(_ detail: String?, language: AppLanguage = AppLocalization.shared.language) -> String? {
+        trustedOpenClawHostAdvice(detail).map { L10n.hostText($0, language: language) }
+    }
+    /// OPENCLAW-DRAFT-DIAGNOSTIC-01: a configured, not-ready backend can be inspected without being launchable.
+    static func openClawBackendAdvice(_ backends: HostJSON) -> String? {
+        guard let row = backends.array.first(where: { $0["kind"].string == "openclaw" }), row["ready"].bool == false else { return nil }
+        let reason = row["reason"].string
+        if reason == "pairing_required" { return "OpenClaw 等待设备批准。请在 OpenClaw 的设备列表批准 Orbis Host，再重新连接 Host。" }
+        return trustedOpenClawHostAdvice(reason) ?? "所选助手尚未就绪，请在电脑端检查"
+    }
+    /// Only OpenClaw replaces folded launch details; an unknown outcome defaults to checking the original launch.
+    static func openClawInlineLaunchDetail(agent: String?, detail: String?, unconfirmed: Bool,
+                                           language: AppLanguage = AppLocalization.shared.language) -> String? {
+        guard agent == "openclaw" else { return nil }
+        return localizedOpenClawHostAdvice(detail, language: language) ?? L10n.format(
+            unconfirmed ? "请先核对上一次启动及首句结果" : "请在电脑端查看 Orbis Host 的诊断，再返回新建。", language: language)
+    }
     static func reason(_ value: String) -> String {
         switch value {
         case "agent_unsupported", "对应的 agent 后端未就绪": return L10n.tr("所选助手尚未就绪，请在电脑端检查")

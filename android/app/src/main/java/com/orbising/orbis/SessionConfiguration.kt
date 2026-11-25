@@ -21,6 +21,53 @@ data class SessionConfigurationState(val agentKind: String = "", val cwd: String
     val model get() = snapshot?.catalog?.models?.firstOrNull { it.value == values.model }
 }
 
+/** OPENCLAW-DRAFT-FEEDBACK-01: compare the whole message, never expose added detail or templates. */
+private fun trustedOpenClawHostAdvice(detail: String?): String? =
+    detail?.takeIf { it in LocalizationCatalog.hostExact && ("OpenClaw" in it || it == "请选择电脑上存在的绝对工作目录") }
+
+private fun localizedOpenClawHostAdvice(detail: String?, language: AppLanguage = AppLocalization.language): String? =
+    trustedOpenClawHostAdvice(detail)?.let { L10n.hostText(it, language) }
+
+/** OPENCLAW-DRAFT-DIAGNOSTIC-01: a configured, not-ready backend may be inspected without being launchable. */
+internal fun openClawBackendAdvice(backends: JsonObject): String? {
+    val row = (backends["backends"] as? JsonArray)?.filterIsInstance<JsonObject>()
+        ?.firstOrNull { it["kind"] == JsonPrimitive("openclaw") } ?: return null
+    if (row["ready"] != JsonPrimitive(false)) return null
+    val reason = (row["reason"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    return when (reason) {
+        "pairing_required" -> "OpenClaw 等待设备批准。请在 OpenClaw 的设备列表批准 Orbis Host，再重新连接 Host。"
+        else -> trustedOpenClawHostAdvice(reason) ?: "所选助手尚未就绪，请在电脑端检查"
+    }
+}
+
+internal fun RemoteState.openClawDraftDiagnostic(language: AppLanguage = AppLocalization.language): String? =
+    openClawBackendAdvice?.takeIf { e2eReady && connection == RelayConnection.ONLINE && openClawNegotiated &&
+        allowsAgentSource("openclaw") && !canLaunchOpenClaw() }?.let { L10n.format(it, language = language) }
+
+internal fun openClawConfigurationRejection(detail: String?): String =
+    localizedOpenClawHostAdvice(detail) ?: L10n.tr("电脑端未能确认 OpenClaw 配置，请检查电脑端 Orbis 后重试")
+
+/** Only OpenClaw replaces folded launch details; an unknown outcome defaults to checking the original launch. */
+internal fun openClawInlineLaunchDetail(agentKind: String?, detail: String?, unconfirmed: Boolean,
+    language: AppLanguage = AppLocalization.language): String? {
+    if (agentKind != "openclaw") return null
+    return localizedOpenClawHostAdvice(detail, language) ?: L10n.format(
+        if (unconfirmed) "请先核对上一次启动及首句结果" else "请在电脑端查看 Orbis Host 的诊断，再返回新建。",
+        language = language)
+}
+
+/** A transport failure may only close the request that actually failed. */
+internal fun RemoteState.failConfigurationTransport(request: String, timedOut: Boolean, legacyError: String): RemoteState {
+    val current = sessionConfiguration
+    if (current.requestId != request) return this
+    val error = when {
+        current.agentKind != "openclaw" -> legacyError
+        timedOut -> L10n.tr("未收到电脑回复，请检查连接后重试")
+        else -> L10n.tr("配置请求未发送，请检查连接后重试")
+    }
+    return copy(sessionConfiguration = current.copy(requestId = null, error = error))
+}
+
 internal enum class ConfiguredLaunchBlock { CONFIGURATION_UNCONFIRMED, JOURNAL_LOADING }
 
 internal data class ConfiguredLaunchAdmission(val configuration: SessionConfigurationState, val block: ConfiguredLaunchBlock?) {

@@ -192,8 +192,10 @@ internal fun RemoteState.applyHostDomainProjection(domains: Map<String, AgentSta
         // ADR-0049 §7.5：完整目录是归档的权威状态。
         state = state.copy(sessions = merged).ledgerAuthority(OperationKinds.CATALOG_DOMAIN, null, true)
     }
-    domains["backends"]?.takeIf { it.availability == "ready" }?.value?.let { element ->
-        val value = element as? JsonObject ?: return@let
+    domains["backends"]?.let { backends ->
+        val value = backends.value.takeIf { backends.availability == "ready" } as? JsonObject
+        state = state.copy(openClawBackendAdvice = value?.takeIf { state.e2eReady && state.openClawNegotiated }?.let(::openClawBackendAdvice))
+        if (value == null) return@let
         fun kinds(key: String) = (value[key] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }?.toSet()
         state = state.copy(supportedAgents = kinds("agents") ?: state.supportedAgents,
             launchableAgents = kinds("launchableAgents") ?: state.launchableAgents,
