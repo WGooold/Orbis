@@ -96,6 +96,7 @@ class HostController : public QObject {
     /** HOST-GUIDE-01: per-Agent backend facts of the running Host ({kind, ready, launchable, runtimeCount}); empty while paused. */
     Q_PROPERTY(QVariantList backends READ backends NOTIFY changed)
     Q_PROPERTY(QVariantMap agentEnablement READ agentEnablement NOTIFY agentEnablementChanged)
+    Q_PROPERTY(QVariantMap agentVersionRequirements READ agentVersionRequirements NOTIFY changed)
     Q_PROPERTY(QVariantMap agentChanges READ agentChanges NOTIFY changed)
     Q_PROPERTY(bool agentChoicesAvailable READ agentChoicesAvailable NOTIFY changed)
     Q_PROPERTY(bool agentChoicesNeedRetry READ agentChoicesNeedRetry NOTIFY changed)
@@ -196,6 +197,7 @@ public:
     int runtimeCount() const { return m_runtimeCount; }
     QVariantList backends() const { return m_backends; }
     QVariantMap agentEnablement() const { return m_agentEnablement; }
+    QVariantMap agentVersionRequirements() const { return m_agentVersionRequirements; }
     bool agentChoicesNeedRetry() const { return m_bridgeReady && m_agentChoiceRecheck && !m_agentReadPending; }
     bool agentChoicesAvailable() const { return m_bridgeReady && !busy() && !m_agentEnablement.isEmpty() && !m_agentChoiceRecheck; }
     QVariantMap agentChanges() const;
@@ -423,7 +425,7 @@ private:
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_iosAppDownloadQr, m_challenge, m_challengeEmail;
     DiagnosticLogModel m_logs;
     QVariantList m_devices, m_agents, m_backends;
-    QVariantMap m_agentEnablement, m_activeAgentSessions;
+    QVariantMap m_agentEnablement, m_agentVersionRequirements, m_activeAgentSessions;
     struct AgentChoice {
         QStringList kinds;
         bool target;

@@ -379,6 +379,20 @@ ApplicationWindow {
             error: "", note: "", installerData: null
         }
     }
+    readonly property string detailVersionRequirement: {
+        const requirement = host.agentVersionRequirements[window.detailKind]
+        const version = window.formatVersion(requirement?.version)
+        if (!version) return "最低版本未确认"
+        switch (requirement.kind) {
+        case "minimum": return "最低支持 " + version
+        case "exact": return "仅支持 " + version
+        case "embeddedService": return "仅支持内嵌服务 " + version
+        case "localLaunch": return "本机启动需要 " + version + "；已有网关最低版本未确认"
+        case "baseline": return "兼容基线 " + version
+        case "reference": return "最低版本未确认 · 接入参考 " + version
+        default: return "最低版本未确认"
+        }
+    }
     readonly property var detailUpdateAction: {
         const meta = window.detailVersionMeta
         const busy = !window.canEditAgent || host.agentInstalling || meta.checking
@@ -2190,7 +2204,24 @@ ApplicationWindow {
                                                 Item { Layout.fillWidth: true }
                                             }
                                         }
+                                        InfoHintButton {
+                                            id: agentVersionInfo
+                                            objectName: "agentVersionInfo"
+                                            visible: window.selectedAgentRow !== null
+                                            Accessible.name: "版本要求"
+                                            Connections {
+                                                target: window
+                                                function onDetailKindChanged() { agentVersionInfo.expanded = false }
+                                                function onPageChanged() { agentVersionInfo.expanded = false }
+                                            }
+                                        }
                                         AgentLatch { objectName: "detailAgentLatch"; large: true; powered: window.agentVisualOn(window.selectedAgentRow); change: window.detailChange; tint: Theme.agent(window.detailKind); enabled: window.canEditAgent && (!change || change.withdrawable); Accessible.name: window.selectedAgentRow ? window.selectedAgentRow.label : "Agent"; onClicked: window.flipAgent(window.detailKind) }
+                                    }
+                                    Hint {
+                                        objectName: "agentVersionRequirement"
+                                        visible: agentVersionInfo.visible && agentVersionInfo.expanded
+                                        text: window.detailVersionRequirement
+                                        Layout.fillWidth: true
                                     }
                                     RowLayout {
                                         visible: window.agentFeedbackText().length > 0 || host.agentChoicesNeedRetry

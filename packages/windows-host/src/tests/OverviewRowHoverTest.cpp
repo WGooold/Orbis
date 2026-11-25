@@ -95,6 +95,7 @@ const agents = [
   { kind: "dsh", label: "DeepSeek CLI", enabled: true },
   { kind: "dshDesktop", label: "DeepSeek 桌面版", enabled: true },
   { kind: "kimiCode", label: "Kimi Code", enabled: true },
+  { kind: "kimiCodeDesktop", label: "Kimi Code 桌面版", enabled: false },
   { kind: "opencode", label: "OpenCode", enabled: true },
   { kind: "hermes", label: "Hermes Agent", enabled: true },
   { kind: "openclaw", label: "OpenClaw", enabled: true }
@@ -113,6 +114,19 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
         hostName: "Fixture",
         devices: [{ deviceId: "phone-1", label: "iPhone", path: "relay", createdAt: 1 }],
         agentEnablement: { revision: 1, agents: currentAgents },
+        agentVersionRequirements: {
+          codex: { kind: "reference", version: "0.167.0" },
+          codexDesktop: { kind: "unknown" },
+          claude: { kind: "minimum", version: "2.1.287" },
+          dsh: { kind: "baseline", version: "0.2.2-rc.2" },
+          dshDesktop: { kind: "baseline", version: "0.2.2-rc.2" },
+          pi: { kind: "reference", version: "0.84.4" },
+          kimiCode: { kind: "exact", version: "2.6.3" },
+          kimiCodeDesktop: { kind: "embeddedService", version: "2.6.2" },
+          opencode: { kind: "exact", version: "2.3.2" },
+          hermes: { kind: "reference", version: "0.22.5" },
+          openclaw: { kind: "localLaunch", version: "2026.11.5" }
+        },
         kimiCodeSupported: true,
         kimiDesktopSupported: true,
         openCodeTuiTabsEnabled: false,
@@ -246,6 +260,53 @@ private slots:
         QQuickStyle::setStyle("Basic");
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
         qmlRegisterType<NeuSurface>("Orbis.Host", 1, 0, "NeuSurface");
+    }
+
+    // HOST-AGENT-VERSION-01: the explanation follows the selected Agent, including powered-off
+    // and unmanaged rows, and stays separate from the installed/update version.
+    void showsVersionRequirementsOnDemand() {
+        QVERIFY(!QStandardPaths::findExecutable("node").isEmpty());
+        QTemporaryDir root;
+        QVERIFY(root.isValid());
+        writeFixtureBridge(root.path());
+        const QString dataDir = root.filePath("desktop");
+        HostController controller(root.path(), dataDir, root.filePath("state"), dataDir, false);
+        controller.m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
+        controller.m_tick.stop();
+
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("host", &controller);
+        engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(dataDir + "/appearance.ini"));
+        engine.rootContext()->setContextProperty("orbisMotionEnabled", false);
+        engine.rootContext()->setContextProperty("trayAvailable", false);
+        engine.loadFromModule("Orbis.Host", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.bridgeReady() && !controller.busy(), 10000);
+
+        const QList<QPair<QString, QString>> requirements = {
+            {"codex", "最低版本未确认 · 接入参考 v0.167.0"}, {"codexDesktop", "最低版本未确认"},
+            {"claude", "最低支持 v2.1.287"}, {"dsh", "兼容基线 v0.2.2-rc.2"},
+            {"dshDesktop", "兼容基线 v0.2.2-rc.2"}, {"pi", "最低版本未确认 · 接入参考 v0.84.4"},
+            {"kimiCode", "仅支持 v2.6.3"}, {"kimiCodeDesktop", "仅支持内嵌服务 v2.6.2"},
+            {"opencode", "仅支持 v2.3.2"}, {"hermes", "最低版本未确认 · 接入参考 v0.22.5"},
+            {"openclaw", "本机启动需要 v2026.11.5；已有网关最低版本未确认"}
+        };
+        for (const auto &[kind, expected] : requirements) {
+            QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, kind)));
+            auto *info = findVisualItem(window->contentItem(), "agentVersionInfo");
+            auto *hint = findVisualItem(window->contentItem(), "agentVersionRequirement");
+            QTRY_VERIFY(info && info->isVisible() && info->isEnabled() && hint && !hint->isVisible());
+            QVERIFY(QMetaObject::invokeMethod(info, "clicked"));
+            QTRY_VERIFY(hint->isVisible());
+            QCOMPARE(hint->property("text").toString(), expected);
+        }
+        // An older bridge that omits the optional metadata cannot imply compatibility.
+        controller.m_agentVersionRequirements.clear();
+        emit controller.changed();
+        auto *hint = findVisualItem(window->contentItem(), "agentVersionRequirement");
+        QCOMPARE(hint->property("text").toString(), QString("最低版本未确认"));
     }
 
     void startsLocalAgentFromHost_data() {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
+import { AgentKindSchema } from "@orbis/protocol";
 import { createRelayServer } from "../../relay/src/index.js";
 import { loadDesktopQa, type DesktopQaConfiguration } from "./desktop-qa.js";
 import { DesktopRuntime, type DesktopEvent } from "./desktop-runtime.js";
@@ -48,6 +49,31 @@ describe("QA-ACT-02 isolated desktop bridge", () => {
       await expect(loadDesktopQa({ ORBIS_QA_ACTIVATION_FILE: path })).rejects.toThrow("isolated home and state");
       await writeFile(path, `{"credential":"${activation.credential}`);
       await expect(loadDesktopQa(process.env)).rejects.toThrow(/^Cannot read valid QA activation JSON$/);
+    } finally { await runtime.close(); }
+  });
+
+  // HOST-AGENT-VERSION-01: publish the entire display catalog even when agents are off,
+  // without confusing exact protocol matches or integration references with a minimum.
+  it("publishes version requirements as separate desktop bootstrap metadata", async () => {
+    const { runtime } = await fixture();
+    try {
+      const result = await runtime.initialize() as {
+        agentVersionRequirements: Record<string, unknown>;
+        agentEnablement: { agents: Array<{ kind: string; label: string; enabled: boolean }> };
+      };
+      expect(Object.keys(result.agentVersionRequirements).sort()).toEqual([...AgentKindSchema.options].sort());
+      expect(result.agentVersionRequirements).toMatchObject({
+        claude: { kind: "minimum", version: "2.1.287" },
+        codexDesktop: { kind: "unknown" },
+        dsh: { kind: "baseline", version: "0.2.2-rc.2" },
+        dshDesktop: { kind: "baseline", version: "0.2.2-rc.2" },
+        kimiCode: { kind: "exact", version: "2.6.3" },
+        kimiCodeDesktop: { kind: "embeddedService", version: "2.6.2" },
+        opencode: { kind: "exact", version: "2.3.2" },
+        openclaw: { kind: "localLaunch", version: "2026.11.5" },
+      });
+      expect(result.agentEnablement.agents.some(row => !row.enabled)).toBe(true);
+      for (const row of result.agentEnablement.agents) expect(Object.keys(row).sort()).toEqual(["enabled", "kind", "label"]);
     } finally { await runtime.close(); }
   });
 

@@ -18,7 +18,7 @@ export const KIMI_API_CONTRACT_SHA256 = Object.freeze({
 
 export type KimiSource = "web" | "desktop";
 export const KIMI_WEB_VERSION = "2.6.3";
-const KIMI_DESKTOP_SERVER_VERSION = "2.6.2";
+export const KIMI_DESKTOP_SERVER_VERSION = "2.6.2";
 const DESKTOP_CONTRACTS = Object.freeze({
   openapi: "9920b34adcf9458d7dcf00d42c8d4ce794f27f4a6a8f21b570e9e6b100ea985f",
   asyncapi: "6f415309b2946045b0df41f0a529a6699821359fcf0237215ad69baab53ffd59",

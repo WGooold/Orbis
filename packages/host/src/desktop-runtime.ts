@@ -9,6 +9,7 @@ import { DEVICE_STORE_FILE, HOST_IDENTITY_FILE, X25519_KEY_BYTES, deriveSharedSe
 import QRCode from "qrcode";
 import { AgentEnablementChoiceSchema, AgentKindSchema, hostRecoveryProof, type AgentDisableReview, type AgentKind, type AgentStateRangeRequest } from "@orbis/protocol";
 import { AgentBatchConfirmationRequired, AgentDisableConfirmationRequired, AgentEnablementController, AgentEnablementStore, type AgentEnablementResult, type AgentEnablementSnapshot } from "./agent-enablement.js";
+import { agentVersionRequirements } from "./agent-version-requirements.js";
 import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
@@ -275,7 +276,7 @@ export class DesktopRuntime {
     const kimi = await this.#kimiCodeConfig();
     return { kimiCodeSupported: !this.#qa, kimiCodeDefaultSource: kimi?.kimiCodeSource ?? "web",
       kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
-      agentEnablement: enablement,
+      agentEnablement: enablement, agentVersionRequirements,
       ...(!this.#qa && (process.platform === "darwin" || process.platform === "win32")
         ? { openCodeTuiTabsEnabled: await openCodeTuiTabsInstalled().catch(() => false) } : {}),
       ...(this.#qa ? {} : { openClaw: await readOpenClawDesktopSettings(this.#stateDir) }),

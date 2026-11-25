@@ -128,6 +128,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_hostPub = obj.value("hostPub").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
             refreshDeviceUpdateIndicators();
+            m_agentVersionRequirements = obj.value("agentVersionRequirements").toObject().toVariantMap();
             applyAgentEnablement(obj.value("agentEnablement").toObject());
             m_openClaw = obj.value("openClaw").toObject().toVariantMap();
             m_hermesRemote = obj.value("hermesRemote").toObject().toVariantMap();
@@ -170,6 +171,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         if (error == QProcess::FailedToStart) { m_state = "error"; setMessage("无法启动内置 Host：" + m_bridge.errorString()); }
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
+        m_agentVersionRequirements.clear();
         m_agentEnablement.clear(); m_agentChoices.clear(); m_agentReview.reset(); m_agentInFlight.reset(); m_agentWriteId = -1; m_agentChoiceRecheck = false; m_agentReadPending = false;
         emit agentEnablementChanged();
         m_kimiCodeSupported = false;
