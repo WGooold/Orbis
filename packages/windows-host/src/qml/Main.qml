@@ -107,7 +107,7 @@ ApplicationWindow {
     readonly property bool kimiDesktopStartAvailable: host.kimiDesktopSupported && window.agentEnabled("kimiCodeDesktop") && host.desiredRunning
         && window.backendFor("kimiCodeDesktop")?.launchable === true && window.backendFor("kimiCodeDesktop")?.ready !== true
     function isKimiKind(kind) { return kind === "kimiCode" || kind === "kimiCodeDesktop" }
-    function localServiceAgent(kind) { return kind === "opencode" || kind === "openclaw" || kind === "hermes" || window.isKimiKind(kind) }
+    function localServiceAgent(kind) { return kind === "agy" || kind === "opencode" || kind === "openclaw" || kind === "hermes" || window.isKimiKind(kind) }
     function startActionVisible(kind) {
         if (kind === "kimiCode") return window.kimiStartAvailable
         if (kind === "kimiCodeDesktop") return window.kimiDesktopStartAvailable
@@ -115,6 +115,7 @@ ApplicationWindow {
         if (kind === "hermes" && (host.hermesRemote.host || host.hermesRemote.invalid)) return false
         if (kind === "openclaw" && (host.openClaw.invalid || !(host.openClaw.url || "").startsWith("ws://127.0.0.1:"))) return false
         const backend = window.backendFor(kind)
+        if (kind === "agy") return backend !== undefined && backend.ready !== true
         return backend?.launchable === true && backend.ready !== true
     }
     function startingAgent(kind) {
@@ -2556,7 +2557,7 @@ ApplicationWindow {
                                             id: agentIntegrationSection
                                             objectName: "agentIntegrationSection"
                                             readonly property bool hasContent:
-                                                ["codex", "codexDesktop", "claude", "dsh", "dshDesktop", "opencode"].includes(window.detailKind)
+                                                ["codex", "codexDesktop", "claude", "dsh", "dshDesktop", "opencode", "agy"].includes(window.detailKind)
                                                 || (window.detailKind === "pi" && (Qt.platform.os === "osx" || ["installed", "available", "foreign"].includes(window.piAgent().terminalCommand)))
                                                 || (window.detailKind === "kimiCode" && host.kimiCodeAvailable)
                                                 || (window.detailKind === "kimiCodeDesktop" && host.kimiDesktopSupported)
@@ -2590,6 +2591,17 @@ ApplicationWindow {
                                                 objectName: "dshDesktopIntegrationReason"
                                                 visible: window.detailKind === "dshDesktop" && text.length > 0
                                                 text: window.dshDesktopReason()
+                                                Layout.fillWidth: true
+                                            }
+                                            RowLayout {
+                                                visible: window.detailKind === "agy"
+                                                Layout.fillWidth: true; spacing: 8
+                                                Label { text: "ACP"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                                Label { text: window.backendFor("agy")?.ready === true ? "已连接" : "等待接入"; color: window.backendFor("agy")?.ready === true ? Theme.success : Theme.inkMuted }
+                                            }
+                                            Hint {
+                                                visible: window.detailKind === "agy" && !window.startingAgent("agy") && text.length > 0
+                                                text: window.backendFor("agy")?.reason || ""
                                                 Layout.fillWidth: true
                                             }
                                             RowLayout {

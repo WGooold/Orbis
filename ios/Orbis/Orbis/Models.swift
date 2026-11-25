@@ -192,7 +192,7 @@ struct RuntimeSummary: Codable, Hashable, Identifiable {
 
     func remoteCloseCommand(_ commands: [SlashCommand], negotiated: Bool) -> SlashCommand? {
         guard !usesSharedRemoteView || negotiated else { return nil }
-        let name = usesSharedRemoteView ? SlashCommand.viewCloseCapability : negotiated && agentKind == "claude" ? SlashCommand.closeCapability : "quit"
+        let name = usesSharedRemoteView ? SlashCommand.viewCloseCapability : negotiated && (agentKind == "claude" || agentKind == "agy") ? SlashCommand.closeCapability : "quit"
         return commands.first {
             $0.name == name && $0.argument?.required != true && (!negotiated || $0.source == "builtin") &&
                 (name == "quit" || $0.closeGeneration?.isEmpty == false)

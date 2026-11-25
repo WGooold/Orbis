@@ -627,6 +627,7 @@ data class RemoteState(
     val kimiCodeSupported: Boolean = false,
     val kimiCodeDesktopSupported: Boolean = false,
     val openClawNegotiated: Boolean = false,
+    val agyNegotiated: Boolean = false,
     val prefersAutoSessionSpawn: Boolean = false,
     val sessionConfiguration: SessionConfigurationState = SessionConfigurationState(),
     /**
@@ -905,7 +906,7 @@ internal fun RuntimeSummary.carryingComposerStatus(previous: RuntimeSummary?): R
         permissionManagement = sameSession?.permissionManagement,
         steerSupported = steerSupported ?: sameSession?.steerSupported,
         // This reserved Host route establishes OpenClaw identity before the model read.
-        agentKind = sameSession?.agentKind ?: agentKind.takeIf { it == "openclaw" && runtimeId.startsWith("openclaw:") },
+        agentKind = sameSession?.agentKind ?: agentKind.takeIf { it == "openclaw" && runtimeId.startsWith("openclaw:") || it == AGY_KIND && runtimeId.startsWith("$AGY_KIND:") },
         domainAvailability = sameSession?.domainAvailability.orEmpty(),
     )
 }
@@ -2165,11 +2166,12 @@ class RelayReducer(
                 }
                 val runtimes = message["runtimes"]?.let {
                     json.decodeFromJsonElement<List<RuntimeSummary>>(it)
-                }.orEmpty().map { it.withOpenClawKind().withKimiIdentity() }.associateBy(RuntimeSummary::runtimeId)
+                }.orEmpty().map { it.withNamespacedAgentKind().withKimiIdentity() }.associateBy(RuntimeSummary::runtimeId)
                 val managedAgentView = readyAdmitsAgentEnablement(message)
                 val openClawNegotiated = readyAdmitsOpenClaw(message)
+                val agyNegotiated = readyAdmitsAgy(message)
                 val unifiedCodexHistory = readyAdmitsCodexHistory(message)
-                val projectionChanged = state.openClawNegotiated != openClawNegotiated || state.unifiedCodexHistory != unifiedCodexHistory
+                val projectionChanged = state.agyNegotiated != agyNegotiated || state.openClawNegotiated != openClawNegotiated || state.unifiedCodexHistory != unifiedCodexHistory
                 // 「这台电脑支持哪些 agent」只有 Host 说得准。中继那条种子 device.ready 发的是
                 // 显式 `null`（它不知道装没装 codex）；任何一种"不知道"都保持原判（未知 = 不限制）。
                 val supportedAgents = message["agents"]
@@ -2266,6 +2268,7 @@ class RelayReducer(
                     kimiCodeSupported = kimiCodeSupported,
                     kimiCodeDesktopSupported = kimiCodeDesktopSupported,
                     openClawNegotiated = openClawNegotiated,
+                    agyNegotiated = agyNegotiated,
                     unifiedCodexHistory = unifiedCodexHistory,
                     runtimeCloseNegotiated = readyAdmitsRuntimeClose(message),
                     prefersAutoSessionSpawn = (message["hostFeatures"] as? JsonArray)?.contains(JsonPrimitive("session.spawn.auto")) == true,
@@ -2349,7 +2352,7 @@ class RelayReducer(
             "runtime.online" -> {
                 val runtime = message["runtime"]?.let {
                     json.decodeFromJsonElement<RuntimeSummary>(it)
-                }?.withKimiIdentity()?.withOpenClawKind() ?: return state
+                }?.withKimiIdentity()?.withNamespacedAgentKind() ?: return state
                 val previousRuntime = state.runtimes[runtime.runtimeId]
                 val hasPreviousRuntime = previousRuntime != null ||
                     state.knownRuntimeSessions.containsKey(runtime.runtimeId)
@@ -2861,7 +2864,7 @@ class RelayReducer(
             "runtime.metadata" -> {
                 val metadata = event["metadata"]?.let {
                     json.decodeFromJsonElement<RuntimeSummary>(it)
-                }?.withKimiIdentity()?.withOpenClawKind() ?: return state
+                }?.withKimiIdentity()?.withNamespacedAgentKind() ?: return state
                 if (metadata.runtimeId != runtimeId) return state
                 val previousRuntime = state.runtimes[runtimeId]
                 val previousView = state.runtimeSessionViews[runtimeId]
@@ -3933,10 +3936,17 @@ internal fun RemoteState.allowsAgentSource(kind: String): Boolean =
     agentEnablementRevision == null || agentEnablementRows.any { it.kind == kind && it.enabled }
 
 internal fun RemoteState.supportsSessionConfiguration(agentKind: String): Boolean =
-    allowsAgentSource(agentKind) && sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated) && supportsKimiCode(agentKind)
+    allowsAgentSource(agentKind) && sessionConfigurationSupported && (agentKind != "openclaw" || openClawNegotiated) && (agentKind != AGY_KIND || agyNegotiated) && supportsKimiCode(agentKind)
+
+internal fun RemoteState.canLaunchAgy(): Boolean =
+    e2eReady && supportsSessionConfiguration(AGY_KIND) && (launchableAgents ?: supportedAgents)?.contains(AGY_KIND) == true
 
 internal fun RemoteState.canLaunchOpenClaw(): Boolean =
     supportsSessionConfiguration("openclaw") && (launchableAgents ?: supportedAgents)?.contains("openclaw") == true
 
-private fun RuntimeSummary.withOpenClawKind(): RuntimeSummary =
-    if (agentKind == null && runtimeId.startsWith("openclaw:")) copy(agentKind = "openclaw") else this
+internal fun RuntimeSummary.withNamespacedAgentKind(): RuntimeSummary = when {
+    agentKind != null -> this
+    runtimeId.startsWith("openclaw:") -> copy(agentKind = "openclaw")
+    runtimeId.startsWith("$AGY_KIND:") -> copy(agentKind = AGY_KIND)
+    else -> this
+}

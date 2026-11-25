@@ -1306,11 +1306,12 @@ void HostController::restartDshServer() {
 }
 void HostController::openAgent(const QString &kind) {
     if (kind == "pi" || kind == "claude") { openAgentTui(kind); return; }
-    if (kind == "kimiCode" || kind == "kimiCodeDesktop" || kind == "opencode" || kind == "hermes" || kind == "openclaw") {
+    if (kind == "kimiCode" || kind == "kimiCodeDesktop" || kind == "opencode" || kind == "hermes" || kind == "openclaw" || kind == "agy") {
         if (!m_bridgeReady || busy() || !m_desiredRunning ||
+            (kind == "agy" && !agentEnabled(kind)) ||
             (kind == "kimiCode" && (!kimiCodeAvailable() || !kimiCodeEnabled())) ||
             (kind == "kimiCodeDesktop" && (!kimiDesktopSupported() || !agentEnabled(kind)))) return;
-        const auto label = kind == "kimiCode" ? "Kimi Code Web" : kind == "kimiCodeDesktop" ? "Kimi Code 桌面版" : kind == "opencode" ? "OpenCode" : kind == "hermes" ? "Hermes Agent" : "OpenClaw";
+        const auto label = kind == "kimiCode" ? "Kimi Code Web" : kind == "kimiCodeDesktop" ? "Kimi Code 桌面版" : kind == "opencode" ? "OpenCode" : kind == "hermes" ? "Hermes Agent" : kind == "agy" ? "Antigravity CLI" : "OpenClaw";
         command("openAgent", {{"kind", kind}}, [this, label](const QJsonValue &) { setMessage(QString("%1 已接入").arg(label)); });
         return;
     }

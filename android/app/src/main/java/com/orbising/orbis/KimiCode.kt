@@ -20,6 +20,7 @@ internal fun deviceAgentFeatures(ready: JsonObject): List<String> {
         "agent.openclaw",
         "agent.hermes",
         "agent.opencode",
+        AGY_FEATURE,
         AGENT_ENABLEMENT_FEATURE,
         AGENT_DIAL_REVIEW_FEATURE,
         "state.compact-bootstrap.v1",

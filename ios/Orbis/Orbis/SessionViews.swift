@@ -363,7 +363,7 @@ struct SessionDrawerView: View, Equatable {
         guard store.connection == .secured else { return L10n.tr("连接电脑后可操作") }
         guard let kind = session.agentKind else { return L10n.tr("尚未获取会话类型") }
         if kind == "openclaw", !store.openClawNegotiated { return L10n.tr("连接电脑后可操作") }
-        guard kind != "hermes" else { return L10n.tr("不支持归档") }
+        guard kind != "hermes", kind != "agy" else { return L10n.tr("不支持归档") }
         guard !store.isArchiving(session.sessionId) else { return L10n.tr("处理中…") }
         guard session.archived != true else { return nil }
         let runtimes = store.runtimes.filter { $0.sessionId == session.sessionId }
@@ -387,11 +387,11 @@ struct SessionDrawerView: View, Equatable {
 
     private var filterMenuItems: [OrbisMenuItem] {
         [OrbisMenuItem(title: L10n.tr("全部"), symbol: "line.3.horizontal.decrease", checked: filterKind == nil) { selectFilter(nil) }]
-        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind, kimiCodeDesktopKind, "hermes", "opencode"].filter { kind in
+        + ["pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", kimiCodeKind, kimiCodeDesktopKind, "hermes", "opencode", "agy"].filter { kind in
             guard enabledAgentKinds?.contains(kind) != false, !unifiedCodex || kind != "codexDesktop" else { return false }
             if kind == "opencode", store.activeConnection.openCodeAvailability != nil { return true }
             if kind == kimiCodeKind { return store.activeConnection.kimiCodeSupported }; if kind == kimiCodeDesktopKind { return store.activeConnection.kimiCodeDesktopSupported }; if kind == "openclaw", !store.openClawNegotiated { return false }
-            return !["dshDesktop", "openclaw", "hermes", "opencode"].contains(kind) || store.supportedAgents?.contains(kind) == true
+            return !["dshDesktop", "openclaw", "hermes", "opencode", "agy"].contains(kind) || store.supportedAgents?.contains(kind) == true
                 || store.launchableAgents?.contains(kind) == true || catalog.sessions.contains { $0.agentKind == kind }
         }.map { kind in
             let providers = kind == "codex" || kind == "codexDesktop"
@@ -677,7 +677,7 @@ struct SessionDraftView: View {
     private var allowed: [String] {
         let enabled = owner.enabledAgentKinds
         let choices = owner.launchableAgents ?? owner.supportedAgents ?? (enabled == nil ? ["pi", "codex"] : [])
-        return choices.filter { enabled?.contains($0) != false }.filter { supportsKimiCode(kind: $0, web: owner.kimiCodeSupported, desktop: owner.kimiCodeDesktopSupported) }.filter { $0 != "openclaw" || owner.openClawNegotiated }
+        return choices.filter { enabled?.contains($0) != false && ($0 != "agy" || owner.agyNegotiated) }.filter { supportsKimiCode(kind: $0, web: owner.kimiCodeSupported, desktop: owner.kimiCodeDesktopSupported) }.filter { $0 != "openclaw" || owner.openClawNegotiated }
     }
     private var family: String { agentFamily(agent) }
     private func launchLabel(_ kind: String) -> String {
@@ -688,7 +688,7 @@ struct SessionDraftView: View {
     private var showsOpenCode: Bool { openCode != nil || (owner.connection == .secured && allowed.contains("opencode")) }
     private var openClawDiagnostic: String? { owner.openClawDraftDiagnostic() }
     private var agentChoices: [String] {
-        let available = [kimiCodeKind, "openclaw", "hermes"].filter { kind in
+        let available = [kimiCodeKind, "openclaw", "hermes", "agy"].filter { kind in
             allowed.contains(kind) || (kind == kimiCodeKind && agentVariants(kind).contains(where: allowed.contains)) ||
                 (kind == "openclaw" && openClawDiagnostic != nil)
         }

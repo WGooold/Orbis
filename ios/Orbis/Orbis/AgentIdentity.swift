@@ -24,6 +24,7 @@ struct AgentIdentity {
         case "kimiCodeDesktop": self.init("Kimi Code 桌面版", "AgentKimi", original: true)
         case "openclaw": self.init("OpenClaw", "AgentOpenClaw", original: true)
         case "hermes": self.init("Hermes Agent", "AgentHermes")
+        case "agy": self.init("Antigravity CLI", "AgentAgy")
         case "opencode": self.init("OpenCode", "AgentOpenCode", darkAsset: "AgentOpenCodeDark", original: true)
         default: return nil
         }

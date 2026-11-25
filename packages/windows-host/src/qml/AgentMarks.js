@@ -2,6 +2,7 @@
 // Agent identity marks shared with the mobile apps. See THIRD-PARTY-NOTICES.md.
 // Existing monochrome marks take their theme tone; multicolor artwork keeps its own ink.
 var marks = {
+    agy: { viewBox: "0 0 24 24", tinted: true, paths: [{ rule: "nonzero", d: "M12 1.5 14.9 9.1 22.5 12 14.9 14.9 12 22.5 9.1 14.9 1.5 12 9.1 9.1Z" }] },
     pi: {
         viewBox: "0 0 470 470",
         group: "translate(-165.29 -165.29)",

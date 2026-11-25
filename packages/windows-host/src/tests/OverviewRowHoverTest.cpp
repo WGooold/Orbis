@@ -97,6 +97,7 @@ const agents = [
   { kind: "kimiCode", label: "Kimi Code", enabled: true },
   { kind: "kimiCodeDesktop", label: "Kimi Code 桌面版", enabled: false },
   { kind: "opencode", label: "OpenCode", enabled: true },
+  { kind: "agy", label: "Antigravity CLI", enabled: true },
   { kind: "hermes", label: "Hermes Agent", enabled: true },
   { kind: "openclaw", label: "OpenClaw", enabled: true }
 ];
@@ -197,7 +198,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     out({ id, result: {} });
     return;
   }
-  if (method === "openAgent" && ["kimiCode", "opencode", "hermes", "openclaw"].includes(params.kind)) {
+  if (method === "openAgent" && ["kimiCode", "opencode", "hermes", "openclaw", "agy"].includes(params.kind)) {
     out(launchStatus(params.kind, "starting", false));
     setTimeout(() => { out(launchStatus(params.kind, "connected", true)); out({ id, result: {} }); }, 360);
     return;
@@ -311,10 +312,10 @@ private slots:
 
     void startsLocalAgentFromHost_data() {
         QTest::addColumn<QString>("kind");
-        for (const auto *kind : {"kimiCode", "opencode", "hermes", "openclaw"}) QTest::newRow(kind) << QString(kind);
+        for (const auto *kind : {"kimiCode", "opencode", "hermes", "openclaw", "agy"}) QTest::newRow(kind) << QString(kind);
     }
 
-    // KIMI-12 / HOST-AGENT-START-01: shared start UI reflects process status; configured remote gateways cannot be started here.
+    // KIMI-12 / HOST-AGENT-START-01 / AGY-13: shared start UI reflects process status; configured remote gateways cannot be started here.
     // OPENCODE-TUI-01: only a ready OpenCode switches both existing actions from headless start to the workspace picker.
     void startsLocalAgentFromHost() {
         QFETCH(QString, kind);
