@@ -119,19 +119,25 @@ export async function verifyAgyConnection(value: unknown, options: {
   if (verification !== "verified") return verification;
   const directory = await mkdtemp(join(tmpdir(), "orbis-agy-auth-check-"));
   let client: AcpConnection | undefined;
+  let result: AgyKeyCheck = "unavailable";
+  let stopped = true;
   try {
     client = await openAgyProfile(directory, options.signal ?? new AbortController().signal, {
       key, env: options.env ?? process.env, verify: async () => "verified", cli: options.cli ?? await resolveAgy(options.env ?? process.env),
     });
     const sessions = record(await client.request("session/list", {}, 5_000));
-    return Array.isArray(sessions.sessions) ? "verified" : "unavailable";
+    result = Array.isArray(sessions.sessions) ? "verified" : "unavailable";
   } catch (error) {
     options.signal?.throwIfAborted();
-    return error instanceof AgyCredentialRejectedError ? "rejected" : "unavailable";
-  } finally {
-    if (client) await client.stop().catch(() => {});
-    const lock = join(directory, "agy-acp", "owner.lock");
-    // Never erase a profile still owned by a child whose cleanup was not confirmed.
-    if (!await stat(lock).then(() => true, () => false)) await rm(directory, { recursive: true, force: true });
+    result = error instanceof AgyCredentialRejectedError ? "rejected" : "unavailable";
   }
+  if (client) {
+    try { await client.stop(); }
+    catch { stopped = false; }
+  }
+  const lock = join(directory, "agy-acp", "owner.lock");
+  const lockRemains = await stat(lock).then(() => true, () => false);
+  if (stopped && !lockRemains) await rm(directory, { recursive: true, force: true }).catch(() => { result = "unavailable"; });
+  else result = "unavailable";
+  return result;
 }
