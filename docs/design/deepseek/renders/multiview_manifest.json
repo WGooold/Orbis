@@ -1,0 +1,70 @@
+{
+  "asset": "DeepSeek_OrbitalExplorer",
+  "version": "V9_Clean_CelShaded_Cartoon",
+  "job_id": "9bcce14403d041be8a305333a88cb11e",
+  "views": [
+    {
+      "camera": "Cam_Hero_34",
+      "filename": "hero_34.png",
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/deepseek/renders/hero_34.png",
+      "width": 1280,
+      "height": 854,
+      "size_bytes": 1139384,
+      "sha256": "b6f73399b98222749c38895fd6c2b5f3e0cb8a191505c92f3c3b4aae741dff72"
+    },
+    {
+      "camera": "Cam_Side_Ortho",
+      "filename": "side_ortho.png",
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/deepseek/renders/side_ortho.png",
+      "width": 1280,
+      "height": 854,
+      "size_bytes": 1046129,
+      "sha256": "9fd289114b5b335d5f089f0b2cdae1de1f5df943f55299d0b6a2f6a421d90d73"
+    },
+    {
+      "camera": "Cam_Front_Ortho",
+      "filename": "front_ortho.png",
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/deepseek/renders/front_ortho.png",
+      "width": 1280,
+      "height": 854,
+      "size_bytes": 1233735,
+      "sha256": "ad7377da0d138b8b5cb76a8fb2dce1744644c0c967c0801658b0cabd18f64ff6"
+    },
+    {
+      "camera": "Cam_Stern_Ortho",
+      "filename": "stern_ortho.png",
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/deepseek/renders/stern_ortho.png",
+      "width": 1280,
+      "height": 854,
+      "size_bytes": 1228022,
+      "sha256": "078a42c07b742212c1f42a7fde896d3fc9d9313936b55a9ee400991cdb2df5a2"
+    },
+    {
+      "camera": "Cam_Top_Ortho",
+      "filename": "top_ortho.png",
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/deepseek/renders/top_ortho.png",
+      "width": 1280,
+      "height": 854,
+      "size_bytes": 1099443,
+      "sha256": "ebc808fe5d5129b996adca121c1a78f124e2daacf678bdf6fe2e9cf30169d503"
+    },
+    {
+      "camera": "Cam_Bottom_Ortho",
+      "filename": "bottom_ortho.png",
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/deepseek/renders/bottom_ortho.png",
+      "width": 1280,
+      "height": 854,
+      "size_bytes": 1042982,
+      "sha256": "18310c2626e6f48cba6c22fe5b470bbbe9a2853cb6c1f43eb7a359f1e3f19c49"
+    },
+    {
+      "camera": "Cam_Rear_34",
+      "filename": "rear_34.png",
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/deepseek/renders/rear_34.png",
+      "width": 1280,
+      "height": 854,
+      "size_bytes": 1105209,
+      "sha256": "c691c2a8e545b659461a1c9188adb52f264a45967842222dca01e480858bdfe7"
+    }
+  ]
+}

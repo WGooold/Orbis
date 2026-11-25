@@ -4,37 +4,72 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#07090f">
-<title>OpenCode · Orbital Carrier 3D</title>
+<title>OpenCode · Orbital Portal Carrier 3D</title>
 <style>
-:root{color-scheme:dark;--paper:#e9e7f0;--mute:#8e8d9d;--line:rgba(203,196,230,.15);--violet:#b58bff;--cyan:#98d7ff;--glass:rgba(12,13,21,.68)}
+:root{color-scheme:dark;--paper:#eceaf4;--mute:#8c8a9e;--line:rgba(186,146,255,.22);--violet:#b278ff;--amber:#ffbe5c;--glass:rgba(10,11,19,.76)}
 *{box-sizing:border-box}
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#07090f;color:var(--paper);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-body{background:radial-gradient(ellipse at 52% 43%,#10121c 0,#090b12 46%,#06070b 100%)}
+body{background:radial-gradient(ellipse at 52% 43%,#131524 0,#090b14 48%,#05060b 100%)}
 #stage{position:absolute;inset:0;width:100%;height:100%;outline:none}
-.grain{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:.16;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.91' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath filter='url(%23n)' opacity='.2' d='M0 0h180v180H0z'/%3E%3C/svg%3E");mix-blend-mode:screen}
+.grain{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:.14;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.91' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath filter='url(%23n)' opacity='.2' d='M0 0h180v180H0z'/%3E%3C/svg%3E");mix-blend-mode:screen}
 .hud{position:absolute;z-index:2;inset:0;pointer-events:none;padding:clamp(18px,3.5vw,46px);display:flex;flex-direction:column;justify-content:space-between}
-.top,.bottom{display:flex;justify-content:space-between;align-items:flex-start;gap:24px}.brand{display:flex;gap:14px;align-items:flex-start}.sigil{position:relative;width:30px;height:30px;border:1px solid rgba(185,147,255,.53);border-radius:50%;flex:none;margin-top:2px;box-shadow:0 0 18px rgba(142,86,242,.14)}.sigil:before,.sigil:after{content:"";position:absolute;background:#c6a8ff;left:50%;top:50%;transform:translate(-50%,-50%)}.sigil:before{width:14px;height:1px}.sigil:after{height:14px;width:1px}.eyebrow{margin:0 0 6px;color:#cfbaff;font-size:9px;font-weight:550;letter-spacing:.24em}.title{margin:0;color:#f0edf5;font-size:clamp(14px,1.3vw,18px);font-weight:520;letter-spacing:.04em}.subtitle{margin:7px 0 0;color:#838494;font-size:9px;letter-spacing:.13em}
-.header-actions{display:flex;gap:8px;pointer-events:auto}.button{height:35px;padding:0 13px;display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:2px;color:#c8c6d1;background:rgba(10,11,17,.56);font:500 10px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.07em;cursor:pointer;transition:all .2s;backdrop-filter:blur(15px)}.button:hover,.button:focus-visible,.button[aria-pressed="true"]{color:white;border-color:rgba(192,151,255,.56);background:rgba(71,47,104,.35);outline:none}.button svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.4}
-.bottom{align-items:flex-end}.note{margin:0 0 1px;color:#9c9aa9;font-size:9px;letter-spacing:.14em}.note .dot{color:#ba92ff;padding:0 7px}.meta{text-align:right;color:#888896;font:9px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.09em}.meta strong{color:#cec0e8;font-weight:500}.meta .rule{display:inline-block;width:30px;height:1px;margin:0 8px;vertical-align:middle;background:linear-gradient(90deg,transparent,#b996ff)}
-.view-dock{position:absolute;left:50%;bottom:clamp(48px,8vh,82px);z-index:3;transform:translateX(-50%);display:flex;align-items:center;gap:4px;padding:5px;border:1px solid rgba(204,192,233,.15);background:rgba(8,9,15,.78);backdrop-filter:blur(18px);pointer-events:auto}.view{min-width:72px;height:30px;padding:0 12px;border:1px solid transparent;border-radius:1px;background:transparent;color:#9492a2;font:500 9px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.08em;cursor:pointer;transition:all .18s}.view:hover{color:#f0edf6}.view[aria-pressed="true"]{border-color:rgba(192,150,255,.35);color:#e0caff;background:rgba(142,91,212,.13)}
-#loading{position:absolute;z-index:5;inset:0;display:grid;place-items:center;background:#07090f;color:#b5adca;font:9px ui-monospace,monospace;letter-spacing:.2em;transition:opacity .45s}#loading.done{opacity:0;pointer-events:none}.load-inner{text-align:center}.loading-line{width:142px;height:1px;margin:13px auto 0;background:linear-gradient(90deg,transparent,#b794ff,transparent);animation:scan 1.5s ease-in-out infinite}@keyframes scan{0%,100%{opacity:.24;transform:scaleX(.45)}50%{opacity:1;transform:scaleX(1)}}#error{display:none;max-width:420px;padding:18px;border:1px solid rgba(255,135,152,.3);background:#130d15;color:#ffd2dc;line-height:1.6;letter-spacing:.03em}
-@media(max-width:660px){.hud{padding:18px}.sigil{width:25px;height:25px}.sigil:before{width:12px}.sigil:after{height:12px}.brand{gap:10px}.eyebrow{font-size:8px}.title{font-size:13px}.subtitle{font-size:8px}.button{height:32px;padding:0 9px;font-size:9px}.header-actions{gap:5px}.view-dock{bottom:68px;max-width:calc(100% - 28px);width:max-content}.view{min-width:0;padding:0 12px;font-size:8px}.bottom{gap:8px}.note,.meta{font-size:7px}.meta .rule{width:16px;margin:0 4px}}
-@media(max-width:380px){.button span{display:none}.button{width:33px;justify-content:center;padding:0}.view{padding:0 9px}.subtitle{letter-spacing:.08em}}
+.top,.bottom{display:flex;justify-content:space-between;align-items:flex-start;gap:24px}
+.brand{display:flex;gap:14px;align-items:flex-start}
+.sigil{position:relative;width:30px;height:30px;border:1px solid rgba(178,120,255,.54);border-radius:4px;flex:none;margin-top:2px;box-shadow:0 0 18px rgba(142,86,242,.26);display:grid;place-items:center}
+.sigil svg{width:16px;height:16px;fill:none;stroke:var(--violet);stroke-width:1.7}
+.eyebrow{margin:0 0 6px;color:#cfb6ff;font-size:9px;font-weight:550;letter-spacing:.24em}
+.title{margin:0;color:#f3f0fa;font-size:clamp(14px,1.3vw,18px);font-weight:520;letter-spacing:.04em}
+.subtitle{margin:7px 0 0;color:#85869b;font-size:9px;letter-spacing:.13em}
+.header-actions{display:flex;gap:8px;pointer-events:auto}
+.button{height:35px;padding:0 13px;display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:2px;color:#d0cde0;background:rgba(12,13,22,.64);font:500 10px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.07em;cursor:pointer;transition:all .2s;backdrop-filter:blur(15px)}
+.button:hover,.button:focus-visible,.button[aria-pressed="true"]{color:#fff;border-color:rgba(192,151,255,.68);background:rgba(92,52,156,.38);outline:none}
+.button svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.4}
+.bottom{align-items:flex-end}
+.note{margin:0 0 1px;color:#9997ac;font-size:9px;letter-spacing:.14em}
+.note .dot{color:var(--violet);padding:0 7px}
+.meta{text-align:right;color:#86859b;font:9px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.09em}
+.meta strong{color:#d8c6ff;font-weight:500}
+.meta .rule{display:inline-block;width:30px;height:1px;margin:0 8px;vertical-align:middle;background:linear-gradient(90deg,transparent,var(--violet))}
+.view-dock{position:absolute;left:50%;bottom:clamp(48px,8vh,82px);z-index:3;transform:translateX(-50%);display:flex;align-items:center;gap:4px;padding:5px;border:1px solid rgba(190,155,255,.22);background:rgba(9,10,18,.84);backdrop-filter:blur(18px);pointer-events:auto}
+.view{min-width:68px;height:30px;padding:0 11px;border:1px solid transparent;border-radius:1px;background:transparent;color:#9593a8;font:500 9px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.08em;cursor:pointer;transition:all .18s}
+.view:hover{color:#f5f2fc}
+.view[aria-pressed="true"]{border-color:rgba(192,150,255,.52);color:#e4d0ff;background:rgba(130,72,226,.24)}
+#loading{position:absolute;z-index:5;inset:0;display:grid;place-items:center;background:#07090f;color:#c3b8df;font:9px ui-monospace,monospace;letter-spacing:.2em;transition:opacity .45s}
+#loading.done{opacity:0;pointer-events:none}
+.load-inner{text-align:center}
+.loading-line{width:142px;height:1px;margin:13px auto 0;background:linear-gradient(90deg,transparent,var(--violet),transparent);animation:scan 1.5s ease-in-out infinite}
+@keyframes scan{0%,100%{opacity:.24;transform:scaleX(.45)}50%{opacity:1;transform:scaleX(1)}}
+#error{display:none;max-width:420px;padding:18px;border:1px solid rgba(192,150,255,.36);background:#120e1c;color:#e8d9ff;line-height:1.6;letter-spacing:.03em}
+@media(max-width:660px){.hud{padding:18px}.sigil{width:25px;height:25px}.brand{gap:10px}.eyebrow{font-size:8px}.title{font-size:13px}.subtitle{font-size:8px}.button{height:32px;padding:0 9px;font-size:9px}.header-actions{gap:5px}.view-dock{bottom:68px;max-width:calc(100% - 28px);width:max-content}.view{min-width:0;padding:0 10px;font-size:8px}.bottom{gap:8px}.note,.meta{font-size:7px}.meta .rule{width:16px;margin:0 4px}}
+@media(max-width:380px){.button span{display:none}.button{width:33px;justify-content:center;padding:0}.view{padding:0 8px}.subtitle{letter-spacing:.08em}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
 </style>
 </head>
 <body>
-<canvas id="stage" aria-label="OpenCode 深空载舰可交互三维模型"></canvas><div class="grain"></div>
-<div id="loading"><div class="load-inner" id="loadLabel">载入同一套舰体几何<div class="loading-line"></div></div><div id="error"></div></div>
+<canvas id="stage" aria-label="OpenCode 轨道门户母舰可交互三维模型"></canvas><div class="grain"></div>
+<div id="loading"><div class="load-inner" id="loadLabel">载入舰体几何与全息力场<div class="loading-line"></div></div><div id="error"></div></div>
 <div class="hud">
  <header class="top">
-  <div class="brand"><span class="sigil" aria-hidden="true"></span><div><p class="eyebrow">ORBITAL PORT <span style="opacity:.5">/</span> VESSEL 01</p><h1 class="title">OpenCode 深空载舰</h1><p class="subtitle">STRUCTURE STUDY <span style="opacity:.4">·</span> MODEL GEOMETRY 01</p></div></div>
+  <div class="brand">
+   <span class="sigil" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1.5"/><rect x="8.5" y="8.5" width="7" height="7"/></svg></span>
+   <div>
+    <p class="eyebrow">ORBITAL PORT <span style="opacity:.5">/</span> VESSEL 07</p>
+    <h1 class="title">OpenCode 轨道门户母舰</h1>
+    <p class="subtitle">WEATHERED CERAMIC ARMOR <span style="opacity:.4">·</span> HOLLOW PORTAL BAY <span style="opacity:.4">·</span> OCTAGONAL TRUSS RING</p>
+   </div>
+  </div>
   <div class="header-actions">
    <button class="button" id="orbitToggle" type="button" aria-pressed="false" title="自动环绕"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-3L4 10"/><path d="M4 5v5h5M4 13a8 8 0 0 0 14.7 3L20 14"/><path d="M20 19v-5h-5"/></svg><span>自动环绕</span></button>
    <button class="button" id="resetView" type="button" title="重置视角"><svg viewBox="0 0 24 24"><path d="M12 21s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12Z"/><circle cx="12" cy="9" r="2.1"/></svg><span>重置</span></button>
   </div>
  </header>
- <footer class="bottom"><p class="note">拖动旋转 <span class="dot">·</span> 滚轮缩放 <span class="dot">·</span> 选择视图</p><div class="meta"><div><strong>OPEN CODE CARRIER</strong><span class="rule"></span>522 PARTS</div><div>ARMOR <span style="color:#bd9bff">·</span> ENERGY BRIDGE <span style="color:#bd9bff">·</span> DRIVE ARRAY</div></div></footer>
+ <footer class="bottom">
+  <p class="note">拖动旋转 <span class="dot">·</span> 滚轮缩放 <span class="dot">·</span> 选择视图</p>
+  <div class="meta">
+   <div><strong>OPENCODE PORTAL CARRIER</strong><span class="rule"></span><span id="partCount">800+ PARTS</span></div>
+   <div>CERAMIC COMPOSITE <span style="color:#b278ff">·</span> HOLO PORTAL <span style="color:#b278ff">·</span> VIOLET DRIVES</div>
+  </div>
+ </footer>
 </div>
 <nav class="view-dock" aria-label="模型视角">
  <button class="view" data-view="hero" aria-pressed="true">透视</button>
@@ -42,6 +77,7 @@ body{background:radial-gradient(ellipse at 52% 43%,#10121c 0,#090b12 46%,#06070b
  <button class="view" data-view="front" aria-pressed="false">正视</button>
  <button class="view" data-view="side" aria-pressed="false">侧视</button>
  <button class="view" data-view="rear" aria-pressed="false">尾部</button>
+ <button class="view" data-view="bottom" aria-pressed="false">底部</button>
 </nav>
 <script type="module">
 import * as THREE from './three-runtime.js';
@@ -49,46 +85,186 @@ import {OrbitControls,GLTFLoader,EffectComposer,RenderPass,UnrealBloomPass,Outpu
 
 const canvas=document.querySelector('#stage');
 const scene=new THREE.Scene();
-scene.background=new THREE.Color('#080a11');
-scene.fog=new THREE.FogExp2('#080a11',.0024);
-const camera=new THREE.PerspectiveCamera(38,innerWidth/innerHeight,.12,220);
-camera.position.set(-14.5,-7.8,21.5); // Blender hero camera transformed into glTF Y-up coordinates.
-const target=new THREE.Vector3(.4,-.1,0);
+scene.background=new THREE.Color('#07090f');
+scene.fog=new THREE.FogExp2('#07090f',.0018);
+const camera=new THREE.PerspectiveCamera(36,innerWidth/innerHeight,.12,260);
+camera.position.set(-21.8,4.2,-21.2);
+const target=new THREE.Vector3(0,0,1.0);
+
 const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:'high-performance'});
-renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));renderer.setSize(innerWidth,innerHeight);
-renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=.72;
-renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
-const pmrem=new THREE.PMREMGenerator(renderer);scene.environment=pmrem.fromScene(new RoomEnvironment(renderer),.04).texture;pmrem.dispose();
-const key=new THREE.DirectionalLight(0xf0efff,1.65);key.position.set(-16,22,-18);scene.add(key);
-const fill=new THREE.DirectionalLight(0x8191c5,.58);fill.position.set(16,8,17);scene.add(fill);
-scene.add(new THREE.HemisphereLight(0xaab9e8,0x17101e,.55));
-const violetLight=new THREE.PointLight(0x8a38fa,16,34,2);violetLight.position.set(1.2,-.1,0);scene.add(violetLight);
-const coolLight=new THREE.PointLight(0x85aaff,8,30,2);coolLight.position.set(6,-3,10);scene.add(coolLight);
-const composer=new EffectComposer(renderer);const renderPass=new RenderPass(scene,camera);composer.addPass(renderPass);
-composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),.12,.42,.92));composer.addPass(new OutputPass());
-const stars=new Float32Array(1150*3);let randomSeed=1907;function random(){randomSeed=(randomSeed*16807)%2147483647;return randomSeed/2147483647}
-for(let i=0;i<1150;i++){const r=45+random()*105,t=random()*Math.PI*2,p=Math.acos(random()*2-1);stars[i*3]=r*Math.sin(p)*Math.cos(t);stars[i*3+1]=r*Math.cos(p);stars[i*3+2]=r*Math.sin(p)*Math.sin(t)}
-const starGeo=new THREE.BufferGeometry();starGeo.setAttribute('position',new THREE.BufferAttribute(stars,3));scene.add(new THREE.Points(starGeo,new THREE.PointsMaterial({color:0xb8b5e4,size:.13,sizeAttenuation:true,transparent:true,opacity:.68,depthWrite:false,fog:false})));
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));
+renderer.setSize(innerWidth,innerHeight);
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.02;
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+
+const pmrem=new THREE.PMREMGenerator(renderer);
+scene.environment=pmrem.fromScene(new RoomEnvironment(renderer),.04).texture;
+pmrem.dispose();
+
+const key=new THREE.DirectionalLight(0xf8fbff,2.10);key.position.set(-20,28,-22);scene.add(key);
+const rim=new THREE.DirectionalLight(0xd6e5ff,1.15);rim.position.set(26,14,10);scene.add(rim);
+const fill=new THREE.HemisphereLight(0xdce4f8,0x0c0e18,.68);scene.add(fill);
+const driveLight=new THREE.PointLight(0x9a3dff,24,38,2);driveLight.position.set(0,0,12.8);scene.add(driveLight);
+const portalLight=new THREE.PointLight(0x882eff,10,24,2);portalLight.position.set(0,0,.5);scene.add(portalLight);
+const underBounce=new THREE.PointLight(0x7fb4e8,9.0,40,2);underBounce.position.set(-6,-18,2);scene.add(underBounce);
+
+const composer=new EffectComposer(renderer);
+const renderPass=new RenderPass(scene,camera);
+composer.addPass(renderPass);
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),.24,.48,.80));
+composer.addPass(new OutputPass());
+
+const stars=new Float32Array(1300*3);
+let seed=2026;
+function rnd(){seed=(seed*16807)%2147483647;return seed/2147483647}
+for(let i=0;i<1300;i++){const r=52+rnd()*120,t=rnd()*Math.PI*2,p=Math.acos(rnd()*2-1);stars[i*3]=r*Math.sin(p)*Math.cos(t);stars[i*3+1]=r*Math.cos(p);stars[i*3+2]=r*Math.sin(p)*Math.sin(t)}
+const starGeo=new THREE.BufferGeometry();
+starGeo.setAttribute('position',new THREE.BufferAttribute(stars,3));
+scene.add(new THREE.Points(starGeo,new THREE.PointsMaterial({color:0xe4def8,size:.13,sizeAttenuation:true,transparent:true,opacity:.70,depthWrite:false,fog:false})));
 
 let ship=null,controls=null,selected='hero',autoRotate=false,cameraTween=null;
 const viewButtons=[...document.querySelectorAll('.view')];
-const cameraState={hero:{type:'perspective',position:new THREE.Vector3(-14.5,-7.8,21.5),aim:new THREE.Vector3(.4,-.1,0),up:new THREE.Vector3(0,1,0)},top:{type:'ortho',position:new THREE.Vector3(.4,34,0),aim:new THREE.Vector3(.4,0,0),up:new THREE.Vector3(0,0,-1),width:25.5,height:13.4},front:{type:'ortho',position:new THREE.Vector3(-34,0,0),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,1,0),width:11.8,height:7.2},side:{type:'ortho',position:new THREE.Vector3(0,0,34),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,1,0),width:25.5,height:7.6},rear:{type:'perspective',position:new THREE.Vector3(22,13.8,19.5),aim:new THREE.Vector3(.2,-.2,0),up:new THREE.Vector3(0,1,0)}};
-function fittedCamera(which){const v=cameraState[which],aspect=innerWidth/innerHeight;if(v.type==='perspective'){const c=new THREE.PerspectiveCamera(38,aspect,.12,220);c.up.copy(v.up);c.position.copy(v.position);c.lookAt(v.aim);return c}const halfH=Math.max(v.height/2,v.width/aspect/2)*1.1;const c=new THREE.OrthographicCamera(-halfH*aspect,halfH*aspect,halfH,-halfH,.1,220);c.up.copy(v.up);c.position.copy(v.position);c.lookAt(v.aim);return c}
-function setCamera(which,{immediate=false}={}){selected=which;const oldControls=controls;const oldCamera=oldControls?.object||activeCamera;const fromPosition=oldCamera.position.clone();const fromTarget=oldControls?.target.clone()||target.clone();if(oldControls){autoRotate=oldControls.autoRotate;oldControls.dispose()}const next=fittedCamera(which);next.position.copy(fromPosition);next.lookAt(fromTarget);controls=new OrbitControls(next,canvas);controls.target.copy(fromTarget);controls.enableDamping=true;controls.dampingFactor=.07;controls.minDistance=12;controls.maxDistance=75;controls.minZoom=.48;controls.maxZoom=3.2;controls.autoRotate=false;controls.autoRotateSpeed=.38;controls.update();activeCamera=next;cameraTween=immediate?null:{start:performance.now(),duration:520,fromPosition,toPosition:cameraState[which].position.clone(),fromTarget,toTarget:cameraState[which].aim.clone()};if(immediate){next.position.copy(cameraState[which].position);controls.target.copy(cameraState[which].aim);controls.autoRotate=autoRotate;controls.update()}viewButtons.forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===which)))}
+// Blender Z-up (+Y Bow, -Y Stern, +Z Dorsal) -> glTF Y-up (-Z Bow, +Z Stern, +Y Dorsal)
+const cameraState={
+ hero:{type:'perspective',position:new THREE.Vector3(-21.8,4.2,-21.2),aim:new THREE.Vector3(0,0,1.0),up:new THREE.Vector3(0,1,0)},
+ top:{type:'ortho',position:new THREE.Vector3(0,42,0),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,0,1),width:15.5,height:24.5},
+ front:{type:'ortho',position:new THREE.Vector3(0,0,-38),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,1,0),width:15.5,height:17.2},
+ side:{type:'ortho',position:new THREE.Vector3(-38,0,0),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,1,0),width:24.5,height:17.2},
+ rear:{type:'perspective',position:new THREE.Vector3(20.2,7.2,23.8),aim:new THREE.Vector3(0,0,1.8),up:new THREE.Vector3(0,1,0)},
+ bottom:{type:'ortho',position:new THREE.Vector3(0,-42,0),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,0,1),width:15.5,height:24.5}
+};
+
+function fittedCamera(which){
+ const v=cameraState[which],aspect=innerWidth/innerHeight;
+ if(v.type==='perspective'){const c=new THREE.PerspectiveCamera(36,aspect,.12,260);c.up.copy(v.up);c.position.copy(v.position);c.lookAt(v.aim);return c}
+ const halfH=Math.max(v.height/2,v.width/aspect/2)*1.14;
+ const c=new THREE.OrthographicCamera(-halfH*aspect,halfH*aspect,halfH,-halfH,.1,260);
+ c.up.copy(v.up);c.position.copy(v.position);c.lookAt(v.aim);return c;
+}
+
+function setCamera(which,{immediate=false}={}){
+ selected=which;
+ const oldControls=controls;
+ const oldCamera=oldControls?.object||activeCamera;
+ const fromPosition=oldCamera.position.clone();
+ const fromTarget=oldControls?.target.clone()||target.clone();
+ if(oldControls){autoRotate=oldControls.autoRotate;oldControls.dispose()}
+ const next=fittedCamera(which);
+ next.position.copy(fromPosition);next.lookAt(fromTarget);
+ controls=new OrbitControls(next,canvas);
+ controls.target.copy(fromTarget);
+ controls.enableDamping=true;controls.dampingFactor=.07;
+ controls.minDistance=12;controls.maxDistance=88;
+ controls.minZoom=.48;controls.maxZoom=3.2;
+ controls.autoRotate=false;controls.autoRotateSpeed=.38;
+ controls.update();
+ activeCamera=next;
+ cameraTween=immediate?null:{start:performance.now(),duration:520,fromPosition,toPosition:cameraState[which].position.clone(),fromTarget,toTarget:cameraState[which].aim.clone()};
+ if(immediate){next.position.copy(cameraState[which].position);controls.target.copy(cameraState[which].aim);controls.autoRotate=autoRotate;controls.update()}
+ viewButtons.forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===which)));
+}
+
 let activeCamera=camera;
 viewButtons.forEach(b=>b.addEventListener('click',()=>setCamera(b.dataset.view)));
-const orbitButton=document.querySelector('#orbitToggle');orbitButton.addEventListener('click',()=>{autoRotate=!autoRotate;if(controls)controls.autoRotate=autoRotate;orbitButton.setAttribute('aria-pressed',String(autoRotate))});
+const orbitButton=document.querySelector('#orbitToggle');
+orbitButton.addEventListener('click',()=>{autoRotate=!autoRotate;if(controls)controls.autoRotate=autoRotate;orbitButton.setAttribute('aria-pressed',String(autoRotate))});
 document.querySelector('#resetView').addEventListener('click',()=>{autoRotate=false;orbitButton.setAttribute('aria-pressed','false');setCamera('hero')});
+
 const loader=new GLTFLoader();
-loader.load('./opencode_carrier.glb',gltf=>{ship=gltf.scene;scene.add(ship);ship.updateMatrixWorld(true);const bounds=new THREE.Box3().setFromObject(ship);const center=bounds.getCenter(new THREE.Vector3());target.copy(center);for(const v of Object.values(cameraState)){v.aim.add(center);v.position.add(center)}
- // The same imported mesh drives every orthographic framing; no per-view redraw or guessed geometry.
- const size=bounds.getSize(new THREE.Vector3());cameraState.top.width=Math.max(size.x*1.16,22);cameraState.top.height=Math.max(size.z*1.16,10);cameraState.side.width=Math.max(size.x*1.16,22);cameraState.side.height=Math.max(size.y*1.18,7);cameraState.front.width=Math.max(size.z*1.2,11);cameraState.front.height=Math.max(size.y*1.18,7);
- document.querySelector('#loading').classList.add('done');setCamera('hero',{immediate:true});
-},undefined,error=>{console.error(error);const box=document.querySelector('#error');document.querySelector('#loadLabel').style.display='none';box.style.display='block';box.textContent='模型载入失败。请用本地 HTTP 服务打开本页，并确认 opencode_carrier.glb 与 three-runtime.js 位于同一目录。'});
-const resize=()=>{renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);cameraTween=null;if(controls){const zoom=controls.object.zoom||1,position=controls.object.position.clone(),aim=controls.target.clone();const next=fittedCamera(selected);next.position.copy(position);next.lookAt(aim);next.zoom=zoom;next.updateProjectionMatrix();controls.dispose();controls=new OrbitControls(next,canvas);controls.target.copy(aim);controls.enableDamping=true;controls.dampingFactor=.07;controls.minDistance=12;controls.maxDistance=75;controls.minZoom=.48;controls.maxZoom=3.2;controls.autoRotate=autoRotate;controls.autoRotateSpeed=.38;activeCamera=next}else activeCamera.aspect=innerWidth/innerHeight;activeCamera.updateProjectionMatrix()};
+// 4-band Mecha Anime Cel-Shading gradient map + crisp ink edge lines for interactive comic rendering!
+const toonBytes=new Uint8Array([72,78,108,255, 138,150,184,255, 218,224,238,255, 255,255,255,255]);
+const toonGrad=new THREE.DataTexture(toonBytes,4,1,THREE.RGBAFormat);
+toonGrad.minFilter=THREE.NearestFilter;toonGrad.magFilter=THREE.NearestFilter;toonGrad.generateMipmaps=false;toonGrad.needsUpdate=true;
+const inkLineMat=new THREE.LineBasicMaterial({color:0x0a0d16,transparent:true,opacity:.88});
+
+loader.load('./opencode_carrier.glb',gltf=>{
+ ship=gltf.scene;
+ let meshCount=0;
+ const toAddLines=[];
+ ship.traverse(o=>{
+  if(!o.isMesh)return;
+  meshCount++;
+  const m=o.material;
+  const isFx=/Holo|VioletNeon|AmberWindow|ThrusterPlasma|MicroLight|CenterIon|SideViolet|SideFaceSlit/i.test(o.name);
+  if(m&&!isFx&&(!m.emissive||m.emissive.r+m.emissive.g+m.emissive.b<.08)){
+   const toonMat=new THREE.MeshToonMaterial({
+    color:m.color?m.color.clone():new THREE.Color(0xeef2f8),
+    map:m.map||null,
+    gradientMap:toonGrad,
+    transparent:Boolean(m.transparent),
+    opacity:m.opacity??1
+   });
+   o.material=toonMat;
+   toAddLines.push(o);
+  }
+ });
+ for(const o of toAddLines){
+  const edges=new THREE.EdgesGeometry(o.geometry,28);
+  const segs=new THREE.LineSegments(edges,inkLineMat);
+  o.add(segs);
+ }
+ document.querySelector('#partCount').textContent=`${meshCount} PARTS · COMIC`;
+ scene.add(ship);
+ ship.updateMatrixWorld(true);
+ const bounds=new THREE.Box3().setFromObject(ship);
+ const center=bounds.getCenter(new THREE.Vector3());
+ target.copy(center);
+ for(const v of Object.values(cameraState)){v.aim.add(center);v.position.add(center)}
+ const size=bounds.getSize(new THREE.Vector3());
+ cameraState.top.width=Math.max(size.x*1.20,15.5);cameraState.top.height=Math.max(size.z*1.12,24);
+ cameraState.bottom.width=Math.max(size.x*1.20,15.5);cameraState.bottom.height=Math.max(size.z*1.12,24);
+ cameraState.side.width=Math.max(size.z*1.14,24);cameraState.side.height=Math.max(size.y*1.18,16.5);
+ cameraState.front.width=Math.max(size.x*1.20,15.5);cameraState.front.height=Math.max(size.y*1.18,16.5);
+ document.querySelector('#loading').classList.add('done');
+ setCamera('hero',{immediate:true});
+},undefined,error=>{
+ console.error(error);
+ const box=document.querySelector('#error');
+ document.querySelector('#loadLabel').style.display='none';
+ box.style.display='block';
+ box.textContent='模型载入失败。请用本地 HTTP 服务打开本页，并确认 opencode_carrier.glb 与 three-runtime.js 位于同一目录。';
+});
+
+const resize=()=>{
+ renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));
+ renderer.setSize(innerWidth,innerHeight);
+ composer.setSize(innerWidth,innerHeight);
+ cameraTween=null;
+ if(controls){
+  const zoom=controls.object.zoom||1,position=controls.object.position.clone(),aim=controls.target.clone();
+  const next=fittedCamera(selected);next.position.copy(position);next.lookAt(aim);next.zoom=zoom;next.updateProjectionMatrix();
+  controls.dispose();controls=new OrbitControls(next,canvas);controls.target.copy(aim);
+  controls.enableDamping=true;controls.dampingFactor=.07;controls.minDistance=12;controls.maxDistance=88;controls.minZoom=.48;controls.maxZoom=3.2;
+  controls.autoRotate=autoRotate;controls.autoRotateSpeed=.38;activeCamera=next;
+ }else activeCamera.aspect=innerWidth/innerHeight;
+ activeCamera.updateProjectionMatrix();
+};
 addEventListener('resize',resize,{passive:true});
-const prefersReduced=matchMedia('(prefers-reduced-motion: reduce)');if(prefersReduced.matches){autoRotate=false;orbitButton.setAttribute('aria-pressed','false')}
-function render(){requestAnimationFrame(render);if(controls){if(cameraTween){const p=Math.min(1,(performance.now()-cameraTween.start)/cameraTween.duration),e=p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2;controls.object.position.lerpVectors(cameraTween.fromPosition,cameraTween.toPosition,e);controls.target.lerpVectors(cameraTween.fromTarget,cameraTween.toTarget,e);if(p===1){cameraTween=null;controls.autoRotate=autoRotate}}controls.update()}renderPass.camera=activeCamera;const t=performance.now()*.001;violetLight.intensity=16+2*Math.sin(t*1.35);composer.render()}render();
+const prefersReduced=matchMedia('(prefers-reduced-motion: reduce)');
+if(prefersReduced.matches){autoRotate=false;orbitButton.setAttribute('aria-pressed','false')}
+
+function render(){
+ requestAnimationFrame(render);
+ if(controls){
+  if(cameraTween){
+   const p=Math.min(1,(performance.now()-cameraTween.start)/cameraTween.duration);
+   const e=p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2;
+   controls.object.position.lerpVectors(cameraTween.fromPosition,cameraTween.toPosition,e);
+   controls.target.lerpVectors(cameraTween.fromTarget,cameraTween.toTarget,e);
+   if(p===1){cameraTween=null;controls.autoRotate=autoRotate}
+  }
+  controls.update();
+ }
+ renderPass.camera=activeCamera;
+ const t=performance.now()*.001;
+ driveLight.intensity=24+4.0*Math.sin(t*2.2);
+ portalLight.intensity=10+1.6*Math.sin(t*1.6+1.1);
+ composer.render();
+}
+render();
 </script>
 </body>
 </html>

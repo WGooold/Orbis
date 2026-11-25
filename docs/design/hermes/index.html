@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#08080a">
+<title>Hermes · Swept-Wing Orbital Interceptor 3D</title>
+<style>
+:root{color-scheme:dark;--paper:#f6f1e6;--mute:#989184;--line:rgba(214,174,104,.24);--gold:#d9b066;--ivory:#eee6d4;--amber:#f3a342;--glass:rgba(12,12,15,.80)}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#08080a;color:var(--paper);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{background:radial-gradient(ellipse at 52% 40%,#1b1916 0,#0d0d10 48%,#050507 100%)}
+#stage{position:absolute;inset:0;width:100%;height:100%;outline:none}
+.grain{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:.14;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.91' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath filter='url(%23n)' opacity='.2' d='M0 0h180v180H0z'/%3E%3C/svg%3E");mix-blend-mode:screen}
+.hud{position:absolute;z-index:2;inset:0;pointer-events:none;padding:clamp(18px,3.5vw,46px);display:flex;flex-direction:column;justify-content:space-between}
+.top,.bottom{display:flex;justify-content:space-between;align-items:flex-start;gap:24px}
+.brand{display:flex;gap:14px;align-items:flex-start}
+.sigil{position:relative;width:30px;height:30px;border:1px solid rgba(217,176,102,.52);border-radius:50%;flex:none;margin-top:2px;box-shadow:0 0 18px rgba(217,176,102,.28);display:grid;place-items:center}
+.sigil svg{width:15px;height:15px;fill:none;stroke:var(--gold);stroke-width:1.6}
+.eyebrow{margin:0 0 6px;color:var(--gold);font-size:9px;font-weight:550;letter-spacing:.24em}
+.title{margin:0;color:#faf5ea;font-size:clamp(14px,1.3vw,18px);font-weight:520;letter-spacing:.04em}
+.subtitle{margin:7px 0 0;color:#999080;font-size:9px;letter-spacing:.13em}
+.header-actions{display:flex;gap:8px;pointer-events:auto}
+.button{height:35px;padding:0 13px;display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:2px;color:#ead9b8;background:rgba(16,15,13,.68);font:500 10px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.07em;cursor:pointer;transition:all .2s;backdrop-filter:blur(15px)}
+.button:hover,.button:focus-visible,.button[aria-pressed="true"]{color:#fff9ec;border-color:rgba(217,176,102,.70);background:rgba(130,96,38,.36);outline:none}
+.button svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.4}
+.bottom{align-items:flex-end}
+.note{margin:0 0 1px;color:#9b9384;font-size:9px;letter-spacing:.14em}
+.note .dot{color:var(--gold);padding:0 7px}
+.meta{text-align:right;color:#8e877a;font:9px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.09em}
+.meta strong{color:#f4e3be;font-weight:500}
+.meta .rule{display:inline-block;width:30px;height:1px;margin:0 8px;vertical-align:middle;background:linear-gradient(90deg,transparent,var(--gold))}
+.view-dock{position:absolute;left:50%;bottom:clamp(48px,8vh,82px);z-index:3;transform:translateX(-50%);display:flex;align-items:center;gap:4px;padding:5px;border:1px solid rgba(217,176,102,.24);background:rgba(13,13,15,.84);backdrop-filter:blur(18px);pointer-events:auto}
+.view{min-width:68px;height:30px;padding:0 11px;border:1px solid transparent;border-radius:1px;background:transparent;color:#9d9586;font:500 9px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.08em;cursor:pointer;transition:all .18s}
+.view:hover{color:#fbf6ea}
+.view[aria-pressed="true"]{border-color:rgba(217,176,102,.54);color:#f6e6c2;background:rgba(130,96,38,.28)}
+#loading{position:absolute;z-index:5;inset:0;display:grid;place-items:center;background:#08080a;color:#ebd8b2;font:9px ui-monospace,monospace;letter-spacing:.2em;transition:opacity .45s}
+#loading.done{opacity:0;pointer-events:none}
+.load-inner{text-align:center}
+.loading-line{width:142px;height:1px;margin:13px auto 0;background:linear-gradient(90deg,transparent,var(--gold),transparent);animation:scan 1.5s ease-in-out infinite}
+@keyframes scan{0%,100%{opacity:.24;transform:scaleX(.45)}50%{opacity:1;transform:scaleX(1)}}
+#error{display:none;max-width:420px;padding:18px;border:1px solid rgba(217,176,102,.34);background:#15130f;color:#f3e2bf;line-height:1.6;letter-spacing:.03em}
+@media(max-width:660px){.hud{padding:18px}.sigil{width:25px;height:25px}.brand{gap:10px}.eyebrow{font-size:8px}.title{font-size:13px}.subtitle{font-size:8px}.button{height:32px;padding:0 9px;font-size:9px}.header-actions{gap:5px}.view-dock{bottom:68px;max-width:calc(100% - 28px);width:max-content}.view{min-width:0;padding:0 10px;font-size:8px}.bottom{gap:8px}.note,.meta{font-size:7px}.meta .rule{width:16px;margin:0 4px}}
+@media(max-width:380px){.button span{display:none}.button{width:33px;justify-content:center;padding:0}.view{padding:0 8px}.subtitle{letter-spacing:.08em}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Hermes 前掠弯翼拦截舰可交互三维模型"></canvas><div class="grain"></div>
+<div id="loading"><div class="load-inner" id="loadLabel">载入前掠翼舰体与黑金陶装<div class="loading-line"></div></div><div id="error"></div></div>
+<div class="hud">
+ <header class="top">
+  <div class="brand">
+   <span class="sigil" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18L9 4l3 4 3-4 5 14-8-3-8 3Z"/></svg></span>
+   <div>
+    <p class="eyebrow">ORBITAL PORT <span style="opacity:.5">/</span> VESSEL 08</p>
+    <h1 class="title">Hermes 前掠弯翼拦截舰</h1>
+    <p class="subtitle">COMIC CEL-SHADED HULL <span style="opacity:.4">·</span> HERMETIC WING INSCRIPTIONS <span style="opacity:.4">·</span> QUAD VECTOR DRIVES</p>
+   </div>
+  </div>
+  <div class="header-actions">
+   <button class="button" id="orbitToggle" type="button" aria-pressed="false" title="自动环绕"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-3L4 10"/><path d="M4 5v5h5M4 13a8 8 0 0 0 14.7 3L20 14"/><path d="M20 19v-5h-5"/></svg><span>自动环绕</span></button>
+   <button class="button" id="resetView" type="button" title="重置视角"><svg viewBox="0 0 24 24"><path d="M12 21s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12Z"/><circle cx="12" cy="9" r="2.1"/></svg><span>重置</span></button>
+  </div>
+ </header>
+ <footer class="bottom">
+  <p class="note">拖动旋转 <span class="dot">·</span> 滚轮缩放 <span class="dot">·</span> 选择视图</p>
+  <div class="meta">
+   <div><strong>HERMES SWEPT-WING</strong><span class="rule"></span><span id="partCount">310 PARTS · COMIC</span></div>
+   <div>LIGNE-CLAIRE CEL <span style="color:#d9b066">·</span> HERMETIC WING INSCRIPTIONS <span style="color:#d9b066">·</span> QUAD THRUSTERS</div>
+  </div>
+ </footer>
+</div>
+<nav class="view-dock" aria-label="模型视角">
+ <button class="view" data-view="hero" aria-pressed="true">透视</button>
+ <button class="view" data-view="top" aria-pressed="false">俯视</button>
+ <button class="view" data-view="front" aria-pressed="false">正视</button>
+ <button class="view" data-view="side" aria-pressed="false">侧视</button>
+ <button class="view" data-view="rear" aria-pressed="false">尾部</button>
+ <button class="view" data-view="bottom" aria-pressed="false">底部</button>
+</nav>
+<script type="module">
+import * as THREE from './three-runtime.js';
+import {OrbitControls,GLTFLoader,EffectComposer,RenderPass,UnrealBloomPass,OutputPass,RoomEnvironment} from './three-runtime.js';
+
+const canvas=document.querySelector('#stage');
+const scene=new THREE.Scene();
+scene.background=new THREE.Color('#08080a');
+scene.fog=new THREE.FogExp2('#08080a',.0018);
+const camera=new THREE.PerspectiveCamera(38,innerWidth/innerHeight,.12,240);
+camera.position.set(-17.5,12.8,-19.2);
+const target=new THREE.Vector3(0,-.1,.4);
+
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));
+renderer.setSize(innerWidth,innerHeight);
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.04;
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+
+const pmrem=new THREE.PMREMGenerator(renderer);
+scene.environment=pmrem.fromScene(new RoomEnvironment(renderer),.04).texture;
+pmrem.dispose();
+
+const key=new THREE.DirectionalLight(0xfff8ec,2.15);key.position.set(-18,26,-16);scene.add(key);
+const rim=new THREE.DirectionalLight(0xd8e8ff,1.25);rim.position.set(24,12,10);scene.add(rim);
+const fill=new THREE.HemisphereLight(0xf2eee4,0x11131a,.72);scene.add(fill);
+const goldLight=new THREE.PointLight(0xffa438,14,28,2);goldLight.position.set(0,0,10.5);scene.add(goldLight);
+const underBounce=new THREE.PointLight(0x96b8de,8.0,38,2);underBounce.position.set(-4,-16,0);scene.add(underBounce);
+
+const composer=new EffectComposer(renderer);
+const renderPass=new RenderPass(scene,camera);
+composer.addPass(renderPass);
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),.22,.44,.84));
+composer.addPass(new OutputPass());
+
+const stars=new Float32Array(1200*3);
+let seed=2026;
+function rnd(){seed=(seed*16807)%2147483647;return seed/2147483647}
+for(let i=0;i<1200;i++){const r=46+rnd()*110,t=rnd()*Math.PI*2,p=Math.acos(rnd()*2-1);stars[i*3]=r*Math.sin(p)*Math.cos(t);stars[i*3+1]=r*Math.cos(p);stars[i*3+2]=r*Math.sin(p)*Math.sin(t)}
+const starGeo=new THREE.BufferGeometry();
+starGeo.setAttribute('position',new THREE.BufferAttribute(stars,3));
+scene.add(new THREE.Points(starGeo,new THREE.PointsMaterial({color:0xf3ead8,size:.13,sizeAttenuation:true,transparent:true,opacity:.68,depthWrite:false,fog:false})));
+
+let ship=null,controls=null,selected='hero',autoRotate=false,cameraTween=null;
+const viewButtons=[...document.querySelectorAll('.view')];
+// Blender Z-up (+Y Bow, -Y Stern, +Z Dorsal) -> glTF Y-up (-Z Bow, +Z Stern, +Y Dorsal)
+const cameraState={
+ hero:{type:'perspective',position:new THREE.Vector3(-17.5,12.8,-19.2),aim:new THREE.Vector3(0,-.1,.4),up:new THREE.Vector3(0,1,0)},
+ top:{type:'ortho',position:new THREE.Vector3(0,36,0),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,0,1),width:24.0,height:22.5},
+ front:{type:'ortho',position:new THREE.Vector3(0,0,-32),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,1,0),width:24.0,height:8.5},
+ side:{type:'ortho',position:new THREE.Vector3(32,0,0),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,1,0),width:22.5,height:8.5},
+ rear:{type:'perspective',position:new THREE.Vector3(16.8,8.6,19.8),aim:new THREE.Vector3(0,-.1,1.2),up:new THREE.Vector3(0,1,0)},
+ bottom:{type:'ortho',position:new THREE.Vector3(0,-36,0),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,0,1),width:24.0,height:22.5}
+};
+
+function fittedCamera(which){
+ const v=cameraState[which],aspect=innerWidth/innerHeight;
+ if(v.type==='perspective'){const c=new THREE.PerspectiveCamera(38,aspect,.12,240);c.up.copy(v.up);c.position.copy(v.position);c.lookAt(v.aim);return c}
+ const halfH=Math.max(v.height/2,v.width/aspect/2)*1.12;
+ const c=new THREE.OrthographicCamera(-halfH*aspect,halfH*aspect,halfH,-halfH,.1,240);
+ c.up.copy(v.up);c.position.copy(v.position);c.lookAt(v.aim);return c;
+}
+
+function setCamera(which,{immediate=false}={}){
+ selected=which;
+ const oldControls=controls;
+ const oldCamera=oldControls?.object||activeCamera;
+ const fromPosition=oldCamera.position.clone();
+ const fromTarget=oldControls?.target.clone()||target.clone();
+ if(oldControls){autoRotate=oldControls.autoRotate;oldControls.dispose()}
+ const next=fittedCamera(which);
+ next.position.copy(fromPosition);next.lookAt(fromTarget);
+ controls=new OrbitControls(next,canvas);
+ controls.target.copy(fromTarget);
+ controls.enableDamping=true;controls.dampingFactor=.07;
+ controls.minDistance=10;controls.maxDistance=76;
+ controls.minZoom=.48;controls.maxZoom=3.2;
+ controls.autoRotate=false;controls.autoRotateSpeed=.38;
+ controls.update();
+ activeCamera=next;
+ cameraTween=immediate?null:{start:performance.now(),duration:520,fromPosition,toPosition:cameraState[which].position.clone(),fromTarget,toTarget:cameraState[which].aim.clone()};
+ if(immediate){next.position.copy(cameraState[which].position);controls.target.copy(cameraState[which].aim);controls.autoRotate=autoRotate;controls.update()}
+ viewButtons.forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===which)));
+}
+
+let activeCamera=camera;
+viewButtons.forEach(b=>b.addEventListener('click',()=>setCamera(b.dataset.view)));
+const orbitButton=document.querySelector('#orbitToggle');
+orbitButton.addEventListener('click',()=>{autoRotate=!autoRotate;if(controls)controls.autoRotate=autoRotate;orbitButton.setAttribute('aria-pressed',String(autoRotate))});
+document.querySelector('#resetView').addEventListener('click',()=>{autoRotate=false;orbitButton.setAttribute('aria-pressed','false');setCamera('hero')});
+
+const loader=new GLTFLoader();
+// 4-band Ligne-Claire Comic Cel-Shading gradient + ultra-clean restrained ink edge lines
+const toonBytes=new Uint8Array([92,94,104,255, 158,160,170,255, 224,224,226,255, 255,255,255,255]);
+const toonGrad=new THREE.DataTexture(toonBytes,4,1,THREE.RGBAFormat);
+toonGrad.minFilter=THREE.NearestFilter;toonGrad.magFilter=THREE.NearestFilter;toonGrad.generateMipmaps=false;toonGrad.needsUpdate=true;
+const inkLineMat=new THREE.LineBasicMaterial({color:0x141218,transparent:true,opacity:.48});
+const skipLineRe=/VentLouver|VentTurbo|VentCavityFloor|InnerWallLouver|InnerWallIntakeThroat|AftBayRib|AftBayBulkhead|InternalStructuralCore|SternVane|SternExhaustThroat|SternEmberCore|SternTopGoldLip|WaistTrenchCore|WaistGlowStrip|ShoulderGoldBevel|UpperRib|ManifoldFin|NozzlePetal|ClampRing|FuelConduit|NozzleThroat|NozzleEmber|BowSensorAperture/i;
+
+function toToonMat(m){
+ if(!m)return m;
+ const hasStrongGlow=m.emissive&&!m.emissiveMap&&(m.emissive.r+m.emissive.g+m.emissive.b>.25);
+ if(hasStrongGlow)return m;
+ const tm=new THREE.MeshToonMaterial({
+  color:m.color?m.color.clone():new THREE.Color(0xeae6dc),
+  map:m.map||null,
+  emissive:m.emissive?m.emissive.clone():new THREE.Color(0x000000),
+  emissiveMap:m.emissiveMap||null,
+  emissiveIntensity:m.emissiveMap?(m.emissiveIntensity??.55):0,
+  gradientMap:toonGrad,
+  transparent:Boolean(m.transparent),
+  opacity:m.opacity??1
+ });
+ return tm;
+}
+
+loader.load('./hermes_swept_wing.glb',gltf=>{
+ ship=gltf.scene;
+ let meshCount=0;
+ const toAddLines=[];
+ ship.traverse(o=>{
+  if(!o.isMesh)return;
+  meshCount++;
+  o.material=Array.isArray(o.material)?o.material.map(toToonMat):toToonMat(o.material);
+  if(!skipLineRe.test(o.name))toAddLines.push(o);
+ });
+ for(const o of toAddLines){
+  const edges=new THREE.EdgesGeometry(o.geometry,42);
+  o.add(new THREE.LineSegments(edges,inkLineMat));
+ }
+ document.querySelector('#partCount').textContent=`${meshCount} PARTS · COMIC`;
+ scene.add(ship);
+ ship.updateMatrixWorld(true);
+ const bounds=new THREE.Box3().setFromObject(ship);
+ const center=bounds.getCenter(new THREE.Vector3());
+ target.copy(center);
+ for(const v of Object.values(cameraState)){v.aim.add(center);v.position.add(center)}
+ const size=bounds.getSize(new THREE.Vector3());
+ cameraState.top.width=Math.max(size.x*1.16,24);cameraState.top.height=Math.max(size.z*1.14,22);
+ cameraState.bottom.width=Math.max(size.x*1.16,24);cameraState.bottom.height=Math.max(size.z*1.14,22);
+ cameraState.side.width=Math.max(size.z*1.14,22);cameraState.side.height=Math.max(size.y*1.6,7.5);
+ cameraState.front.width=Math.max(size.x*1.16,24);cameraState.front.height=Math.max(size.y*1.6,7.5);
+ document.querySelector('#loading').classList.add('done');
+ setCamera('hero',{immediate:true});
+},undefined,error=>{
+ console.error(error);
+ const box=document.querySelector('#error');
+ document.querySelector('#loadLabel').style.display='none';
+ box.style.display='block';
+ box.textContent='模型载入失败。请用本地 HTTP 服务打开本页，并确认 hermes_swept_wing.glb 与 three-runtime.js 位于同一目录。';
+});
+
+const resize=()=>{
+ renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));
+ renderer.setSize(innerWidth,innerHeight);
+ composer.setSize(innerWidth,innerHeight);
+ cameraTween=null;
+ if(controls){
+  const zoom=controls.object.zoom||1,position=controls.object.position.clone(),aim=controls.target.clone();
+  const next=fittedCamera(selected);next.position.copy(position);next.lookAt(aim);next.zoom=zoom;next.updateProjectionMatrix();
+  controls.dispose();controls=new OrbitControls(next,canvas);controls.target.copy(aim);
+  controls.enableDamping=true;controls.dampingFactor=.07;controls.minDistance=10;controls.maxDistance=76;controls.minZoom=.48;controls.maxZoom=3.2;
+  controls.autoRotate=autoRotate;controls.autoRotateSpeed=.38;activeCamera=next;
+ }else activeCamera.aspect=innerWidth/innerHeight;
+ activeCamera.updateProjectionMatrix();
+};
+addEventListener('resize',resize,{passive:true});
+const prefersReduced=matchMedia('(prefers-reduced-motion: reduce)');
+if(prefersReduced.matches){autoRotate=false;orbitButton.setAttribute('aria-pressed','false')}
+
+function render(){
+ requestAnimationFrame(render);
+ if(controls){
+  if(cameraTween){
+   const p=Math.min(1,(performance.now()-cameraTween.start)/cameraTween.duration);
+   const e=p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2;
+   controls.object.position.lerpVectors(cameraTween.fromPosition,cameraTween.toPosition,e);
+   controls.target.lerpVectors(cameraTween.fromTarget,cameraTween.toTarget,e);
+   if(p===1){cameraTween=null;controls.autoRotate=autoRotate}
+  }
+  controls.update();
+ }
+ renderPass.camera=activeCamera;
+ const t=performance.now()*.001;
+ goldLight.intensity=14+2.2*Math.sin(t*2.1);
+ composer.render();
+}
+render();
+</script>
+</body>
+</html>
