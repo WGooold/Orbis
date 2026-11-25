@@ -98,6 +98,7 @@ struct ChatLaunchNoticeRegion: View, Equatable {
     private var ownsViewport: Bool { model.ownsMount(target: actions.target, token: mountToken) }
     let onBack: () -> Void
     let onReturnToNewSession: () -> Void
+    @Environment(\.colorScheme) private var scheme
     @State private var confirmingEnd = false
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.mountToken == rhs.mountToken

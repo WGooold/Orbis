@@ -771,6 +771,7 @@ struct LaunchLedgerTests {
         #expect(fixture.transport.userMessages.count == 1)
         #expect(fixture.transport.userMessages.first?["runtimeId"] as? String == "agy:session")
         #expect(fixture.host.selectedRuntimeId == "agy:session")
+    }
 
     @Test func configuredLaunchReopensWithTheOriginalIdentityAndDoesNotResendTheFirstSentence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-configured-recovery-" + UUID().uuidString)

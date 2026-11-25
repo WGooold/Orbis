@@ -96,6 +96,7 @@
 		A00100010000000000000022 /* SessionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000022 /* SessionViews.swift */; };
 		A00100010000000000000023 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000023 /* ChatView.swift */; };
 		A00100010000000000000024 /* StatusViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000024 /* StatusViews.swift */; };
+		E11000010000000000000001 /* RelayTelemetryConsent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E11000010000000000000002 /* RelayTelemetryConsent.swift */; };
 		A00100010000000000000025 /* HistoryBranchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000025 /* HistoryBranchView.swift */; };
 		A00100010000000000000026 /* PreviewSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000026 /* PreviewSupport.swift */; };
 		A00100010000000000000027 /* InteractionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000027 /* InteractionView.swift */; };
@@ -213,6 +214,7 @@
 		A00110010000000000000022 /* SessionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionViews.swift; sourceTree = "<group>"; };
 		A00110010000000000000023 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		A00110010000000000000024 /* StatusViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusViews.swift; sourceTree = "<group>"; };
+		E11000010000000000000002 /* RelayTelemetryConsent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayTelemetryConsent.swift; sourceTree = "<group>"; };
 		A00110010000000000000025 /* HistoryBranchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryBranchView.swift; sourceTree = "<group>"; };
 		A00110010000000000000026 /* PreviewSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSupport.swift; sourceTree = "<group>"; };
 		A00110010000000000000027 /* InteractionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionView.swift; sourceTree = "<group>"; };
@@ -345,6 +347,7 @@
 				A00110010000000000000026 /* PreviewSupport.swift */,
 				A00110010000000000000025 /* HistoryBranchView.swift */,
 				A00110010000000000000024 /* StatusViews.swift */,
+				E11000010000000000000002 /* RelayTelemetryConsent.swift */,
 				A00110010000000000000023 /* ChatView.swift */,
 				A00110010000000000000022 /* SessionViews.swift */,
 				A00110010000000000000021 /* Presentation.swift */,
@@ -596,6 +599,7 @@
 				A00100010000000000000026 /* PreviewSupport.swift in Sources */,
 				A00100010000000000000025 /* HistoryBranchView.swift in Sources */,
 				A00100010000000000000024 /* StatusViews.swift in Sources */,
+				E11000010000000000000001 /* RelayTelemetryConsent.swift in Sources */,
 				A00100010000000000000023 /* ChatView.swift in Sources */,
 				A00100010000000000000022 /* SessionViews.swift in Sources */,
 				A00100010000000000000021 /* Presentation.swift in Sources */,
