@@ -37,6 +37,13 @@ export function openClawUrl(value: string): string {
   return url.origin;
 }
 
+/** Local sessions may use a project outside the Gateway's configured workspace. */
+export function openClawRequestedScopes(url: string): string[] | undefined {
+  // Only explicit loopback ws endpoints are local. The pinned SDK defaults to
+  // operator.admin, but reuses the granted scopes when using a saved device token.
+  return openClawUrl(url).startsWith("ws://") ? undefined : [...SCOPES];
+}
+
 export async function loadOpenClawConfig(stateDir: string, env: NodeJS.ProcessEnv = process.env): Promise<OpenClawConfig | undefined> {
   if (env.ORBIS_OPENCLAW_URL === "") return undefined;
   // An environment-selected endpoint must never inherit a file's token for a different Gateway.
@@ -153,6 +160,7 @@ export class OpenClawGateway {
 
   private constructor(config: OpenClawConfig, identity: DeviceIdentity, tokenFile: string, events: OpenClawGatewayEvents) {
     this.url = config.url;
+    const requestedScopes = openClawRequestedScopes(config.url);
     let tokenWrites: Promise<void> = Promise.resolve();
     const stored = async (): Promise<DeviceAuthTokenRecord | null> => {
       const text = await readPrivate(tokenFile);
@@ -174,7 +182,7 @@ export class OpenClawGateway {
       const current = () => !this.#stopped && generation === this.#connectionGeneration;
       return new GatewayClient({ url: config.url, ...(config.token ? { token: config.token } : {}),
         clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT, clientDisplayName: "Orbis Host", mode: GATEWAY_CLIENT_MODES.BACKEND,
-        role: "operator", scopes: SCOPES, deviceIdentity: identity, requestTimeoutMs: 10_000,
+        role: "operator", ...(requestedScopes ? { scopes: requestedScopes } : {}), deviceIdentity: identity, requestTimeoutMs: 10_000,
         minProtocol: PROTOCOL_VERSION, maxProtocol: PROTOCOL_VERSION,
         hostDeps: {
           publicKeyRawBase64UrlFromPem: pem => rawKey(createPublicKey(pem)).toString("base64url"),
@@ -187,7 +195,10 @@ export class OpenClawGateway {
         },
         onHelloOk: hello => {
           if (!current()) return;
-          if (hello.protocol !== PROTOCOL_VERSION || hello.auth.role !== "operator" || !SCOPES.every(scope => hello.auth.scopes.includes(scope)) ||
+          const granted = hello.auth.scopes;
+          const sessionAccess = SCOPES.every(scope => granted.includes(scope)) ||
+            (requestedScopes === undefined && granted.includes("operator.admin"));
+          if (hello.protocol !== PROTOCOL_VERSION || hello.auth.role !== "operator" || !sessionAccess ||
               !METHODS.every(method => hello.features.methods.includes(method))) {
             events.log?.("OpenClaw Gateway did not grant the required operator scopes or chat methods");
             this.#client.stop(); return;

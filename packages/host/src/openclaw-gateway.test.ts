@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { afterEach, expect, test, vi } from "vitest";
 import { buildDeviceAuthPayloadV3 } from "@openclaw/gateway-client";
-import { loadOpenClawConfig, OpenClawGateway, openClawUrl, readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
+import { loadOpenClawConfig, OpenClawGateway, openClawRequestedScopes, openClawUrl, readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -58,6 +58,15 @@ test("desktop saves the private config, retains the token only on the same endpo
   expect(await loadOpenClawConfig(dir, {})).toBeUndefined();
 });
 
+// OPENCLAW-LOCAL-ADMIN-01: do not extend the local default to TLS/remote connections.
+test("only explicit loopback ws endpoints use the SDK's default operator scopes", () => {
+  expect(openClawRequestedScopes("ws://127.0.0.1:18789")).toBeUndefined();
+  expect(openClawRequestedScopes("ws://[::1]:18789")).toBeUndefined();
+  expect(openClawRequestedScopes("wss://gateway.example.net")).toEqual(["operator.read", "operator.write"]);
+  expect(openClawRequestedScopes("wss://127.0.0.1:18789")).toEqual(["operator.read", "operator.write"]);
+  expect(() => openClawRequestedScopes("ws://gateway.example.net")).toThrow(/wss/);
+});
+
 // Exercise the published SDK against real WebSocket frames, not a mocked SDK method.
 test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its device proof and token", async () => {
   const dir = await stateDir();
@@ -70,7 +79,8 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
   const address = server.address(); if (typeof address !== "object" || !address) throw new Error("missing address");
   const url = `ws://127.0.0.1:${address.port}`;
   const connects: Array<{ deviceId: string; token: string; valid: boolean }> = [];
-  let scopes = ["operator.read", "operator.write"];
+  const requestedScopes: string[][] = [];
+  let scopes = ["operator.admin"];
   let needsPairing = false;
   server.on("connection", socket => {
     const nonce = `nonce-${connects.length}`;
@@ -83,6 +93,7 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
         return;
       }
       const { device, client, role, auth } = frame.params;
+      requestedScopes.push(frame.params.scopes);
       const raw = Buffer.from(device.publicKey, "base64url");
       const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: device.publicKey }, format: "jwk" });
       const signed = buildDeviceAuthPayloadV3({ deviceId: device.id, clientId: client.id, clientMode: client.mode, role,
@@ -117,6 +128,8 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
   await vi.waitFor(() => expect(second.ready).toBe(true));
   expect(connects).toEqual([{ deviceId: connects[0]?.deviceId, token: "bootstrap-token", valid: true },
     { deviceId: connects[0]?.deviceId, token: "paired-token", valid: true }]);
+  // OPENCLAW-LOCAL-ADMIN-01: fresh shared-token auth and reconnect both send the authorized scope.
+  expect(requestedScopes).toEqual([["operator.admin"], ["operator.admin"]]);
   await second.stop();
   // HOST-AGENT-START-01: after native approval, retry only the transport and keep the same Orbis identity.
   needsPairing = true;
@@ -133,4 +146,13 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
   await vi.waitFor(() => expect(events.log).toHaveBeenCalledWith(expect.stringContaining("required operator scopes")));
   expect(third.ready).toBe(false);
   await expect(third.request("chat.send", {})).rejects.toThrow(/offline/);
+  await third.stop();
+  // A token from an older read/write pairing can still connect without a scope upgrade.
+  scopes = ["operator.read", "operator.write"];
+  const tokenFile = join(dir, "openclaw", createHash("sha256").update(url).digest("hex"), `${connects[0]?.deviceId}.json`);
+  await writeFile(tokenFile, JSON.stringify({ token: "paired-token", scopes }), { mode: 0o600 });
+  const existing = await start();
+  await vi.waitFor(() => expect(existing.ready).toBe(true));
+  expect(connects.at(-1)?.token).toBe("paired-token");
+  expect(requestedScopes.at(-1)).toEqual(scopes);
 });

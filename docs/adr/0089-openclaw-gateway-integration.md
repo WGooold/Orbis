@@ -9,7 +9,7 @@
 
 Host 是 OpenClaw Gateway 的独立 operator 客户端，不读写 OpenClaw 的配置、会话库或其他客户端的身份，不停止已有 Gateway。App 和 Relay 不直连 Gateway，也不接收 Gateway 凭据。使用 [官方 SDK](https://github.com/openclaw/openclaw/tree/v2026.11.5/packages/gateway-client) 与协议包 `2026.11.5`，按 Gateway 的 operator wire `4` 握手并检查必要 RPC。此版本与 Orbis 业务协议独立；不尝试降级，CLI 只用于 HOST-AGENT-START-01 的本机冷启动，不替代 RPC。
 
-本机地址允许 `ws://127.0.0.1`／`ws://[::1]`；非本机 Gateway 仅允许显式配置的根地址 `wss://`，拒绝远程明文 `ws://`。稳定 Ed25519 设备身份和 Gateway 签发的配对 token 按规范化端点分开保存到 Host 的状态目录，不复用手机配对密钥。使用 Gateway 的共享认证 token，必要时由用户在 Gateway 批准请求。共享 token 握手不保证签发设备 token；只有 Gateway 实际签发且后续独立认证成功，才能去掉共享 token。只申请 `operator.read`／`operator.write`；不请求 admin、approvals、questions 或 pairing。真实 Gateway 上，只有 `operator.sessions.read/write` 的普通 operator 握手可成功，但会话 RPC 因没有已验证用户资料被拒；不因此提升至 admin。
+本机地址允许 `ws://127.0.0.1`／`ws://[::1]`；非本机 Gateway 仅允许显式配置的根地址 `wss://`，拒绝远程明文 `ws://`。稳定 Ed25519 设备身份和 Gateway 签发的配对 token 按规范化端点分开保存到 Host 的状态目录，不复用手机配对密钥。使用 Gateway 的共享认证 token，必要时由用户在 Gateway 批准请求。共享 token 握手不保证签发设备 token；只有 Gateway 实际签发且后续独立认证成功，才能去掉共享 token。远程和 TLS 端点只申请 `operator.read`／`operator.write`；本机回环见 OPENCLAW-LOCAL-ADMIN-01。不单独申请 approvals、questions 或 pairing。真实 Gateway 上，只有 `operator.sessions.read/write` 的普通 operator 握手可成功，但会话 RPC 因没有已验证用户资料被拒；不因此提升至 admin。
 
 实现：[`openclaw-gateway.ts`](../../packages/host/src/openclaw-gateway.ts)。验证：[`openclaw-gateway.test.ts`](../../packages/host/src/openclaw-gateway.test.ts)（签名、配对 token、拒绝缺 scope／不安全地址）；隔离 Gateway `2026.11.5` 的证据在 `.artifacts/openclaw-20261119/gateway-sdk-smoke.log`。
 
@@ -56,3 +56,9 @@ Agent 卡以“本机／远程”切换连接方式，不再由所填地址推�
 已明确配置 `ws://127.0.0.1:<端口>` 时，可在 Host 点击「启动」，或由已协商的手机选中新建或恢复同源会话触发。先连接原端点，只有回环端口确认未监听才用兼容 CLI 在该端口启动本机 Gateway；不使用 `--force`、不覆盖原生认证、不开放局域网或公网。已有 Gateway 继续按原配置接入，远程 WSS、TLS 代理和其他端点仍只连接。首次需要原生设备批准时保留新 Gateway，不宣告会话已可用，不自动批准或扩大权限。Host 暂停只关闭自身连接；失败时只清理尚未交付的自产子进程。
 
 实现见 [`openclaw-local-launch.ts`](../../packages/host/src/openclaw-local-launch.ts)、[`openclaw-gateway.ts`](../../packages/host/src/openclaw-gateway.ts)；隔离官方 Gateway、占用端口／批准、加密请求和 Qt 验证见 [证据索引](../../.artifacts/agent-demand-launch-20261124/verification.json)。未发布，未安装至用户设备。
+
+## OPENCLAW-LOCAL-ADMIN-01｜本机 Gateway 工作目录
+
+本机 `ws://127.0.0.1`／`ws://[::1]` 通过合法共享令牌连接时使用 OpenClaw SDK 默认的 `operator.admin`，允许在显式选择的工作目录新建会话。旧设备令牌按已有授权连接，原生批准规则不变。远程 `wss://` 仍只申请读写权限；不改 Gateway 认证配置。
+
+实现见 [`openclaw-gateway.ts`](../../packages/host/src/openclaw-gateway.ts)；验证见 [`openclaw-gateway.test.ts`](../../packages/host/src/openclaw-gateway.test.ts) 和 [隔离验证记录](../../.artifacts/openclaw-local-admin-20261125/verification.json)。私发 macOS arm64 候选包，未公开发布；安装验收待用户验证。
