@@ -3750,6 +3750,54 @@ final class OrbisUITests: XCTestCase {
         capture("viewport-following", app: app)
     }
 
+    // CHAT-PAGING-08: a label change must resize the rendered pill over multiple
+    // frames; movement within the same pull phase must not resize the pill.
+    func testHistoryStatusMorphsOnlyAtPhaseChanges() throws {
+        for reduced in [false, true] {
+            let app = launch("history-status-motion", arguments: reduced ? ["--preview-reduce-motion"] : [])
+            defer { app.terminate() }
+            let advance = app.buttons["history-motion-advance"]
+            let report = app.staticTexts["history-motion-frames"]
+            let pull = app.descendants(matching: .any)["chat-history-pull"].firstMatch
+            let loading = app.descendants(matching: .any)["chat-history-loading"].firstMatch
+            XCTAssertTrue(pull.waitForExistence(timeout: 5))
+            XCTAssertEqual(pull.label, "下拉加载历史")
+            for (index, label) in ["下拉加载历史", "松手加载", "下拉加载历史", "松手加载", "正在加载更早的历史…"].enumerated() {
+                advance.tap()
+                let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH '['"), object: report)
+                XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 3), .completed)
+                let samples = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(report.label.utf8)) as? [[Double]])
+                let first = try XCTUnwrap(samples.first), last = try XCTUnwrap(samples.last)
+                print("HISTORY_STATUS_FRAMES reduced=\(reduced) step=\(index) \(report.label)")
+                XCTAssertGreaterThan(samples.count, 3)
+                if index == 4 {
+                    XCTAssertFalse(pull.exists)
+                    XCTAssertEqual(loading.label, label)
+                    XCTAssertEqual(last[0], first[0], accuracy: 1, "Release moved the pill")
+                } else {
+                    XCTAssertEqual(pull.label, label)
+                }
+                if index == 0 {
+                    XCTAssertTrue(samples.allSatisfy { abs($0[1] - first[1]) <= 1 }, "Finger movement resized the pill")
+                    continue
+                }
+                let direction: Double = index == 1 || index == 3 ? -1 : 1
+                XCTAssertGreaterThan((last[1] - first[1]) * direction, 5)
+                for (before, after) in zip(samples, samples.dropFirst()) {
+                    XCTAssertGreaterThanOrEqual((after[1] - before[1]) * direction, -1, "Pill width reversed")
+                }
+                let low = min(first[1], last[1]), high = max(first[1], last[1])
+                let inBetween = samples.filter { $0[1] > low + 1 && $0[1] < high - 1 }
+                if reduced {
+                    XCTAssertTrue(inBetween.isEmpty, "Reduce Motion still interpolated width")
+                } else {
+                    XCTAssertGreaterThan(Set(inBetween.map { Int($0[1].rounded()) }).count, 2,
+                                         "Pill width jumped instead of morphing")
+                }
+            }
+        }
+    }
+
     // IOS-CHAT-13: a real remote history page must prepend through SQLite and
     // receive an applied acknowledgement without moving the same native text.
     func testHistoryPrependPreservesTheVisibleReadingAnchor() throws {

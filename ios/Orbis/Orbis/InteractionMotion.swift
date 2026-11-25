@@ -164,6 +164,7 @@ enum InteractionMotion {
     static let copyTransition = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.16)
     static let selection = Animation.timingCurve(0.2, 0, 0, 1, duration: 0.26)
     static let state = Animation.easeOut(duration: 0.16)
+    static let stateMorph = Animation.timingCurve(0.4, 0, 0.2, 1, duration: 0.16)
     static let panel = Animation.easeOut(duration: 0.22)
     static let exit = Animation.easeIn(duration: 0.16)
     static let dismiss = Animation.easeIn(duration: 0.18)
