@@ -2903,10 +2903,8 @@ internal fun ChatScreen(
             firstReadError,
             rangeError,
             state.sessionSyncFailures[runtimeId] ?: conversation.chatSyncError,
-            if (conversation.waitingLocalInteraction) L10n.tr("请在电脑端完成交互") else null,
-            conversation.interactionNotice,
-            conversation.systemNotice,
         ).distinct()
+        val chatStatusNotice = conversation.systemNotice ?: conversation.interactionNotice
         var statusDetailsOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
         var fullContentDialogOpen by remember(runtimeId, sessionId) { mutableStateOf(false) }
         if (statusDetailsOpen || fullContentDialogOpen) {
@@ -3033,7 +3031,7 @@ internal fun ChatScreen(
                 items(orphanTools, key = ToolActivity::toolCallId) { tool -> ToolCard(tool) }
             }
             // 通知与待处理交互都浮在正文上：出现、消失都不移动阅读位置，也不推动输入框（与 iOS 一致）。
-            val notices = state.visibleNotificationProjection(runtimeId)?.takeIf { it.sessionId == sessionId }
+            val notices = state.chatNoticeProjection(runtimeId, sessionId)
             val noticesSupported = runtime?.agentKind in setOf("codex", "codexDesktop")
             val hasNotices = notices != null && (notices.items.isNotEmpty() || (noticesSupported && !notices.complete))
             val failedLaunch = launch?.takeIf { it.failure != null || it.unconfirmed }
@@ -3066,7 +3064,7 @@ internal fun ChatScreen(
                         if (historyStatus == ChatHistoryStatus.Hidden && hasStatusErrors) {
                             NoticeBanner(
                                 text = chatStatusErrors.first(),
-                                isError = true,
+                                severity = "error",
                                 recheck = runtime != null,
                                 onRecheck = { model.refreshRuntime(runtimeId, explicitRetry = true) },
                                 onClose = null,
@@ -3074,6 +3072,9 @@ internal fun ChatScreen(
                                 onClick = { statusDetailsOpen = true },
                                 showRecheckHint = false,
                             )
+                        } else if (historyStatus == ChatHistoryStatus.Hidden && chatStatusNotice != null) {
+                            NoticeBanner(text = chatStatusNotice, recheck = false, onRecheck = null, onClose = null,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp).testTag("chat-status-info"))
                         } else if (historyStatus == ChatHistoryStatus.Hidden && !hasNotices) {
                             val readingRowId by remember(listState, projection) {
                                 derivedStateOf {
@@ -3149,8 +3150,10 @@ internal fun ChatScreen(
                 androidx.compose.runtime.key(runtimeId, sessionId) {
                     Box(Modifier.fillMaxWidth()) {
                         InteractionWorkspace(
-                            requests = conversation.interactions.values.toList(), connected = state.e2eReady && runtime != null,
-                            pendingCommands = state.pendingCommands.keys, error = null,
+                            requests = conversation.interactions.values.toList(),
+                            connected = state.e2eReady && runtime?.domainAvailability?.get("interactions") == "ready",
+                            pendingCommands = state.pendingCommands.keys,
+                            availabilityHint = if (state.e2eReady && runtime != null) L10n.tr("交互状态待核对") else null,
                             respondConfirm = { request, approved ->
                                 if (model.respondConfirm(request, approved) == true) actionHaptic()
                             },
@@ -5024,9 +5027,9 @@ internal fun RuntimeNotifications(
     Column(Modifier.fillMaxWidth().heightIn(max = 200.dp)
         .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (projection.items.isEmpty()) NoticeBanner(L10n.tr("通知状态待核对"), isError = false, recheck = unverified, onRecheck = onRecheck, onClose = null)
+        if (projection.items.isEmpty()) NoticeBanner(L10n.tr("通知状态待核对"), recheck = unverified, onRecheck = onRecheck, onClose = null)
         projection.items.forEachIndexed { index, notice ->
-            NoticeBanner(notice.message, isError = notice.severity != "info",
+            NoticeBanner(notice.displayMessage, severity = notice.displaySeverity,
                 recheck = index == 0 && (unverified || (supported && notice.verification == "unknown")), onRecheck = onRecheck,
                 onClose = { onDismiss(notice.notificationId) })
         }
@@ -5036,7 +5039,7 @@ internal fun RuntimeNotifications(
 @Composable
 private fun NoticeBanner(
     text: String,
-    isError: Boolean,
+    severity: String = "info",
     recheck: Boolean,
     onRecheck: (() -> Unit)?,
     onClose: (() -> Unit)?,
@@ -5051,13 +5054,16 @@ private fun NoticeBanner(
         contentPadding = 12.dp,
         onClick = onClick,
     ) {
+        val (symbol, tint) = when (severity) {
+            "error" -> OrbisSymbols.Error to MaterialTheme.colorScheme.error
+            "warning" -> OrbisSymbols.Warning to LocalOrbisPalette.current.warning
+            else -> OrbisSymbols.Info to MaterialTheme.colorScheme.onSurfaceVariant
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
-            Icon(if (isError) OrbisSymbols.Error else OrbisSymbols.Info, contentDescription = null,
-                tint = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp).padding(top = 1.dp))
+            Icon(symbol, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp).padding(top = 1.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(text, style = MaterialTheme.typography.bodyMedium,
-                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+                    color = if (severity == "info") MaterialTheme.colorScheme.onSurface else tint)
                 if (recheck && showRecheckHint && text != L10n.tr("通知状态待核对")) {
                     Text(L10n.tr("通知状态待核对"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -5104,7 +5110,18 @@ internal fun InteractionPanel(
     onCancel: (() -> Unit)? = null,
     /** Inline above the composer: the card wraps its content instead of filling a sheet. */
     compact: Boolean = false,
+    availabilityHint: String? = null,
 ) {
+    if (!isMobileSupportedInteractionKind(request.kind)) {
+        NeumorphSurface(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("interaction-unsupported"),
+            shape = RemoteUi.CardShape, contentPadding = 12.dp) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(request.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(L10n.tr("当前版本不支持此交互"), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        return
+    }
     val localDraft = remember(request.requestId) { InteractionDraft(InteractionDraftValue(input = request.initialValue.orEmpty())) }
     val form = draftState ?: localDraft
     val input = form.value.input
@@ -5123,8 +5140,7 @@ internal fun InteractionPanel(
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     var fullPreview by remember(request.requestId) { mutableStateOf(false) }
     var summaryOverflows by remember(request.requestId) { mutableStateOf(false) }
-    var linkError by remember(request.requestId) { mutableStateOf<String?>(null) }
-    val knownKind = request.kind == "confirm" || request.kind == "select" || request.kind == "multi-select" || request.kind == "input"
+    var linkError by remember(request.requestId, request.externalUrl) { mutableStateOf<String?>(null) }
 
     Column(
         modifier = modifier.fillMaxWidth().padding(horizontal = if (compact) 16.dp else 12.dp, vertical = 8.dp),
@@ -5140,13 +5156,13 @@ internal fun InteractionPanel(
                         overflow = TextOverflow.Ellipsis)
                     Text(
                         when {
+                            expired -> L10n.tr("已过期")
                             request.submitted -> L10n.tr("已提交")
                             submitting -> L10n.tr("正在发送…")
-                            expired -> L10n.tr("已过期")
                             else -> L10n.tr("待确认")
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (expired) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        color = if (expired) LocalOrbisPalette.current.warning else MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                     )
                 }
@@ -5184,14 +5200,14 @@ internal fun InteractionPanel(
                     request.externalUrl?.let { url ->
                         Text(url, style = MaterialTheme.typography.bodySmall)
                         NeumorphTextButton(L10n.tr("打开网页"), enabled = responseEnabled, onClick = {
-                            runCatching { uriHandler.openUri(url) }.onFailure { linkError = L10n.tr("无法打开网页，请在电脑端完成操作。") }
+                            linkError = null
+                            runCatching { uriHandler.openUri(url) }.onFailure { linkError = L10n.tr("无法打开链接，请重试") }
                         })
+                        linkError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     }
-                    linkError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     if (interactionHasDeadline(request) && !expired) {
                         Text(L10n.tr("剩余 {0} 秒", interactionRemainingSeconds(request, nowMs)), color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelMedium)
                     }
-                    if (!knownKind) WarningCard(L10n.tr("手机无法安全渲染此交互，请在电脑端处理。"))
                     when (request.kind) {
                         "select" -> request.options.forEach { option ->
                             NeumorphSurface(
@@ -5214,7 +5230,6 @@ internal fun InteractionPanel(
                             modifier = Modifier.fillMaxWidth(),
                             label = { Text(request.placeholder ?: L10n.tr("输入内容")) },
                             supportingText = { interactionInputConstraintText(request)?.let { Text(it) } },
-                            isError = !isInteractionInputValid(input, request),
                             enabled = responseEnabled,
                             visualTransformation = if (request.secret) PasswordVisualTransformation() else VisualTransformation.None,
                             keyboardOptions = if (request.secret) KeyboardOptions(keyboardType = KeyboardType.Password) else KeyboardOptions.Default,
@@ -5249,7 +5264,10 @@ internal fun InteractionPanel(
                         }
                     }
                 }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (!expired && !request.submitted && !submitting) {
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("interaction-response-error")) }
+                    if (!connected) Text(availabilityHint ?: L10n.tr("连接后可提交"), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (onCancel != null && request.kind != "confirm") {
                         NeumorphTextButton(L10n.tr("取消请求"), enabled = responseEnabled, onClick = onCancel)

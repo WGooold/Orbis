@@ -819,6 +819,7 @@ class RelayClient internal constructor(
         put("response", buildJsonObject {
             put("kind", responseKind)
             when {
+                responseKind == "cancel" -> Unit // The wire cancel variant has no value field.
                 booleanValue != null -> put("value", booleanValue)
                 stringValues != null -> put("values", buildJsonArray { stringValues.forEach { add(JsonPrimitive(it)) } })
                 else -> put("value", stringValue.orEmpty())

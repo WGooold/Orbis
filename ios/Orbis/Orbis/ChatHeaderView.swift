@@ -333,10 +333,10 @@ struct RuntimeNoticesView: View {
             ScrollView {
                 VStack(spacing: 8) {
                     if projection.items.isEmpty {
-                        banner(text: L10n.tr("通知状态待核对"), error: false, recheck: unverified, close: nil)
+                        banner(text: L10n.tr("通知状态待核对"), severity: "info", recheck: unverified, close: nil)
                     }
                     ForEach(Array(projection.items.enumerated()), id: \.element.id) { index, notice in
-                        banner(text: notice.message, error: notice.severity != "info",
+                        banner(text: notice.displayMessage, severity: notice.displaySeverity,
                                recheck: index == 0 && (unverified || (supported && notice.verification == "unknown")),
                                close: { if actions.isCurrent { actions.dismissNotification(notice.notificationId) } })
                     }
@@ -345,13 +345,15 @@ struct RuntimeNoticesView: View {
         }
     }
 
-    private func banner(text: String, error: Bool, recheck: Bool, close: (() -> Void)?) -> some View {
+    private func banner(text: String, severity: String, recheck: Bool, close: (() -> Void)?) -> some View {
         let p = OrbisPalette(scheme)
+        let tint = severity == "error" ? p.error : severity == "warning" ? p.warning : p.secondary
+        let symbol = severity == "error" ? "exclamationmark.circle" : severity == "warning" ? "exclamationmark.triangle" : "info.circle"
         return HStack(alignment: .top, spacing: 10) {
-            OrbisActionSymbol(systemName: error ? "exclamationmark.circle" : "info.circle")
-                .foregroundStyle(error ? p.error : p.secondary).orbisIconBaseline(OrbisTextSize.label)
+            OrbisActionSymbol(systemName: symbol)
+                .foregroundStyle(tint).orbisIconBaseline(OrbisTextSize.label)
             VStack(alignment: .leading, spacing: 6) {
-                Text(text).font(.orbisLabel()).foregroundStyle(error ? p.error : p.text)
+                Text(text).font(.orbisLabel()).foregroundStyle(severity == "info" ? p.text : tint)
                     .fixedSize(horizontal: false, vertical: true)
                 if recheck {
                     HStack(spacing: 10) {

@@ -193,6 +193,53 @@ class AgentModelConsumerTest {
         assertTrue(stale.conversations.getValue("runtime").interactions.isEmpty())
     }
 
+    // MOBILE-INTERACTION-01: a newer Host can add a display-only kind without blocking answers to known siblings.
+    @Test fun `future interactions shed unknown controls while known siblings still project`() {
+        val state = receive(initial(), domain("interactions", """{
+            "future":{"requestId":"future","extensionId":"extension","kind":"future-kind","title":"New control",
+                "options":{"layout":"grid"},"questions":{"schema":2},"externalUrl":"https://example.test/control",
+                "confirmLabel":"Run","cancelLabel":"Cancel","initialValue":"draft","placeholder":"Future input"},
+            "question":${interaction()},
+            "approval":{"requestId":"approval","extensionId":"extension","kind":"confirm","title":"Approve?","confirmLabel":"Allow"}
+        }"""))
+        val interactions = state.conversations.getValue("runtime").interactions
+        assertEquals(setOf("future", "question", "approval"), interactions.keys)
+        val future = interactions.getValue("future")
+        assertEquals("New control", future.title)
+        assertEquals("future-kind", future.kind)
+        assertFalse(isMobileSupportedInteractionKind(future.kind))
+        assertTrue(future.options.isEmpty())
+        assertTrue(future.questions.isEmpty())
+        assertNull(future.externalUrl)
+        assertNull(future.confirmLabel)
+        assertNull(future.cancelLabel)
+        assertNull(future.initialValue)
+        assertNull(future.placeholder)
+        assertEquals(listOf(InteractionOption("yes", "Yes")), interactions.getValue("question").options)
+        assertEquals("Allow", interactions.getValue("approval").confirmLabel)
+        assertNull(state.agentStateSnapshots.values.single().error)
+    }
+
+    // A known kind with an invalid payload is not a forward-compatible display-only request.
+    @Test fun `malformed supported requests cannot replace the last good interaction inventory`() {
+        val baseline = receive(initial(), domain("interactions", """{"question":${interaction()}}"""))
+        val malformed = listOf(
+            """"kind":"select","options":{"layout":"grid"}""",
+            """"kind":"select","options":[]""",
+            """"kind":"questionnaire","questions":[]""",
+            """"kind":"input","minLength":6,"maxLength":3""",
+        )
+        for (fields in malformed) {
+            val after = receive(baseline, domain("interactions", """{
+                "broken":{"requestId":"broken","extensionId":"extension","title":"Broken",$fields},
+                "new-question":${interaction("new-question")}
+            }""", revision = 2))
+            assertNotNull(fields, after.agentStateSnapshots.values.single().error)
+            assertEquals(fields, baseline.conversations.getValue("runtime").interactions,
+                after.conversations.getValue("runtime").interactions)
+        }
+    }
+
     @Test fun `partial source inventory cannot delete without a complete Host projection`() {
         val first = receive(initial(), domain("interactions", """{"question":${interaction()}}"""))
         val partial = receive(first, domain("interactions", "{}", revision = 2, completeness = "partial", projectionComplete = false))

@@ -150,12 +150,13 @@ enum OperationKinds {
     }
 
     /// 原位短状态：确认前带处理中标记；结果不明显示“未确认”。
-    static func respondStatus(_ ledger: AppLedger, runtimeId: String) -> (text: String, pending: Bool)? {
+    static func respondStatus(_ ledger: AppLedger, runtimeId: String, excluding: Set<String> = []) -> (text: String, pending: Bool, requestId: String)? {
         for op in ledger.operations.reversed() {
-            guard case .respond(let owner, _, let summary) = op.payload, owner == runtimeId else { continue }
+            guard case .respond(let owner, let requestId, _) = op.payload, owner == runtimeId, !excluding.contains(requestId) else { continue }
             switch op.phase {
-            case .waiting, .sent, .accepted: return (summary, true)
-            case .unknown, .unconfirmed: return (summary + L10n.tr("，未确认"), false)
+            case .waiting, .sent: return (L10n.tr("正在发送…"), true, requestId)
+            case .accepted: return (L10n.tr("已提交，等待处理结果…"), true, requestId)
+            case .unknown, .unconfirmed: return (L10n.tr("回答结果未确认"), false, requestId)
             case .rejected: continue
             }
         }

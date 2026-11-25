@@ -94,6 +94,19 @@ describe("Codex approval lifecycle", () => {
     expect(h.events).toContainEqual({ type: "interaction.snapshot", requests: [] });
   });
 
+  // A deadline ends the request, but is not a negative receipt for a response already sent to Codex.
+  it("ends a submitted interaction at its deadline without reporting a rejected answer", async () => {
+    vi.useFakeTimers(); const h = await harness();
+    const pending = h.approval({ autoResolutionMs: 1000 }); const prompt = h.latest();
+    h.answer(prompt); h.events.length = 0;
+    await vi.advanceTimersByTimeAsync(1001);
+    expect(pending.respond).toHaveBeenCalledTimes(1);
+    expect(h.events.filter(e => e.type === "interaction.cancelled" || e.type === "command.result")).toEqual([
+      { type: "interaction.cancelled", requestId: prompt.requestId, reason: "timeout" },
+      { type: "command.result", commandId: "answer-1", ok: false, status: "unconfirmed", error: "未收到 Codex 的处理确认" },
+    ]);
+  });
+
   it("rejects expired answers even before the timeout callback runs", async () => {
     vi.useFakeTimers(); const h = await harness(); const pending = h.approval(); const prompt = h.latest();
     vi.setSystemTime(prompt.expiresAt);
@@ -166,5 +179,8 @@ describe("Codex approval lifecycle", () => {
     expect(h.latest()).toMatchObject({ kind: "questionnaire" }); expect(input.respond).not.toHaveBeenCalled();
     const unknown = h.approval({}, "unknown", "unsupported");
     expect(unknown.respond).not.toHaveBeenCalled(); expect(unknown.fail).toHaveBeenCalled();
+    expect(h.events).toContainEqual(expect.objectContaining({ type: "notification.source", outcomes: [expect.objectContaining({
+      code: "codex.interaction.rejected", severity: "warning", message: "当前版本不支持此交互",
+    })] }));
   });
 });

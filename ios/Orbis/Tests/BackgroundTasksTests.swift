@@ -42,7 +42,7 @@ struct BackgroundTasksTests {
         runtime.status = "running"
         #expect(runtime.presentationTitle == "运行中，1 个子代理")
         runtime.status = "waiting_local_interaction"
-        #expect(runtime.presentationTitle == "等待确认")
+        #expect(runtime.presentationTitle == "等待交互")
         runtime.status = "idle"
         runtime.backgroundTasks = tasks("completed")
         #expect(runtime.presentationTitle == "空闲")

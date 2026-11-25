@@ -23,6 +23,16 @@ struct RuntimeNotice: Codable, Hashable, Identifiable {
     var displayMs: Int64?
     var expiresAt: Int64?
     var id: String { notificationId }
+    var isResponseOutcome: Bool { lifecycle == "outcome" && ["interaction.submit", "interaction.submit.rejected"].contains(code) }
+    var isInteractionResult: Bool { lifecycle == "outcome" && code == "interaction.result" }
+    private var isConfirmedResponseFailure: Bool { code == "interaction.submit.rejected" && severity == "error" }
+
+    // Legacy Hosts used error styling and raw details even for uncertain results.
+    var displaySeverity: String { isResponseOutcome && !isConfirmedResponseFailure ? "warning" : severity }
+    var displayMessage: String {
+        if isResponseOutcome { return isConfirmedResponseFailure ? L10n.tr("提交失败") : L10n.tr("回答结果未确认") }
+        return isInteractionResult ? L10n.tr(message) : message
+    }
 
     fileprivate var valid: Bool {
         [notificationId, producerEpoch, code, occurrenceId].allSatisfy(RuntimeNotifications.validIdentifier) &&
@@ -43,6 +53,21 @@ struct RuntimeNoticeProjection: Equatable {
     let verification: String
     let items: [RuntimeNotice]
     let complete: Bool
+
+    var interactionResultRequestIds: Set<String> {
+        Set(items.lazy.filter(\.isInteractionResult).compactMap(\.scope.requestId))
+    }
+
+    // Presentation only. The stored inventory and dismiss acknowledgements remain authoritative.
+    func hidingResponseOutcomes(ownedBy requests: Set<String>, terminal: Set<String> = []) -> Self {
+        guard items.contains(where: \.isResponseOutcome) else { return self }
+        let owners = requests.union(interactionResultRequestIds).union(terminal)
+        let visible = items.filter { notice in
+            !notice.isResponseOutcome || notice.scope.requestId.map(owners.contains) != true
+        }
+        return .init(hostEpoch: hostEpoch, revision: revision, sessionId: sessionId,
+                     verification: verification, items: visible, complete: complete)
+    }
 }
 
 private struct RuntimeNoticeSnapshot: Decodable {

@@ -58,7 +58,7 @@ internal fun savableInteractionDraft(request: PendingInteraction, draft: Interac
 @Composable
 internal fun InteractionWorkspace(
     requests: List<PendingInteraction>, connected: Boolean,
-    pendingCommands: Set<String>, error: String?,
+    pendingCommands: Set<String>,
     respondConfirm: (PendingInteraction, Boolean) -> Unit,
     respondValue: (PendingInteraction, String) -> Unit,
     respondValues: (PendingInteraction, List<String>) -> Unit,
@@ -66,8 +66,9 @@ internal fun InteractionWorkspace(
     onCancel: (PendingInteraction) -> Unit,
     /** ADR-0049 §6.5：正在回答的请求立即收起（草稿保留），其他请求直接切到下一项。 */
     responding: Set<String> = emptySet(),
-    /** 原位短状态：(文案, 是否处理中, 已结算结果的标识)。 */
-    status: Triple<String, Boolean, String?>? = null,
+    /** 原位短状态，只在没有待展示的请求时使用。 */
+    status: InteractionStatus? = null,
+    availabilityHint: String? = null,
 ) {
     val allIds = requests.map { it.requestId }.toSet()
     @Suppress("NAME_SHADOWING") val requests = requests.filterNot { it.requestId in responding }
@@ -86,11 +87,11 @@ internal fun InteractionWorkspace(
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var seenIds by rememberSaveable { mutableStateOf(emptyList<String>()) }
     val ids = requests.map { it.requestId }
-    // 单个确认直接在输入框上方回答，不打开整页面板（与 iOS 一致）；其余交互仍自动展开面板。
-    val inlineConfirm = requests.size == 1 && requests[0].kind == "confirm"
+    // 单个确认或不支持的请求留在原位；只有可操作的新请求才自动打开面板。
+    val inline = requests.singleOrNull()?.let { it.kind == "confirm" || !isMobileSupportedInteractionKind(it.kind) } == true
     LaunchedEffect(ids) {
-        val newRequest = ids.firstOrNull { it !in seenIds }
-        if (inlineConfirm) open = false
+        val newRequest = requests.firstOrNull { it.requestId !in seenIds && isMobileSupportedInteractionKind(it.kind) }?.requestId
+        if (inline) open = false
         else if (newRequest != null) {
             if (!open) selectedId = newRequest
             open = true
@@ -101,17 +102,17 @@ internal fun InteractionWorkspace(
     // 收起中的请求仍保留草稿：被拒绝后面板回到原位，答案还在。
     LaunchedEffect(allIds) { drafts.keys.retainAll(allIds) }
     val request = requests.find { it.requestId == selectedId } ?: requests.firstOrNull() ?: run {
-        InteractionStatus(status)
+        InteractionStatusView(status)
         return
     }
-    if (inlineConfirm) {
+    if (inline) {
         val draft = drafts.getOrPut(request.requestId) { InteractionDraft() }
         InteractionPanel(
             request, request.responseCommandId in pendingCommands, respondConfirm = { respondConfirm(request, it) },
             respondValue = { respondValue(request, it) }, respondValues = { respondValues(request, it) },
             modifier = Modifier.fillMaxWidth(), connected = connected,
-            error = if (!connected) L10n.tr("连接已断开，连接后可重试") else request.responseError ?: error,
-            draftState = draft, compact = true,
+            error = request.responseError,
+            draftState = draft, compact = true, availabilityHint = availabilityHint,
         )
         return
     }
@@ -130,18 +131,18 @@ internal fun InteractionWorkspace(
             }
         }
         val submitting = request.responseCommandId in pendingCommands
-        val message = if (!connected) L10n.tr("连接已断开，草稿已保留，连接后可重试") else request.responseError ?: error
+        val message = request.responseError
         val draft = drafts.getOrPut(request.requestId) { InteractionDraft(InteractionDraftValue(input = request.initialValue.orEmpty())) }
         key(request.requestId) {
             if (request.kind == "questionnaire") QuestionnairePanel(
                 request, submitting, message,
                 onSubmit = { respondQuestionnaire(request, it) }, onCancel = { respondQuestionnaire(request, null) },
-                modifier = Modifier.weight(1f), connected = connected, draftState = draft,
+                modifier = Modifier.weight(1f), connected = connected, draftState = draft, availabilityHint = availabilityHint,
             ) else InteractionPanel(
                 request, submitting, respondConfirm = { respondConfirm(request, it) },
                 respondValue = { respondValue(request, it) }, respondValues = { respondValues(request, it) },
                 modifier = Modifier.weight(1f), connected = connected, error = message, draftState = draft,
-                onCancel = { onCancel(request) },
+                onCancel = { onCancel(request) }, availabilityHint = availabilityHint,
             )
         }
     }
@@ -149,7 +150,7 @@ internal fun InteractionWorkspace(
 
 /** 原面板位置的覆盖式短状态（V06）：不插入消息行、不推动正文；确认前带轻量处理中标记，结算后约 2.5 秒消失（V16）。 */
 @Composable
-private fun InteractionStatus(status: Triple<String, Boolean, String?>?) {
+private fun InteractionStatusView(status: InteractionStatus?) {
     status ?: return
     NeumorphSurface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).testTag("interaction-status"),
@@ -157,8 +158,8 @@ private fun InteractionStatus(status: Triple<String, Boolean, String?>?) {
     ) {
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (status.second) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-            Text(status.first, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+            if (status.pending) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text(status.text, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
         }
     }
 }

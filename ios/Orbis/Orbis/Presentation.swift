@@ -98,7 +98,7 @@ func runtimeStatusTitle(_ status: String) -> String {
     case "background": return L10n.tr("子代理运行中")
     case "background_commands": return L10n.tr("空闲")
     case "tasks_unknown": return L10n.tr("后台任务状态待核对")
-    case "waiting", "waiting_interaction", "waiting_local_interaction": return L10n.tr("等待确认")
+    case "waiting", "waiting_interaction", "waiting_local_interaction": return L10n.tr("等待交互")
     case "error": return L10n.tr("异常")
     case "idle": return L10n.tr("空闲")
     case "unknown": return L10n.tr("状态待核对")

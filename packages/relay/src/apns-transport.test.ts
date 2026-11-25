@@ -102,6 +102,15 @@ describe("APNs transport lifecycle", () => {
     f.sender.close();
   });
 
+  it("uses generic pending-interaction copy without changing the legacy approval category", async () => {
+    const f = fixture();
+    const interactionHint = { ...hint, category: "approval-requested" as const };
+    await f.sender.send("a".repeat(64), interactionHint);
+    expect(f.sent[0]!.payload.orbis).toEqual({ v: 1, ...interactionHint });
+    expect(f.sent[0]!.payload.aps).toMatchObject({ alert: { body: "有待处理的交互。" } });
+    f.sender.close();
+  });
+
   it.each([[410, "Unregistered"], [400, "BadDeviceToken"], [400, "DeviceTokenNotForTopic"]])("retires invalid destinations for %i %s", async (status, reason) => {
     const f = fixture(status as number, reason as string);
     await expect(f.sender.send("a".repeat(64), hint)).resolves.toBe("invalid-token"); f.sender.close();

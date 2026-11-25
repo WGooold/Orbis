@@ -22,7 +22,7 @@ import org.junit.Rule
 import org.junit.Test
 
 /**
- * ADR-0049 §6.4–§6.8 的呈现：结果在回执前出现，拒绝后回到原位（V22、V07、V10–V12）。状态由账本的纯状态函数构造，
+ * ADR-0049 §6.4–§6.8 的呈现：操作状态在回执前出现，拒绝后回到原位（V22、V07、V10–V12）。状态由账本的纯状态函数构造，
  * 与 [HostConnection] 的写法一致；各种类的结算由单元测试覆盖。
  */
 class OptimisticPresentationInstrumentedTest {
@@ -34,21 +34,27 @@ class OptimisticPresentationInstrumentedTest {
         output.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
-    @Test fun answeringCollapsesThePanelIntoAnInPlaceSummaryAndARejectionBringsItBack() {
-        val request = PendingInteraction("approval", "test", "confirm", "允许执行命令？", null, emptyList(), null)
+    @Test fun answeringCollapsesThePanelIntoAnInPlaceStatusAndARejectionBringsItBack() {
+        var request by mutableStateOf(PendingInteraction("approval", "test", "confirm", "允许执行命令？", null, emptyList(), null))
         var responding by mutableStateOf(setOf("approval"))
-        var status by mutableStateOf<Triple<String, Boolean, String?>?>(Triple("已允许", true, null))
+        var status by mutableStateOf<InteractionStatus?>(InteractionStatus("正在发送…", true, "approval"))
         compose.setContent { OrbisTheme {
-            InteractionWorkspace(listOf(request), connected = true, pendingCommands = emptySet(), error = null,
+            InteractionWorkspace(listOf(request), connected = true, pendingCommands = emptySet(),
                 respondConfirm = { _, _ -> }, respondValue = { _, _ -> }, respondValues = { _, _ -> },
                 respondQuestionnaire = { _, _ -> }, onCancel = {}, responding = responding, status = status)
         } }
         compose.onNodeWithTag("interaction-status").assertIsDisplayed()
-        compose.onNodeWithText("已允许").assertIsDisplayed()
+        compose.onNodeWithText("正在发送…").assertIsDisplayed()
+        compose.onNodeWithText("已允许").assertDoesNotExist()
         compose.onNodeWithText("允许执行命令？").assertDoesNotExist()
         capture("optimistic-respond-summary")
-        compose.runOnIdle { responding = emptySet(); status = null }
+        compose.runOnIdle {
+            request = request.copy(responseError = "回答未提交：校验失败")
+            responding = emptySet()
+            status = null
+        }
         compose.onNodeWithText("允许执行命令？").assertIsDisplayed()
+        compose.onNodeWithTag("interaction-response-error").assertIsDisplayed().assertTextEquals("回答未提交：校验失败")
         compose.onNodeWithTag("interaction-status").assertDoesNotExist()
     }
 
@@ -59,7 +65,7 @@ class OptimisticPresentationInstrumentedTest {
         compose.setContent { OrbisTheme {
             // Preserve a page-sized capture surface when the cleared outcome renders no children.
             Box(Modifier.fillMaxSize()) {
-                if (inChat) InteractionWorkspace(emptyList(), connected = true, pendingCommands = emptySet(), error = null,
+                if (inChat) InteractionWorkspace(emptyList(), connected = true, pendingCommands = emptySet(),
                     respondConfirm = { _, _ -> }, respondValue = { _, _ -> }, respondValues = { _, _ -> },
                     respondQuestionnaire = { _, _ -> }, onCancel = {}, status = state.interactionStatus("runtime"))
             }

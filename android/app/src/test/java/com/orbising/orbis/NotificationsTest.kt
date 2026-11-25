@@ -82,4 +82,81 @@ class NotificationsTest {
         assertTrue(pending.notificationProjections.getValue("runtime").items.isEmpty())
         assertEquals("unknown", pending.notificationProjections.getValue("runtime").verification)
     }
+
+    private fun interactionNotice(id: String, code: String, request: String? = null) = notice(id).copy(
+        code = code, scope = NoticeScope(requestId = request), lifecycle = "outcome", severity = "error", message = "Raw detail",
+    )
+
+    // MOBILE-INTERACTION-04: ambiguous legacy failures are not presented as confirmed rejections.
+    @Test fun `terminal interaction result and confirmed rejection are distinct from a legacy warning`() {
+        val result = interactionNotice("done", "interaction.result", "request").copy(severity = "info", message = "已处理")
+        val rejected = interactionNotice("rejected", "interaction.submit.rejected", "request")
+        val legacy = interactionNotice("legacy", "interaction.submit", "request")
+
+        assertTrue(result.isInteractionResult)
+        assertFalse(result.isResponseOutcome)
+        assertEquals("info" to "已处理", result.displaySeverity to result.displayMessage)
+        assertTrue(rejected.isResponseOutcome)
+        assertFalse(rejected.isInteractionResult)
+        assertEquals("error" to "提交失败", rejected.displaySeverity to rejected.displayMessage)
+        assertTrue(legacy.isResponseOutcome)
+        assertFalse(legacy.isInteractionResult)
+        assertEquals("warning" to "回答结果未确认", legacy.displaySeverity to legacy.displayMessage)
+    }
+
+    // Deduplication is a chat-only projection, not a change to Host authority.
+    @Test fun `chat drops only submission copies owned by a matching request or result`() {
+        fun approval(id: String, error: String? = null) = PendingInteraction(
+            id, "test", "confirm", "Approve?", null, emptyList(), null, responseError = error,
+        )
+        val local = approval("local", "Local send error")
+        val pending = approval("pending")
+        val elsewhere = approval("elsewhere", "Different runtime error")
+        val base = initial().copy(conversations = mapOf(
+            "runtime" to RuntimeConversation(interactions = listOf(local, pending).associateBy { it.requestId }),
+            "other" to RuntimeConversation(interactions = mapOf(elsewhere.requestId to elsewhere)),
+        ))
+        val (created, creation) = base.createRespond("command", "runtime", pending.requestId, "已允许", 0)
+        assertTrue(creation is LedgerCreation.Created)
+        val responding = created.ledgerWritten("command", 0).copy(interactionOutcomes = mapOf(
+            "runtime" to InteractionOutcome("outcome", "已允许", Long.MAX_VALUE, requestId = "settled"),
+        ))
+        val retained = listOf(
+            interactionNotice("terminal", "interaction.result", "remote-result").copy(severity = "info"),
+            interactionNotice("nonmatching", "interaction.submit.rejected", "elsewhere"),
+            interactionNotice("unscoped", "interaction.submit"),
+            notice("sandbox"),
+        )
+        val copies = listOf(
+            interactionNotice("local-copy", "interaction.submit.rejected", "local"),
+            interactionNotice("pending-copy", "interaction.submit", "pending"),
+            interactionNotice("settled-copy", "interaction.submit", "settled"),
+            interactionNotice("terminal-copy", "interaction.submit.rejected", "remote-result"),
+        )
+        val state = receive(responding, 1, copies + retained)
+        // The other request occupies the workspace. The two short statuses cannot own visible feedback.
+        assertEquals(copies.slice(1..2) + retained, state.chatNoticeProjection("runtime", "session")?.items)
+        assertNull(state.chatNoticeProjection("runtime", "retired"))
+        assertEquals(copies + retained, state.notificationProjections.getValue("runtime").items)
+
+        val withoutLocal = state.copy(conversations = state.conversations + ("runtime" to RuntimeConversation(interactions = mapOf(pending.requestId to pending))))
+        assertEquals(pending.requestId, withoutLocal.interactionStatus("runtime")?.requestId)
+        assertEquals(listOf(copies[0], copies[2]) + retained, withoutLocal.chatNoticeProjection("runtime", "session")?.items)
+    }
+
+    // Host time, not phone time, retires notices. A request-local error only owns visible feedback while it can still display.
+    @Test fun `expired request does not hide its fallback and dismissing a terminal does not expose a duplicate`() {
+        val expired = PendingInteraction("expired", "test", "confirm", "Approve?", null, emptyList(), null,
+            expiresAt = 10, responseError = "Old error")
+        val fallback = interactionNotice("expired-fallback", "interaction.submit.rejected", expired.requestId)
+        val terminal = interactionNotice("terminal", "interaction.result", "ended")
+        val duplicate = interactionNotice("old-fallback", "interaction.submit", "ended")
+        val base = initial().copy(conversations = mapOf("runtime" to RuntimeConversation(interactions = mapOf(expired.requestId to expired))))
+        val state = receive(base, 1, listOf(fallback, terminal, duplicate))
+        assertEquals(listOf(terminal), state.chatNoticeProjection("runtime", "session", now = 9)?.items)
+        assertEquals(listOf(fallback, terminal), state.chatNoticeProjection("runtime", "session", now = 10)?.items)
+        val (dismissing, creation) = state.createDismiss("dismiss", "runtime", terminal.notificationId, 11)
+        assertTrue(creation is LedgerCreation.Created)
+        assertEquals(listOf(fallback), dismissing.chatNoticeProjection("runtime", "session", now = 11)?.items)
+    }
 }

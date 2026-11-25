@@ -1,7 +1,9 @@
 package com.orbising.orbis
 
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import okhttp3.Response
@@ -74,6 +76,12 @@ class LanConnectionTest {
             assertTrue(lanHost.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8).contains("external-import.result.read"))
             assertTrue(client.sendDeviceMessage(buildJsonObject { put("type", "session.list"); put("requestId", "lan-command") }))
             assertTrue(lanHost.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8).contains("lan-command"))
+
+            // Non-questionnaire cancellation is the strict, value-less cancel variant too.
+            val pending = PendingInteraction("input", "test", "input", "Enter a value", null, emptyList(), null)
+            assertEquals("cancel-input", client.respond("runtime", pending, "cancel", commandId = "cancel-input"))
+            val cancelled = Json.parseToJsonElement(lanHost.received.poll(3, TimeUnit.SECONDS)!!.second.toString(Charsets.UTF_8)).jsonObject
+            assertEquals(buildJsonObject { put("kind", "cancel") }, cancelled["command"]?.jsonObject?.get("response"))
             val chunk = ByteArray(20_000) { it.toByte() }
             assertTrue(client.sendUploadChunk("host", "upload", 0, chunk))
             val upload = lanHost.received.poll(3, TimeUnit.SECONDS)!!

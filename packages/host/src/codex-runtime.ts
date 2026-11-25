@@ -628,7 +628,7 @@ export class CodexRuntime implements AgentBackend {
         clearTimeout(approval.timer);
         this.#emit(approval.threadId, { type: "interaction.cancelled", requestId, reason: "disconnected" });
         for (const commandId of approval.submitted?.commandIds ?? []) {
-          this.#commandResult(approval.threadId, commandId, false, "Codex 已断开，无法确认批准结果");
+          this.#commandResult(approval.threadId, commandId, false, "Codex 已断开，回答结果未确认", "unconfirmed");
         }
       }
       this.#approvals.clear();
@@ -2004,7 +2004,7 @@ export class CodexRuntime implements AgentBackend {
       clearTimeout(approval.timer);
       if (approval.submitted === undefined && !preserveApproval) approval.serverRequest.respond(approval.interaction.decline);
       this.#emit(threadId, { type: "interaction.cancelled", requestId, reason: "owner_closed" });
-      for (const commandId of approval.submitted?.commandIds ?? []) this.#commandResult(threadId, commandId, false, reason);
+      for (const commandId of approval.submitted?.commandIds ?? []) this.#commandResult(threadId, commandId, false, reason, "unconfirmed");
       this.#approvals.delete(requestId);
     }
     this.#threads.delete(threadId);
@@ -4410,8 +4410,9 @@ export class CodexRuntime implements AgentBackend {
           try { request.respond(interaction.decline); } catch (error) { this.#options.log?.(describeError(error)); }
         }
         this.#approvals.delete(requestId);
-        for (const commandId of pending.submitted?.commandIds ?? []) this.#commandResult(thread.id, commandId, false, "未收到 Codex 的处理确认，请在电脑端检查结果");
+        // The request expired; that does not prove that an already submitted answer failed.
         this.#emit(thread.id, { type: "interaction.cancelled", requestId, reason: "timeout" });
+        for (const commandId of pending.submitted?.commandIds ?? []) this.#commandResult(thread.id, commandId, false, "未收到 Codex 的处理确认", "unconfirmed");
         this.#publishMetadataEvent(thread);
       }, timeoutMs);
       timer.unref();
@@ -4426,7 +4427,8 @@ export class CodexRuntime implements AgentBackend {
       else request.respond(decline);
       this.#options.log?.(`Codex 交互 ${request.method} 未受理：${describeError(error)}`);
       if (thread !== undefined) thread.notifications.outcome({ code: "codex.interaction.rejected", occurrenceId: String(request.id),
-        scope: { requestId: String(request.id) }, severity: "error", message: `交互未受理：${describeError(error)}` });
+        scope: { requestId: String(request.id) }, severity: "warning",
+        message: decline === undefined ? "当前版本不支持此交互" : "交互请求已失效或不可用" });
     }
   }
 
@@ -4463,7 +4465,7 @@ export class CodexRuntime implements AgentBackend {
       ? { type: "interaction.resolved", requestId, source: approval.submitted ? "remote" : "local" }
       : { type: "interaction.cancelled", requestId, reason: "cancelled" });
     for (const commandId of approval.submitted?.commandIds ?? []) this.#commandResult(approval.threadId, commandId,
-      confirmed, confirmed ? undefined : "本轮已结束，但未收到 Codex 的处理确认，请在电脑端检查结果");
+      confirmed, confirmed ? undefined : "本轮已结束，回答结果未确认", confirmed ? undefined : "unconfirmed");
     const thread = this.#threads.get(approval.threadId);
     if (thread !== undefined) this.#publishMetadataEvent(thread);
   }

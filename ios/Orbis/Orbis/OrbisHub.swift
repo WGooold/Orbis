@@ -350,7 +350,9 @@ final class OrbisStore: ObservableObject {
     var historyRevision: Int { activeConnection.historyRevision }
     var interactions: [String: [InteractionRequest]] { activeConnection.interactions }
     func respondingRequestIds(_ runtimeId: String) -> Set<String> { activeConnection.respondingRequestIds(runtimeId) }
-    func interactionStatus(_ runtimeId: String) -> (text: String, pending: Bool)? { activeConnection.interactionStatus(runtimeId) }
+    func interactionStatus(_ runtimeId: String) -> (text: String, pending: Bool)? {
+        activeConnection.interactionStatus(runtimeId).map { ($0.text, $0.pending) }
+    }
     func configStatus(_ runtimeId: String, setting: String) -> (label: String, mark: String)? { activeConnection.configStatus(runtimeId, setting: setting) }
     func sessionConfigFailure(_ runtimeId: String) -> SessionConfigFailure? { activeConnection.sessionConfigFailure(runtimeId) }
     func sessionModelPresentation(_ runtime: RuntimeSummary) -> SessionModelPresentation {

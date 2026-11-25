@@ -107,8 +107,14 @@ export class NotificationStore {
     if (changed) this.#change(runtimeId, state);
     return true;
   }
-  #put(records: Map<string, Record>, input: NotificationInput, epoch: string, transient: boolean, deviceId?: string): void {
-    const key = notificationKey(input) + (deviceId === undefined ? "" : `:${deviceId}`);
+  #recordKey(key: string, deviceId?: string): string {
+    return deviceId === undefined ? key : `${key}:${deviceId}`;
+  }
+  #isSubmission(code: string): boolean {
+    return code === "interaction.submit" || code === "interaction.submit.rejected";
+  }
+  #put(records: Map<string, Record>, input: NotificationInput, epoch: string, transient: boolean, deviceId?: string,
+    key = this.#recordKey(notificationKey(input), deviceId)): void {
     const existing = records.get(key);
     const prior = existing?.item.producerEpoch === epoch ? existing : undefined;
     if (prior && prior.item.producerEpoch === epoch && isDeepStrictEqual({ ...prior.item, notificationId: undefined, producerEpoch: undefined,
@@ -121,14 +127,41 @@ export class NotificationStore {
       createdAt: prior?.item.createdAt ?? at, updatedAt: at, verification: "confirmed",
       ...(input.displayMs === undefined ? {} : { expiresAt: prior?.item.expiresAt ?? at + input.displayMs }) } });
   }
+  #interactionTerminalKey(state: Projection, requestId: string): string {
+    return JSON.stringify(["interaction.terminal", state.sessionId, requestId]);
+  }
+  /** Terminal request evidence supersedes device-scoped submission fallbacks, not the command receipts. */
+  interactionTerminated(runtimeId: string, requestId: string): void {
+    const state = this.#runtimes.get(runtimeId);
+    if (!state?.active) return;
+    this.#rememberOutcome(state, this.#interactionTerminalKey(state, requestId));
+    let changed = false;
+    for (const [key, record] of state.records) {
+      if (record.deviceId !== undefined && record.item.producerEpoch === this.hostEpoch &&
+          this.#isSubmission(record.item.code) && record.item.scope.requestId === requestId) {
+        this.#rememberRemoval(state, record.item.notificationId);
+        state.records.delete(key); changed = true;
+      }
+    }
+    if (changed) { this.#pruneDismissals(state); this.#change(runtimeId, state); }
+  }
   outcome(runtimeId: string, input: NotificationInput, deviceId?: string): void {
     const state = this.#runtimes.get(runtimeId);
     if (!state?.active) return;
+    const requestId = input.scope.requestId;
+    const submission = deviceId !== undefined && requestId !== undefined && this.#isSubmission(input.code);
+    if (submission && state.outcomeReceipts.has(this.#interactionTerminalKey(state, requestId))) return;
     const item = NotificationInputSchema.parse({ ...input, message: notificationMessage(input.message), lifecycle: "outcome",
       displayMs: input.displayMs ?? (input.severity === "info" ? 8000 : 30_000) });
-    const receipt = JSON.stringify([this.hostEpoch, notificationKey(item), deviceId]);
-    if (state.outcomeReceipts.has(receipt) || state.records.size >= 64) return;
-    const records = new Map(state.records); this.#put(records, item, this.hostEpoch, true, deviceId);
+    const identity = notificationKey(submission ? { ...item, code: "interaction.submit" } : item);
+    const key = this.#recordKey(identity, deviceId);
+    const receipt = JSON.stringify([this.hostEpoch, identity, deviceId]);
+    const existing = state.records.get(key)?.item;
+    // Definite evidence upgrades the same live card without reviving a dismissed or expired outcome.
+    const upgrade = submission && item.code === "interaction.submit.rejected" && existing?.code === "interaction.submit" &&
+      existing.producerEpoch === this.hostEpoch && (existing.expiresAt ?? 0) > this.now();
+    if (!upgrade && (state.outcomeReceipts.has(receipt) || state.records.size >= 64)) return;
+    const records = new Map(state.records); this.#put(records, item, this.hostEpoch, true, deviceId, key);
     if (Buffer.byteLength(JSON.stringify([...records.values()]), "utf8") > 240 * 1024) return;
     this.#rememberOutcome(state, receipt);
     if (!isDeepStrictEqual(records, state.records)) { state.records = records; this.#change(runtimeId, state); }

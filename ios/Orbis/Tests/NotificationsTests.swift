@@ -37,6 +37,34 @@ struct NotificationsTests {
         return row
     }
 
+    // An outcome fallback belongs to its request, not to the whole runtime or notification inventory.
+    @Test func responseOutcomeFallbackIsScopedAndDoesNotMisstateFailure() {
+        func outcome(_ id: String, code: String = "interaction.submit", requestId: String? = nil,
+                     lifecycle: String = "outcome") -> RuntimeNotice {
+            RuntimeNotice(notificationId: id, producerEpoch: "producer", code: code, occurrenceId: id,
+                          scope: .init(requestId: requestId), severity: "error", message: "Original Host detail",
+                          lifecycle: lifecycle, createdAt: 1, updatedAt: 1, verification: "confirmed")
+        }
+        let localFallback = outcome("local-fallback", requestId: "local")
+        let terminalFallback = outcome("terminal-fallback", code: "interaction.submit.rejected", requestId: "terminal")
+        let terminal = outcome("terminal", code: "interaction.result", requestId: "terminal")
+        let unowned = outcome("unowned", requestId: "unowned-request")
+        let unscoped = outcome("unscoped")
+        let unrelated = outcome("unrelated", code: "workspace.error", requestId: "local")
+        let condition = outcome("condition", requestId: "local", lifecycle: "condition")
+        let rejected = outcome("rejected", code: "interaction.submit.rejected", requestId: "rejected-request")
+        let projection = RuntimeNoticeProjection(hostEpoch: "host-epoch", revision: 7, sessionId: "session", verification: "confirmed",
+            items: [localFallback, terminalFallback, terminal, unowned, unscoped, unrelated, condition, rejected], complete: true)
+
+        #expect(projection.hidingResponseOutcomes(ownedBy: ["local"]).items == [terminal, unowned, unscoped, unrelated, condition, rejected])
+        #expect(projection.items.count == 8)
+        #expect(unowned.displaySeverity == "warning")
+        #expect(unowned.displayMessage == L10n.tr("回答结果未确认"))
+        #expect(rejected.displaySeverity == "error")
+        #expect(rejected.displayMessage == L10n.tr("提交失败"))
+        #expect(unrelated.displayMessage == unrelated.message)
+    }
+
     @Test func completeInventoriesRepairLostClearsWithoutChatOrTransportVersions() {
         let h = Harness()
         h.receive(1, [notice("retry"), notice("sandbox")])

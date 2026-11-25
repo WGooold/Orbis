@@ -36,7 +36,7 @@ class DshInstrumentedTest {
             InteractionOption("allow-once", "Allow once"), InteractionOption("reject-once", "Reject"),
         ), null)
         compose.setContent { OrbisTheme { AgentTheme(AgentBrand.DeepSeek) { InteractionWorkspace(
-            listOf(request), true, emptySet(), null,
+            listOf(request), true, emptySet(),
             respondConfirm = { _, _ -> }, respondValue = { _, value -> answer = value }, respondValues = { _, _ -> },
             respondQuestionnaire = { _, _ -> }, onCancel = {},
         ) } } }

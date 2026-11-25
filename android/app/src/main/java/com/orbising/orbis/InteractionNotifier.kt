@@ -51,7 +51,7 @@ class InteractionNotifier(private val context: Context) {
         val notification = Notification.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_orbis)
             .setContentTitle(request.title)
-            .setContentText("$runtimeName • ${request.extensionId}")
+            .setContentText(runtimeName)
             .setContentIntent(intent)
             .setAutoCancel(true)
             .build()
