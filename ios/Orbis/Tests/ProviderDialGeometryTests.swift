@@ -90,15 +90,34 @@ struct ProviderDialGeometryTests {
     @Test func variantBadgesInfoHintsAndActiveSessionPinReleaseHintsMatchDialSpec() {
         #expect(ProviderDialGeometry.variant(for: "codex") == "terminal")
         #expect(ProviderDialGeometry.variant(for: "dsh") == "terminal")
+        #expect(ProviderDialGeometry.variant(for: "kimiCode") == "web")
         #expect(ProviderDialGeometry.variant(for: "codexDesktop") == "desktop")
         #expect(ProviderDialGeometry.variant(for: "dshDesktop") == "desktop")
+        #expect(ProviderDialGeometry.variant(for: "kimiCodeDesktop") == "desktop")
         #expect(ProviderDialGeometry.variant(for: "claude") == nil)
+        #expect(L10n.format("Kimi Code 桌面版", language: .english) == "Kimi Code Desktop")
+        #expect(L10n.format("Kimi Code Web", language: .english) == "Kimi Code Web")
         #expect(ProviderDialGeometry.infoHint(for: "未安装") == "在电脑上的 Orbis 里安装，完成后自动接入。")
         #expect(ProviderDialGeometry.infoHint(for: "待配置") == "在电脑上的 Orbis 里填写连接配置。")
         #expect(ProviderDialGeometry.infoHint(for: "已连接") == nil)
         #expect(ProviderDialGeometry.pinReleaseHint(effectiveEnabled: false, activeSessions: 2) == "松手启用")
         #expect(ProviderDialGeometry.pinReleaseHint(effectiveEnabled: true, activeSessions: 0) == "松手停用")
         #expect(ProviderDialGeometry.pinReleaseHint(effectiveEnabled: true, activeSessions: 1) == "松手后确认停用")
+    }
+
+    // Compact landscape viewports shrink the disc below the portrait floor while preserving handle geometry.
+    @Test func compactLandscapeDialShrinksCleanlyWhilePreservingHandles() {
+        let portrait = ProviderDialGeometry.Layout(width: 402, height: 380)
+        for height in [204.0, 228.0, 260.0] {
+            let landscape = ProviderDialGeometry.Layout(width: 480, height: height)
+            #expect(landscape.radius < portrait.radius)
+            #expect(landscape.centerX < 0)
+            #expect(landscape.centerX + landscape.holeRadius >= 26)
+            #expect(landscape.hubRadius - landscape.holeRadius >= 72)
+            #expect(landscape.hubRadius + 24 < landscape.radius)
+            #expect(landscape.handle(x: landscape.centerX + (landscape.holeRadius + landscape.hubRadius) / 2, y: landscape.centerY) == .agent)
+            #expect(landscape.handle(x: landscape.centerX + landscape.hubRadius + 25, y: landscape.centerY) == .profile)
+        }
     }
 
 }

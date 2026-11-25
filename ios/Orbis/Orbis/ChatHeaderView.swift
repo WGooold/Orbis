@@ -91,6 +91,75 @@ private struct ChatHistoryLabelLayout: Layout {
     }
 }
 
+struct ChatLaunchNoticeRegion: View, Equatable {
+    let model: ChatScreenModel
+    let actions: ChatSessionActions
+    let mountToken: UUID
+    private var ownsViewport: Bool { model.ownsMount(target: actions.target, token: mountToken) }
+    let onBack: () -> Void
+    let onReturnToNewSession: () -> Void
+    @State private var confirmingEnd = false
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.mountToken == rhs.mountToken
+    }
+    private var facts: ChatNoticesState { model.notices }
+    var body: some View {
+        if let launch = facts.launch, facts.isLaunchPage, launch.failure != nil || launch.unconfirmed {
+            let unconfirmed = launch.unconfirmed && !launch.rejected
+            let title = L10n.tr(unconfirmed ? "启动未确认" : "启动失败")
+            VStack(alignment: .leading, spacing: 8) {
+                if let detail = FeedbackText.openClawInlineLaunchDetail(agent: launch.agentKind, detail: launch.failure, unconfirmed: unconfirmed) {
+                    let palette = OrbisPalette(scheme)
+                    Text(title).font(.orbisCaption()).foregroundStyle(unconfirmed ? palette.secondary : palette.error)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(detail).font(.orbisCaption()).foregroundStyle(palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("launch-openclaw-detail")
+                } else {
+                    OrbisStatusWithInfo(title: title,
+                        message: launch.failure ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: !unconfirmed)
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) { launchActions(launch) }.fixedSize(horizontal: true, vertical: false)
+                    VStack(alignment: .leading, spacing: 8) { launchActions(launch) }
+                }
+            }.neuSurface(radius: OrbisRadius.control, intensity: 0.6, padding: 12)
+                .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 4)
+                .accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
+                .alert(L10n.tr("结束本次等待？"), isPresented: $confirmingEnd) {
+                    Button(L10n.tr("结束等待")) { endLaunch(launch.requestId) }
+                    Button(L10n.tr("取消"), role: .cancel) {}
+                } message: {
+                    Text(L10n.tr("电脑上的会话可能仍在启动。结束等待后首句会保留为草稿；再次创建可能打开另一个会话。"))
+                }
+        }
+    }
+
+    @ViewBuilder private func launchActions(_ launch: HostConnection.LaunchState) -> some View {
+        if launch.rejected {
+            OrbisActionButton(title: L10n.tr("返回新建")) { endLaunch(launch.requestId) }
+                .disabled(launch.endingWait).accessibilityIdentifier("launch-abandon")
+        } else {
+            OrbisActionButton(title: launch.configured ? L10n.tr("核对原启动") : L10n.tr("重试"), symbol: "arrow.clockwise") {
+                actions.retryLaunch()
+            }.disabled(launch.endingWait).accessibilityIdentifier("launch-retry")
+            if launch.canEndConfiguredLaunch {
+                OrbisActionButton(title: L10n.tr("结束等待")) { confirmingEnd = true }
+                    .disabled(launch.endingWait).accessibilityIdentifier("launch-abandon")
+            }
+        }
+        OrbisActionButton(title: L10n.tr("返回"), action: onBack).accessibilityIdentifier("launch-back")
+    }
+
+    private func endLaunch(_ id: String) {
+        guard ownsViewport else { return }
+        Task { @MainActor in
+            if await actions.endConfiguredLaunch(id, mayReturnToDraft: { ownsViewport && model.visualActivity.active }) {
+                onReturnToNewSession()
+            }
+        }
+    }
+}
+
 struct ChatNoticesRegion: View, Equatable {
     let model: ChatScreenModel
     let actions: ChatSessionActions
@@ -101,7 +170,6 @@ struct ChatNoticesRegion: View, Equatable {
     let onBack: () -> Void
     let retryHistory: () -> Void
     let onReturnToNewSession: () -> Void
-    @State private var confirmingEnd = false
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisReduceMotion) private var reduceMotion
     @Environment(\.orbisVisualActive) private var visualActive
@@ -117,32 +185,7 @@ struct ChatNoticesRegion: View, Equatable {
         let _ = ChatDebugProbes.rendered(.notices)
         Group {
             if let launch = facts.launch, facts.isLaunchPage, launch.failure != nil || launch.unconfirmed {
-                let unconfirmed = launch.unconfirmed && !launch.rejected
-                let title = L10n.tr(unconfirmed ? "启动未确认" : "启动失败")
-                VStack(alignment: .leading, spacing: 8) {
-                    if let detail = FeedbackText.openClawInlineLaunchDetail(agent: launch.agentKind, detail: launch.failure, unconfirmed: unconfirmed) {
-                        let palette = OrbisPalette(scheme)
-                        Text(title).font(.orbisCaption()).foregroundStyle(unconfirmed ? palette.secondary : palette.error)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(detail).font(.orbisCaption()).foregroundStyle(palette.secondary)
-                            .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("launch-openclaw-detail")
-                    } else {
-                        OrbisStatusWithInfo(title: title,
-                            message: launch.failure ?? L10n.tr("启动未确认：电脑端尚未报告会话上线，请稍后在会话列表中查看。"), error: !unconfirmed)
-                    }
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 12) { launchActions(launch) }.fixedSize(horizontal: true, vertical: false)
-                        VStack(alignment: .leading, spacing: 8) { launchActions(launch) }
-                    }
-                }.neuSurface(radius: OrbisRadius.control, intensity: 0.6, padding: 12)
-                    .padding(.horizontal, 16).padding(.top, 8)
-                    .accessibilityElement(children: .contain).accessibilityIdentifier("launch-notice")
-                    .alert(L10n.tr("结束本次等待？"), isPresented: $confirmingEnd) {
-                        Button(L10n.tr("结束等待")) { endLaunch(launch.requestId) }
-                        Button(L10n.tr("取消"), role: .cancel) {}
-                    } message: {
-                        Text(L10n.tr("电脑上的会话可能仍在启动。结束等待后首句会保留为草稿；再次创建可能打开另一个会话。"))
-                    }
+                EmptyView()
             } else {
                 historySlot
             }
@@ -233,29 +276,6 @@ struct ChatNoticesRegion: View, Equatable {
             .disabled(!enabled)
             .accessibilityIdentifier("chat-history-retry")
             .padding(.horizontal, 16).padding(.top, 6)
-    }
-    @ViewBuilder private func launchActions(_ launch: HostConnection.LaunchState) -> some View {
-        if launch.rejected {
-            OrbisActionButton(title: L10n.tr("返回新建")) { endLaunch(launch.requestId) }
-                .disabled(launch.endingWait).accessibilityIdentifier("launch-abandon")
-        } else {
-            OrbisActionButton(title: launch.configured ? L10n.tr("核对原启动") : L10n.tr("重试"), symbol: "arrow.clockwise") {
-                actions.retryLaunch()
-            }.disabled(launch.endingWait).accessibilityIdentifier("launch-retry")
-            if launch.canEndConfiguredLaunch {
-                OrbisActionButton(title: L10n.tr("结束等待")) { confirmingEnd = true }
-                    .disabled(launch.endingWait).accessibilityIdentifier("launch-abandon")
-            }
-        }
-        OrbisActionButton(title: L10n.tr("返回"), action: onBack).accessibilityIdentifier("launch-back")
-    }
-    private func endLaunch(_ id: String) {
-        guard ownsViewport else { return }
-        Task { @MainActor in
-            if await actions.endConfiguredLaunch(id, mayReturnToDraft: { ownsViewport && model.visualActivity.active }) {
-                onReturnToNewSession()
-            }
-        }
     }
     private func questionReminder(_ question: ChatQuestion) -> some View {
         let p = OrbisPalette(scheme)

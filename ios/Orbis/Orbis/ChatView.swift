@@ -94,17 +94,19 @@ struct ChatView: View {
         GeometryReader { geometry in
             let division = readingDivision(geometry)
             let reading = foldReading && division != nil
-            let controlsVisible = reading && !composerFocus.focused && geometry.size.height - (division?.maxY ?? 0) >= 300
+            let editing = reading && composerFocus.focused
+            let headerVisible = !editing
+            let surfaceVisible = reading && !editing
             let pageLayout = reading
-                ? AnyLayout(ChatPageLayout(division: division, editing: !controlsVisible))
+                ? AnyLayout(ChatPageLayout(division: division, editing: editing))
                 : AnyLayout(VStackLayout(spacing: 0))
             pageLayout {
                 ChatHeaderView(model: model, actions: actions, fallbackRuntime: fallbackRuntime,
                                composerFocus: composerFocus, downloadFlight: downloadFlight,
                                onBack: onBack, onHistory: onHistory, onDownloads: onDownloads).equatable()
-                    .opacity(reading && !controlsVisible ? 0 : 1)
-                    .allowsHitTesting(!reading || controlsVisible)
-                    .accessibilityHidden(reading && !controlsVisible)
+                    .opacity(headerVisible ? 1 : 0)
+                    .allowsHitTesting(headerVisible)
+                    .accessibilityHidden(!headerVisible)
                 ChatTranscriptRegion(model: model, actions: actions, mountToken: mountToken,
                                      setComposerFocused: { composerFocus.focused = $0 }, sendFlight: sendFlight,
                                      acceptedSends: acceptedSends, onBack: onBack, onReturnToNewSession: onReturnToNewSession).id(mountToken)
@@ -113,12 +115,12 @@ struct ChatView: View {
                                  onAcceptedSend: { acceptedSends.send($0) }).equatable()
                     .anchorPreference(key: FeedbackBottomAnchorKey.self, value: .bounds) { [.init(scope: .chat, bounds: $0)] }
                 FoldReadingSurface(model: model, actions: actions, mountToken: mountToken,
-                                    enabled: controlsVisible && visualActive && scenePhase == .active,
+                                    enabled: surfaceVisible && visualActive && scenePhase == .active,
                                     viewportHeight: max(1, (division?.minY ?? 0) - 12))
                     .frame(height: reading ? nil : 0)
-                    .opacity(controlsVisible ? 1 : 0)
-                    .allowsHitTesting(controlsVisible)
-                    .accessibilityHidden(!controlsVisible)
+                    .opacity(surfaceVisible ? 1 : 0)
+                    .allowsHitTesting(surfaceVisible)
+                    .accessibilityHidden(!surfaceVisible)
             }
             .clipped()
         }.frame(maxWidth: 720).frame(maxWidth: .infinity, maxHeight: .infinity)

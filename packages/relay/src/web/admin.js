@@ -3,7 +3,7 @@ const app = document.getElementById("app");
 const dialog = document.getElementById("confirm-dialog");
 const views = { overview: ["概览", "Relay 的运行状态，一目了然。", "◈"], hosts: ["Host", "管理已注册与正在连接的电脑。", "⊞"], devices: ["设备", "查看设备的 Relay 凭据与连接状态。", "▯"], bandwidth: ["带宽", "仅显示已同意分享用量的设备流量。", "⇄"], usage: ["增长遥测", "匿名服务汇总与已同意设备的使用明细。", "↗"], service: ["服务", "注册服务、版本与部署配置。", "⚙"], audit: ["操作记录", "最近 200 次管理操作，随服务数据持久保存。", "≡"] };
 let bandwidthData, bandwidthPeriod = "today", bandwidthDevice = "";
-let usageData, usageHistory = [], usageGranularity = "day", usageDevice = "";
+let usageData, usageHistory = [], usageGranularity = "day";
 let csrf = "", data, view = "overview", query = "", filter = "all", refreshing = false, mutation = false, timer, toastTimer, lastRefresh;
 const escape = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
 const errors = { unauthorized: "登录已失效，请重新输入管理员令牌。", invalid_origin: "请求来源不匹配，请通过本站地址访问后台。", invalid_csrf: "页面会话已更新，请刷新页面后重试。", invalid_granularity: "统计粒度无效，请重新选择。", telemetry_worker_unavailable: "遥测存储暂不可用。", admin_unavailable: "服务器尚未配置管理员令牌。", too_many_attempts: "尝试次数过多，请在 15 分钟后重试。", admin_busy: "管理会话数已达上限，请稍后重试。", device_not_found: "该设备已被撤销，请刷新列表。", host_not_found: "未找到该 Host，请刷新列表。", host_disabled: "请先重新启用该 Host，再重置激活。", internal_error: "服务端未能保存操作，请稍后重试。" };
@@ -160,7 +160,6 @@ function usagePage() {
   return `<section class="metrics" aria-label="增长与用量"><article class="metric"><div class="metric-label">${activeLabel}</div><strong>${metricValue(latest, "activeUsers")}</strong><small>Relay 设备 ID 代理，不等于自然人账号</small></article><article class="metric"><div class="metric-label">新增活跃设备</div><strong>${metricValue(latest, "newUsers")}</strong><small>本粒度首次被观察到活跃</small></article><article class="metric"><div class="metric-label">回访设备</div><strong>${metricValue(latest, "returningUsers")}</strong><small>本粒度此前已活跃</small></article><article class="metric"><div class="metric-label">网站访问</div><strong>${metricValue(latest, "websitePageViews")}</strong><small>主页成功 GET；不是独立访客数</small></article></section><section class="panel"><div class="panel-heading"><div><h2>增长与使用总表</h2><p>注册、配对、活跃、消息、流量及网站下载漏斗。</p></div></div><div class="filter-bar"><select id="usage-granularity" class="field" aria-label="统计粒度">${periodOptions}</select></div>${aggregateTable}</section><section class="panel"><div class="panel-heading"><div><h2>设备使用明细</h2><p>连接时长包括已认证 WebSocket 的空闲连接；带宽按有消息秒统计。</p></div></div><div class="filter-bar"><input id="usage-search" type="search" class="field" aria-label="搜索设备遥测" placeholder="搜索设备名称、ID 或 Host" value="${escape(query)}"></div>${devicesTable}</section>${historyTable}<section class="panel"><div class="panel-heading"><div><h2>服务器资源</h2><p>每分钟采样，展示各粒度的平均值与峰值。</p></div></div>${resourceTable}</section><section class="panel"><div class="panel-heading"><div><h2>用户留存 cohort</h2><p>以首次活跃 UTC 日期分组，统计 D1、D7、D30 当日回访。</p></div></div>${cohortTable}</section><section class="panel settings-notes"><div class="panel-heading"><h2>统计口径与范围</h2></div><p>表行由 Relay 事件实时更新，SQLite 保存小时、日、周、双周、月预聚合；后台读取行，不在请求时扫描事件重算。</p><p>周以 UTC 周一开始；双周按 1970-01-05 UTC 起始的固定 14 天对齐；月为 UTC 自然月。小时保留 90 天、日 400 天、周和双周 3 年、月 5 年。</p><p>设备使用明细仅包含在 Orbis App 设置中明确允许统计的设备；关闭后会删除其可识别的明细，聚合服务总量保留。Relay 仍统计主页访问、下载总量、注册与配对码事件，以及每分钟 CPU、内存、连接数和事件循环指标。网站访问只记录成功的主页 GET，下载只记录 Relay 实际成功服务的类别与字节数；不保存 IP、Cookie、设备消息内容或 URL 查询参数。</p><p>遥测采集开始于 ${escape(timestamp(usageData.coverageStartedAt))}。网站访问不识别独立访客；设备 ID 不能证明自然人身份；设备级使用明细只包含明确同意的设备。QUIC 或由外部 Nginx 直接提供的下载不计入 Relay WebSocket / 下载字节口径。</p></section>`;
 }
 async function loadUsageDevice(deviceId) {
-  usageDevice = deviceId;
   try {
     const result = await api(`usage?granularity=${encodeURIComponent(usageGranularity)}&deviceId=${encodeURIComponent(deviceId)}`);
     usageHistory = result.deviceHistory ?? [];
@@ -174,10 +173,10 @@ function drawUsageUsers() {
   const input = document.getElementById("usage-search");
   if (input) input.oninput = event => { query = event.target.value; draw(); };
   const selector = document.getElementById("usage-granularity");
-  if (selector) { selector.value = usageGranularity; selector.onchange = () => { usageGranularity = selector.value; usageHistory = []; usageDevice = ""; void refresh(); }; }
+  if (selector) { selector.value = usageGranularity; selector.onchange = () => { usageGranularity = selector.value; usageHistory = []; void refresh(); }; }
   document.querySelectorAll("[data-usage-device]").forEach(button => { button.onclick = () => void loadUsageDevice(button.dataset.usageDevice); });
   const close = document.getElementById("close-usage-history");
-  if (close) close.onclick = () => { usageDevice = ""; usageHistory = []; draw(); };
+  if (close) close.onclick = () => { usageHistory = []; draw(); };
 }
 
 function confirmAction(title, message, action) {

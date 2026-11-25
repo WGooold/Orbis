@@ -155,11 +155,15 @@ struct ChatTranscriptView: View, Equatable {
         let revision = model.transcriptInputRevision
         let _ = ChatSchedulingTrace.regionBody(.transcript)
         let _ = ChatDebugProbes.rendered(.transcript)
-        conversation(state: state, revision: revision).overlay(alignment: .top) {
-            ChatNoticesRegion(model: model, actions: actions, mountToken: mountToken, viewport: viewport,
-                setComposerFocused: setComposerFocused, onBack: onBack,
-                retryHistory: { _ = loadOlder(retrying: true, hapticOnAcceptance: true) },
+        VStack(spacing: 0) {
+            ChatLaunchNoticeRegion(model: model, actions: actions, mountToken: mountToken, onBack: onBack,
                 onReturnToNewSession: mount.onReturnToNewSession).equatable()
+            conversation(state: state, revision: revision).overlay(alignment: .top) {
+                ChatNoticesRegion(model: model, actions: actions, mountToken: mountToken, viewport: viewport,
+                    setComposerFocused: setComposerFocused, onBack: onBack,
+                    retryHistory: { _ = loadOlder(retrying: true, hapticOnAcceptance: true) },
+                    onReturnToNewSession: mount.onReturnToNewSession).equatable()
+            }
         }
         .onReceive(acceptedSends) { beginSendFeedback(existing: $0) }
         .onDisappear {

@@ -376,6 +376,7 @@ struct AgentProvidersView: View {
     @Environment(\.orbisSystemVerticalBar) private var systemVerticalBar
     @Environment(\.orbisSystemRootActions) private var systemRootActions
     @Environment(\.orbisVisible) private var visible
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var selectedId: String?
     @State private var chosenKind = "codex"
     @State private var moving = false
@@ -397,7 +398,7 @@ struct AgentProvidersView: View {
     // DeepSeek Desktop has a separate, read-only native catalog (ADR-0076).
     private var group: String? { kind == "codexDesktop" ? "codex" : groups.contains(kind) ? kind : nil }
     private var row: HostConnection.AgentEnablementRow? { rows.first { $0.id == kind } }
-    private var label: String { row?.label ?? (kind.isEmpty ? "" : agentTitle(kind)) }
+    private var label: String { (row?.label).map { L10n.tr($0) } ?? (kind.isEmpty ? "" : agentTitle(kind)) }
     private var powered: Bool { !managed || row?.enabled == true }
     private var visualOn: Bool { owner.agentDialVisualEnabled(kind, committed: powered) }
     private var write: HostConnection.AgentDialChoice? { owner.agentDialChoice(kind) }
@@ -458,19 +459,20 @@ struct AgentProvidersView: View {
                 Spacer(minLength: 8)
                 Text(managed ? (rows.isEmpty ? L10n.tr("正在读取 Agent") : L10n.tr("{0} / {1} 已启用", rows.filter(\.enabled).count, rows.count)) : L10n.tr("{0} 个配置", profiles.count))
                     .font(.orbisCaption()).foregroundStyle(palette.secondary).lineLimit(1).minimumScaleFactor(0.8)
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 12)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, verticalSizeClass == .compact ? 4 : 12)
             GeometryReader { geometry in
                 if geometry.size.width >= 560 && geometry.size.height < 500 {
                     HStack(spacing: 0) {
                         providerDial.frame(maxWidth: .infinity, maxHeight: .infinity)
-                        ScrollView { providerControls }.frame(width: min(340, geometry.size.width * 0.44))
+                        ScrollView { providerControls(compact: true) }.scrollBounceBehavior(.basedOnSize)
+                            .frame(width: min(340, geometry.size.width * 0.44))
                             .accessibilityIdentifier("provider-controls-scroll")
                     }
                 } else {
                     // AGENT-DIAL-04: the facts below scroll inside their own share; they never resize the dial.
                     VStack(spacing: 0) {
                         providerDial.frame(height: ProviderDialGeometry.stackedHeight(width: geometry.size.width, height: geometry.size.height))
-                        ScrollView { providerControls }.scrollBounceBehavior(.basedOnSize).frame(maxHeight: .infinity)
+                        ScrollView { providerControls(compact: false) }.scrollBounceBehavior(.basedOnSize).frame(maxHeight: .infinity)
                     }
                 }
             }
@@ -504,7 +506,7 @@ struct AgentProvidersView: View {
         dismissReviewDialog()
         guard visible, online, let review else { return }
         let expected = owner
-        let name = rows.first { $0.id == review.kind }?.label ?? review.kind
+        let name = (rows.first { $0.id == review.kind }?.label).map { L10n.tr($0) } ?? agentTitle(review.kind)
         var text = L10n.tr("Orbis 将断开此 Agent 的接入，不会退出原生应用。")
         if !review.sessions.isEmpty { text += "\n\n" + review.sessions.map { "• " + $0 }.joined(separator: "\n") }
         let extra = (review.total ?? 0) - review.sessions.count
@@ -544,8 +546,8 @@ struct AgentProvidersView: View {
                 }
             }.accessibilityIdentifier("provider-dial-area")
     }
-    private var providerControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func providerControls(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 8 : 10) {
             let activeSessions = online && powered ? owner.runtimes.filter { $0.agentKind == kind } : []
             let quotaReady = provider?.subscriptionSupported == true && provider?.enabled == true
             // AGENT-DIAL-05: the facts slot, the action and the position line hold the same place for every Agent;
@@ -568,8 +570,8 @@ struct AgentProvidersView: View {
                         .padding(.horizontal, 12).padding(.vertical, 10)
                         .neuSurface(inset: true, radius: 12, intensity: 0.35, concentric: false)
                         .accessibilityIdentifier("provider-running-sessions")
-                } else if powered && group != nil && (provider != nil || !managed) { quotaPanel }
-            }.frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
+                } else if powered && group != nil && (provider != nil || !managed) { quotaPanel(compact: compact) }
+            }.frame(maxWidth: .infinity, minHeight: compact ? 96 : 112, alignment: .topLeading)
             if let write {
                 OrbisActionButton(title: L10n.tr(write.target ? "正在启用" : "正在停用"), symbol: "clock") {}.disabled(true)
             } else if managed && row == nil {
@@ -615,10 +617,10 @@ struct AgentProvidersView: View {
                         .font(.orbisCaption()).foregroundStyle(palette.secondary)
                 }
             }.frame(minHeight: 20, alignment: .top)
-        }.padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 16)
+        }.padding(.horizontal, compact ? 16 : 20).padding(.top, compact ? 6 : 12).padding(.bottom, compact ? 12 : 16)
     }
     private func feedbackRow(_ feedback: HostConnection.AgentDialNotice) -> some View {
-        let name = rows.first { $0.id == feedback.kind }?.label ?? label
+        let name = (rows.first { $0.id == feedback.kind }?.label).map { L10n.tr($0) } ?? label
         let text: String = switch feedback.status {
         case "disabled": L10n.tr("已停用 {0}", name)
         case "externalOn": L10n.tr("{0} 已在其他设备启用", name)
@@ -635,7 +637,7 @@ struct AgentProvidersView: View {
             } else if feedback.status == "readFailed", online { Button(L10n.tr("刷新"), action: owner.refreshAgentEnablement) }
         }
     }
-    private var quotaPanel: some View {
+    private func quotaPanel(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if let provider, provider.enabled && provider.subscriptionSupported {
                 let snapshot = host.subscriptionQuota(for: provider)
@@ -653,7 +655,7 @@ struct AgentProvidersView: View {
             } else {
                 OrbisStatusWithInfo(title: L10n.tr("配额不可用"), message: L10n.tr("这个配置不提供配额查询"))
             }
-        }.frame(minHeight: 112, alignment: .top)
+        }.frame(minHeight: compact ? 96 : 112, alignment: .top)
     }
     private func actionTitle(_ provider: AgentProvider) -> String {
         if provider.additive { return provider.enabled ? L10n.tr("移出 {0}", provider.name) : L10n.tr("启用 {0}", provider.name) }
@@ -869,7 +871,7 @@ private struct ProviderDialView: View {
             groupPosition = Double(groupIndex); profilePosition = Double(selected); ringLit = powered; restTravel = pinRest
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--preview-provider-keyboard") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { keyboardHandle = .profile }
+                keyboardHandle = .profile
             }
             #endif
         }
@@ -967,7 +969,7 @@ private struct ProviderDialView: View {
                     .neuSurface(radius: 7, intensity: 0.25, concentric: false)
                     .environment(\.orbisSurface, nil)
                     .overlay {
-                        Image(systemName: variant == "terminal" ? "terminal" : "display")
+                        Image(systemName: variant == "terminal" ? "terminal" : variant == "web" ? "globe" : "display")
                             .font(.system(size: 7.5, weight: .semibold)).foregroundStyle(palette.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing).padding(2)
@@ -1369,22 +1371,77 @@ private struct OrbisDialKeyboardBridge: UIViewRepresentable {
     func updateUIView(_ view: Receiver, context: Context) {
         view.active = active; view.owner = focus; view.browse = browse; view.pinEditable = pinEditable
         view.changeFocus = { focus = $0 }
-        if active && focus != nil { if !view.isFirstResponder { view.becomeFirstResponder() } }
-        else if view.isFirstResponder { view.resignFirstResponder() }
+        if active && focus != nil {
+            view.claimFocusIfNeeded()
+        } else if view.isFirstResponder { view.resignFirstResponder() }
     }
-    final class Receiver: UIView {
+    final class Receiver: UITextView {
         var owner: ProviderDialGeometry.Handle?
         var active = false
         var pinEditable = false
         var acceptsPinKeys: Bool { owner == .agent && pinEditable }
-        override func didMoveToWindow() { super.didMoveToWindow(); if window != nil && active && owner != nil { becomeFirstResponder() } }
+        private let hiddenInputView = UIView(frame: .zero)
+        override var inputView: UIView? { get { hiddenInputView } set {} }
+        override var inputAssistantItem: UITextInputAssistantItem {
+            let item = super.inputAssistantItem
+            item.leadingBarButtonGroups = []
+            item.trailingBarButtonGroups = []
+            return item
+        }
+        override func insertText(_ text: String) {
+            guard active, owner != nil else { return }
+            switch text {
+            case "\t":
+                if owner == .profile { nextHandle() }
+            case " " where acceptsPinKeys:
+                space()
+            case "\u{F700}", UIKeyCommand.inputUpArrow: up()
+            case "\u{F701}", UIKeyCommand.inputDownArrow: down()
+            case "\u{F729}", UIKeyCommand.inputHome: home()
+            case "\u{F72B}", UIKeyCommand.inputEnd: end()
+            case "\u{F702}", UIKeyCommand.inputLeftArrow where acceptsPinKeys: left()
+            case "\u{F703}", UIKeyCommand.inputRightArrow where acceptsPinKeys: right()
+            default: break
+            }
+        }
+        override func deleteBackward() {}
+        override init(frame: CGRect, textContainer: NSTextContainer?) {
+            super.init(frame: frame, textContainer: textContainer)
+            backgroundColor = .clear
+            textColor = .clear
+            tintColor = .clear
+            isScrollEnabled = false
+            isSelectable = false
+            autocorrectionType = .no
+            spellCheckingType = .no
+            smartQuotesType = .no
+            smartDashesType = .no
+            accessibilityElementsHidden = true
+            NotificationCenter.default.addObserver(self, selector: #selector(windowOrAppActivated), name: UIWindow.didBecomeKeyNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(windowOrAppActivated), name: UIApplication.didBecomeActiveNotification, object: nil)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        deinit { NotificationCenter.default.removeObserver(self) }
+        @objc private func windowOrAppActivated() { claimFocusIfNeeded() }
+        func claimFocusIfNeeded() {
+            guard active, owner != nil else { return }
+            if window != nil && !isFirstResponder { becomeFirstResponder() }
+            if !isFirstResponder {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.window != nil, self.active, self.owner != nil, !self.isFirstResponder else { return }
+                    self.becomeFirstResponder()
+                }
+            }
+        }
+        override func didMoveToWindow() { super.didMoveToWindow(); claimFocusIfNeeded() }
+        override func layoutSubviews() { super.layoutSubviews(); if window?.isKeyWindow == true { claimFocusIfNeeded() } }
         var browse: (ProviderDialGeometry.Handle, KeyEquivalent) -> Void = { _, _ in }
         var changeFocus: (ProviderDialGeometry.Handle?) -> Void = { _ in }
-        override var canBecomeFirstResponder: Bool { true }
+        override var canBecomeFirstResponder: Bool { active && owner != nil }
         override var canBecomeFocused: Bool { active }
         override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
             super.didUpdateFocus(in: context, with: coordinator)
-            if context.nextFocusedView === self { if owner == nil { owner = .profile; changeFocus(.profile) }; becomeFirstResponder() }
+            if context.nextFocusedView === self { if owner == nil { owner = .profile; changeFocus(.profile) }; claimFocusIfNeeded() }
         }
         override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
             guard let key = presses.compactMap(\.key).first(where: { $0.keyCode != .keyboardLeftShift && $0.keyCode != .keyboardRightShift }), owner != nil else { super.pressesBegan(presses, with: event); return }
@@ -1401,7 +1458,16 @@ private struct OrbisDialKeyboardBridge: UIViewRepresentable {
                 if shift, owner == .agent { previous() }
                 else if !shift, owner == .profile { nextHandle() }
                 else { super.pressesBegan(presses, with: event) }
-            default: super.pressesBegan(presses, with: event)
+            default:
+                switch key.charactersIgnoringModifiers {
+                case UIKeyCommand.inputUpArrow, "\u{F700}": up()
+                case UIKeyCommand.inputDownArrow, "\u{F701}": down()
+                case UIKeyCommand.inputHome, "\u{F729}": home()
+                case UIKeyCommand.inputEnd, "\u{F72B}": end()
+                case UIKeyCommand.inputLeftArrow, "\u{F702}" where acceptsPinKeys: left()
+                case UIKeyCommand.inputRightArrow, "\u{F703}" where acceptsPinKeys: right()
+                default: super.pressesBegan(presses, with: event)
+                }
             }
         }
         override var keyCommands: [UIKeyCommand]? {

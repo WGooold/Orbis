@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { GatewayClient, GatewayClientRequestError, type DeviceAuthTokenRecord, type DeviceIdentity, type GatewayClientRequestOptions } from "@openclaw/gateway-client";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "@openclaw/gateway-protocol/client-info";
-import { ConnectErrorDetailCodes, readConnectErrorDetailCode, readPairingConnectErrorDetails } from "@openclaw/gateway-protocol/connect-error-details";
+import { ConnectErrorDetailCodes, ConnectErrorDetailCodes as Connect, readConnectErrorDetailCode, readPairingConnectErrorDetails } from "@openclaw/gateway-protocol/connect-error-details";
 import type { EventFrame } from "@openclaw/gateway-protocol/frame-guards";
 import { isRetryableGatewayStartupUnavailableError } from "@openclaw/gateway-protocol/startup-unavailable";
 import { PROTOCOL_VERSION } from "@openclaw/gateway-protocol/version";

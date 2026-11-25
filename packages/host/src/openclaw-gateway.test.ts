@@ -70,7 +70,7 @@ test("keeps access policy and token on a same-endpoint edit, and does not carry 
   await expect(save(endpoint, "secret", { clearToken: true })).rejects.toThrow(/凭据操作无效/);
   await expect(save(endpoint, "", { access: ["operator.admin"] })).rejects.toThrow(/权限选项无效/);
   expect(await loadOpenClawConfig(dir, {})).toEqual({ url: endpoint, token: "fixture", access: "sessions" });
-  expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_ACCESS: "admin" })).toEqual({ url: endpoint, token: "fixture", access: "admin" });
+  expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_ACCESS: "admin" })).toEqual({ url: endpoint, token: "fixture", access: "admin", environment: true });
   expect(await readOpenClawDesktopSettings(dir, { ORBIS_OPENCLAW_ACCESS: "admin" })).toEqual({
     source: "environment", url: endpoint, hasToken: true, invalid: false, access: "admin",
   });
@@ -89,8 +89,8 @@ test("saves Gateway password authentication without disclosing or migrating the 
   expect(await save("fixture-password", { auth: "password" })).toMatchObject({ auth: "password", hasPassword: true });
   expect(JSON.stringify(await readOpenClawDesktopSettings(dir, {}))).not.toContain("fixture-password");
   expect(await loadOpenClawConfig(dir, {})).toEqual({ url: endpoint, auth: "password", password: "fixture-password" });
-  expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_TOKEN: "replacement" })).toEqual({ url: endpoint, token: "replacement" });
-  expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_URL: "wss://other.example.net", ORBIS_OPENCLAW_PASSWORD: "other-password" })).toEqual({ url: "wss://other.example.net", auth: "password", password: "other-password" });
+  expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_TOKEN: "replacement" })).toEqual({ url: endpoint, token: "replacement", environment: true });
+  expect(await loadOpenClawConfig(dir, { ORBIS_OPENCLAW_URL: "wss://other.example.net", ORBIS_OPENCLAW_PASSWORD: "other-password" })).toEqual({ url: "wss://other.example.net", auth: "password", password: "other-password", environment: true });
   await expect(loadOpenClawConfig(dir, { ORBIS_OPENCLAW_TOKEN: "one", ORBIS_OPENCLAW_PASSWORD: "two" })).rejects.toThrow(/只能配置一种/);
   expect(await save("", { clearToken: true })).toMatchObject({ auth: "password", hasPassword: false });
 });
@@ -247,6 +247,67 @@ test("OPENCLAW-01 signs the nonce, checks scope/RPC admission and reuses its dev
   expect(connects.slice(before).map(row => row.token)).toEqual(["previously-valid-token", "paired-token"]);
   expect(rotated.issue).toBeUndefined();
   expect(events.log.mock.calls.flat()).not.toContain("OpenClaw Gateway: token_mismatch");
+});
+
+// OPENCLAW-RECOVERY-01: only a confirmed local refusal or structured Gateway
+// rejection diagnoses the failure. Reconnect keeps the endpoint and pairing identity.
+test("reports a closed local port with no claim about Gateway auth", async () => {
+  const dir = await stateDir();
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await new Promise<void>(resolve => server.once("listening", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing address");
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  const gateway = await OpenClawGateway.create({ url: `ws://127.0.0.1:${address.port}` }, dir,
+    { online: vi.fn(), offline: vi.fn(), event: vi.fn(), gap: vi.fn() });
+  cleanups.push(() => gateway.stop());
+  gateway.start();
+  await vi.waitFor(() => expect(gateway.issue).toBe("local_port_closed"));
+  expect(gateway.ready).toBe(false);
+});
+
+test.each([
+  ["AUTH_TOKEN_MISSING", false, "token_missing"],
+  ["AUTH_TOKEN_MISSING", true, "environment_token_missing"],
+  ["AUTH_TOKEN_MISMATCH", false, "token_mismatch"],
+  ["AUTH_TOKEN_MISMATCH", true, "environment_token_mismatch"],
+  ["AUTH_TOKEN_NOT_CONFIGURED", false, "gateway_token_unconfigured"],
+  ["AUTH_DEVICE_TOKEN_MISMATCH", false, "device_token_rejected"],
+  ["PAIRING_EXPIRED", false, "pairing_rejected"],
+  ["AUTH_SCOPE_MISMATCH", false, "session_access_denied"],
+  ["PROTOCOL_MISMATCH", false, "version_incompatible"],
+  ["CLIENT_VERSION_MISMATCH", false, "version_incompatible"],
+  ["UNKNOWN_FIXTURE_DETAIL", false, "connect_unconfirmed"],
+  ["startup-sidecars", false, "starting"],
+] as const)("uses safe next steps for structured Gateway reply %s (environment=%s)", async (code, environment, issue) => {
+  const dir = await stateDir();
+  const secret = "fixture-private-message-or-url";
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  cleanups.push(async () => {
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  });
+  await new Promise<void>(resolve => server.once("listening", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing address");
+  server.on("connection", socket => {
+    socket.send(JSON.stringify({ type: "event", event: "connect.challenge", payload: { nonce: "fixture", ts: Date.now() } }));
+    socket.on("message", raw => {
+      const { id } = JSON.parse(raw.toString());
+      socket.send(JSON.stringify({ type: "res", id, ok: false, error: code === "startup-sidecars"
+        ? { code: "UNAVAILABLE", message: secret, retryable: true, details: { reason: code } }
+        : { code: "INVALID_REQUEST", message: secret, details: { code, remediationHint: secret, requestId: secret } } }));
+    });
+  });
+  const events = { online: vi.fn(), offline: vi.fn(), event: vi.fn(), gap: vi.fn(), log: vi.fn() };
+  const gateway = await OpenClawGateway.create({ url: `ws://127.0.0.1:${address.port}`, ...(environment ? { environment: true } : {}) }, dir, events);
+  cleanups.push(() => gateway.stop());
+  gateway.start();
+  await vi.waitFor(() => expect(gateway.issue).toBe(issue));
+  expect(gateway.ready).toBe(false);
+  expect(events.online).not.toHaveBeenCalled();
+  expect(events.log).toHaveBeenCalledExactlyOnceWith(`OpenClaw Gateway: ${issue}`);
+  expect(JSON.stringify(events.log.mock.calls)).not.toContain(secret);
 });
 
 // OPENCLAW-RECOVERY-01: only a confirmed local refusal or structured Gateway

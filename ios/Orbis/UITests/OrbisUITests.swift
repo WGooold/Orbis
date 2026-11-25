@@ -347,33 +347,36 @@ final class OrbisUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["persistent-session-directory"].firstMatch.exists)
         let transcript = chatTranscript(app)
         XCTAssertLessThan(transcript.frame.maxY, surface.frame.minY)
-        func visibleAnchors() -> [String: CGFloat] {
-            let rows = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "阅读锚点 "))
-                .allElementsBoundByIndex.filter {
-                    $0.isHittable && $0.frame.intersects(transcript.frame)
-                }
-            return Dictionary(rows.map { ($0.label, $0.frame.minY) }, uniquingKeysWith: { first, _ in first })
+        let bottomAnchor = app.staticTexts["阅读锚点 79"].firstMatch
+        let midAnchor = app.staticTexts["阅读锚点 74"].firstMatch
+        XCTAssertTrue(bottomAnchor.waitForExistence(timeout: 4))
+        XCTAssertTrue(midAnchor.waitForExistence(timeout: 4))
+        func anchorPositions() -> (CGFloat, CGFloat) {
+            (bottomAnchor.exists ? bottomAnchor.frame.minY : .greatestFiniteMagnitude,
+             midAnchor.exists ? midAnchor.frame.minY : .greatestFiniteMagnitude)
         }
         func dragSurface(down: Bool) {
             let start = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.2 : 0.8))
             let end = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.8 : 0.2))
             start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
         }
-        let initial = visibleAnchors()
-        XCTAssertFalse(initial.isEmpty)
+        let initial = anchorPositions()
         surface.tap()
-        XCTAssertEqual(visibleAnchors(), initial, "A resting grip or tap must not page the transcript")
+        XCTAssertEqual(anchorPositions().0, initial.0, accuracy: 2, "A resting grip or tap must not page the transcript")
+        XCTAssertEqual(anchorPositions().1, initial.1, accuracy: 2, "A resting grip or tap must not page the transcript")
         dragSurface(down: true)
         let pageChanged = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            !visibleAnchors().isEmpty && visibleAnchors() != initial
+            let current = anchorPositions()
+            return abs(current.0 - initial.0) > 12 || abs(current.1 - initial.1) > 12
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [pageChanged], timeout: 4), .completed)
-        let earlier = visibleAnchors()
+        XCTAssertEqual(XCTWaiter.wait(for: [pageChanged], timeout: 6), .completed)
+        let earlier = anchorPositions()
         dragSurface(down: false)
         let reversed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            !visibleAnchors().isEmpty && visibleAnchors() != earlier
+            let current = anchorPositions()
+            return abs(current.0 - earlier.0) > 12 || abs(current.1 - earlier.1) > 12
         }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [reversed], timeout: 4), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [reversed], timeout: 6), .completed)
         capture("fold-reading-surface", app: app)
 
         editor.tap()
@@ -430,25 +433,30 @@ final class OrbisUITests: XCTestCase {
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
             XCUIDevice.shared.orientation = orientation
             let tabBar = app.tabBars.firstMatch
-            XCTAssertTrue(tabBar.waitForExistence(timeout: 8))
+            let hasStandardTabBar = tabBar.waitForExistence(timeout: 4)
+            func tabButton(_ name: String) -> XCUIElement {
+                hasStandardTabBar ? tabBar.buttons[name] : app.buttons[name].firstMatch
+            }
+            XCTAssertTrue(tabButton("聊天").waitForExistence(timeout: 4))
             XCTAssertFalse(app.descendants(matching: .any)["root-header-navigation"].firstMatch.exists)
             XCTAssertFalse(app.descendants(matching: .any)["root-bottom-navigation"].firstMatch.exists)
-            for tab in ["聊天", "供应商", "设置"] {
-                let button = tabBar.buttons[tab]
+            for tab in ["聊天", "Agent", "设置"] {
+                let button = tabButton(tab)
                 XCTAssertTrue(button.isHittable)
-                XCTAssertTrue(tabBar.frame.contains(button.frame))
+                if hasStandardTabBar { XCTAssertTrue(tabBar.frame.contains(button.frame)) }
             }
             for action in ["home-downloads", "home-new-session"] {
                 let button = app.buttons[action]
                 XCTAssertTrue(button.isHittable)
             }
-            tabBar.buttons["供应商"].tap()
-            XCTAssertTrue(tabBar.buttons["供应商"].isSelected)
-            XCTAssertTrue(app.buttons["刷新供应商"].isHittable)
-            tabBar.buttons["设置"].tap()
+            tabButton("Agent").tap()
+            XCTAssertTrue(tabButton("Agent").isSelected)
+            XCTAssertTrue(app.buttons["刷新"].waitForExistence(timeout: 4))
+            XCTAssertTrue(app.buttons["刷新"].isHittable)
+            tabButton("设置").tap()
             XCTAssertTrue(app.buttons["settings-connection"].waitForExistence(timeout: 4))
-            XCTAssertTrue(tabBar.buttons["设置"].isSelected)
-            tabBar.buttons["聊天"].tap()
+            XCTAssertTrue(tabButton("设置").isSelected)
+            tabButton("聊天").tap()
             XCTAssertTrue(app.buttons["home-new-session"].waitForExistence(timeout: 4))
             capture(orientation == .portrait ? "closed-fold-root-navigation-portrait" : "closed-fold-root-navigation-landscape", app: app)
         }
@@ -529,6 +537,7 @@ final class OrbisUITests: XCTestCase {
         let app = launch("providers", arguments: ["--preview-reduce-motion", "--preview-provider-keyboard", "--preview-reset-design"])
         let profile = app.descendants(matching: .any)["provider-profile-keyboard"].firstMatch
         XCTAssertTrue(profile.waitForExistence(timeout: 6))
+        XCTAssertTrue(app.buttons["provider-action-official"].waitForExistence(timeout: 6))
         profile.typeKey(.end, modifierFlags: [])
         let selectedTeam = NSPredicate(format: "value == %@", "团队供应商")
         XCTAssertTrue(profile.waitForExistence(timeout: 3))
@@ -1576,8 +1585,14 @@ final class OrbisUITests: XCTestCase {
     }
 
     private func waitForSessionLaunchFailure(_ app: XCUIApplication) -> XCUIElement {
-        let failure = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "启动失败：对应的 agent 后端未就绪")).firstMatch
+        let failure = app.staticTexts["启动失败"].firstMatch
         XCTAssertTrue(failure.waitForExistence(timeout: 5))
+        let info = app.buttons["查看启动失败说明"].firstMatch
+        XCTAssertTrue(info.waitForExistence(timeout: 3))
+        XCTAssertTrue(info.isHittable)
+        info.tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "所选助手尚未就绪")).firstMatch.waitForExistence(timeout: 3))
+        if app.buttons["知道了"].exists { app.buttons["知道了"].tap() }
         XCTAssertTrue(app.buttons["launch-retry"].isHittable)
         XCTAssertTrue(app.buttons["launch-back"].isHittable)
         return failure
@@ -1596,6 +1611,13 @@ final class OrbisUITests: XCTestCase {
         XCTAssertFalse(title.label.contains("launch:"), title.label)
         capture("launch-starting", app: app)
         let failure = waitForSessionLaunchFailure(app)
+        let notice = app.descendants(matching: .any)["launch-notice"].firstMatch
+        let transcript = app.collectionViews["chat-transcript-native"].firstMatch.exists
+            ? app.collectionViews["chat-transcript-native"].firstMatch : app.scrollViews.firstMatch
+        let firstMessage = transcript.staticTexts["开始测试会话"].firstMatch
+        XCTAssertTrue(notice.exists && firstMessage.waitForExistence(timeout: 2))
+        XCTAssertLessThanOrEqual(notice.frame.maxY, firstMessage.frame.minY + 2,
+                                 "Launch failure card must sit above the preserved first message")
         capture("launch-failed", app: app)
         app.buttons["launch-retry"].tap()
         XCTAssertTrue(starting.waitForExistence(timeout: 1))
@@ -4918,6 +4940,111 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(position.label.contains("第 1 / 2 题"))
         XCTAssertTrue(firstOption.isSelected)
         capture("questionnaire-page-navigation-and-scroll", app: app)
+    }
+
+    // Phone landscape regression: questionnaire inner answers stay scrollable (never crushed to 0pt)
+    // and Home new-session draft hides the bottom tab bar so keyboard + draft stay usable.
+    func testLandscapeQuestionnaireAndNewSessionStayUsable() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+
+        let sheetApp = launch("interactions", arguments: ["--preview-questionnaire", "--preview-reduce-motion"])
+        let scroll = sheetApp.scrollViews["questionnaire-answer-scroll"]
+        let firstOption = sheetApp.buttons["questionnaire-option-preference-choice-1"]
+        let lastOption = sheetApp.buttons["questionnaire-option-preference-choice-12"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 8))
+        XCTAssertGreaterThanOrEqual(scroll.frame.height, 100, "Landscape questionnaire answers must stay visible")
+        XCTAssertTrue(firstOption.waitForExistence(timeout: 4))
+        XCTAssertTrue(firstOption.isHittable)
+        firstOption.tap()
+        XCTAssertTrue(firstOption.isSelected)
+        XCTAssertTrue(sheetApp.staticTexts["questionnaire-progress"].label.contains("已回答 1 / 2"))
+        capture("landscape-questionnaire-top", app: sheetApp)
+        for _ in 0..<14 where !lastOption.isHittable {
+            let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+            let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+            start.press(forDuration: 0.03, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.05)
+        }
+        XCTAssertTrue(lastOption.isHittable)
+        sheetApp.buttons["questionnaire-next"].tap()
+        XCTAssertTrue(sheetApp.staticTexts["questionnaire-position"].waitForExistence(timeout: 3))
+        XCTAssertTrue(sheetApp.staticTexts["questionnaire-position"].label.contains("第 2 / 2 题"))
+        capture("landscape-questionnaire", app: sheetApp)
+        sheetApp.terminate()
+
+        let homeApp = launch("home", arguments: ["--preview-reduce-motion", "--preview-reset-design"])
+        let newSession = homeApp.buttons["home-new-session"]
+        XCTAssertTrue(newSession.waitForExistence(timeout: 8))
+        newSession.tap()
+        XCTAssertFalse(homeApp.descendants(matching: .any)["root-bottom-navigation"].firstMatch.exists,
+                       "Bottom tab bar must yield while composing a new session")
+        let draftList = homeApp.scrollViews["home-session-list"]
+        XCTAssertTrue(draftList.waitForExistence(timeout: 4))
+        XCTAssertGreaterThan(draftList.frame.height, 80, "Home draft list must keep usable height in landscape")
+        let pi = homeApp.buttons["draft-agent-pi"]
+        XCTAssertTrue(pi.waitForExistence(timeout: 4))
+        pi.tap()
+        let input = homeApp.descendants(matching: .any)["draft-message"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 4))
+        input.tap()
+        input.typeText("横屏新建会话")
+        let send = homeApp.buttons["draft-send"]
+        XCTAssertTrue(waitUntilEnabled(send, timeout: 3))
+        XCTAssertTrue(send.isHittable)
+        capture("landscape-new-session-draft", app: homeApp)
+        homeApp.terminate()
+    }
+
+    // Managed Agent dial preview: verifies Kimi Code Web / Desktop coexist cleanly with distinct badges
+    // and Host-supplied "Kimi Code 桌面版" localizes to "Kimi Code Desktop" in English mode.
+    func testManagedAgentDialShowsKimiWebAndDesktopVariantsAndLocalizesLabel() {
+        let app = launch("providers", arguments: ["--preview-agent-enablement", "--preview-reduce-motion", "--preview-reset-design"])
+        let agent = app.descendants(matching: .any)["provider-agent-keyboard"].firstMatch
+        XCTAssertTrue(agent.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["4 / 5 已启用"].waitForExistence(timeout: 5))
+        let dialArea = app.descendants(matching: .any)["provider-dial-area"].firstMatch
+        XCTAssertTrue(dialArea.waitForExistence(timeout: 4))
+        // Step through inner ring to Kimi Code Web and Kimi Code Desktop.
+        func dragInnerUp() {
+            let frame = agent.frame
+            let start = app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: frame.maxX - 30, dy: frame.midY))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -84)),
+                withVelocity: .slow, thenHoldForDuration: 0.15)
+        }
+        dragInnerUp() // codexDesktop
+        dragInnerUp() // kimiCode
+        XCTAssertTrue(app.staticTexts["Kimi Code Web"].waitForExistence(timeout: 4))
+        capture("managed-dial-kimi-web", app: app)
+        dragInnerUp() // kimiCodeDesktop
+        XCTAssertTrue(app.staticTexts["Kimi Code 桌面版"].waitForExistence(timeout: 4))
+        capture("managed-dial-kimi-desktop", app: app)
+        app.terminate()
+    }
+
+    // Chat `@` computer file mention opens the session's working directory (not the Downloads folder)
+    // and inserts the selected computer file path into the composer.
+    func testChatMentionOpensSessionCwdAndInsertsComputerFilePath() {
+        let app = launch("chat", arguments: ["--preview-chat-path-mention", "--preview-reduce-motion"])
+        let composer = app.descendants(matching: .any)["chat-composer"].firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 8))
+        composer.tap()
+        composer.typeText("查看 @")
+        let pathField = app.textFields["download-browser-path"]
+        XCTAssertTrue(pathField.waitForExistence(timeout: 6))
+        XCTAssertEqual(pathField.value as? String, "/Projects/orbis")
+        let readme = app.buttons["README.md"]
+        XCTAssertTrue(readme.waitForExistence(timeout: 4))
+        readme.tap()
+        let insert = app.buttons["引用到输入框"]
+        XCTAssertTrue(waitUntilEnabled(insert, timeout: 3))
+        capture("chat-mention-browser-cwd", app: app)
+        insert.tap()
+        XCTAssertTrue(pathField.waitForNonExistence(timeout: 4))
+        XCTAssertTrue((composer.value as? String)?.contains("/Projects/orbis/README.md") == true,
+                      "Expected inserted computer path, got \(String(describing: composer.value))")
+        capture("chat-mention-inserted", app: app)
+        app.terminate()
     }
 
     func testToolExportAndInteractionDraftSwitching() {

@@ -525,7 +525,9 @@ func makePreviewStore(screen: String) -> OrbisStore {
         }
     }
     transport.launchGate = { [weak store] in
-        store?.pendingSends.items.contains { if case .waiting = $0.state { return true }; return false } == true
+        // LAUNCH-FIRST-01 queues the draft's first message immediately on launch;
+        // wait until a follow-up message is sent while launching before coming online.
+        (store?.pendingSends.items.filter { if case .waiting = $0.state { return true }; return false }.count ?? 0) >= 2
     }
     if screen == "chat", let mode = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--preview-upload-waiting") }) {
         // 夹具（ADR-0049 §6.1–§6.2）：输入框挂一个正在上传的图片；带着它发出消息后推进进度，
@@ -789,10 +791,19 @@ private final class PreviewTransport: OrbisTransport {
             }
             if ProcessInfo.processInfo.arguments.contains("--preview-background-tasks") { runtimes[0]["agentKind"] = "claude"; runtimes[0]["name"] = "Claude Code" }
             let launchableDshOnly = ProcessInfo.processInfo.arguments.contains("--preview-launchable-dsh")
-            receive(["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": runtimes,
+            let managedDial = ProcessInfo.processInfo.arguments.contains("--preview-agent-enablement")
+            let providerAgents = managedDial ? ["codex", "codexDesktop", "kimiCode", "kimiCodeDesktop"]
+                : screen == "providers" ? ["pi", "codex", "claude", "dsh"] : ["pi", "codex", "dsh"]
+            var ready: [String: Any] = ["type": "device.ready", "protocolVersion": orbisProtocolVersion, "modelEpoch": "preview-model", "notificationEpoch": "preview-notices", "runtimes": runtimes,
                      "sessionConfiguration": ProcessInfo.processInfo.arguments.contains("--preview-permission-options") ? 1 : 0,
-                     "agents": launchableDshOnly ? ["pi"] : ["pi", "codex", "dsh"],
-                     "launchableAgents": launchableDshOnly ? ["pi", "dsh"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop-only") ? ["codexDesktop"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop") ? ["pi", "codex", "codexDesktop", "dsh"] : ["pi", "codex", "dsh"]], "ctl")
+                     "agents": launchableDshOnly ? ["pi"] : providerAgents,
+                     "launchableAgents": launchableDshOnly ? ["pi", "dsh"] : managedDial ? ["codex", "codexDesktop", "kimiCode", "kimiCodeDesktop", "pi"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop-only") ? ["codexDesktop"] : ProcessInfo.processInfo.arguments.contains("--preview-draft-desktop") ? ["pi", "codex", "codexDesktop", "dsh"] : ["pi", "codex", "dsh"]]
+            if managedDial {
+                let features = ["agent.enablement.v1", "agent.kimiCode", "agent.kimiCodeDesktop"]
+                ready["hostFeatures"] = features
+                ready["deviceFeatures"] = features
+            }
+            receive(ready, "ctl")
             var path: [String: Any] = ["type": "device.path", "path": "relay"]
             if !ProcessInfo.processInfo.arguments.contains("--preview-no-rtt") { path["rttMs"] = 42 }
             receive(path, "ctl")
@@ -1191,6 +1202,16 @@ private final class PreviewTransport: OrbisTransport {
                             ["name": "seven_day", "remainingPercent": kind == "codex" ? 35 : 18, "resetsAt": 1793432000000]]]], "ctl")
                 }
             }
+        } else if object["type"] as? String == "agent.enablement.read" {
+            let agents: [[String: Any]] = [
+                ["kind": "codex", "label": "Codex CLI", "enabled": true],
+                ["kind": "codexDesktop", "label": "Codex Desktop", "enabled": true],
+                ["kind": "kimiCode", "label": "Kimi Code Web", "enabled": true],
+                ["kind": "kimiCodeDesktop", "label": "Kimi Code 桌面版", "enabled": true],
+                ["kind": "pi", "label": "Pi", "enabled": false]
+            ]
+            receive?(["type": "agent.enablement.snapshot", "requestId": object["requestId"]!,
+                      "snapshot": ["revision": 1, "agents": agents]], "ctl")
         } else if object["type"] as? String == "provider.switch", let kind = object["kind"] as? String, let id = object["id"] as? String {
             if kind == "pi" {
                 if object["enabled"] as? Bool == true { enabledProviders[kind, default: []].insert(id) }
@@ -1209,7 +1230,14 @@ private final class PreviewTransport: OrbisTransport {
                       "page": ["records": records, "nextCursor": next ? "preview-next" as Any : NSNull(), "truncated": false]], "ctl")
         } else if object["type"] as? String == "session.browse" {
             let path = object["path"] as? String
-            if screen == "downloads" && ProcessInfo.processInfo.arguments.contains("--preview-download-browser") {
+            if ProcessInfo.processInfo.arguments.contains("--preview-chat-path-mention") {
+                let entries: [[String: Any]] = path == "/Projects/orbis" ? [
+                    ["name": "ios", "isDir": true, "hasSessions": false],
+                    ["name": "README.md", "isDir": false, "hasSessions": false],
+                    ["name": "Package.swift", "isDir": false, "hasSessions": false]
+                ] : [["name": "orbis", "isDir": true, "hasSessions": true]]
+                receive?(["type": "session.browse.result", "requestId": object["requestId"]!, "path": path ?? "/Projects", "parent": "/Projects", "entries": entries], "ctl")
+            } else if screen == "downloads" && ProcessInfo.processInfo.arguments.contains("--preview-download-browser") {
                 if path == "/missing" {
                     receive?(["type": "protocol.error", "requestId": object["requestId"]!, "code": "session_request_failed", "message": "目录不可读"], "ctl")
                 } else {
@@ -1393,9 +1421,14 @@ private final class PreviewTransport: OrbisTransport {
             let arguments = ProcessInfo.processInfo.arguments
             let openCodeReady = arguments.contains("--preview-opencode-ready")
             let openCodeIncompatible = arguments.contains("--preview-opencode-incompatible")
-            let agents = ["pi", "codex", "dsh"] + (openCodeReady ? ["opencode"] : [])
-            let launchable = arguments.contains("--preview-draft-desktop-only") ? ["codexDesktop"] : arguments.contains("--preview-draft-desktop") ? ["pi", "codex", "codexDesktop", "dsh"] : agents
-            var rows: [[String: Any]] = ["pi", "codex", "dsh"].map { ["kind": $0, "ready": true] }
+            let managedDial = arguments.contains("--preview-agent-enablement")
+            let baseAgents = managedDial ? ["codex", "codexDesktop", "kimiCode", "kimiCodeDesktop"]
+                : screen == "providers" ? ["pi", "codex", "claude", "dsh"] : ["pi", "codex", "dsh"]
+            let agents = baseAgents + (openCodeReady ? ["opencode"] : [])
+            let launchable = managedDial ? ["codex", "codexDesktop", "kimiCode", "kimiCodeDesktop", "pi"]
+                : arguments.contains("--preview-draft-desktop-only") ? ["codexDesktop"]
+                : arguments.contains("--preview-draft-desktop") ? ["pi", "codex", "codexDesktop", "dsh"] : agents
+            var rows: [[String: Any]] = baseAgents.map { ["kind": $0, "ready": true] }
             if openCodeReady {
                 rows.append(["kind": "opencode", "ready": true])
             } else if openCodeIncompatible {

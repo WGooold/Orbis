@@ -725,6 +725,7 @@ struct DirectoryBrowse {
     var loading = true
     var error: String?
     var forDownload = false
+    var rememberPath = true
 }
 
 struct WorkingBranch {

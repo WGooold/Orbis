@@ -24,4 +24,5 @@ export const agentVersionRequirements = {
   opencode: { kind: "exact", version: OPENCODE_CLIENT_VERSION },
   hermes: { kind: "reference", version: "0.22.5" }, // ADR-0087: local Gateway command baseline.
   openclaw: { kind: "localLaunch", version: OPENCLAW_LAUNCH_VERSION }, // Existing Gateways negotiate protocol and capabilities.
+  agy: { kind: "unknown" }, // Antigravity ACP does not expose a comparable local version fact.
 } as const satisfies Record<AgentKind, AgentVersionRequirement>;

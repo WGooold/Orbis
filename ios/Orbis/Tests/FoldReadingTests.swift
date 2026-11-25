@@ -103,6 +103,28 @@ struct FoldReadingTests {
             division: CGRect(x: 0, y: 420, width: 669, height: 1),
             headerHeight: 80, composerHeight: 116, editing: false)
         #expect(!cramped.showsSurface)
+        #expect(cramped.showsHeader)
+        #expect(cramped.header.height == 80 && cramped.header.minY > 421 && cramped.header.maxY <= cramped.composer.minY)
+    }
+
+    // Cramped non-editing fold heights keep navigation reachable (below the hinge when space permits,
+    // or above the transcript when the lower half is shorter than header + composer).
+    @Test func crampedNonEditingFoldPostureRetainsHeaderNavigation() {
+        let duoCompact = FoldReadingGeometry(size: CGSize(width: 466, height: 678),
+            division: CGRect(x: 0, y: 420, width: 466, height: 1),
+            headerHeight: 68, composerHeight: 116, editing: false)
+        #expect(duoCompact.showsHeader)
+        #expect(duoCompact.showsSurface)
+        #expect(duoCompact.header.height == 68 && duoCompact.surface.height >= 44)
+        #expect(duoCompact.surface.maxY == duoCompact.composer.minY)
+
+        let ultraCramped = FoldReadingGeometry(size: CGSize(width: 466, height: 540),
+            division: CGRect(x: 0, y: 420, width: 466, height: 1),
+            headerHeight: 80, composerHeight: 116, editing: false)
+        #expect(!ultraCramped.showsSurface)
+        #expect(ultraCramped.showsHeader)
+        #expect(ultraCramped.header == CGRect(x: 0, y: 0, width: 466, height: 80))
+        #expect(ultraCramped.transcript.minY == 80 && ultraCramped.transcript.maxY <= ultraCramped.composer.minY)
     }
 
     // VoiceOver retains an explicit page action without visible paging buttons;

@@ -797,8 +797,11 @@ describe("host end-to-end over relay", () => {
     await providers.save("pi", "custom", "Custom", { apiKey: "never-send-this", baseUrl: "https://example.com/v1", api: "openai-completions", models: [{ id: "model" }] }, true, false, { notes: "private-notes-never-send", usageScript: { enabled: false, language: "javascript", timeout: 10, code: "private-script-never-send" } });
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false, providers });
     await host.start();
-    const paired = await pairDevice({ relay, host }); device = paired.device;
-    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    const opened = await host!.openPairingWindow();
+    const connected = await TestDevice.connect({ relayUrl: relay!.url, relayHttpBase: relay!.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Kimi source fixture" });
+    const pskRoot = await connected.device.pair(connected.payload); device = connected.device;
+    await device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
     await device.receiveMessage(); await device.receiveMessage();
     device.sendData(JSON.stringify({ type: "provider.list", protocolVersion: PROTOCOL_VERSION, requestId: "list", kind: "pi" }));
     const list = await device.receiveReply("list");

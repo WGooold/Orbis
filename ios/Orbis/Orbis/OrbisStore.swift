@@ -2945,24 +2945,24 @@ final class HostConnection: ObservableObject {
         browseDownloadDirectory(selectedHostId.flatMap { downloadBrowserPaths.path(hostId: $0) })
     }
 
-    func browseDownloadDirectory(_ path: String?) {
-        browseDirectory(path, forDownload: true)
+    func browseDownloadDirectory(_ path: String?, rememberPath: Bool = true) {
+        browseDirectory(path, forDownload: true, rememberPath: rememberPath)
     }
 
     func browseDirectory(_ path: String? = nil) {
-        browseDirectory(path, forDownload: false)
+        browseDirectory(path, forDownload: false, rememberPath: false)
     }
 
     var workDirectoryBrowse: DirectoryBrowse? { browse?.forDownload == false ? browse : nil }
 
-    private func browseDirectory(_ path: String?, forDownload: Bool) {
+    private func browseDirectory(_ path: String?, forDownload: Bool, rememberPath: Bool) {
         browseTimeout?.cancel()
         guard connection == .secured else {
-            browse = DirectoryBrowse(requestId: "", path: path, loading: false, error: L10n.tr("未连接到电脑，连接恢复后可重试。"), forDownload: forDownload)
+            browse = DirectoryBrowse(requestId: "", path: path, loading: false, error: L10n.tr("未连接到电脑，连接恢复后可重试。"), forDownload: forDownload, rememberPath: rememberPath)
             return
         }
         let requestId = UUID().uuidString
-        browse = DirectoryBrowse(requestId: requestId, path: path, forDownload: forDownload)
+        browse = DirectoryBrowse(requestId: requestId, path: path, forDownload: forDownload, rememberPath: rememberPath)
         var request: [String: Any] = ["type": "session.browse", "protocolVersion": orbisProtocolVersion, "requestId": requestId]
         if let path { request["path"] = path }
         guard transport.send(request) else { browse?.loading = false; browse?.error = L10n.tr("目录读取请求未送达。"); return }
@@ -4259,7 +4259,7 @@ final class HostConnection: ObservableObject {
             guard entries.count == rows.count else { return }
             browseTimeout?.cancel()
             // FILE-BROWSER-02: only the connection that accepts this download listing can save it.
-            if current.forDownload, let hostId = selectedHostId { downloadBrowserPaths.remember(path, hostId: hostId) }
+            if current.forDownload && current.rememberPath, let hostId = selectedHostId { downloadBrowserPaths.remember(path, hostId: hostId) }
             current.path = path
             current.parent = message["parent"] as? String
             current.entries = entries

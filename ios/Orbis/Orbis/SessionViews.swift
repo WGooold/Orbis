@@ -1238,8 +1238,10 @@ struct OrbisDraftEditor: UIViewRepresentable {
         view.font = font
         view.textContainer.lineFragmentPadding = lineFragmentPadding
         view.accessibilityIdentifier = identifier
+        context.coordinator.syncingFocus = true
         if focused && !view.isFirstResponder { view.becomeFirstResponder() }
         else if !focused && view.isFirstResponder { view.resignFirstResponder() }
+        context.coordinator.syncingFocus = false
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: Editor, context: Context) -> CGSize? {
         let width = proposal.width ?? 240
@@ -1248,6 +1250,7 @@ struct OrbisDraftEditor: UIViewRepresentable {
     }
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: OrbisDraftEditor
+        var syncingFocus = false
         init(_ parent: OrbisDraftEditor) { self.parent = parent }
         func textViewDidChange(_ textView: UITextView) {
             let marked = textView.markedTextRange != nil
@@ -1266,8 +1269,27 @@ struct OrbisDraftEditor: UIViewRepresentable {
             let height = Int(ceil(editor?.measuredEditorHeight(width: width) ?? textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
             onEdit(textView.text, false, height, textView.selectedRange.location)
         }
-        func textViewDidBeginEditing(_ textView: UITextView) { parent.focused = true }
-        func textViewDidEndEditing(_ textView: UITextView) { flush(textView); parent.focused = false }
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            guard !parent.focused else { return }
+            if syncingFocus {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.parent.focused else { return }
+                    self.parent.focused = true
+                }
+            } else { parent.focused = true }
+        }
+        func textViewDidEndEditing(_ textView: UITextView) {
+            if syncingFocus {
+                DispatchQueue.main.async { [weak self, weak textView] in
+                    guard let self, let textView else { return }
+                    self.flush(textView)
+                    if self.parent.focused { self.parent.focused = false }
+                }
+                return
+            }
+            flush(textView)
+            if parent.focused { parent.focused = false }
+        }
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
             if text == "\n", textView.markedTextRange == nil,
                (textView as? Editor)?.insertingLineBreak != true,

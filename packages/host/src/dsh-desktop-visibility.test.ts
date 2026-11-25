@@ -2,11 +2,21 @@
 // released App validates. Released iOS rejects a whole catalog page containing an unknown agent kind and
 // checks offsets and totals across range pages, so Desktop rows are filtered with consistent cursors.
 import { describe, expect, it } from "vitest";
-import { HostCatalogRangeSchema, HostCatalogStateSchema, type AgentSessionSummary, type HostCatalogState } from "@orbis/protocol";
+import {
+  DEVICE_FEATURE_AGY, DEVICE_FEATURE_DSH_DESKTOP, DEVICE_FEATURE_HERMES, DEVICE_FEATURE_KIMI_CODE,
+  DEVICE_FEATURE_KIMI_CODE_DESKTOP, DEVICE_FEATURE_OPENCLAW, DEVICE_FEATURE_OPENCODE,
+  HostCatalogRangeSchema, HostCatalogStateSchema, type AgentSessionSummary, type HostCatalogState,
+} from "@orbis/protocol";
 import { AgentStateRegistry } from "./agent-state-registry.js";
 import { HostStateFacts } from "./host-state-facts.js";
-import { allowsAgentRequest, projectAgentMessage, projectBackendDomain } from "./device-agent-visibility.js";
-const viewFor = (hidden: readonly string[]) => (hidden.includes("dshDesktop") ? 2 : 0) | (hidden.includes("openclaw") ? 4 : 0);
+import { allowsAgentRequest, deviceAgentView, projectAgentMessage, projectBackendDomain } from "./device-agent-visibility.js";
+const negotiatedFeatures = [
+  ["agy", DEVICE_FEATURE_AGY], ["dshDesktop", DEVICE_FEATURE_DSH_DESKTOP], ["hermes", DEVICE_FEATURE_HERMES],
+  ["kimiCode", DEVICE_FEATURE_KIMI_CODE], ["kimiCodeDesktop", DEVICE_FEATURE_KIMI_CODE_DESKTOP],
+  ["openclaw", DEVICE_FEATURE_OPENCLAW], ["opencode", DEVICE_FEATURE_OPENCODE],
+] as const;
+const viewFor = (hidden: readonly string[]) => deviceAgentView(new Set(negotiatedFeatures
+  .filter(([kind]) => !hidden.includes(kind)).map(([, feature]) => feature)));
 const legacyDeviceMessage = (value: object, hidden = ["dshDesktop"] as readonly string[]) => projectAgentMessage(viewFor(hidden), value);
 const legacyHostDomain = (domain: string, value: unknown, catalog?: (value: Record<string, unknown>) => unknown, hidden = ["dshDesktop"] as readonly string[]) =>
   domain === "catalog" && catalog ? catalog(value as Record<string, unknown>) : projectBackendDomain(viewFor(hidden), domain, value);
