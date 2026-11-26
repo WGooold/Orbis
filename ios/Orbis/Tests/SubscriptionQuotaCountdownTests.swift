@@ -7,8 +7,8 @@ struct SubscriptionQuotaCountdownTests {
     // QUOTA-RESET-01: countdown precision is useful without recreating a long absolute date string.
     @Test func displaysRemainingDaysHoursAndMinutes() {
         let now = Date(timeIntervalSince1970: 0)
-        let twoDaysThreeHours = Int64((2 * 24 + 3) * 60 * 60 * 1_000)
-        let threeHoursTwelveMinutes = Int64((3 * 60 + 12) * 60 * 1_000)
+        let twoDaysThreeHours: Int64 = 183_600_000 // 51 hours in milliseconds.
+        let threeHoursTwelveMinutes: Int64 = 11_520_000 // 192 minutes in milliseconds.
 
         let twoDaysResult = subscriptionQuotaResetCountdown(resetsAt: twoDaysThreeHours, now: now)
         let threeHoursResult = subscriptionQuotaResetCountdown(resetsAt: threeHoursTwelveMinutes, now: now)
