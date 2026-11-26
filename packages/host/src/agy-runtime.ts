@@ -21,6 +21,9 @@ const validId = (id: unknown): id is string => typeof id === "string" && /^[\w.-
 const validCwd = (cwd: unknown): cwd is string => typeof cwd === "string" && cwd.length <= 4096 && isAbsolute(cwd);
 const clippedTitle = (title: unknown) => typeof title === "string" ? title.slice(0, 256) : "";
 const epochTime = (value: unknown) => typeof value === "string" ? Math.max(0, Date.parse(value) || 0) : 0;
+/** ACP publishes no model or permission catalog before a session exists, and Apps always send the permission container. */
+const chosenConfiguration = (values: AgentActivateContext["configuration"]): boolean => values !== undefined
+  && (values.model !== undefined || values.thinking !== undefined || Object.keys(values.permissions ?? {}).length > 0);
 type Prompt = Extract<RuntimeCommand, { type: "user_message" }>;
 type Delivery = NonNullable<Prompt["delivery"]>;
 type Queued = { id: string; command: Prompt; delivery: Delivery };
@@ -248,7 +251,7 @@ export class AgyRuntime implements AgentBackend {
   async #activate(target: AgentActivateTarget, context?: AgentActivateContext): Promise<BackendActivation> {
     const client = this.#client;
     if (!client || this.#stopping) throw new ActivationError("agent_unsupported", this.#reason);
-    if (context?.configuration && Object.keys(context.configuration).length) throw new ActivationError("agent_unsupported", "Antigravity ACP 未提供新建前的模型或权限目录");
+    if (chosenConfiguration(context?.configuration)) throw new ActivationError("agent_unsupported", "Antigravity ACP 未提供新建前的模型或权限目录");
     const requireCurrent = () => {
       context?.requireCurrent?.();
       if (client !== this.#client || this.#stopping) throw new ActivationError("spawn_failed", "Antigravity CLI 连接已变化");

@@ -31,7 +31,7 @@ Orbis App 是交互界面。Host 启动本机官方 `agy acp` 子进程，通过
 | 新建和首句 | 复用现有 `session.launch` / 启动账本，native ID 确认后才通知 App；首句只在匹配的启动已就绪时发送。没有 native ID 的模糊创建只保留未知结果，不自动重建；有原生会话 ID 则按原会话恢复。AGY 不开 TUI。 |
 | 发送、停止、排队 | 走 `session/prompt`、`session/cancel`。一个会话同一时刻只提交一个原生 prompt；忙时支持后续排队、撤回以及先停止再立即发送。同一提交 ID 不发第二次；持久 spent 标记只防重，不是送达证明。未确认的回合不继续派发挂起队列。附件沿用 Host 已落地的路径提示，不请求客户端文件能力。 |
 | 权限、问题和工具 | 通过 App 现有交互卡确认原生一次性权限选项；取消、超时、关闭或断线清理待确认。支持有界、平坦的必填字符串／枚举／布尔 ACP 表单；不代理 URL、敏感输入或未知请求。流式文本、思考、标题、上下文用量及有界工具摘要按实际 ACP 更新投影；不把任意参数、工具输出或诊断正文放进共享事件。 |
-| 模型与深度 | 从原生会话 `configOptions` 生成会话内选择器，只发该会话实际提供的选项；`session/set_config_option` 的结果需要原生读回。新建前无安全可读的模型目录，使用原生默认，不为取目录新建占位会话。没有实际执行配置事实时不宣称「本轮使用」。 |
+| 模型与深度 | 从原生会话 `configOptions` 生成会话内选择器，只发该会话实际提供的选项；`session/set_config_option` 的结果需要原生读回。新建前无安全可读的模型目录，使用原生默认，不为取目录新建占位会话；App 固定携带的空权限容器不算已选配置。没有实际执行配置事实时不宣称「本轮使用」。 |
 | 关闭、历史与不支持项 | 若协商 `session/close`，用运行代次确认并关闭确切会话，历史仍可重新打开。AGY 不提供归档、删除、原生文件差异、原始工具展开、跨会话并行子任务或其它没有验证清楚的原生功能；不把 `/quit`、关闭、回滚或归档互相替代。 |
 
 实现与断言：[`agy-runtime.ts`](../../packages/host/src/agy-runtime.ts)、[`agy-runtime.test.ts`](../../packages/host/src/agy-runtime.test.ts)、[`agy-approval.ts`](../../packages/host/src/agy-approval.ts)、[`agy-elicitation.test.ts`](../../packages/host/src/agy-elicitation.test.ts)、[`agy-submission-fence.test.ts`](../../packages/host/src/agy-submission-fence.test.ts)。

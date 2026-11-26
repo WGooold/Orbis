@@ -75,6 +75,20 @@ describe("Antigravity ACP backend", () => {
       expect(vi.mocked(client.request).mock.calls.filter(([method]) => method === "session/prompt")).toHaveLength(1);
     } finally { await runtime.stop(); }
   });
+
+  // Apps always send the permission container, while ACP has no pre-session catalog: an empty selection must not block launch.
+  it("accepts an empty pre-session selection and still refuses chosen settings", async () => {
+    const { runtime } = setup();
+    await runtime.start();
+    try {
+      expect(await runtime.activate({ type: "new", cwd: process.cwd() }, { configuration: { permissions: {} } }))
+        .toEqual({ sessionId: "agy:fresh", spawnMode: "headless" });
+      await expect(runtime.activate({ type: "new", cwd: process.cwd() }, { configuration: { model: "mdl-a" } }))
+        .rejects.toThrow("未提供新建前的模型或权限目录");
+      await expect(runtime.activate({ type: "new", cwd: process.cwd() }, { configuration: { permissions: { sandbox: "readOnly" } } }))
+        .rejects.toThrow("未提供新建前的模型或权限目录");
+    } finally { await runtime.stop(); }
+  });
 });
 
 // AGY-12: only the exact native prompt's offered one-time choice is accepted.
