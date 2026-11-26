@@ -2575,6 +2575,7 @@ ApplicationWindow {
                                                     x: 6; y: 6; width: parent.width - 12; spacing: 2
                                                     // HOST-PROVIDER-DRAG-01: reorder within this list. Hit-test the
                                                     // pointer itself, not a delayed Qt drag item with an offset hotspot.
+                                                    objectName: "inlineProviderRows"
                                                     property string dragTarget: ""
                                                     function providerAt(item, x, y) {
                                                         const viewport = scroll.contentItem
@@ -2663,7 +2664,8 @@ ApplicationWindow {
                                                                             }
                                                                             onReleased: function(mouse) {
                                                                                 const source = providerRow.modelData.id
-                                                                                const target = reordering && window.canReorderProviders
+                                                                                const moved = reordering || Math.abs(mouse.y - pressY) >= Qt.styleHints.startDragDistance
+                                                                                const target = moved && window.canReorderProviders
                                                                                     ? inlineProviderColumn.providerAt(dragMouse, mouse.x, mouse.y) : ""
                                                                                 resetDrag()
                                                                                 if (target) window.moveProvider(source, target)

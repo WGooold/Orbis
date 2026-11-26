@@ -4137,14 +4137,14 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       // This time history is the first request. Its private replacement preview
       // must wait for the native read, then continue the original page request.
       const dispatch = vi.spyOn(codex, "dispatchCommand");
+      // Arm before the notification: the native read can start before the
+      // encrypted boundary is observed on the device.
+      holdNextRead = true;
       server.onNotification?.("thread/reverted", { threadId: thread.id });
       const boundary = await boundaryAfter(previous.source!.epoch);
       expect(host.readDiagnostics({ category: "recovery", sessionId }).records).toEqual(expect.arrayContaining([
         expect.objectContaining({ detail: expect.objectContaining({ reason: "registry_source_epoch_limit:history" }) }),
       ]));
-      // Hold the baseline read once. Later periodic/recovery reads must keep
-      // replying, even when a slower runner reaches them at version 65.
-      holdNextRead = true;
       const history = load("after-limit-history", "history");
       // Attach a rejection handler while the native fixture deliberately waits.
       void history.catch(() => undefined);

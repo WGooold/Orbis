@@ -230,7 +230,12 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   }
   if (method === "openAgent" && ["kimiCode", "opencode", "hermes", "openclaw", "agy"].includes(params.kind)) {
     out(launchStatus(params.kind, "starting", false));
-    setTimeout(() => { out(launchStatus(params.kind, "connected", true)); out({ id, result: {} }); }, 360);
+    const held = require("node:path").resolve(__dirname, "../../../hold-agent-start");
+    const complete = () => {
+      if (require("node:fs").existsSync(held)) return setTimeout(complete, 16);
+      out(launchStatus(params.kind, "connected", true)); out({ id, result: {} });
+    };
+    setTimeout(complete, 360);
     return;
   }
   if (method === "provider.default") {
@@ -404,6 +409,9 @@ private slots:
             emit controller.changed();
             QTRY_VERIFY(detail->isVisible() && detail->isEnabled());
         }
+        QFile holdStart(root.filePath("hold-agent-start"));
+        QVERIFY(holdStart.open(QIODevice::WriteOnly));
+        holdStart.close();
         if (kind == "opencode") {
             auto *syncTabs = findVisualItem(window->contentItem(), "openCodeTuiTabsAction");
             QTRY_VERIFY(syncTabs && syncTabs->isVisible() && syncTabs->isEnabled());
@@ -429,6 +437,7 @@ private slots:
         }
         QTRY_COMPARE(status->property("text").toString(), QString("正在启动"));
         QVERIFY(!detail->isEnabled());
+        QVERIFY(holdStart.remove());
         QTRY_COMPARE(status->property("text").toString(), QString(kind == "kimiCode" ? "已接入" : "可用"));
         if (kind == "opencode") {
             QTRY_VERIFY(detail->isVisible() && detail->isEnabled());
@@ -904,6 +913,9 @@ private slots:
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from);
         QTRY_COMPARE(window->property("draggedProviderId").toString(), QString("openai-copy"));
         for (int step = 1; step <= 12; ++step) QTest::mouseMove(window, from + (to - from) * step / 12, 20);
+        auto *providerRows = findVisualItem(detail, "inlineProviderRows");
+        QVERIFY(providerRows);
+        QTRY_COMPARE(providerRows->property("dragTarget").toString(), QString("openrouter"));
         QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to, 20);
         QTRY_COMPARE(controller.providers().first().toMap().value("id").toString(), QString("openai-copy"));
         QTRY_VERIFY(!controller.busy());
