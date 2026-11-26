@@ -901,6 +901,10 @@ private slots:
         const auto to = dragTo->mapToScene(dragTo->boundingRect().center()).toPoint();
         // The handle's mouse area is interactive even before the hover icon
         // is painted. The press assertion verifies the real drag owner.
+        // A press/release on the handle is not a reorder.
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, from);
+        QCOMPARE(controller.providers().first().toMap().value("id").toString(), QString("openrouter"));
+        QCOMPARE(window->property("draggedProviderId").toString(), QString());
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from);
         QCOMPARE(window->property("draggedProviderId").toString(), QString("openai-copy"));
         for (int step = 1; step <= 12; ++step) QTest::mouseMove(window, from + (to - from) * step / 12, 20);
