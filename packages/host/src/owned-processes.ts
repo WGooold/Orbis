@@ -62,7 +62,9 @@ export async function listeningPids(port: number): Promise<number[]> {
   if (process.platform === "win32") {
     // Ask only for this port: enumerating every TCP connection can exceed the
     // command timeout on a loaded hosted runner even when the listener exists.
-    const command = `$ErrorActionPreference = 'Stop'; Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object -ExpandProperty OwningProcess`;
+    // An empty result is CIM's "not found" error; only real query failures
+    // propagate to the bounded retry below.
+    const command = `$ErrorActionPreference = 'Stop'; try { Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object -ExpandProperty OwningProcess } catch { if ($_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound*') { } else { throw } }`;
     let stdout: string;
     try {
       ({ stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], options));
