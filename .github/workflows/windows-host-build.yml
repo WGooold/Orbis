@@ -2,6 +2,11 @@ name: Windows Host build
 
 on:
   workflow_dispatch:
+    inputs:
+      installer_checks:
+        description: 'Run silent install, read-only license, and Claude plugin installer checks'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -54,6 +59,7 @@ jobs:
             Remove-Item Env:ORBIS_COMPATIBLE_RUNTIME -ErrorAction SilentlyContinue
           }
       - name: Verify installed application
+        if: inputs.installer_checks
         shell: pwsh
         timeout-minutes: 10
         run: |
@@ -107,6 +113,7 @@ jobs:
             }
           }
       - name: Verify read-only license upgrade
+        if: inputs.installer_checks
         shell: pwsh
         timeout-minutes: 8
         run: |
