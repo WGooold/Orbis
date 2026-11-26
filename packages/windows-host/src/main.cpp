@@ -437,15 +437,23 @@ int main(int argc, char *argv[]) {
             enablement.insert("agents", agents);
             controller.smokeReceive({{"event", "agentEnablement"}, {"snapshot", enablement}});
             QTest::qWait(100);
-            QList<QRectF> launchBounds;
+            QList<QPair<QString, QRectF>> launchBounds;
             for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"}) {
                 auto *button = findVisualItem(window->contentItem(), name);
                 if (!button || !button->isVisible()) { qWarning() << "Missing smoke overview action:" << name; app.exit(44); return; }
                 const auto bounds = button->mapRectToScene(button->boundingRect());
                 // Rows may scroll below the fold at the minimum height; they must never overflow sideways.
-                if (bounds.left() < 0 || bounds.right() > window->width()) { app.exit(45); return; }
-                for (const auto &other : launchBounds) if (bounds.intersects(other)) { app.exit(46); return; }
-                launchBounds.append(bounds);
+                if (bounds.left() < 0 || bounds.right() > window->width()) {
+                    qWarning() << "Overview action outside window:" << name << bounds << window->size();
+                    app.exit(45); return;
+                }
+                for (const auto &[otherName, otherBounds] : launchBounds) {
+                    if (!bounds.intersects(otherBounds)) continue;
+                    qWarning() << "Overlapping overview actions:" << name << bounds << otherName << otherBounds
+                               << "window:" << window->size() << "DPR:" << window->devicePixelRatio();
+                    app.exit(46); return;
+                }
+                launchBounds.append({QString::fromLatin1(name), bounds});
             }
             // A caption keeps the button's optical center whether or not a glyph sits beside it:
             // a reserved slot without an icon would push the text right by half of its width.
