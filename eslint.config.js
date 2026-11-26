@@ -7,6 +7,10 @@ export default tseslint.config(
       "**/dist/**",
       // Unmodified third-party GSAP runtime; license retained alongside it.
       "packages/relay/src/web/vendor/gsap.min.js",
+      // Design previews and exported visual assets are authored/bundled artifacts, not product code.
+      "docs/design/**",
+      // Bundled upstream Three.js runtime for local design previews; license retained alongside it.
+      "docs/design/*/three-runtime.js",
       // Pinned KaTeX distributions, with upstream license and integrity manifest.
       "shared/math/katex.min.js",
       "docs/assets/promo2/source/assets/math/katex.min.js",

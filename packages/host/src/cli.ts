@@ -32,6 +32,10 @@ import { resolveDshCommand } from "./dsh-client.js";
 import { HostService } from "./host-service.js";
 import { createLocalKimiRuntime } from "./kimi-runtime.js";
 import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
+import { openAgyProfile } from "./agy-client.js";
+import { agyEnvironmentKey } from "./agy-credential.js";
+import { AgyRuntime } from "./agy-runtime.js";
+import { agySubmissionFence } from "./agy-submission-fence.js";
 import { createOpenCodeLocalLauncher } from "./opencode-local-launch.js";
 import { OpenCodeServiceConnection } from "./opencode-service-connection.js";
 import { KIMI_DESKTOP_KIND, KIMI_KIND, type KimiKind } from "./kimi-sessions.js";
@@ -134,6 +138,7 @@ async function runHostUntilShutdown(
   let service: HostService | undefined;
   const kimiKind = config.kimiCodeSource === "desktop" ? KIMI_DESKTOP_KIND : KIMI_KIND;
   const enablement = cliEnablement(stateDir, { ...(codexEnabled ? { codex: true } : {}), ...(dshEnabled ? { dsh: true } : {}),
+    ...(agyLocallyAllowed() && sessionsRoot === undefined ? { agy: true } : {}),
     ...(config.kimiCodeEnabled || kimiCodeFlag ? { [kimiKind]: true } : {}) });
   const liveApply = (kind: AgentKind, liveEdit: boolean): boolean => liveEdit && kind === "dsh";
   const providers = new ProviderManager(stateDir, undefined, {
@@ -169,6 +174,7 @@ async function runHostUntilShutdown(
   try {
     service = await HostService.create({
       agentEnablement: enablement,
+      ...(agyLocallyAllowed() && sessionsRoot === undefined ? { agyCredentialConfigured: () => agyEnvironmentKey() !== undefined, createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(stateDir, signal, { key: agyEnvironmentKey() }), hostId, agySubmissionFence(stateDir)) } : {}),
       createKimiCodeRuntime: async (kind: KimiKind) => {
         const source = kind === KIMI_DESKTOP_KIND ? "desktop" : "web";
         if (source === "desktop" && !profile.launchDesktopAgents) throw new Error("当前平台不支持 Kimi Code 桌面接入");
@@ -282,11 +288,13 @@ async function runHostUntilShutdown(
   console.error("[host] 已退出");
 }
 
+const agyLocallyAllowed = () => process.env.ORBIS_AGY_ENABLED === "1";
+
 function cliEnablement(stateDir: string, choices: Partial<Record<AgentKind, boolean>> = {}): AgentEnablementController {
   return new AgentEnablementController(new AgentEnablementStore(stateDir, async () => {
     const openClaw = await readOpenClawDesktopSettings(stateDir);
     return { ...(openClaw.url ? { openclaw: true } : {}), ...choices };
-  }), () => {});
+  }, kind => kind !== "agy" || agyLocallyAllowed()), () => {});
 }
 
 /** 配对模式：短命进程。开窗、收 PAIR_REQUEST、落盘，然后退出。 */

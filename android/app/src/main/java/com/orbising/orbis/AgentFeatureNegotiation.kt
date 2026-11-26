@@ -7,6 +7,8 @@ import kotlinx.serialization.json.contentOrNull
 
 internal const val AGENT_ENABLEMENT_FEATURE = "agent.enablement.v1"
 internal const val CODEX_UNIFIED_HISTORY = "codex.history-unified.v1"
+internal const val AGY_KIND = "agy"
+internal const val AGY_FEATURE = "agent.agy"
 private const val KIMI_CODE_FEATURE = "agent.kimiCode"
 private const val KIMI_CODE_DESKTOP_FEATURE = "agent.kimiCodeDesktop"
 internal fun readyAdmitsCodexHistory(ready: JsonObject): Boolean =
@@ -21,6 +23,9 @@ internal fun readyAdmitsRuntimeClose(ready: JsonObject): Boolean =
 private fun JsonObject.features(key: String): List<String> = (get(key) as? JsonArray).orEmpty()
     .mapNotNull { (it as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.contentOrNull }
 
+internal fun readyAdmitsAgy(ready: JsonObject): Boolean =
+    AGY_FEATURE in ready.features("hostFeatures") && AGY_FEATURE in ready.features("deviceFeatures")
+
 internal fun readyAdmitsOpenClaw(ready: JsonObject): Boolean =
     "agent.openclaw" in ready.features("hostFeatures") && "agent.openclaw" in ready.features("deviceFeatures")
 
@@ -32,6 +37,7 @@ internal fun requestedAgentFeatures(ready: JsonObject): List<String> {
     if ("dshDesktop" in ready && (!hostSupportsOpenClaw || readyAdmitsOpenClaw(ready)) &&
         (AGENT_ENABLEMENT_FEATURE !in features || readyAdmitsAgentEnablement(ready)) &&
         (AGENT_DIAL_REVIEW_FEATURE !in features || readyAdmitsAgentDialReview(ready)) &&
+        (AGY_FEATURE !in features || readyAdmitsAgy(ready)) &&
         (KIMI_CODE_FEATURE !in features || KIMI_CODE_FEATURE in ready.features("deviceFeatures")) &&
         (KIMI_CODE_DESKTOP_FEATURE !in features || KIMI_CODE_DESKTOP_FEATURE in ready.features("deviceFeatures")) &&
         (CODEX_UNIFIED_HISTORY !in features || readyAdmitsCodexHistory(ready)) &&

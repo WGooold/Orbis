@@ -368,6 +368,12 @@ struct StoreTests {
         await second.emit(listing(secondJump, path: "D:\\work"))
 
         store.selectHost("host-1")
+        owner.browseDownloadDirectory("/Projects/orbis", rememberPath: false)
+        let mentionBrowse = try request(first, path: "/Projects/orbis")
+        await first.emit(listing(mentionBrowse, path: "/Projects/orbis"))
+        #expect(owner.browse?.path == "/Projects/orbis")
+        #expect(paths.path(hostId: "host-1") == "/build output")
+
         owner.browseDirectory("/new-session")
         let workspace = try request(first, path: "/new-session")
         await first.emit(listing(workspace, path: "/new-session"))

@@ -102,9 +102,10 @@ internal fun SessionDraftCard(state: RemoteState, open: Boolean, presetCwd: Stri
     LaunchedEffect(open, kind, cwd, state.e2eReady, state.supportsSessionConfiguration(kind), canUseSelectedAgent) {
         if (open && state.e2eReady && state.supportsSessionConfiguration(kind) && cwd.isNotBlank() && canUseSelectedAgent) onLoadConfiguration(kind, cwd)
     }
-    val kinds = listOf("codex", "claude", "dsh", "openclaw", "pi", KIMI_CODE_KIND, "hermes", "opencode").filter {
+    val kinds = listOf("codex", "claude", "dsh", "openclaw", "pi", KIMI_CODE_KIND, "hermes", "opencode", AGY_KIND).filter {
         (enabledAgentKinds == null || agentVariants(it).any(enabledAgentKinds::contains)) && when (it) {
             "opencode" -> showOpenCode
+            AGY_KIND -> state.canLaunchAgy()
             "hermes" -> supported?.contains("hermes") == true
             "openclaw" -> canLaunchOpenClaw || openClawDiagnostic != null
             KIMI_CODE_KIND -> agentVariants(it).any { variant -> state.supportsKimiCode(variant) && (supported == null || variant in supported) }

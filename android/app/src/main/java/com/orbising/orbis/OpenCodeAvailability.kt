@@ -42,14 +42,14 @@ internal fun reconcileDraftAgent(
         return DraftAgentReconciliation("opencode", allowUnavailableOpenCode = true)
     }
     if (supported != null) {
-        val fallback = listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, "hermes", "opencode")
+        val fallback = listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND, "hermes", "opencode", AGY_KIND)
             .firstOrNull { it in supported && agentFamily(it) in kinds && (it != "opencode" || canChooseOpenCode) }
             ?: "opencode".takeIf { "opencode" in kinds }
         if (fallback != null) {
             return DraftAgentReconciliation(fallback, allowUnavailableOpenCode = fallback == "opencode")
         }
     } else if (current == "opencode" && !canChooseOpenCode) {
-        val fallback = listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, "hermes")
+        val fallback = listOf("codex", "codexDesktop", "claude", "dsh", "dshDesktop", "pi", "openclaw", KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND, "hermes")
             .firstOrNull { agentFamily(it) in kinds }
         if (fallback != null) {
             return DraftAgentReconciliation(fallback, allowUnavailableOpenCode = false)

@@ -96,11 +96,16 @@ class HostController : public QObject {
     /** HOST-GUIDE-01: per-Agent backend facts of the running Host ({kind, ready, launchable, runtimeCount}); empty while paused. */
     Q_PROPERTY(QVariantList backends READ backends NOTIFY changed)
     Q_PROPERTY(QVariantMap agentEnablement READ agentEnablement NOTIFY agentEnablementChanged)
+    Q_PROPERTY(QVariantMap agentVersionRequirements READ agentVersionRequirements NOTIFY changed)
     Q_PROPERTY(QVariantMap agentChanges READ agentChanges NOTIFY changed)
     Q_PROPERTY(bool agentChoicesAvailable READ agentChoicesAvailable NOTIFY changed)
     Q_PROPERTY(bool agentChoicesNeedRetry READ agentChoicesNeedRetry NOTIFY changed)
     Q_PROPERTY(QVariantMap activeAgentSessions READ activeAgentSessions NOTIFY changed)
+    Q_PROPERTY(QVariantMap agySetup READ agySetup NOTIFY agySetupChanged)
     Q_PROPERTY(QVariantMap openClaw READ openClaw NOTIFY openClawChanged)
+    Q_PROPERTY(QVariantMap openClawConnection READ openClawConnection NOTIFY changed)
+    Q_PROPERTY(QVariantMap openClawNative READ openClawNative NOTIFY openClawNativeChanged)
+    Q_PROPERTY(QString openClawNativeFeedback READ openClawNativeFeedback NOTIFY changed)
     Q_PROPERTY(QVariantMap hermesRemote READ hermesRemote NOTIFY hermesRemoteChanged)
     Q_PROPERTY(QVariantList devices READ devices NOTIFY changed)
     Q_PROPERTY(QVariantList agents READ agents NOTIFY changed)
@@ -196,11 +201,16 @@ public:
     int runtimeCount() const { return m_runtimeCount; }
     QVariantList backends() const { return m_backends; }
     QVariantMap agentEnablement() const { return m_agentEnablement; }
+    QVariantMap agentVersionRequirements() const { return m_agentVersionRequirements; }
     bool agentChoicesNeedRetry() const { return m_bridgeReady && m_agentChoiceRecheck && !m_agentReadPending; }
     bool agentChoicesAvailable() const { return m_bridgeReady && !busy() && !m_agentEnablement.isEmpty() && !m_agentChoiceRecheck; }
     QVariantMap agentChanges() const;
     QVariantMap activeAgentSessions() const { return m_activeAgentSessions; }
+    QVariantMap agySetup() const { return m_agySetup; }
     QVariantMap openClaw() const { return m_openClaw; }
+    QVariantMap openClawConnection() const { return m_openClawConnection; }
+    QVariantMap openClawNative() const { return m_openClawNative; }
+    QString openClawNativeFeedback() const { return m_openClawNativeFeedback; }
     QVariantMap hermesRemote() const { return m_hermesRemote; }
     QVariantList devices() const { return m_devices; }
     QVariantList agents() const { return m_agents; }
@@ -231,9 +241,13 @@ public:
     Q_INVOKABLE void confirmAgentReviews();
     Q_INVOKABLE void dismissAgentReviews();
     Q_INVOKABLE void refreshAgentChoices();
-    Q_INVOKABLE void refreshAgentProviders(const QString &kind);
-    Q_INVOKABLE void saveOpenClaw(const QString &url, const QString &token);
+    Q_INVOKABLE void saveAgyCredential(const QString &key);
+    Q_INVOKABLE void retryAgySetup();
+    Q_INVOKABLE void removeAgyCredential();
+    Q_INVOKABLE void saveOpenClaw(const QString &url, const QString &token, const QString &access = {}, bool clearToken = false, const QString &auth = {});
     Q_INVOKABLE void reconnectOpenClaw();
+    Q_INVOKABLE void readOpenClawNative();
+    Q_INVOKABLE void applyOpenClawNative(const QVariantMap &changes);
     Q_INVOKABLE void saveHermesRemote(const QString &host, int port, const QString &profile);
     Q_INVOKABLE void reconnectHermesRemote();
     Q_INVOKABLE void stopHost();
@@ -265,6 +279,7 @@ public:
     Q_INVOKABLE void openProvider(const QString &id);
     Q_INVOKABLE void saveProvider(const QVariantMap &draft);
     Q_INVOKABLE void switchProvider(const QString &id, bool enabled);
+    Q_INVOKABLE void setDefaultProvider(const QString &id);
     Q_INVOKABLE void removeProvider(const QString &id);
     Q_INVOKABLE void copyProvider(const QString &id);
     Q_INVOKABLE void restartDshServer();
@@ -302,7 +317,9 @@ signals:
     void agentEnablementChanged();
     void agentReviewsRequested(const QStringList &kinds, const QVariantList &reviews, double revision);
     void agentWriteFeedback(const QStringList &kinds, const QString &status, double revision);
+    void agySetupChanged();
     void openClawChanged();
+    void openClawNativeChanged();
     void hermesRemoteChanged();
     void providersChanged();
     void providerPresetsChanged();
@@ -353,6 +370,14 @@ private:
     void resumeAfterChange();
     /** Paused Hosts have no reachable phones or sessions; drop the running service's facts with it. */
     void clearRunningFacts();
+    enum class AgyVaultAction { Load, Save, Remove };
+    using AgyVault = std::function<std::optional<QString>(AgyVaultAction, const QString &, const QString &)>;
+    void runAgyVault(AgyVaultAction action, const QString &key, std::function<void(std::optional<QString>)> done);
+    void loadAgyCredential();
+    void applyAgyCredential(const QString &key, const QString &verification = QString());
+    void finishAgySetup(const QJsonObject &info, const QString &verification = QString());
+    void beginAgySetup();
+    bool canEditAgySetup() const;
     void applyAgentEnablement(const QJsonObject &snapshot, bool announce = false);
     void enqueueAgentChoices(const QStringList &kinds, bool enabled, double expectedRevision, bool batch);
     void pumpAgentChoices();
@@ -423,7 +448,7 @@ private:
     QString m_state = "stopped", m_message, m_email, m_hostName, m_hostId, m_credential, m_qr, m_appDownloadQr, m_iosAppDownloadQr, m_challenge, m_challengeEmail;
     DiagnosticLogModel m_logs;
     QVariantList m_devices, m_agents, m_backends;
-    QVariantMap m_agentEnablement, m_activeAgentSessions;
+    QVariantMap m_agentEnablement, m_agentVersionRequirements, m_activeAgentSessions;
     struct AgentChoice {
         QStringList kinds;
         bool target;
@@ -436,7 +461,14 @@ private:
     std::optional<AgentChoice> m_agentInFlight, m_agentReview;
     int m_agentWriteId = -1;
     bool m_agentChoiceRecheck = false, m_agentReadPending = false;
+    QVariantMap m_agySetup;
+    QString m_agyVaultPath;
+    QThreadPool m_agyVaultPool;
+    int m_agyBridgeGeneration = 0;
+    AgyVault m_agyVaultForTest;
     QVariantMap m_openClaw;
+    QVariantMap m_openClawConnection, m_openClawNative;
+    QString m_openClawNativeFeedback;
     QVariantMap m_hermesRemote;
     QVariantMap m_codexDesktop, m_dshDesktop;
     QString m_kimiCodeState, m_kimiCodeDefaultSource = "web";

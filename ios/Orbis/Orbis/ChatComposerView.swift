@@ -472,7 +472,8 @@ struct ChatComposerView: View, Equatable {
                 if actions.isCurrent { composerFocus.focused = true }
             }) {
                 if let owner = pathPickerOwner {
-                    DownloadBrowserView(owner: owner, onDismiss: { computerPathPickerOpen = false },
+                    DownloadBrowserView(owner: owner, initialPath: runtime.cwd.isEmpty ? nil : runtime.cwd,
+                                       onDismiss: { computerPathPickerOpen = false },
                                        onSelectPath: selectComputerPath).orbisSheet([.large])
                 }
             }

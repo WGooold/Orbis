@@ -556,6 +556,7 @@ struct FoldReadingGeometry {
     let surface: CGRect
     let composer: CGRect
     let showsSurface: Bool
+    let showsHeader: Bool
 
     init(size: CGSize, division: CGRect, headerHeight: CGFloat, composerHeight: CGFloat, editing: Bool) {
         let width = max(0, size.width), height = max(0, size.height)
@@ -563,11 +564,20 @@ struct FoldReadingGeometry {
         let hingeBottom = division == .zero ? height / 2 : division.maxY
         let editorHeight = min(max(0, composerHeight), height)
         let editorY = height - editorHeight
-        let surfaceY = max(0, hingeBottom + 12) + headerHeight
-        showsSurface = !editing && editorY - surfaceY >= 44
+        let lowerHeaderY = max(0, hingeBottom + 12)
+        let headerFitsBelowHinge = !editing && editorY - lowerHeaderY >= headerHeight
+        let headerAtTop = !editing && !headerFitsBelowHinge && headerHeight > 0 && editorY >= headerHeight
+        let surfaceY = lowerHeaderY + headerHeight
+        showsHeader = headerFitsBelowHinge || headerAtTop
+        showsSurface = headerFitsBelowHinge && editorY - surfaceY >= 44
         let readingBottom = min(max(0, hingeTop - 12), max(0, editorY - 12))
-        transcript = CGRect(x: 0, y: 0, width: width, height: readingBottom)
-        header = CGRect(x: 0, y: max(0, hingeBottom + 12), width: width, height: showsSurface ? headerHeight : 0)
+        if headerAtTop {
+            header = CGRect(x: 0, y: 0, width: width, height: headerHeight)
+            transcript = CGRect(x: 0, y: headerHeight, width: width, height: max(0, readingBottom - headerHeight))
+        } else {
+            transcript = CGRect(x: 0, y: 0, width: width, height: readingBottom)
+            header = CGRect(x: 0, y: lowerHeaderY, width: width, height: headerFitsBelowHinge ? headerHeight : 0)
+        }
         surface = CGRect(x: 0, y: surfaceY, width: width, height: showsSurface ? editorY - surfaceY : 0)
         composer = CGRect(x: 0, y: editorY, width: width, height: editorHeight)
     }

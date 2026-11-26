@@ -2,7 +2,7 @@ import { createConnection } from "node:net";
 import { checkServiceCliVersion, launchLocalService, serviceCli, waitForLocalAgent, type StartGuard } from "./local-agent-start.js";
 import { OpenClawSetupError, type OpenClawIssue } from "./openclaw-diagnostics.js";
 
-const OPENCLAW_LAUNCH_VERSION = "2026.11.5";
+export const OPENCLAW_LAUNCH_VERSION = "2026.11.5";
 
 /** Only the Host's explicit IPv4 local port is launchable. TLS/proxy/remote addresses stay attach-only. */
 export function localOpenClawPort(value: string): number | undefined {

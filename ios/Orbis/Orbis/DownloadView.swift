@@ -140,18 +140,21 @@ struct DownloadBrowserView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
     @ObservedObject var owner: HostConnection
+    let initialPath: String?
     let onDismiss: () -> Void
     let onSelectPath: ((String) -> Void)?
     @State private var selected: Set<String> = []
     @State private var pathInput = ""
     @FocusState private var pathFocused: Bool
 
-    init(owner: HostConnection, onDismiss: @escaping () -> Void, onSelectPath: ((String) -> Void)? = nil) {
+    init(owner: HostConnection, initialPath: String? = nil, onDismiss: @escaping () -> Void, onSelectPath: ((String) -> Void)? = nil) {
         self.owner = owner
+        self.initialPath = initialPath
         self.onDismiss = onDismiss
         self.onSelectPath = onSelectPath
     }
 
+    private var remembersPath: Bool { onSelectPath == nil }
     private var directory: DirectoryBrowse? { owner.browse?.forDownload == true ? owner.browse : nil }
     private var selectedFiles: [BrowseEntry] {
         (directory?.entries ?? []).filter { !$0.isDir && selected.contains($0.id) }
@@ -166,7 +169,7 @@ struct DownloadBrowserView: View {
     private func jumpToPath() {
         guard !trimmedPath.isEmpty, owner.connection == .secured, directory?.loading != true else { return }
         pathFocused = false
-        owner.browseDownloadDirectory(trimmedPath)
+        owner.browseDownloadDirectory(trimmedPath, rememberPath: remembersPath)
     }
 
     private func downloadSelected() {
@@ -188,7 +191,7 @@ struct DownloadBrowserView: View {
         OrbisMotionButton {
             if entry.isDir {
                 selected.removeAll()
-                owner.browseDownloadDirectory(remoteBrowsePath(parent: directory?.path, name: entry.name))
+                owner.browseDownloadDirectory(remoteBrowsePath(parent: directory?.path, name: entry.name), rememberPath: remembersPath)
             } else if onSelectPath != nil {
                 selected = selected.contains(entry.id) ? [] : [entry.id]
             } else if !selected.insert(entry.id).inserted {
@@ -217,7 +220,7 @@ struct DownloadBrowserView: View {
         RemotePathField(text: $pathInput, current: directory?.path, loading: directory?.loading == true,
                         enabled: owner.connection == .secured, identifier: "download-browser-path",
                         jumpIdentifier: "download-browser-jump", focus: $pathFocused, go: jumpToPath) {
-            owner.browseDownloadDirectory(directory?.path)
+            owner.browseDownloadDirectory(directory?.path, rememberPath: remembersPath)
         }
         .padding(.horizontal, 24)
     }
@@ -228,14 +231,14 @@ struct DownloadBrowserView: View {
                 if directory?.path?.isEmpty == false {
                     OrbisActionButton(title: L10n.tr("上一级"), symbol: "arrow.up") {
                         selected.removeAll()
-                        owner.browseDownloadDirectory(directory?.parent)
+                        owner.browseDownloadDirectory(directory?.parent, rememberPath: remembersPath)
                     }
                     .disabled(directory?.loading == true)
                 }
                 if let error = directory?.error {
                     OrbisNotice(text: error, error: true)
                     OrbisActionButton(title: L10n.tr("重新读取"), symbol: "arrow.clockwise") {
-                        owner.browseDownloadDirectory(directory?.path)
+                        owner.browseDownloadDirectory(directory?.path, rememberPath: remembersPath)
                     }
                 } else if directory?.loading == false {
                     ForEach(sortedEntries) { browserEntry($0) }
@@ -273,7 +276,14 @@ struct DownloadBrowserView: View {
         }
         .background(OrbisPalette(scheme).base.ignoresSafeArea())
         .onChange(of: owner.connection, initial: true) { _, connection in
-            if connection == .secured { owner.openDownloadBrowser() }
+            guard connection == .secured else { return }
+            if let initialPath, !initialPath.isEmpty {
+                owner.browseDownloadDirectory(initialPath, rememberPath: remembersPath)
+            } else if remembersPath {
+                owner.openDownloadBrowser()
+            } else {
+                owner.browseDownloadDirectory(nil, rememberPath: false)
+            }
         }
         .onChange(of: directory?.path, initial: true) { _, path in pathInput = path ?? "" }
         .onChange(of: directory?.requestId) { _, _ in selected.removeAll() }

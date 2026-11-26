@@ -1,0 +1,103 @@
+{
+  "job_id": "5d5b7e2a061c4e24bd5f3d9b1019154e",
+  "kind": "multiview",
+  "status": "completed",
+  "items": [
+    {
+      "camera": "Cam_Front_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "db3b9b4fb37a90180cd6002d83f8ec2e82c254687525b965380799aafd86e051",
+        "width": 1280,
+        "height": 1200,
+        "size_bytes": 1840606
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/station/renders/front_ortho.png"
+    },
+    {
+      "camera": "Cam_Rear_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "01c71e7ad8a20d93791a5acd581d85dc6540a824e8e498a0c825d5c0ff1c465e",
+        "width": 1280,
+        "height": 1200,
+        "size_bytes": 1862546
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/station/renders/rear_ortho.png"
+    },
+    {
+      "camera": "Cam_Edge_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "db126d511e3eea5e101ce53a751eb20247f876154779b1a443b8f9728d66bf31",
+        "width": 1280,
+        "height": 1200,
+        "size_bytes": 1508597
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/station/renders/edge_ortho.png"
+    },
+    {
+      "camera": "Cam_Closeup_Hub",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "5fb55fac1d2b245c3a5e3a50e4dda993d4ceb5e10423fd2c8085fe6fe0e8bb3a",
+        "width": 1280,
+        "height": 1200,
+        "size_bytes": 2069231
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/station/renders/closeup_hub.png"
+    },
+    {
+      "camera": "Cam_Hero_34",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "6642c551ef32e10eb2ec17181fc90ce27eb9012e613824ca950d3a6f661b7376",
+        "width": 1280,
+        "height": 1200,
+        "size_bytes": 1769054
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/station/renders/hero_34.png"
+    },
+    {
+      "camera": "Cam_Rear_34",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "a5b7889873b01864dc32385eb50c2f9df7ea588d1fc413b852d57e1354b3a974",
+        "width": 1280,
+        "height": 1200,
+        "size_bytes": 1731348
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/station/renders/rear_34.png"
+    },
+    {
+      "camera": "Cam_Closeup_Spire",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "7ed940505132b993856f9b7b3aed5d980e64aa0ed715d472af058dc19ba40c6c",
+        "width": 1280,
+        "height": 1200,
+        "size_bytes": 1911187
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/station/renders/closeup_spire.png"
+    },
+    {
+      "camera": "Cam_Top_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "d74e714e8b945db768650d6619c133e0e596040493945199cb217b2903a4072f",
+        "width": 1280,
+        "height": 1200,
+        "size_bytes": 1427750
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/station/renders/top_ortho.png"
+    }
+  ]
+}

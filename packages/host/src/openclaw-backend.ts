@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { posix, win32 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { GatewayClientRequestError } from "@openclaw/gateway-client";
+import { readMissingScopeErrorDetails } from "@openclaw/gateway-protocol/gateway-error-details";
 import {
   RecoverableSessionSource, SessionSyncPreparer, type AgentSessionSummary, type RemoteSessionEntry,
   type RuntimeCommand, type RuntimeEvent, type RuntimeMetadata, type SessionConfigurationCatalog,
@@ -42,7 +43,8 @@ type OpenClawBackendCallbacks = {
   log?: (message: string) => void;
 };
 /** The deliberately small seam used by transport tests. Production uses the official SDK. */
-export type OpenClawConnection = Pick<OpenClawGateway, "request" | "ready" | "start" | "stop"> & Partial<Pick<OpenClawGateway, "issue" | "retryLocal">>;
+export type OpenClawConnection = Pick<OpenClawGateway, "request" | "ready" | "start" | "stop"> &
+  Partial<Pick<OpenClawGateway, "issue" | "pairingEpoch" | "retryLocal" | "connectionState" | "settingsConnection">>;
 
 export class OpenClawBackend implements AgentBackend {
   readonly kind = "openclaw";
@@ -84,12 +86,16 @@ export class OpenClawBackend implements AgentBackend {
   get issue(): OpenClawIssue | undefined {
     return this.#stopped || this.isReady() ? undefined : this.#transport.ready ? this.#sessionIssue : this.#transport.issue;
   }
+  get connectionState() {
+    const connection = this.#transport.connectionState;
+    return this.#stopped || !connection ? undefined : { ...connection, sessionsReady: this.isReady() };
+  }
+  get settingsConnection() { return this.#stopped ? undefined : this.#transport.settingsConnection; }
+  get pairingEpoch(): number { return this.#transport.pairingEpoch ?? 0; }
   async retryLocal(current: () => void): Promise<void> {
     current();
     if (this.#stopped || this.isReady()) return;
     if (this.#transport.ready) {
-      // A failed permission/session probe can be retried once on explicit user action.
-      // Don't duplicate an ongoing probe or rebuild an authenticated connection.
       if (this.#retry) {
         clearTimeout(this.#retry); this.#retry = undefined;
         this.#sessionIssue = undefined;
@@ -270,7 +276,7 @@ export class OpenClawBackend implements AgentBackend {
     if (target.type === "new") {
       await this.sessionConfiguration(target.cwd);
       if (context?.configuration?.model !== undefined || context?.configuration?.thinking !== undefined || Object.keys(context?.configuration?.permissions ?? {}).length > 0) {
-        throw new ActivationError("agent_unsupported", "Configure the model and permissions in OpenClaw");
+        throw new ActivationError("agent_unsupported", "请在电脑端 Host 的 OpenClaw 运行配置或 OpenClaw 控制台中设置模型与权限");
       }
       if (!context?.deviceId || !context.launchId) throw new ActivationError("agent_unsupported", "OpenClaw requires a durable launch identity");
       const key = this.#launchKey(context.deviceId, context.launchId);
@@ -679,7 +685,13 @@ export class OpenClawBackend implements AgentBackend {
 
   async #rpc(method: OpenClawMethod, params: object): Promise<unknown> {
     try { return await this.#transport.request(method, params); }
-    catch { throw new Error(`OpenClaw Gateway did not confirm ${method}`); }
+    catch (error) {
+      if (method === "sessions.create" && error instanceof GatewayClientRequestError && error.gatewayCode === "FORBIDDEN" &&
+          readMissingScopeErrorDetails(error.details)?.missingScope === "operator.admin") {
+        throw new Error("OpenClaw Gateway 未授予创建此会话所需的管理员权限。请在电脑端 Host 的 OpenClaw 页面检查实际授权，或选用 Gateway 工作区内的目录。");
+      }
+      throw new Error(`OpenClaw Gateway did not confirm ${method}`);
+    }
   }
   async #write(method: "chat.send" | "chat.abort", params: object): Promise<unknown> {
     let sent = false;

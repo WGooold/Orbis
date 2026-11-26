@@ -16,6 +16,7 @@ import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js"
 import { createBusinessRelayServer as createRelayServer, relayBusinessDeviceURL, relayBusinessHostOptions, stopRelayBusinessTransports } from "./fixtures/relay-business-transport.js";
 import { HostService as SourceHostService } from "./host-service.js";
 import { agentEnablementCatalog, agentEnablementOrder, AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
+import { negotiatedAgentFeature } from "./device-agent-visibility.js";
 import { CLAUDE_BRIDGE_CAPABILITIES, CLAUDE_BRIDGE_VERSION } from "./claude-mods-bridge.js";
 import type { OpenClawConfig } from "./openclaw-gateway.js";
 import { openClawAdvice } from "./openclaw-diagnostics.js";
@@ -185,24 +186,27 @@ describe("Host Agent settings through the desktop JSON bridge", () => {
         return phone;
       };
       try {
-        const allOff = { revision: 0, agents: agentEnablementOrder.map(kind => ({ kind, label: agentEnablementCatalog[kind].label, enabled: false })) };
+        const allOff = { revision: 0, agents: agentEnablementOrder.filter(kind => kind !== "agy").map(kind => ({ kind, label: agentEnablementCatalog[kind].label, enabled: false })) };
+        const phoneView = (snapshot: typeof allOff) => ({ ...snapshot, agents: snapshot.agents.filter(row => negotiatedAgentFeature(row.kind) === undefined) });
         expect(await command("initialize")).toMatchObject({ agentEnablement: allOff });
         await command("start");
         const [first, second] = await Promise.all([connect(firstDevice), connect(secondDevice)]);
         first.request({ type: "agent.enablement.read", requestId: "read-fresh" });
-        expect(await first.take("agent.enablement.snapshot", "read-fresh")).toMatchObject({ snapshot: allOff });
+        expect(await first.take("agent.enablement.snapshot", "read-fresh")).toMatchObject({ snapshot: phoneView(allOff) });
         const enabled = { revision: 1, agents: allOff.agents.map(row => ({ ...row, enabled: row.kind === "pi" })) };
         expect(await command("agent.enablement.write", { kind: "pi", enabled: true, expectedRevision: 0 })).toMatchObject({ status: "applied", snapshot: enabled });
-        for (const phone of [first, second]) expect(await phone.take("agent.enablement.snapshot")).toMatchObject({ snapshot: enabled });
+        for (const phone of [first, second]) expect(await phone.take("agent.enablement.snapshot")).toMatchObject({ snapshot: phoneView(enabled) });
         expect(await desktopEvent(1)).toMatchObject({ snapshot: enabled });
         first.request({ type: "agent.enablement.write", requestId: "phone-off", kind: "pi", enabled: false, expectedRevision: 1 });
         const retired = { ...allOff, revision: 2 };
-        expect(await first.take("agent.enablement.result", "phone-off")).toMatchObject({ status: "applied", snapshot: retired });
-        expect(await second.take("agent.enablement.snapshot")).toMatchObject({ snapshot: retired });
+        expect(await first.take("agent.enablement.result", "phone-off")).toMatchObject({ status: "applied", snapshot: phoneView(retired) });
+        expect(await second.take("agent.enablement.snapshot")).toMatchObject({ snapshot: phoneView(retired) });
         expect(await desktopEvent(2)).toMatchObject({ snapshot: retired });
         expect(await command("agent.enablement.write", { kind: "pi", enabled: true, expectedRevision: 1 })).toMatchObject({ status: "conflict", snapshot: retired });
         expect(await command("agent.enablement.read")).toMatchObject(retired);
-        expect(await new AgentEnablementStore(directory).read()).toMatchObject(retired);
+        const persisted = await new AgentEnablementStore(directory).read();
+        expect(persisted).toMatchObject({ revision: 2, agents: expect.arrayContaining([{ kind: "agy", label: "Antigravity CLI", enabled: false }]) });
+        expect(persisted.agents.filter(row => row.kind !== "agy")).toEqual(retired.agents);
         expect(events.filter(row => row.event === "state" && row.state === "connected")).toHaveLength(1);
         await command("stop");
         const pausedEdit = { ...enabled, revision: 3 };
@@ -212,7 +216,7 @@ describe("Host Agent settings through the desktop JSON bridge", () => {
         await command("start");
         const reconnected = await connect(firstDevice, ["pi"]);
         reconnected.request({ type: "agent.enablement.read", requestId: "after-pause" });
-        expect(await reconnected.take("agent.enablement.snapshot", "after-pause")).toMatchObject({ snapshot: pausedEdit });
+        expect(await reconnected.take("agent.enablement.snapshot", "after-pause")).toMatchObject({ snapshot: phoneView(pausedEdit) });
       } finally {
         for (const socket of sockets) socket.terminate();
         child.stdin.end();
@@ -425,11 +429,16 @@ describe("unchanged legacy device behavior against a compatible Host", () => {
       const send = (id: string, enabled: boolean, expectedRevision: number) => app.request({ type: "agent.enablement.write", requestId: id, kind: "openclaw", enabled, expectedRevision });
       send("unnegotiated", true, 0);
       expect(await app.take("protocol.error", "unnegotiated")).toMatchObject({ code: "agent_feature_required" });
-      app.request({ type: "device.features", features: ["agent.enablement.v1", "agent.openclaw"] });
+      const negotiatedFeatures = ["agent.enablement.v1", "agent.openclaw"];
+      app.request({ type: "device.features", features: negotiatedFeatures });
       expect(await app.take("device.ready")).toMatchObject({ hostFeatures: expect.arrayContaining(["agent.enablement.v1"]), deviceFeatures: expect.arrayContaining(["agent.openclaw", "agent.enablement.v1"]) });
       app.request({ type: "agent.enablement.read", requestId: "initial" });
       const initial = await app.take("agent.enablement.snapshot", "initial");
-      expect(initial).toMatchObject({ snapshot: { revision: 0, agents: Object.keys(agentEnablementCatalog).map(kind => ({ kind, enabled: false })) } });
+      const exposedKinds = Object.keys(agentEnablementCatalog).filter(kind => {
+        const feature = negotiatedAgentFeature(kind as keyof typeof agentEnablementCatalog);
+        return feature === undefined || negotiatedFeatures.includes(feature);
+      });
+      expect(initial).toMatchObject({ snapshot: { revision: 0, agents: exposedKinds.map(kind => ({ kind, enabled: false })) } });
       app.request({ type: "agent.enablement.write", requestId: "unmanaged", kind: "unknown-source", enabled: true, expectedRevision: 0 });
       expect(await app.take("protocol.error", "unmanaged")).toMatchObject({ code: "agent_feature_required" });
       expect(opened).toBe(0);

@@ -23,6 +23,7 @@ private struct NavigationRoot: View, Equatable {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openURL) private var openURL
     @Environment(\.orbisReduceMotion) private var reduceMotion
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @StateObject private var navigation = OrbisPageStack<AppPage>()
     @State private var homeSelecting = false
     @State private var rootTab: RootTab = .chat
@@ -369,7 +370,8 @@ private struct NavigationRoot: View, Equatable {
     }
 
     private var rootPages: some View {
-        VStack(spacing: 0) {
+        let compactHeight = verticalSizeClass == .compact
+        return VStack(spacing: 0) {
             // FOLD-06: system containers own the shared vertical sidebar on Duo;
             // keep TabView unboxed so UIKit and SwiftUI backgrounds bleed through safe areas.
             TabView(selection: Binding(get: { displayedRoot }, set: { tab in
@@ -383,7 +385,7 @@ private struct NavigationRoot: View, Equatable {
             }
             .orbisConfigureVerticalTabBar()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if !homeSelecting && !usesSystemVerticalBar { HStack(spacing: 12) {
+            if !homeSelecting && !(newSessionOpen && displayedRoot == .chat) && !usesSystemVerticalBar { HStack(spacing: 12) {
                 ForEach(RootTab.allCases, id: \.self) { tab in
                     OrbisMotionButton {
                         guard tab != rootTab else { return }
@@ -391,15 +393,15 @@ private struct NavigationRoot: View, Equatable {
                     } label: {
                         VStack(spacing: 2) {
                             Image(systemName: tab == .chat && rootTab == tab ? "bubble.left.fill" : tab == .settings && rootTab == tab ? "gearshape.fill" : tab.symbol)
-                                .font(.system(size: 22))
+                                .font(.system(size: compactHeight ? 20 : 22))
                             Text(tab.title).font(.orbisLabel(rootTab == tab ? .semibold : .regular))
                         }.foregroundStyle(rootTab == tab ? OrbisPalette(scheme).accent : OrbisPalette(scheme).secondary)
-                            .frame(maxWidth: .infinity, minHeight: 56)
+                            .frame(maxWidth: .infinity, minHeight: compactHeight ? 48 : 56)
                     }.buttonStyle(NeuButtonStyle(selected: rootTab == tab, radius: 16))
                         .accessibilityIdentifier("root-tab-" + tab.rawValue)
                         .accessibilityAddTraits(rootTab == tab ? .isSelected : [])
                 }
-            }.padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
+            }.padding(.horizontal, 20).padding(.top, compactHeight ? 4 : 8).padding(.bottom, compactHeight ? 4 : 12)
                 .frame(maxWidth: 720).frame(maxWidth: .infinity)
                 .accessibilityIdentifier("root-bottom-navigation")
                 .anchorPreference(key: FeedbackBottomAnchorKey.self, value: .bounds) { [.init(scope: .root, bounds: $0)] } }
@@ -896,6 +898,7 @@ struct HomeView: View, Equatable {
     @Environment(\.orbisSystemVerticalBar) private var systemVerticalBar
     @Environment(\.orbisSystemRootActions) private var systemRootActions
     @Environment(\.orbisPersistentDirectory) private var persistentDirectory
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var selectedRuntimeIds: Set<String> = []
     @State private var swipeTranslations: [String: CGFloat] = [:]
     private struct ExitingCard {
@@ -977,20 +980,22 @@ struct HomeView: View, Equatable {
             if !systemVerticalBar {
                 homeHeader
             }
-            // One fixed row: which computer this page shows, how it is connected and, once the
-            // list is published, whether it is still syncing. Retry joins the row without moving the cards.
-            // The capsule only reports state; settings open from the gear (ADR-0046 §5).
-            HStack(spacing: 10) {
-                hostSwitcher
-                Spacer(minLength: 8)
-                ConnectionPill(connection: store.connection, path: store.activePath, sync: backgroundSync)
-                    .accessibilityIdentifier("home-connection-pill")
-                if case .failed(let error) = backgroundSync {
-                    OrbisIconButton(symbol: "arrow.clockwise", label: retryLabel, tint: palette.error,
-                                    compact: true, action: store.refresh)
-                        .accessibilityHint(error)
-                }
-            }.frame(height: 48).padding(.horizontal, 20).padding(.bottom, 2)
+            if !(draftOpen && verticalSizeClass == .compact) {
+                // One fixed row: which computer this page shows, how it is connected and, once the
+                // list is published, whether it is still syncing. Retry joins the row without moving the cards.
+                // The capsule only reports state; settings open from the gear (ADR-0046 §5).
+                HStack(spacing: 10) {
+                    hostSwitcher
+                    Spacer(minLength: 8)
+                    ConnectionPill(connection: store.connection, path: store.activePath, sync: backgroundSync)
+                        .accessibilityIdentifier("home-connection-pill")
+                    if case .failed(let error) = backgroundSync {
+                        OrbisIconButton(symbol: "arrow.clockwise", label: retryLabel, tint: palette.error,
+                                        compact: true, action: store.refresh)
+                            .accessibilityHint(error)
+                    }
+                }.frame(height: 48).padding(.horizontal, 20).padding(.bottom, 2)
+            }
             homeSessionList
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(palette.base.ignoresSafeArea())

@@ -1,0 +1,54 @@
+{
+  "asset": "Hermes Swept-Wing Interceptor (V3 Ligne-Claire Comic Cel-Shaded + Fine Ink LineArt + Hermetic Wing Inscriptions)",
+  "blend": "hermes_swept_wing.blend",
+  "glb": "hermes_swept_wing.glb",
+  "script": "build_hermes_ship.py",
+  "resolution": [
+    1280,
+    854
+  ],
+  "views": [
+    {
+      "camera": "Cam_Hero_34",
+      "file": "hero_34.png",
+      "size_bytes": 1202978,
+      "sha256": "ebea6e642296eb54696aa9ceb8fb9ceffd13fd9565df659d6ab4d1ccec82ee72"
+    },
+    {
+      "camera": "Cam_Front_Ortho",
+      "file": "front_ortho.png",
+      "size_bytes": 1037747,
+      "sha256": "734b2944f050934ff4c4fa4064aa169b733bc08cfcc91f06e379f655a77070cd"
+    },
+    {
+      "camera": "Cam_Top_Ortho",
+      "file": "top_ortho.png",
+      "size_bytes": 1239135,
+      "sha256": "4d6e8d9a61d5470770c2066c5320cc0148ba84d4476166ee92e8eeb5abf26c9b"
+    },
+    {
+      "camera": "Cam_Side_Ortho",
+      "file": "side_ortho.png",
+      "size_bytes": 1017235,
+      "sha256": "5ab7c90cab67191ec0037137ee6dbdc360910782ab1fa22992cb859937a914d3"
+    },
+    {
+      "camera": "Cam_Stern_Ortho",
+      "file": "stern_ortho.png",
+      "size_bytes": 1019811,
+      "sha256": "c844eb4ac9f85fbae9d5b0e80eecaf5aafef4ebb7d552ade60da94c0ba0b4aa3"
+    },
+    {
+      "camera": "Cam_Bottom_Ortho",
+      "file": "bottom_ortho.png",
+      "size_bytes": 1243762,
+      "sha256": "0ef5f93bc32acc18fc63625d99cd0b8d00a6a98a8bd7ecaeed7debffc67075e5"
+    },
+    {
+      "camera": "Cam_Rear_34",
+      "file": "rear_34.png",
+      "size_bytes": 1174261,
+      "sha256": "3193bacdc3ddebde5569d8f6de6dafad58f88578c03b2aa32c81456ab937a5fb"
+    }
+  ]
+}

@@ -28,6 +28,7 @@ import { HermesHostConnection, type HermesHostOptions } from "./hermes-host-conn
 import type { HermesAgentBackend } from "./hermes-agent-backend.js";
 import { AgentDisableConfirmationRequired, AgentLifecycleRegistry, type AgentEnablementController, type AgentEnablementSnapshot, type AgentLifecycleLease, type AgentLifecycleRegistration } from "./agent-enablement.js";
 import { LiveActivityPublisher } from "./live-activity.js";
+import { AgyRuntime, AGY_KIND, isAgyId } from "./agy-runtime.js";
 import { sharedViewBackend } from "./shared-session-view.js";
 import { KeyedLanes, ProviderLaunchGate, providerGroup } from "./launch-lanes.js";
 
@@ -50,6 +51,7 @@ import {
   DeviceE2ePayloadSchema,
   DEVICE_FEATURE_MESSAGE_RENDER,
   DEVICE_FEATURE_OPENCODE,
+  DEVICE_FEATURE_AGY,
   DEVICE_FEATURE_KIMI_CODE,
   DEVICE_FEATURE_KIMI_CODE_DESKTOP,
   DEVICE_FEATURE_OPENCLAW,
@@ -145,6 +147,7 @@ import { loadOpenClawConfig, openClawUrl, type OpenClawConfig } from "./openclaw
 import { localOpenClawPort, waitForOpenClawAttachment, type OpenClawLocalLauncher } from "./openclaw-local-launch.js";
 import { LocalAgentStart, LocalAgentStartTimeout } from "./local-agent-start.js";
 import { openClawAdvice, OpenClawSetupError } from "./openclaw-diagnostics.js";
+import { isNativeProviderKind } from "./provider-native.js";
 import { OPENCLAW_PREFIX } from "./openclaw-history.js";
 import { describeError } from "./describe-error.js";
 import { parseGitBranchRequest, readGitBranch, type GitBranchRequest } from "./git-branch.js";
@@ -191,7 +194,7 @@ const sessionLane = (sessionId: string): string => JSON.stringify(["session", se
 /** The backend a resume addresses, from its explicit kind or namespaced ID; a legacy bare ID stays undefined. */
 function resumeAgentKind(target: { sessionId: string; agentKind?: AgentKind | undefined }): AgentKind | undefined {
   const id = target.sessionId, history = isCodexHistoryId(id as unknown);
-  return (kimiKindFromId(id) ?? target.agentKind) ?? (id.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : id.startsWith("hermes:") ? "hermes"
+  return (kimiKindFromId(id) ?? (isAgyId(id) ? AGY_KIND : undefined) ?? target.agentKind) ?? (id.startsWith(OPENCLAW_PREFIX) ? OPENCLAW_KIND : id.startsWith("hermes:") ? "hermes"
     : history ? "codex" : id.startsWith("codex-desktop:") ? "codexDesktop"
     : id.startsWith("dsh-desktop:") ? "dshDesktop" : id.startsWith("dsh:") ? "dsh" : undefined);
 }
@@ -299,6 +302,8 @@ export type HostServiceOptions = {
   codexDesktopRuntime?: CodexRuntime;
   /** Connection monitor; a production launcher is injected only when local startup is permitted. */
   opencodeConnection?: OpenCodeServiceConnection | false;
+  createAgyRuntime?: (hostId: string) => AgyRuntime;
+  agyCredentialConfigured?: () => boolean;
   createOpenCodeConnection?: () => OpenCodeServiceConnection;
   /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
   ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
@@ -397,6 +402,8 @@ export class HostService {
    * 接口，不为单个后端写特判。
    */
   #backends: AgentBackend[];
+  #agy: AgyRuntime | undefined;
+  #agyRetry: ReturnType<typeof setTimeout> | undefined;
   #openClaw: OpenClawBackend | undefined;
   #openClawSetupIssue: "configuration_invalid" | "host_state_unavailable" | "connect_unconfirmed" | undefined;
   #openClawStart: { startup: LocalAgentStart; local: boolean; installed: boolean | undefined } | undefined;
@@ -433,6 +440,7 @@ export class HostService {
         await connection?.close();
       },
     },
+    agy: { start: async lease => this.#startManagedAgy(lease), stop: () => this.#stopManagedAgy() },
     opencode: { start: async lease => this.#startOpenCode(true, lease.isCurrent), stop: async () => this.#stopOpenCode() },
     openclaw: { start: async lease => this.#startOpenClaw(lease.isCurrent), stop: async () => this.#stopManagedOpenClaw() },
   } satisfies Record<AgentKind, AgentLifecycleRegistration>, (kind, phase) => this.#options.log?.(`Agent ${kind} ${phase} failed`));
@@ -723,7 +731,7 @@ export class HostService {
     }
     facts.identity({ hostId: this.#identity.hostId, hostName: this.#identity.hostName, protocolVersion: PROTOCOL_VERSION });
     const agents = this.#agentsSnapshot(); const launchableAgents = this.#launchableAgentsSnapshot();
-    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#openCodeBackend ? [OPENCODE_KIND] as const : []), ...KIMI_KINDS.filter(kind => this.#kimi[kind] !== undefined || this.#managedPolicy && !this.#disabledSources.has(kind) && (kind !== KIMI_DESKTOP_KIND || this.#options.kimiCodeDesktopSupported === true))];
+    const kinds: AgentKind[] = ["pi", "codex", "codexDesktop", "dsh", "claude", "dshDesktop", ...(this.#openCodeBackend ? [OPENCODE_KIND] as const : []), ...(this.#agy ? [AGY_KIND] : []), ...KIMI_KINDS.filter(kind => this.#kimi[kind] !== undefined || this.#managedPolicy && !this.#disabledSources.has(kind) && (kind !== KIMI_DESKTOP_KIND || this.#options.kimiCodeDesktopSupported === true))];
     // A configured Gateway can fail before a backend exists. Project its diagnosis,
     // not an Agent or launch capability. Unconfigured hosts still have no row.
     if (this.#openClaw || this.#openClawSetupIssue) kinds.push(OPENCLAW_KIND);
@@ -740,7 +748,7 @@ export class HostService {
       const ready = backend?.isReady() ?? false;
       return { kind, ready, launchable: launchableAgents.includes(kind),
         runtimeCount: runtimes.filter(runtime => backend?.ownsRuntime(runtime.runtimeId)).length,
-        reason: ready ? null : kind === OPENCLAW_KIND ? openClawReason : kind === OPENCODE_KIND ? openCodeReason
+        reason: ready ? null : kind === AGY_KIND ? this.#agy?.reason ?? "backend_not_attached" : kind === OPENCLAW_KIND ? openClawReason : kind === OPENCODE_KIND ? openCodeReason
           : kind === "hermes" && this.#hermes?.starting ? "starting" : backend === undefined ? "backend_not_attached"
           : isKimiKind(kind) ? this.#kimi[kind]?.reason ?? "backend_not_ready" : "backend_not_ready" };
     }), agents, launchableAgents, codexDesktop: this.#codexDesktopSnapshot(), dshDesktop: this.#dshDesktopSnapshot() });
@@ -894,6 +902,7 @@ export class HostService {
     store: DeviceStore,
   ) {
     this.#options = { ...options, relayHistoryMode: relayHistoryMode(options.relayHistoryMode) };
+    if (!options.createAgyRuntime) this.#disabledSources.add(AGY_KIND);
     this.#stateDir = stateDir;
     this.#sessionConfigurations = new SessionConfigurationStore(join(stateDir, "session-configuration.json"));
     // Released Hosts parse every launch entry strictly; never mix new kinds into their file.
@@ -1151,6 +1160,78 @@ export class HostService {
     }
     if (!options.agentEnablement) this.#startOpenCode(false);
     this.refreshHostFacts();
+  }
+
+  refreshAgyConnection(): Promise<void> {
+    return this.#providerFactsClosing ? Promise.resolve() : this.#managedAgents.restart(AGY_KIND);
+  }
+
+  retryAgyConnection(): void {
+    if (!this.#providerFactsClosing && this.#managedAgents.lease(AGY_KIND)?.isCurrent()) void this.#agy?.start();
+  }
+
+  #startManagedAgy(lease: AgentLifecycleLease): void {
+    if (!this.#options.createAgyRuntime || !lease.isCurrent() || this.#agy) return;
+    const runtime = this.#agy = this.#options.createAgyRuntime(this.#identity.hostId);
+    this.#backends.push(runtime);
+    lease.signal.addEventListener("abort", () => runtime.revoke(), { once: true });
+    const current = () => lease.isCurrent() && this.#agy === runtime && !this.#providerFactsClosing;
+    runtime.setEventSink((event, id) => { if (current()) this.#publishRuntimeEvent(id, event); });
+    runtime.onCatalogChange = () => { if (current()) this.#invalidateCatalog(); };
+    runtime.onMetadataChange = metadata => {
+      if (!current()) return;
+      const { runtimeId, sessionId } = metadata;
+      if (!this.#notifications.has(runtimeId) || this.#notifications.needsAttach(runtimeId)) this.#notifications.attach(runtimeId, sessionId);
+      this.#publishRuntimeEvent(runtimeId, { type: "runtime.metadata", metadata });
+      this.#broadcastDeviceMessage({ type: "runtime.online", runtime: metadata });
+    };
+    runtime.onOffline = (metadata, reason) => {
+      if (!current()) return;
+      this.#notifications.end(metadata.runtimeId);
+      this.#markRuntimeOffline(metadata.runtimeId, reason);
+      this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId: metadata.runtimeId, reason });
+    };
+    let connected = false;
+    runtime.onReadyChange = () => {
+      if (!current()) return;
+      this.#invalidateCatalog();
+      this.#broadcastDeviceReady(AGY_KIND);
+      if (runtime.isReady()) { connected = true; return; }
+      // One transport-only reconnect after losing a previously verified backend.
+      // Never reload a turn or repeat a create/send; explicit actions can retry readiness.
+      if (connected) {
+        connected = false;
+        this.#agyRetry = setTimeout(() => { if (current()) void runtime.start(); }, 1_000);
+        this.#agyRetry.unref();
+      }
+    };
+    void runtime.start();
+  }
+
+  async #stopManagedAgy(): Promise<void> {
+    clearTimeout(this.#agyRetry); this.#agyRetry = undefined;
+    const runtime = this.#agy;
+    this.#agy = undefined;
+    if (!runtime) return;
+    this.#backends = this.#backends.filter(item => item !== runtime);
+    const reason = this.#disabledSources.has(AGY_KIND) ? "agent_disabled" : "Antigravity CLI 已断开";
+    for (const { runtimeId } of runtime.directoryEntries()) {
+      this.#notifications.end(runtimeId);
+      this.#markRuntimeOffline(runtimeId, reason);
+      this.#broadcastDeviceMessage({ type: "runtime.offline", runtimeId, reason });
+    }
+    await runtime.stop();
+    this.#invalidateCatalog();
+    this.#broadcastDeviceReady(AGY_KIND);
+  }
+
+  async #ensureAgyReady(current: () => boolean): Promise<void> {
+    if (!current()) throw new AgentLaunchRevoked();
+    const runtime = this.#agy;
+    await runtime?.start();
+    if (!current()) throw new AgentLaunchRevoked();
+    if (!runtime?.isReady() || runtime !== this.#agy)
+      throw new ActivationError("agent_unsupported", runtime?.reason || "Antigravity CLI 未启用");
   }
 
   async #startManagedKimi(kind: KimiKind, lease: AgentLifecycleLease): Promise<void> {
@@ -1531,6 +1612,10 @@ export class HostService {
     await this.#ensureKimiReady(kind, this.#sourceCurrent(kind));
   }
 
+  async startAgy(): Promise<void> {
+    await this.#ensureAgyReady(this.#sourceCurrent(AGY_KIND));
+  }
+
   async startLocalAgent(kind: "opencode" | "openclaw" | "hermes"): Promise<void> {
     await this.#ensureSharedAgent(kind, this.#sourceCurrent(kind), true);
   }
@@ -1658,7 +1743,9 @@ export class HostService {
   changeProvider<T>(kind: AgentKind, operation: () => Promise<T>, mode: "switch" | "save" = "switch"): Promise<T> {
     const current = this.#providerCurrent(kind);
     const requireCurrent = () => { if (!current()) throw new ProviderError("此 Agent 未启用"); };
-    const operationId = this.#beginSharedOperation("provider.change", kind);
+    // PROVIDER-NATIVE-01: these kinds are managed on the computer only; older Apps never receive them as provider groups.
+    const publicKind = isNativeProviderKind(kind) ? null : kind;
+    const operationId = this.#beginSharedOperation("provider.change", publicKind);
     // Changes stay ordered among themselves; the gate only holds back new launches of this provider group.
     const result = this.#providerMutation.then(() => this.#providerGate.exclusive(providerGroup(kind), async () => {
       this.#providerChanging = kind;
@@ -1682,7 +1769,7 @@ export class HostService {
         // 不含配置内容或凭据——诊断记录永远不装秘密（ADR-0032 模块 23）。
         this.recordDiagnostic({
           scope: "host",
-          agentKind: kind,
+          agentKind: publicKind,
           sessionId: null,
           category: "provider",
           severity: "error",
@@ -1698,6 +1785,7 @@ export class HostService {
   }
 
   announceProviderChange(kind: AgentKind, exceptDeviceId?: string): void {
+    if (isNativeProviderKind(kind)) return;
     for (const id of this.#links.keys()) if (id !== exceptDeviceId) {
       this.#sendJsonToDevice(id, { type: "provider.changed", protocolVersion: PROTOCOL_VERSION, kind }, "ctl");
     }
@@ -1793,7 +1881,7 @@ export class HostService {
 
   #providerCurrent(kind: AgentKind): () => boolean {
     const current = this.#sourceCurrent(kind);
-    const desktopKind = kind === "codex" ? "codexDesktop" : kind === "dsh" ? "dshDesktop" : undefined;
+    const desktopKind = kind === "codex" ? "codexDesktop" : kind === "dsh" ? "dshDesktop" : kind === KIMI_KIND ? KIMI_DESKTOP_KIND : undefined;
     if (!desktopKind) return current;
     const desktop = this.#sourceCurrent(desktopKind);
     return () => current() || desktop();
@@ -2142,6 +2230,7 @@ export class HostService {
         DEVICE_FEATURE_OPENCLAW,
         DEVICE_FEATURE_HERMES,
         DEVICE_FEATURE_OPENCODE,
+        ...(this.#options.createAgyRuntime ? [DEVICE_FEATURE_AGY] : []),
         DEVICE_FEATURE_COMPACT_BOOTSTRAP,
         DEVICE_FEATURE_CLAUDE_SEND_NOW,
         RUNTIME_CLOSE_FEATURE,
@@ -2151,7 +2240,7 @@ export class HostService {
         ...(this.#options.providers ? [VOICE_CLEANUP_FEATURE] : []),
       ],
       sessionConfiguration: 1,
-        ...(features && (features.has(DEVICE_FEATURE_OPENCLAW) || features.has(DEVICE_FEATURE_KIMI_CODE) || features.has(DEVICE_FEATURE_KIMI_CODE_DESKTOP) || features.has(RUNTIME_CLOSE_FEATURE) || this.#unifiedCodex(deviceId) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
+        ...(features && (features.has(DEVICE_FEATURE_AGY) || features.has(DEVICE_FEATURE_OPENCLAW) || features.has(DEVICE_FEATURE_KIMI_CODE) || features.has(DEVICE_FEATURE_KIMI_CODE_DESKTOP) || features.has(RUNTIME_CLOSE_FEATURE) || this.#unifiedCodex(deviceId) || this.#managedPolicy && features.has(AGENT_ENABLEMENT_FEATURE)) ? { deviceFeatures: [...features] } : {}),
     };
   }
 
@@ -2529,6 +2618,7 @@ export class HostService {
   #setManagedPolicy(snapshot: AgentEnablementSnapshot): void {
     this.#managedPolicy = snapshot;
     this.#disabledSources = new Set(snapshot.agents.filter(row => !row.enabled).map(row => row.kind));
+    if (!this.#options.createAgyRuntime) this.#disabledSources.add(AGY_KIND);
   }
 
   #applyManagedPolicy(snapshot: AgentEnablementSnapshot): void {
@@ -2556,7 +2646,7 @@ export class HostService {
     const features = this.#deviceFeatures.get(deviceId);
     return { ...snapshot, agents: snapshot.agents.filter(row => {
       const feature = negotiatedAgentFeature(row.kind);
-      return feature === undefined || features?.has(feature) === true;
+      return (row.kind !== AGY_KIND || this.#options.createAgyRuntime !== undefined) && (feature === undefined || features?.has(feature) === true);
     }) };
   }
 
@@ -2578,11 +2668,18 @@ export class HostService {
       }
       const { kind, enabled, expectedRevision, confirmDisable, review } = message;
       if (!this.#managedPolicy.agents.some(row => row.kind === kind)) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
-      const kindFeature = kind === KIMI_KIND ? DEVICE_FEATURE_KIMI_CODE : kind === KIMI_DESKTOP_KIND ? DEVICE_FEATURE_KIMI_CODE_DESKTOP : undefined;
+      if (kind === AGY_KIND && !this.#options.createAgyRuntime) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
+      const kindFeature = kind === AGY_KIND ? DEVICE_FEATURE_AGY : kind === KIMI_KIND ? DEVICE_FEATURE_KIMI_CODE : kind === KIMI_DESKTOP_KIND ? DEVICE_FEATURE_KIMI_CODE_DESKTOP : undefined;
       if (kindFeature !== undefined && !features.has(kindFeature)) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
       if (review !== undefined && !scoped) { this.#rejectAgentFeature(deviceId, { requestId }); return; }
+      const permitted = () => active() && (kind !== AGY_KIND || !enabled || this.#options.agyCredentialConfigured?.() !== false);
+      if (!permitted()) {
+        this.#sendToDevice(deviceId, { type: "protocol.error", requestId, code: "agent_enablement_unavailable",
+          message: "请先在 Host 本机配置 Antigravity CLI" });
+        return;
+      }
       const result = await controller.set({ kind, enabled, expectedRevision, ...(confirmDisable ? { confirmDisable } : {}), ...(review ? { review } : {}) },
-        active, (source, revision, token) => this.verifyAgentDisable(source, revision, token, `paired:${deviceId}`), scoped);
+        permitted, (source, revision, token) => this.verifyAgentDisable(source, revision, token, `paired:${deviceId}`), scoped);
       const snapshot = result.snapshot;
       if (active()) this.#sendToDevice(deviceId, { type: "agent.enablement.result", requestId, status: result.status, snapshot: this.#enablementForDevice(deviceId, snapshot) });
     } catch (error) {
@@ -2595,6 +2692,10 @@ export class HostService {
         message: error instanceof AgentDisableConfirmationRequired ? "请确认停用正在工作的 Agent" : "无法读取或保存 Agent 设置" });
     }
   }
+
+  // Desktop-only settings and diagnostics. Do not add credentials, grants, or config to mobile/Relay state.
+  get openClawConnectionState() { return this.#openClaw?.connectionState; }
+  get openClawSettingsConnection() { return this.#openClaw?.settingsConnection; }
 
   async #stopManagedOpenClaw(): Promise<void> {
     const backend = this.#openClaw;
@@ -2946,8 +3047,10 @@ export class HostService {
       const codexViewChanged = this.#unifiedCodex(deviceId) !== message.features.includes(CODEX_UNIFIED_HISTORY);
       const managementChanged = !!this.#managedPolicy && (!!previous?.has(AGENT_ENABLEMENT_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_FEATURE) ||
         !!previous?.has(AGENT_ENABLEMENT_REVIEW_FEATURE) !== message.features.includes(AGENT_ENABLEMENT_REVIEW_FEATURE) ||
-        !!previous?.has(DEVICE_FEATURE_OPENCLAW) !== message.features.includes(DEVICE_FEATURE_OPENCLAW));
+        !!previous?.has(DEVICE_FEATURE_OPENCLAW) !== message.features.includes(DEVICE_FEATURE_OPENCLAW) ||
+        !!previous?.has(DEVICE_FEATURE_AGY) !== message.features.includes(DEVICE_FEATURE_AGY));
       this.#deviceFeatures.set(deviceId, new Set(message.features.filter(feature =>
+        (feature !== DEVICE_FEATURE_AGY || this.#options.createAgyRuntime !== undefined) &&
         (feature !== DEVICE_FEATURE_KIMI_CODE || this.#kimi[KIMI_KIND] !== undefined || this.#options.createKimiCodeRuntime !== undefined) &&
         (feature !== DEVICE_FEATURE_KIMI_CODE_DESKTOP || this.#kimi[KIMI_DESKTOP_KIND] !== undefined || this.#options.createKimiCodeRuntime !== undefined && this.#options.kimiCodeDesktopSupported === true))));
       const hadClaudeSendNow = previous?.has(DEVICE_FEATURE_CLAUDE_SEND_NOW) ?? false;
@@ -3436,6 +3539,7 @@ export class HostService {
     this.refreshHostFacts();
     try {
       let closeKind: AgentKind | undefined;
+      let nativeClose = false;
       let viewOnly = false;
       if (command.type === "session.close") {
         const reject = (error: string) => this.#publishRuntimeEvent(runtimeId, { type: "command.result", commandId, ok: false, status: "failure", error });
@@ -3448,9 +3552,10 @@ export class HostService {
         }
         closeKind = scope.key.agentKind;
         viewOnly = sharedViewBackend(closeKind);
+        nativeClose = closeKind === "claude" || closeKind === AGY_KIND;
         if (viewOnly && !this.#deviceFeatures.get(deviceId)?.has(RUNTIME_VIEW_CLOSE_FEATURE)) { reject("unsupported_command"); return; }
         const menu = this.#agentStateRegistry.read<Record<string, AgentCapabilityItem>>(scope, "capabilities");
-        const capability = menu?.value?.[viewOnly ? RUNTIME_VIEW_CLOSE_CAPABILITY : closeKind === "claude" ? RUNTIME_CLOSE_CAPABILITY : "quit"];
+        const capability = menu?.value?.[viewOnly ? RUNTIME_VIEW_CLOSE_CAPABILITY : nativeClose ? RUNTIME_CLOSE_CAPABILITY : "quit"];
         if (menu?.availability !== "ready" || capability?.source !== "builtin" || capability.argumentRequired === true
             || viewOnly && !command.closeGeneration
             || capability.closeGeneration !== command.closeGeneration) {
@@ -3474,7 +3579,7 @@ export class HostService {
         if (!backend.isReady() || !backend.ownsRuntime(runtimeId)) continue;
         if (closeKind !== undefined && closeKind !== backend.kind) continue;
         // Only legacy backends use a slash command. Shared viewers validate the exact attachment again.
-        const result = backend.dispatchCommand(runtimeId, commandId, command.type === "session.close" && closeKind !== "claude" && !viewOnly
+        const result = backend.dispatchCommand(runtimeId, commandId, command.type === "session.close" && !nativeClose && !viewOnly
           ? { type: "slash.execute", name: "quit", args: "" } : command);
         if (result === "handled") return;
         const error = result === "offline" ? "runtime_offline" : "unsupported_command";
@@ -3671,6 +3776,7 @@ export class HostService {
       throw new SessionConfigurationError("configuration_unavailable", "Hermes Gateway 未连接");
     }
     let backend = this.#backends.find(item => item.kind === kind);
+    if (kind === AGY_KIND && !backend?.isReady()) await this.#ensureAgyReady(current);
     if (isKimiKind(kind) && !backend?.isReady()) await this.#ensureKimiReady(kind, current);
     if ((kind === "dsh" || kind === "dshDesktop") && !backend?.isReady()) await this.#ensureDshRuntime(false, kind);
     if ((kind === "codex" || kind === "codexDesktop") && !backend?.isReady()) await this.#ensureManagedCodex(kind);
@@ -3824,7 +3930,7 @@ export class HostService {
         const requireCurrent = () => { if (!current()) throw new AgentLaunchRevoked(); };
         requireCurrent();
         const activated = await backend.activate({ type: "new", cwd: message.cwd }, {
-          deviceId, launchId: message.launchId, requireCurrent, spawnMode: backend.kind === OPENCLAW_KIND ? "headless" : message.spawnMode ?? (isKimiKind(backend.kind) ? "auto" : "tui"), configuration: message.values,
+          deviceId, launchId: message.launchId, requireCurrent, spawnMode: backend.kind === OPENCLAW_KIND || backend.kind === AGY_KIND ? "headless" : message.spawnMode ?? (isKimiKind(backend.kind) ? "auto" : "tui"), configuration: message.values,
           legacyCodexSpawn: message.spawnMode === undefined || !this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_EXPLICIT_TUI),
           ...(begun.record.nativeLaunchMarker === undefined ? {} : { nativeLaunchMarker: begun.record.nativeLaunchMarker }),
           ...(begun.record.expectedSessionId === undefined ? {} : { expectedSessionId: begun.record.expectedSessionId }),
@@ -4140,6 +4246,8 @@ export class HostService {
       };
       if (target.type === "new" && isKimiKind(target.agentKind)) throw new ActivationError("agent_unsupported", "请使用可恢复的 Kimi Code 启动请求");
       const legacyDesktopId = target.type === "resume" && target.sessionId.startsWith("kimi-code:desktop-");
+      if (target.type === "resume" && target.agentKind !== undefined && isAgyId(target.sessionId) !== (target.agentKind === AGY_KIND))
+        throw new ActivationError("session_not_found", "Antigravity 会话身份不匹配");
       if (target.type === "resume" && isKimiId(target.sessionId) && target.agentKind !== undefined && target.agentKind !== kimiKindFromId(target.sessionId)
         && !(legacyDesktopId && target.agentKind === KIMI_KIND))
         throw new ActivationError("session_not_found", "会话与 Agent 类型不一致");
@@ -4156,6 +4264,7 @@ export class HostService {
       if (target.type === "new") {
         const requireCurrent = requireLaunch(target.agentKind);
         requireCurrent();
+        if (target.agentKind === AGY_KIND) throw new ActivationError("agent_unsupported", "请使用支持可恢复启动的 App 创建 Antigravity 会话");
         if (target.agentKind === OPENCLAW_KIND) throw new ActivationError("agent_unsupported", "请使用支持可恢复启动的 App 创建 OpenClaw 会话");
         if ((target.agentKind === "hermes" || target.agentKind === OPENCODE_KIND) && !this.#backends.some(backend => backend.kind === target.agentKind && backend.isReady())) {
           if (!isAbsolute(target.cwd) || !await stat(target.cwd).then(info => info.isDirectory(), () => false)) throw new ActivationError("cwd_missing", "请选择电脑上存在的绝对工作目录");
@@ -4206,6 +4315,10 @@ export class HostService {
         return;
       }
       const resumeKind = resumeAgentKind(target);
+      if (resumeKind === AGY_KIND && !this.#agy?.isReady()) {
+        const current = requireLaunch(AGY_KIND);
+        await this.#ensureAgyReady(() => { try { current(); return true; } catch { return false; } });
+      }
       if (isKimiKind(resumeKind) && !this.#kimi[resumeKind]?.isReady()) {
         const current = this.#sourceCurrent(resumeKind);
         await this.#ensureKimiReady(resumeKind, () => current() && link?.active !== undefined && link === this.#links.get(deviceId) && epoch === this.#deviceViewEpochs.get(deviceId), target.sessionId);
@@ -4238,7 +4351,7 @@ export class HostService {
       for (const backend of this.#backends) {
         if (!backend.isReady() || !allowsAgent(this.#agentView(deviceId), backend.kind)) continue;
         if (resumeKind !== undefined && backend.kind !== resumeKind) continue;
-        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || isKimiKind(backend.kind) || backend.kind === OPENCLAW_KIND || backend.kind === "hermes" || backend.kind === OPENCODE_KIND)) continue;
+        if (resumeKind === undefined && (backend.kind === "codexDesktop" || backend.kind === "dshDesktop" || isKimiKind(backend.kind) || backend.kind === OPENCLAW_KIND || backend.kind === "hermes" || backend.kind === OPENCODE_KIND || backend.kind === AGY_KIND)) continue;
         try {
           const requireCurrent = requireLaunch(backend.kind);
           requireCurrent();
@@ -4485,7 +4598,7 @@ export class HostService {
 
   #publishRuntimeEvent(runtimeId: string, event: RuntimeEvent, codex?: CodexRuntime): void {
     if (this.#isCodexRuntime(runtimeId)) this.#deviceMessageRendering.observe(runtimeId, event);
-    if (!isKimiId(runtimeId) && !runtimeId.startsWith(OPENCLAW_PREFIX)) this.#fileChangeTurns.observe(runtimeId, event);
+    if (!isKimiId(runtimeId) && !isAgyId(runtimeId) && !runtimeId.startsWith(OPENCLAW_PREFIX)) this.#fileChangeTurns.observe(runtimeId, event);
     if (event.type === "tool.activity") return;
     if (event.type === "session.tools.produced") {
       this.#countToolTraffic(runtimeId, "summaryJsonBytes", Buffer.byteLength(JSON.stringify(event.page), "utf8"));

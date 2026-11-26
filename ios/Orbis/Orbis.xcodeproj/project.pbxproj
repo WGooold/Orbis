@@ -96,6 +96,7 @@
 		A00100010000000000000022 /* SessionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000022 /* SessionViews.swift */; };
 		A00100010000000000000023 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000023 /* ChatView.swift */; };
 		A00100010000000000000024 /* StatusViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000024 /* StatusViews.swift */; };
+		E11000010000000000000001 /* RelayTelemetryConsent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E11000010000000000000002 /* RelayTelemetryConsent.swift */; };
 		A00100010000000000000025 /* HistoryBranchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000025 /* HistoryBranchView.swift */; };
 		A00100010000000000000026 /* PreviewSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000026 /* PreviewSupport.swift */; };
 		A00100010000000000000027 /* InteractionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00110010000000000000027 /* InteractionView.swift */; };
@@ -213,6 +214,7 @@
 		A00110010000000000000022 /* SessionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionViews.swift; sourceTree = "<group>"; };
 		A00110010000000000000023 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		A00110010000000000000024 /* StatusViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusViews.swift; sourceTree = "<group>"; };
+		E11000010000000000000002 /* RelayTelemetryConsent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayTelemetryConsent.swift; sourceTree = "<group>"; };
 		A00110010000000000000025 /* HistoryBranchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryBranchView.swift; sourceTree = "<group>"; };
 		A00110010000000000000026 /* PreviewSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewSupport.swift; sourceTree = "<group>"; };
 		A00110010000000000000027 /* InteractionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionView.swift; sourceTree = "<group>"; };
@@ -345,6 +347,7 @@
 				A00110010000000000000026 /* PreviewSupport.swift */,
 				A00110010000000000000025 /* HistoryBranchView.swift */,
 				A00110010000000000000024 /* StatusViews.swift */,
+				E11000010000000000000002 /* RelayTelemetryConsent.swift */,
 				A00110010000000000000023 /* ChatView.swift */,
 				A00110010000000000000022 /* SessionViews.swift */,
 				A00110010000000000000021 /* Presentation.swift */,
@@ -596,6 +599,7 @@
 				A00100010000000000000026 /* PreviewSupport.swift in Sources */,
 				A00100010000000000000025 /* HistoryBranchView.swift in Sources */,
 				A00100010000000000000024 /* StatusViews.swift in Sources */,
+				E11000010000000000000001 /* RelayTelemetryConsent.swift in Sources */,
 				A00100010000000000000023 /* ChatView.swift in Sources */,
 				A00100010000000000000022 /* SessionViews.swift in Sources */,
 				A00100010000000000000021 /* Presentation.swift in Sources */,
@@ -665,7 +669,7 @@
         F08670010000000000000001 /* Share Extension Debug */ = {isa = XCBuildConfiguration; buildSettings = {
             APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_STYLE = Automatic;
             CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-            CURRENT_PROJECT_VERSION = 11; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
+            CURRENT_PROJECT_VERSION = 12; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
             INFOPLIST_FILE = ShareExtension/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0;
             LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
             MARKETING_VERSION = 0.1.3; ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
@@ -676,7 +680,7 @@
         F08670010000000000000002 /* Share Extension Release */ = {isa = XCBuildConfiguration; buildSettings = {
             APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_STYLE = Automatic;
             CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
-            CURRENT_PROJECT_VERSION = 11; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
+            CURRENT_PROJECT_VERSION = 12; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
             INFOPLIST_FILE = ShareExtension/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0;
             LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
             MARKETING_VERSION = 0.1.3; ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
@@ -687,7 +691,7 @@
         A11170010000000000000001 /* Notifications Debug */ = {isa = XCBuildConfiguration; buildSettings = {
             APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_STYLE = Automatic;
             CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
-            CURRENT_PROJECT_VERSION = 11; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
+            CURRENT_PROJECT_VERSION = 12; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
             INFOPLIST_FILE = NotificationService/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0;
             LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
             MARKETING_VERSION = 0.1.3; ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
@@ -698,7 +702,7 @@
         A11170010000000000000002 /* Notifications Release */ = {isa = XCBuildConfiguration; buildSettings = {
             APPLICATION_EXTENSION_API_ONLY = YES; CLANG_ENABLE_MODULES = YES; CODE_SIGN_STYLE = Automatic;
             CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
-            CURRENT_PROJECT_VERSION = 11; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
+            CURRENT_PROJECT_VERSION = 12; DEVELOPMENT_TEAM = Z5KBY7SP63; GENERATE_INFOPLIST_FILE = NO;
             INFOPLIST_FILE = NotificationService/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 17.0;
             LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
             MARKETING_VERSION = 0.1.3; ORBIS_APP_BUNDLE_IDENTIFIER = com.orbising.orbis.ios;
@@ -712,7 +716,7 @@
                 APPLICATION_EXTENSION_API_ONLY = YES;
                 CLANG_ENABLE_MODULES = YES;
                 CODE_SIGN_STYLE = Automatic;
-                CURRENT_PROJECT_VERSION = 11;
+                CURRENT_PROJECT_VERSION = 12;
                 DEVELOPMENT_TEAM = Z5KBY7SP63;
                 GENERATE_INFOPLIST_FILE = NO;
                 INFOPLIST_FILE = LiveActivityWidget/Info.plist;
@@ -737,7 +741,7 @@
                 APPLICATION_EXTENSION_API_ONLY = YES;
                 CLANG_ENABLE_MODULES = YES;
                 CODE_SIGN_STYLE = Automatic;
-                CURRENT_PROJECT_VERSION = 11;
+                CURRENT_PROJECT_VERSION = 12;
                 DEVELOPMENT_TEAM = Z5KBY7SP63;
                 GENERATE_INFOPLIST_FILE = NO;
                 INFOPLIST_FILE = LiveActivityWidget/Info.plist;
@@ -765,7 +769,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Orbis/Orbis.Debug.entitlements;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = Z5KBY7SP63;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Orbis/Info.plist;
@@ -791,7 +795,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = Orbis/Orbis.Release.entitlements;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = Z5KBY7SP63;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Orbis/Info.plist;

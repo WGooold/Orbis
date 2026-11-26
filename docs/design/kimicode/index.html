@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#050812">
+<title>Kimi Code · Orbital Cruiser 3D</title>
+<style>
+:root{color-scheme:dark;--paper:#edf4ff;--mute:#8698b8;--line:rgba(72,168,255,.22);--cobalt:#2b8cff;--cyan:#5cc8ff;--ice:#b6e4ff;--glass:rgba(8,14,26,.76)}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050812;color:var(--paper);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{background:radial-gradient(ellipse at 52% 42%,#0e1930 0,#070c18 48%,#03050b 100%)}
+#stage{position:absolute;inset:0;width:100%;height:100%;outline:none}
+.grain{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:.14;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.91' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Cpath filter='url(%23n)' opacity='.2' d='M0 0h180v180H0z'/%3E%3C/svg%3E");mix-blend-mode:screen}
+.hud{position:absolute;z-index:2;inset:0;pointer-events:none;padding:clamp(18px,3.5vw,46px);display:flex;flex-direction:column;justify-content:space-between}
+.top,.bottom{display:flex;justify-content:space-between;align-items:flex-start;gap:24px}
+.brand{display:flex;gap:14px;align-items:flex-start}
+.sigil{position:relative;width:30px;height:30px;border:1px solid rgba(92,200,255,.52);border-radius:50%;flex:none;margin-top:2px;box-shadow:0 0 18px rgba(43,140,255,.28);display:grid;place-items:center}
+.sigil svg{width:16px;height:16px;fill:var(--ice)}
+.eyebrow{margin:0 0 6px;color:var(--cyan);font-size:9px;font-weight:550;letter-spacing:.24em}
+.title{margin:0;color:#f0f7ff;font-size:clamp(14px,1.3vw,18px);font-weight:520;letter-spacing:.04em}
+.subtitle{margin:7px 0 0;color:#7e93b4;font-size:9px;letter-spacing:.13em}
+.header-actions{display:flex;gap:8px;pointer-events:auto}
+.button{height:35px;padding:0 13px;display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:2px;color:#c9dcf7;background:rgba(10,18,34,.64);font:500 10px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.07em;cursor:pointer;transition:all .2s;backdrop-filter:blur(15px)}
+.button:hover,.button:focus-visible,.button[aria-pressed="true"]{color:#f3f9ff;border-color:rgba(92,200,255,.68);background:rgba(28,92,188,.36);outline:none}
+.button svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.4}
+.bottom{align-items:flex-end}
+.note{margin:0 0 1px;color:#8ea3c4;font-size:9px;letter-spacing:.14em}
+.note .dot{color:var(--cyan);padding:0 7px}
+.meta{text-align:right;color:#7d91b2;font:9px/1.8 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.09em}
+.meta strong{color:var(--ice);font-weight:500}
+.meta .rule{display:inline-block;width:30px;height:1px;margin:0 8px;vertical-align:middle;background:linear-gradient(90deg,transparent,var(--cyan))}
+.view-dock{position:absolute;left:50%;bottom:clamp(48px,8vh,82px);z-index:3;transform:translateX(-50%);display:flex;align-items:center;gap:4px;padding:5px;border:1px solid rgba(92,200,255,.20);background:rgba(8,14,26,.84);backdrop-filter:blur(18px);pointer-events:auto}
+.view{min-width:68px;height:30px;padding:0 11px;border:1px solid transparent;border-radius:1px;background:transparent;color:#8aa0c2;font:500 9px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.08em;cursor:pointer;transition:all .18s}
+.view:hover{color:#f0f8ff}
+.view[aria-pressed="true"]{border-color:rgba(92,200,255,.48);color:#c8ebff;background:rgba(43,140,255,.20)}
+#loading{position:absolute;z-index:5;inset:0;display:grid;place-items:center;background:#050812;color:#b8d7f8;font:9px ui-monospace,monospace;letter-spacing:.2em;transition:opacity .45s}
+#loading.done{opacity:0;pointer-events:none}
+.load-inner{text-align:center}
+.loading-line{width:142px;height:1px;margin:13px auto 0;background:linear-gradient(90deg,transparent,var(--cyan),transparent);animation:scan 1.5s ease-in-out infinite}
+@keyframes scan{0%,100%{opacity:.24;transform:scaleX(.45)}50%{opacity:1;transform:scaleX(1)}}
+#error{display:none;max-width:420px;padding:18px;border:1px solid rgba(92,200,255,.34);background:#0c1424;color:#d6ecff;line-height:1.6;letter-spacing:.03em}
+@media(max-width:660px){.hud{padding:18px}.sigil{width:25px;height:25px}.brand{gap:10px}.eyebrow{font-size:8px}.title{font-size:13px}.subtitle{font-size:8px}.button{height:32px;padding:0 9px;font-size:9px}.header-actions{gap:5px}.view-dock{bottom:68px;max-width:calc(100% - 28px);width:max-content}.view{min-width:0;padding:0 10px;font-size:8px}.bottom{gap:8px}.note,.meta{font-size:7px}.meta .rule{width:16px;margin:0 4px}}
+@media(max-width:380px){.button span{display:none}.button{width:33px;justify-content:center;padding:0}.view{padding:0 8px}.subtitle{letter-spacing:.08em}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Kimi Code 轨道巡洋舰可交互三维模型"></canvas><div class="grain"></div>
+<div id="loading"><div class="load-inner" id="loadLabel">载入舰体几何与涂装<div class="loading-line"></div></div><div id="error"></div></div>
+<div class="hud">
+ <header class="top">
+  <div class="brand">
+   <span class="sigil" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9.5 3l1.7 5.3L16.5 10l-5.3 1.7L9.5 17l-1.7-5.3L2.5 10l5.3-1.7L9.5 3zm8 9l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9.9-2.6z"/></svg></span>
+   <div>
+    <p class="eyebrow">ORBITAL PORT <span style="opacity:.5">/</span> VESSEL 05</p>
+    <h1 class="title">Kimi Code 轨道巡洋舰</h1>
+    <p class="subtitle">PEARL TITANIUM ARMOR <span style="opacity:.4">·</span> OBSIDIAN NAVY CORE <span style="opacity:.4">·</span> SYMMETRIC GRAV-HALO</p>
+   </div>
+  </div>
+  <div class="header-actions">
+   <button class="button" id="orbitToggle" type="button" aria-pressed="false" title="自动环绕"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-3L4 10"/><path d="M4 5v5h5M4 13a8 8 0 0 0 14.7 3L20 14"/><path d="M20 19v-5h-5"/></svg><span>自动环绕</span></button>
+   <button class="button" id="resetView" type="button" title="重置视角"><svg viewBox="0 0 24 24"><path d="M12 21s7-6.2 7-12a7 7 0 1 0-14 0c0 5.8 7 12 7 12Z"/><circle cx="12" cy="9" r="2.1"/></svg><span>重置</span></button>
+  </div>
+ </header>
+ <footer class="bottom">
+  <p class="note">拖动旋转 <span class="dot">·</span> 滚轮缩放 <span class="dot">·</span> 选择视图</p>
+  <div class="meta">
+   <div><strong>KIMI CODE ORBITAL CRUISER</strong><span class="rule"></span><span id="partCount">694 PARTS</span></div>
+   <div>PEARL CERAMIC <span style="color:#5cc8ff">·</span> TWIN GRAV-RINGS <span style="color:#5cc8ff">·</span> SYMMETRIC VENTRAL HALO</div>
+  </div>
+ </footer>
+</div>
+<nav class="view-dock" aria-label="模型视角">
+ <button class="view" data-view="hero" aria-pressed="true">透视</button>
+ <button class="view" data-view="top" aria-pressed="false">俯视</button>
+ <button class="view" data-view="front" aria-pressed="false">正视</button>
+ <button class="view" data-view="side" aria-pressed="false">侧视</button>
+ <button class="view" data-view="rear" aria-pressed="false">尾部</button>
+ <button class="view" data-view="bottom" aria-pressed="false">底部</button>
+</nav>
+<script type="module">
+import * as THREE from './three-runtime.js';
+import {OrbitControls,GLTFLoader,EffectComposer,RenderPass,UnrealBloomPass,OutputPass,RoomEnvironment} from './three-runtime.js';
+
+const canvas=document.querySelector('#stage');
+const scene=new THREE.Scene();
+scene.background=new THREE.Color('#050812');
+scene.fog=new THREE.FogExp2('#050812',.0022);
+const camera=new THREE.PerspectiveCamera(36,innerWidth/innerHeight,.12,240);
+camera.position.set(-15.5,1.2,-16.5);
+const target=new THREE.Vector3(0,.35,.5);
+
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));
+renderer.setSize(innerWidth,innerHeight);
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=.96;
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+
+const pmrem=new THREE.PMREMGenerator(renderer);
+scene.environment=pmrem.fromScene(new RoomEnvironment(renderer),.04).texture;
+pmrem.dispose();
+
+const key=new THREE.DirectionalLight(0xf6faff,1.95);key.position.set(-16,22,-16);scene.add(key);
+const rim=new THREE.DirectionalLight(0x9bc8ff,.95);rim.position.set(20,12,12);scene.add(rim);
+const fill=new THREE.HemisphereLight(0xd8ecff,0x0c1428,.62);scene.add(fill);
+const driveLight=new THREE.PointLight(0x1f82ff,18,30,2);driveLight.position.set(0,0,11.2);scene.add(driveLight);
+const underBounce=new THREE.PointLight(0x3a8aff,6.5,32,2);underBounce.position.set(-4,-12,2);scene.add(underBounce);
+
+const composer=new EffectComposer(renderer);
+const renderPass=new RenderPass(scene,camera);
+composer.addPass(renderPass);
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),.20,.46,.82));
+composer.addPass(new OutputPass());
+
+const stars=new Float32Array(1200*3);
+let seed=2026;
+function rnd(){seed=(seed*16807)%2147483647;return seed/2147483647}
+for(let i=0;i<1200;i++){const r=44+rnd()*108,t=rnd()*Math.PI*2,p=Math.acos(rnd()*2-1);stars[i*3]=r*Math.sin(p)*Math.cos(t);stars[i*3+1]=r*Math.cos(p);stars[i*3+2]=r*Math.sin(p)*Math.sin(t)}
+const starGeo=new THREE.BufferGeometry();
+starGeo.setAttribute('position',new THREE.BufferAttribute(stars,3));
+scene.add(new THREE.Points(starGeo,new THREE.PointsMaterial({color:0xc8e4ff,size:.13,sizeAttenuation:true,transparent:true,opacity:.68,depthWrite:false,fog:false})));
+
+let ship=null,controls=null,selected='hero',autoRotate=false,cameraTween=null;
+const viewButtons=[...document.querySelectorAll('.view')];
+// Blender Z-up (+Y Bow, -Y Stern, +Z Dorsal) -> glTF Y-up (-Z Bow, +Z Stern, +Y Dorsal)
+const cameraState={
+ hero:{type:'perspective',position:new THREE.Vector3(-15.5,1.2,-16.5),aim:new THREE.Vector3(0,.35,.5),up:new THREE.Vector3(0,1,0)},
+ top:{type:'ortho',position:new THREE.Vector3(0,34,0),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,0,-1),width:12,height:23},
+ front:{type:'ortho',position:new THREE.Vector3(0,.85,-28),aim:new THREE.Vector3(0,.85,0),up:new THREE.Vector3(0,1,0),width:12,height:9.5},
+ side:{type:'ortho',position:new THREE.Vector3(28,.85,0),aim:new THREE.Vector3(0,.85,0),up:new THREE.Vector3(0,1,0),width:23,height:9.5},
+ rear:{type:'perspective',position:new THREE.Vector3(14.0,5.8,17.5),aim:new THREE.Vector3(0,.4,0),up:new THREE.Vector3(0,1,0)},
+ bottom:{type:'ortho',position:new THREE.Vector3(0,-34,0),aim:new THREE.Vector3(0,0,0),up:new THREE.Vector3(0,0,1),width:12,height:23}
+};
+
+function fittedCamera(which){
+ const v=cameraState[which],aspect=innerWidth/innerHeight;
+ if(v.type==='perspective'){const c=new THREE.PerspectiveCamera(36,aspect,.12,240);c.up.copy(v.up);c.position.copy(v.position);c.lookAt(v.aim);return c}
+ const halfH=Math.max(v.height/2,v.width/aspect/2)*1.12;
+ const c=new THREE.OrthographicCamera(-halfH*aspect,halfH*aspect,halfH,-halfH,.1,240);
+ c.up.copy(v.up);c.position.copy(v.position);c.lookAt(v.aim);return c;
+}
+
+function setCamera(which,{immediate=false}={}){
+ selected=which;
+ const oldControls=controls;
+ const oldCamera=oldControls?.object||activeCamera;
+ const fromPosition=oldCamera.position.clone();
+ const fromTarget=oldControls?.target.clone()||target.clone();
+ if(oldControls){autoRotate=oldControls.autoRotate;oldControls.dispose()}
+ const next=fittedCamera(which);
+ next.position.copy(fromPosition);next.lookAt(fromTarget);
+ controls=new OrbitControls(next,canvas);
+ controls.target.copy(fromTarget);
+ controls.enableDamping=true;controls.dampingFactor=.07;
+ controls.minDistance=10;controls.maxDistance=72;
+ controls.minZoom=.48;controls.maxZoom=3.2;
+ controls.autoRotate=false;controls.autoRotateSpeed=.38;
+ controls.update();
+ activeCamera=next;
+ cameraTween=immediate?null:{start:performance.now(),duration:520,fromPosition,toPosition:cameraState[which].position.clone(),fromTarget,toTarget:cameraState[which].aim.clone()};
+ if(immediate){next.position.copy(cameraState[which].position);controls.target.copy(cameraState[which].aim);controls.autoRotate=autoRotate;controls.update()}
+ viewButtons.forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.view===which)));
+}
+
+let activeCamera=camera;
+viewButtons.forEach(b=>b.addEventListener('click',()=>setCamera(b.dataset.view)));
+const orbitButton=document.querySelector('#orbitToggle');
+orbitButton.addEventListener('click',()=>{autoRotate=!autoRotate;if(controls)controls.autoRotate=autoRotate;orbitButton.setAttribute('aria-pressed',String(autoRotate))});
+document.querySelector('#resetView').addEventListener('click',()=>{autoRotate=false;orbitButton.setAttribute('aria-pressed','false');setCamera('hero')});
+
+const loader=new GLTFLoader();
+loader.load('./kimicode_cruiser.glb',gltf=>{
+ ship=gltf.scene;
+ let meshCount=0;
+ ship.traverse(o=>{if(o.isMesh)meshCount++});
+ document.querySelector('#partCount').textContent=`${meshCount} PARTS`;
+ scene.add(ship);
+ ship.updateMatrixWorld(true);
+ const bounds=new THREE.Box3().setFromObject(ship);
+ const center=bounds.getCenter(new THREE.Vector3());
+ target.copy(center);
+ for(const v of Object.values(cameraState)){v.aim.add(center);v.position.add(center)}
+ const size=bounds.getSize(new THREE.Vector3());
+ cameraState.top.width=Math.max(size.x*1.25,12);cameraState.top.height=Math.max(size.z*1.12,22);
+ cameraState.bottom.width=Math.max(size.x*1.25,12);cameraState.bottom.height=Math.max(size.z*1.12,22);
+ cameraState.side.width=Math.max(size.z*1.14,22);cameraState.side.height=Math.max(size.y*1.25,8.5);
+ cameraState.front.width=Math.max(size.x*1.25,12);cameraState.front.height=Math.max(size.y*1.25,8.5);
+ document.querySelector('#loading').classList.add('done');
+ setCamera('hero',{immediate:true});
+},undefined,error=>{
+ console.error(error);
+ const box=document.querySelector('#error');
+ document.querySelector('#loadLabel').style.display='none';
+ box.style.display='block';
+ box.textContent='模型载入失败。请用本地 HTTP 服务打开本页，并确认 kimicode_cruiser.glb 与 three-runtime.js 位于同一目录。';
+});
+
+const resize=()=>{
+ renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));
+ renderer.setSize(innerWidth,innerHeight);
+ composer.setSize(innerWidth,innerHeight);
+ cameraTween=null;
+ if(controls){
+  const zoom=controls.object.zoom||1,position=controls.object.position.clone(),aim=controls.target.clone();
+  const next=fittedCamera(selected);next.position.copy(position);next.lookAt(aim);next.zoom=zoom;next.updateProjectionMatrix();
+  controls.dispose();controls=new OrbitControls(next,canvas);controls.target.copy(aim);
+  controls.enableDamping=true;controls.dampingFactor=.07;controls.minDistance=10;controls.maxDistance=72;controls.minZoom=.48;controls.maxZoom=3.2;
+  controls.autoRotate=autoRotate;controls.autoRotateSpeed=.38;activeCamera=next;
+ }else activeCamera.aspect=innerWidth/innerHeight;
+ activeCamera.updateProjectionMatrix();
+};
+addEventListener('resize',resize,{passive:true});
+const prefersReduced=matchMedia('(prefers-reduced-motion: reduce)');
+if(prefersReduced.matches){autoRotate=false;orbitButton.setAttribute('aria-pressed','false')}
+
+function render(){
+ requestAnimationFrame(render);
+ if(controls){
+  if(cameraTween){
+   const p=Math.min(1,(performance.now()-cameraTween.start)/cameraTween.duration);
+   const e=p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2;
+   controls.object.position.lerpVectors(cameraTween.fromPosition,cameraTween.toPosition,e);
+   controls.target.lerpVectors(cameraTween.fromTarget,cameraTween.toTarget,e);
+   if(p===1){cameraTween=null;controls.autoRotate=autoRotate}
+  }
+  controls.update();
+ }
+ renderPass.camera=activeCamera;
+ const t=performance.now()*.001;
+ driveLight.intensity=18+2.6*Math.sin(t*1.8);
+ composer.render();
+}
+render();
+</script>
+</body>
+</html>

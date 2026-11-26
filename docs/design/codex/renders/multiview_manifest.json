@@ -1,0 +1,91 @@
+{
+  "job_id": "249f156fdbe44c7cb35e3de0fbeb3f17",
+  "kind": "multiview",
+  "status": "completed",
+  "items": [
+    {
+      "camera": "Cam_Hero_34",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "6a449f2d345323ad41f13e18f2f40db2853bb9e403b3261762b6996b06f3762d",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1182336
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/codex/renders/hero_34.png"
+    },
+    {
+      "camera": "Cam_Side_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "8320b6fa96c614ff6a346ca6ed72240bf44a3367d5fa61e109891324a3456711",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1114462
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/codex/renders/side_ortho.png"
+    },
+    {
+      "camera": "Cam_Front_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "b479f50cd9545efbd7cb0a9d9fc20ce02a896b2ed4ddbad81654905b28e3a6b3",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1259108
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/codex/renders/front_ortho.png"
+    },
+    {
+      "camera": "Cam_Stern_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "0db11f34e8f06d68d5dbe1ff99ba783fa2670555b4200d41d1d9f1d39299a5db",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1362326
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/codex/renders/stern_ortho.png"
+    },
+    {
+      "camera": "Cam_Top_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "5cd9a521c7060828007c8f1897411abe7ce1bb31aea5ba2febcfb8a991a1a240",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1128248
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/codex/renders/top_ortho.png"
+    },
+    {
+      "camera": "Cam_Bottom_Ortho",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "43be5dc47a8bb881bb79d415db70d0231ed52870a14c4a21ffca7fe8c4a65bdb",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1103557
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/codex/renders/bottom_ortho.png"
+    },
+    {
+      "camera": "Cam_Rear_34",
+      "pass": "beauty",
+      "status": "completed",
+      "image": {
+        "sha256": "9e56a2d8420b41b154de858d8a9345e0b178e24b518b5f2711b2e364e741270c",
+        "width": 1280,
+        "height": 854,
+        "size_bytes": 1253910
+      },
+      "path": "/Volumes/WD1TB/Orbis/orbis/docs/design/codex/renders/rear_34.png"
+    }
+  ]
+}

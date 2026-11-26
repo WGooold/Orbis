@@ -24,6 +24,7 @@ input.on("line", line => {
   try {
     const parsed = JSON.parse(line) as { id?: number; method?: string };
     const method = Number.isSafeInteger(parsed.id) ? parsed.method : undefined;
+    if (method === "shutdown") runtime.cancelAgySetup();
     if (method === "shutdown" || method === "cancelInstall") { installCancellation += 1; runtime.cancelInstall(); }
     // Cancellation must bypass the serialized command queue: npm may still be running.
     if (method === "cancelInstall") {
@@ -69,7 +70,12 @@ input.on("line", line => {
           result = await runtime.setAgentEnablement(choice, scoped === true); break;
         }
         case "agent.enablement.writeBatch": result = await runtime.setAgentEnablementBatch(p); break;
-        case "openclaw.save": result = await runtime.saveOpenClaw(p.url, p.token); break;
+        case "agy.setup.verify": result = await runtime.checkAgyCredential(p.key); break;
+        case "agy.setup.apply": result = await runtime.applyAgyCredential(p.key); break;
+        case "agy.setup.retry": result = await runtime.retryAgyCredential(); break;
+        case "openclaw.save": result = await runtime.saveOpenClaw(p.url, p.token, p.access, p.clearToken, p.auth); break;
+        case "openclaw.config.read": result = await runtime.readOpenClawNativeSettings(); break;
+        case "openclaw.config.apply": result = await runtime.applyOpenClawNativeSettings(p.ticket, p.changes); break;
         case "hermes.remote.save": result = await runtime.saveHermesRemote(p.host, p.port, p.profile); break;
         case "start": await runtime.start(p as DesktopSettings); break;
         case "stop": await runtime.stop(); break;
@@ -113,6 +119,7 @@ input.on("line", line => {
         case "provider.save": result = await runtime.mutateProvider(String(p.kind), "save", p); break;
         case "provider.switch": result = await runtime.mutateProvider(String(p.kind), "switch", p); break;
         case "provider.remove": result = await runtime.mutateProvider(String(p.kind), "remove", p); break;
+        case "provider.default": result = await runtime.mutateProvider(String(p.kind), "default", p); break;
         case "provider.copy": result = await runtime.mutateProvider(String(p.kind), "copy", p); break;
         case "openAgent": await runtime.openAgent(String(p.kind), p.mode === undefined ? "setup" : String(p.mode), typeof p.cwd === "string" ? p.cwd : undefined); break;
         case "restartDshServer": await runtime.restartDshServer(); break;
@@ -121,8 +128,14 @@ input.on("line", line => {
       }
       output({ id: request.id, result });
       if (closing) process.exit(0);
-    } catch (error) { output({ id: request?.id ?? 0, error: typeof request?.method === "string" && request.method.startsWith("provider.") && !(error instanceof ProviderError) ? "供应商操作失败，请检查配置格式与文件权限" : error instanceof Error ? error.message : String(error) }); }
+    } catch (error) {
+      const method = request?.method;
+      const safeError = typeof method === "string" && method.startsWith("agy.setup.") ? "Antigravity CLI 设置失败"
+        : typeof method === "string" && method.startsWith("provider.") && !(error instanceof ProviderError) ? "供应商操作失败，请检查配置格式与文件权限"
+        : error instanceof Error ? error.message : String(error);
+      output({ id: request?.id ?? 0, error: safeError });
+    }
   });
 });
-input.on("close", () => { installCancellation += 1; runtime.cancelInstall(); void commands.drain().finally(async () => { await runtime.close(); process.exit(0); }); });
+input.on("close", () => { installCancellation += 1; runtime.cancelInstall(); runtime.cancelAgySetup(); void commands.drain().finally(async () => { await runtime.close(); process.exit(0); }); });
 process.on("SIGTERM", () => { installCancellation += 1; void runtime.close().finally(() => process.exit(0)); });

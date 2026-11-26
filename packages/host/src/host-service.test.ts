@@ -75,6 +75,8 @@ import type { ActivePathChange } from "./device-link.js";
 import { CodexAppServer } from "./codex-daemon.js";
 import { CodexRuntime } from "./codex-runtime.js";
 import { codexHistoryId } from "./codex-history-catalog.js";
+import { AgyRuntime } from "./agy-runtime.js";
+import type { AcpConnection } from "./acp-client.js";
 import { KimiRuntime } from "./kimi-runtime.js";
 import { KimiWebClient } from "./kimi-web-client.js";
 import { DshRuntime } from "./dsh-runtime.js";
@@ -85,6 +87,7 @@ import { ActivationError, type SessionSpawner } from "./spawner.js";
 import { ProviderManager } from "./provider-manager.js";
 import { SessionConfigurationStore } from "./session-configuration-store.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
+import { AGENT_ENABLEMENT_FEATURE } from "@orbis/protocol";
 import { OpenCodeServiceConnection, type OpenCodeClient } from "./opencode-service-connection.js";
 import { OpenClawBackend, type OpenClawConnection } from "./openclaw-backend.js";
 import { openClawAdvice } from "./openclaw-diagnostics.js";
@@ -794,8 +797,11 @@ describe("host end-to-end over relay", () => {
     await providers.save("pi", "custom", "Custom", { apiKey: "never-send-this", baseUrl: "https://example.com/v1", api: "openai-completions", models: [{ id: "model" }] }, true, false, { notes: "private-notes-never-send", usageScript: { enabled: false, language: "javascript", timeout: 10, code: "private-script-never-send" } });
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false, providers });
     await host.start();
-    const paired = await pairDevice({ relay, host }); device = paired.device;
-    await device.openChannel("relay", paired.pskRoot, paired.payload.hostId, paired.payload.hostId);
+    const opened = await host!.openPairingWindow();
+    const connected = await TestDevice.connect({ relayUrl: relay!.url, relayHttpBase: relay!.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Kimi source fixture" });
+    const pskRoot = await connected.device.pair(connected.payload); device = connected.device;
+    await device.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
     await device.receiveMessage(); await device.receiveMessage();
     device.sendData(JSON.stringify({ type: "provider.list", protocolVersion: PROTOCOL_VERSION, requestId: "list", kind: "pi" }));
     const list = await device.receiveReply("list");
@@ -4501,6 +4507,106 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     attached = [];
     ready.mockReturnValue(false);
     expect(host.runningAgentSessions()).not.toHaveProperty("kimiCode");
+  });
+
+  // AGY-14: real encrypted Relay framing, with an isolated ACP fixture and reconnect downgrade.
+  it("negotiates Antigravity before exposing or admitting native sessions", async () => {
+    stateDir = await mkdtemp(join(tmpdir(), "orbis-agy-wire-"));
+    const releasedRelayPath = process.env.ORBIS_TEST_AGY_RELEASED_RELAY;
+    const releasedRelay = releasedRelayPath
+      ? await import(/* @vite-ignore */ releasedRelayPath) as { createRelayServer: typeof createRelayServer } : undefined;
+    relay = releasedRelay ? await releasedRelay.createRelayServer({ port: 0, runtimeCredentials: ["runtime-secret"],
+      adminToken: "owner-secret", stateFile: join(stateDir, "released-relay.json") }) : await startRelayLocal(stateDir);
+    const cwd = join(stateDir, "agy-only-workspace"); await mkdir(cwd);
+    const id = "agy:native";
+    const client: AcpConnection = { onExit: undefined, onRequest: undefined, onNotification: undefined,
+      notify: vi.fn(), stop: vi.fn(async () => {}), request: vi.fn(async (method, params) => {
+        if (method === "session/list") return { sessions: [] };
+        if (method === "session/new") return { sessionId: "native" };
+        if (method === "session/prompt") {
+          client.onNotification?.("session/update", { sessionId: params.sessionId, update: {
+            sessionUpdate: "agent_message_chunk", content: { type: "text", text: "native answer" },
+          } });
+          return { stopReason: "end_turn" };
+        }
+        throw new Error(method);
+      }) };
+    let configured = false;
+    let agy: AgyRuntime | undefined;
+    const enablement = new AgentEnablementController(new AgentEnablementStore(stateDir), () => {});
+    host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir,
+      sessionsRoot: join(stateDir, "pi-sessions"), reconnect: false, lan: false, agentEnablement: enablement,
+      agyCredentialConfigured: () => configured,
+      createAgyRuntime: () => agy = new AgyRuntime(async () => {
+        if (!configured) throw new Error("Host local credentials required");
+        return client;
+      }),
+    });
+    await host.start();
+    const opened = await host.openPairingWindow();
+    const connected = await TestDevice.connect({ relayUrl: relay.url, relayHttpBase: relay.url.replace(/^ws/u, "http"),
+      qrText: encodePairingQrText(opened.payload), deviceName: "Antigravity fixture" });
+    device = connected.device;
+    const pskRoot = await device.pair(opened.payload);
+    const handshake = () => device!.openChannel("relay", pskRoot, opened.payload.hostId, opened.payload.hostId);
+    const send = (type: string, params: object) => sendRequest(device!, { type, protocolVersion: PROTOCOL_VERSION, ...params });
+    const wait = async (predicate: (message: Record<string, unknown>) => boolean) => {
+      for (let i = 0; i < 100; i++) {
+        const message = await device!.receiveMessage() as Record<string, unknown>;
+        if (predicate(message)) return message;
+      }
+      throw new Error("Antigravity fixture did not receive expected message");
+    };
+    const launch = { requestId: "create", launchId: "agy-launch", agentKind: "agy", cwd, binding: "agy-acp-v1:isolated", revision: 0, values: {}, spawnMode: "headless" };
+    await handshake();
+    const hidden = await wait(message => message.type === "device.ready");
+    expect(hidden.hostFeatures).toContain("agent.agy");
+    expect(hidden.agents).not.toContain("agy");
+    send("session.launch", launch);
+    expect(await wait(message => message.requestId === "create")).toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
+    expect(vi.mocked(client.request).mock.calls.some(([method]) => method === "session/new")).toBe(false);
+    send("device.features", { features: ["agent.dshDesktop", "agent.agy", AGENT_ENABLEMENT_FEATURE] });
+    await wait(message => message.type === "device.ready" && (message.deviceFeatures as string[]).includes("agent.agy"));
+    const revision = (await enablement.read()).revision;
+    // A paired client may not authorize a credential-less Host, even when it
+    // understands the AGY source. Provisioning and permission start locally.
+    send("agent.enablement.write", { requestId: "unconfigured", kind: "agy", enabled: true, expectedRevision: revision });
+    expect(await wait(message => message.requestId === "unconfigured")).toMatchObject({ type: "protocol.error", code: "agent_enablement_unavailable" });
+    expect(agy).toBeUndefined();
+    configured = true;
+    await enablement.set({ kind: "agy", expectedRevision: revision, enabled: true });
+    const shown = await wait(message => message.type === "device.ready" && (message.agents as string[]).includes("agy"));
+    expect(shown.modelEpoch).not.toBe(hidden.modelEpoch);
+    expect(shown.deviceFeatures).toContain("agent.agy");
+    send("session.launch", launch);
+    expect(await wait(message => message.requestId === "create" && message.phase === "ready")).toMatchObject({ sessionId: id, spawnMode: "headless" });
+    send("session.launch", { ...launch, requestId: "duplicate-launch" });
+    expect(await wait(message => message.requestId === "duplicate-launch" && message.phase === "ready")).toMatchObject({ sessionId: id });
+    expect(vi.mocked(client.request).mock.calls.filter(([method]) => method === "session/new")).toHaveLength(1);
+    send("runtime.command", { commandId: "prompt", runtimeId: id, command: { type: "user_message", text: "question", messageId: "first" } });
+    expect(await wait(message => (message.event as { commandId?: string; status?: string } | undefined)?.commandId === "prompt"
+      && (message.event as { status?: string }).status === "success")).toMatchObject({ runtimeId: id });
+    send("runtime.command", { commandId: "history", runtimeId: id, command: { type: "session.sync", sessionId: id, syncId: "history", range: "preview" } });
+    const history = await wait(message => (message.event as { type?: string } | undefined)?.type === "session.snapshot");
+    expect(JSON.stringify(history)).toContain("native answer");
+    // Replacing/removing credentials revokes the live generation, not the enabled
+    // choice or a different Agent. Outstanding sessions are not auto-replayed.
+    const previous = agy!;
+    configured = false;
+    const refresh = host.refreshAgyConnection();
+    expect(previous.isReady()).toBe(false);
+    await refresh;
+    const down = await wait(message => message.type === "device.ready" && !(message.agents as string[]).includes("agy"));
+    expect(down.agents).not.toContain("agy");
+    expect(await enablement.read()).toMatchObject({ agents: expect.arrayContaining([expect.objectContaining({ kind: "agy", enabled: true })]) });
+    expect(client.stop).toHaveBeenCalledOnce();
+    expect(vi.mocked(client.request).mock.calls.filter(([method]) => method === "session/prompt")).toHaveLength(1);
+    await handshake();
+    const downgraded = await wait(message => message.type === "device.ready" && message.modelEpoch !== shown.modelEpoch);
+    expect(JSON.stringify(downgraded)).not.toContain(id);
+    expect(downgraded.agents).not.toContain("agy");
+    send("session.launch.read", { requestId: "read-hidden", launchId: launch.launchId });
+    expect(await wait(message => message.requestId === "read-hidden")).toMatchObject({ phase: "absent" });
   });
 
   // KIMI-06/12: encrypted feature gate, phone-triggered cold start, and same-device downgrade.

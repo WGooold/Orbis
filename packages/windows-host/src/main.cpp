@@ -496,7 +496,7 @@ int main(int argc, char *argv[]) {
             }
             if (parser.isSet("smoke-providers")) {
                 QTimer::singleShot(1800, &app, [&] {
-                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "codex"));
+                    QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, "codex"));
                 });
                 QTimer::singleShot(2500, &app, [&] {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".providers.png")) app.exit(7);
@@ -505,7 +505,7 @@ int main(int argc, char *argv[]) {
                 QTimer::singleShot(3200, &app, [&] {
                     if (parser.isSet("screenshot") && !window->grabWindow().save(parser.value("screenshot") + ".provider-editor.png")) app.exit(7);
                     QMetaObject::invokeMethod(window, "closeProviderEditor");
-                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "pi"));
+                    QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, "pi"));
                 });
                 QTimer::singleShot(3800, &app, [&] { controller.presetProvider("pi-0"); });
                 QTimer::singleShot(4600, &app, [&] {
@@ -553,7 +553,7 @@ int main(int argc, char *argv[]) {
                 QTimer::singleShot(9300, &app, [&] {
                     const auto providers = controller.providers();
                     if (!providers.first().toMap().value("id").toString().endsWith("-copy") || providers.first().toMap().value("enabled").toBool()) { app.exit(14); return; }
-                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "codex"));
+                    QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, "codex"));
                 });
                 QTimer::singleShot(10000, Qt::PreciseTimer, &app, [&] { controller.presetProvider("codex-0"); });
                 QTimer::singleShot(10800, Qt::PreciseTimer, &app, [&] {
@@ -628,7 +628,7 @@ int main(int argc, char *argv[]) {
                 QTimer::singleShot(17200, Qt::PreciseTimer, &app, [&] {
                     const auto providers = controller.providers();
                     if (providers.size() != 2 || providers.first().toMap().value("enabled").toBool() || !providers.last().toMap().value("enabled").toBool()) { app.exit(21); return; }
-                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "pi"));
+                    QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, "pi"));
                 });
                 QTimer::singleShot(18000, Qt::PreciseTimer, &app, [&] { controller.editProvider(controller.providers().last().toMap().value("id").toString()); });
                 QTimer::singleShot(18800, Qt::PreciseTimer, &app, [&] {
@@ -659,7 +659,7 @@ int main(int argc, char *argv[]) {
                     const auto last = models.last().toMap();
                     if (models.size() != smokePiModelCount + 2 || !last.value("contextWindow").toString().isEmpty() || !last.value("maxTokens").toString().isEmpty()) { app.exit(33); return; }
                     QMetaObject::invokeMethod(window, "closeProviderEditor");
-                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "dsh"));
+                    QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, "dsh"));
                 });
                 QTimer::singleShot(22000, Qt::PreciseTimer, &app, [&] { controller.editProvider(""); });
                 QTimer::singleShot(22800, Qt::PreciseTimer, &app, [&] {
@@ -724,7 +724,7 @@ int main(int argc, char *argv[]) {
                     const auto models = window->property("providerModels").toList();
                     if (models.size() != 2 || models.first().toMap().value("id").toString() != "smoke-b" || models.last().toMap().value("id").toString() != "smoke-a") { app.exit(43); return; }
                     QMetaObject::invokeMethod(window, "closeProviderEditor");
-                    QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "pi"));
+                    QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, "pi"));
                 });
                 QTimer::singleShot(28800, Qt::PreciseTimer, &app, [&] { controller.editProvider(controller.providers().last().toMap().value("id").toString()); });
                 QTimer::singleShot(29600, Qt::PreciseTimer, &app, [&] {
@@ -850,7 +850,7 @@ int main(int argc, char *argv[]) {
             else if (parser.isSet("smoke-modal-lighting")) {
                 // S67: supplier dropdowns and nested dialogs use cast shadows, and Esc cancels
                 // only the active layer without undoing edits or changing the parent surface.
-                QMetaObject::invokeMethod(window, "openProviders", Q_ARG(QVariant, "codex"));
+                QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, "codex"));
                 controller.editProvider("");
                 QTimer::singleShot(500, &app, [&] {
                     auto *combo = window->findChild<QObject *>("codexReasoning");

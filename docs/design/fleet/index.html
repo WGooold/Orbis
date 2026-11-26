@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#f3f1ec">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Orbis 舰队</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="src/ui/app.css">
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
+</head>
+<body>
+<canvas id="halo" aria-hidden="true"></canvas>
+<main id="stage">
+  <div id="device">
+    <div id="screen">
+      <canvas id="gl"></canvas>
+      <svg id="frames" aria-hidden="true"></svg>
+      <div id="captions" aria-hidden="true"></div>
+      <div id="touch"></div>
+      <div id="fscrim"></div><div id="scrim"></div>
+      <div id="badges" aria-hidden="true"></div>
+      <div id="hud"></div>
+      <div id="ghost" aria-hidden="true"></div>
+      <div id="boot"><i></i></div>
+    </div>
+    <div id="bar" aria-hidden="true"><b>9:41</b><span class="isle"></span><svg viewBox="0 0 78 14"><g fill="currentColor"><rect x="0" y="8.5" width="3.2" height="4.5" rx=".9"/><rect x="5" y="6" width="3.2" height="7" rx=".9"/><rect x="10" y="3.4" width="3.2" height="9.6" rx=".9"/><rect x="15" y="1" width="3.2" height="12" rx=".9"/><path d="M33.5 3.3c2.5 0 4.8 1 6.5 2.6l1.2-1.3A11 11 0 0 0 33.5 1.500a11 11 0 0 0-7.700 3.100L27 5.900a9.300 9.300 0 0 1 6.500-2.600Zm0 4c1.400 0 2.700.5 3.700 1.400l1.200-1.300a7.200 7.200 0 0 0-9.800 0l1.200 1.300c1-.9 2.300-1.400 3.700-1.400Zm0 3.700-1.900 2 1.900 1.900 1.900-1.900c-.5-.6-1.200-1-1.900-1Z"/><rect x="49.500" y="1.500" width="24" height="11" rx="3.400" fill="none" stroke="currentColor" stroke-opacity=".45"/><rect x="51.200" y="3.200" width="18" height="7.600" rx="2"/><path d="M75 5.200v3.600c.9-.3 1.500-1 1.500-1.800s-.6-1.500-1.500-1.800Z" fill-opacity=".5"/></g></svg></div>
+  </div>
+  <aside id="desk"></aside>
+</main>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

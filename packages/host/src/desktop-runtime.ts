@@ -2,16 +2,22 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, writeFile, rename, rm, stat } from "node:fs/promises";
 import { Socket } from "node:net";
 import { homedir } from "node:os";
-import { join, delimiter, isAbsolute } from "node:path";
+import { join, delimiter, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { DEVICE_STORE_FILE, HOST_IDENTITY_FILE, X25519_KEY_BYTES, deriveSharedSecret, fromBase64UrlFixed, loadDeviceStore, loadOrCreateHostIdentity, encodePairingQrText, privateKeyFromRaw, resolveStateDir, revokeDeviceRecord, saveDeviceStore, toBase64Url } from "@orbis/e2e";
 import QRCode from "qrcode";
 import { AgentEnablementChoiceSchema, AgentKindSchema, hostRecoveryProof, type AgentDisableReview, type AgentKind, type AgentStateRangeRequest } from "@orbis/protocol";
 import { AgentBatchConfirmationRequired, AgentDisableConfirmationRequired, AgentEnablementController, AgentEnablementStore, type AgentEnablementResult, type AgentEnablementSnapshot } from "./agent-enablement.js";
+import { agentVersionRequirements } from "./agent-version-requirements.js";
 import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
+import { AGY_VERSION, findAgy, openAgyProfile, verifyAgyConnection } from "./agy-client.js";
+import { agyEnvironmentKey, agyKey } from "./agy-credential.js";
+import { AgyRuntime } from "./agy-runtime.js";
+import { agySubmissionFence } from "./agy-submission-fence.js";
+import { OpenClawNativeSettings } from "./openclaw-native-settings.js";
 import { createOpenCodeLocalLauncher, OPENCODE_TUI_ENV_KEYS, prepareOpenCodeTerminalLaunch } from "./opencode-local-launch.js";
 import { OpenCodeServiceConnection } from "./opencode-service-connection.js";
 import { configureOpenCodeTuiTabs, openCodeTuiTabsInstalled } from "./opencode-tui-tabs-install.js";
@@ -50,7 +56,9 @@ import { adoptLoginShellEnvironment, adoptWindowsEnvironment } from "./login-she
 import { agentInstallRoot } from "./agent-root.js";
 import { PiCommandCancelledError, installMacPiCommand, piCommandStatus, refreshMacPiCommand, removeMacPiCommand, syncWindowsPiCommand } from "./pi-command.js";
 import { existsSync } from "node:fs";
-import { ProviderManager, ProviderError, agentKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
+import { ProviderManager, ProviderError, agentKind, providerKind, providerMetadata, type ProviderPaths, type ProviderProfile, type ProviderSummary } from "./provider-manager.js";
+import { isNativeProviderKind, kimiOfficial, openCodeV2 } from "./provider-native.js";
+import { nativeProviderPresets } from "./provider-native-presets.js";
 import { installAgentPackage, activateManagedAgent, activeManagedEntry, findAgentCopies, fetchNpmLatestVersion, agentPackages, queryAgentStatus, recommendedAgentVersion, extractAgentVersion, compareAgentVersions, installationSource, type AgentInstallProgress, type AgentInstallStatus, type LocalAgent } from "./agent-installation.js";
 import { randomUUID } from "node:crypto";
 import { newProviderConfig, providerFields, applyProviderFields, type ProviderFields } from "./provider-form.js";
@@ -83,7 +91,7 @@ async function loopbackPortAlive(value: unknown): Promise<boolean> {
   });
 }
 
-const providerPresets = [...existingProviderPresets, ...claudeProviderPresets];
+const providerPresets = [...existingProviderPresets, ...claudeProviderPresets, ...nativeProviderPresets];
 
 export type DesktopSettings = {
   relayUrl: string; credential: string; codexEnabled?: boolean; piEntry?: string; codexEntry?: string;
@@ -163,6 +171,9 @@ export class DesktopRuntime {
   #claudeStatus: DesktopEvent = { event: "claudeStatus", installed: false, compatible: false, minimumVersion: CLAUDE_MIN_VERSION };
   readonly #emit: (event: DesktopEvent) => void;
   #service: HostService | undefined;
+  #agySavedKey: string | undefined;
+  readonly #agySetupAbort = new AbortController();
+  readonly #openClawNative = new OpenClawNativeSettings(() => this.#qa ? undefined : this.#service?.openClawSettingsConnection);
   #disposing: Promise<void> | undefined;
   #codex: CodexAppServer | undefined;
   #codexRuntime: CodexRuntime | undefined;
@@ -209,7 +220,8 @@ export class DesktopRuntime {
   #legacyKimiEnabled: boolean | undefined;
   #claudeIntegrationPreference: Pick<DesktopSettings, "claudeIntegrationEnabled"> = {};
 
-  constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths, qa?: DesktopQaConfiguration) {
+  constructor(emit: (event: DesktopEvent) => void, stateDir?: string, providerPaths?: ProviderPaths, qa?: DesktopQaConfiguration,
+    private readonly agyCredentialVerifier: typeof verifyAgyConnection = verifyAgyConnection) {
     this.#emit = emit;
     this.#qa = qa;
     this.#stateDir = resolveStateDir(stateDir);
@@ -220,7 +232,7 @@ export class DesktopRuntime {
       const keepKimi = this.#legacyKimiEnabled ?? kimi?.kimiCodeEnabled;
       const legacyKimiKind = kimi?.kimiCodeSource === "desktop" ? KIMI_DESKTOP_KIND : KIMI_KIND;
       return { ...(openClaw.url ? { openclaw: true } : {}), ...(keepKimi === undefined ? {} : { [legacyKimiKind]: keepKimi }), ...(this.#legacyDshEnabled ? { dsh: true } : {}), ...(this.#legacyCodexEnabled ? { codex: true } : {}), ...(this.#legacyPiEnabled ? { pi: true } : {}), ...(this.#legacyClaudeEnabled ? { claude: true } : {}) };
-    }), snapshot => {
+    }, kind => kind !== "agy" || !this.#qa), snapshot => {
       if (!snapshot.agents.some(row => row.kind === "dshDesktop" && row.enabled)) this.#cancelDshDesktopOpen();
       if (!this.#agentEnablement.allows("claude")) this.#claudeIntegrationAbort?.abort();
       if (this.#poll) this.#prepareClaudeIntegration();
@@ -260,6 +272,7 @@ export class DesktopRuntime {
     if (!this.#qa) {
       await adoptLoginShellEnvironment(line => this.log(line));
       await adoptWindowsEnvironment();
+      this.#providers.kimiHome = (await loadKimiCodeConfig(this.#stateDir).catch(() => undefined))?.kimiCodeHome;
     }
     this.#applyAgentOverrides(settings.agentEntryOverrides);
     // DMG / portable installs have no installer hook. Registration runs in the background (HOST-PREP-04):
@@ -274,10 +287,11 @@ export class DesktopRuntime {
     const devices = (await loadDeviceStore(this.#stateDir)).devices.filter(d => !d.revoked).map(d => ({ deviceId: d.deviceId, label: d.label, createdAt: d.createdAt }));
     const kimi = await this.#kimiCodeConfig();
     return { kimiCodeSupported: !this.#qa, kimiCodeDefaultSource: kimi?.kimiCodeSource ?? "web",
-      kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: this.#stateDir, devices, nodeVersion: process.version,
-      agentEnablement: enablement,
+      kimiDesktopSupported: !this.#qa && supportsKimiDesktop, hostId: identity.hostId, hostName: identity.hostName, hostPub: toBase64Url(identity.publicRaw), stateDir: resolve(this.#stateDir), devices, nodeVersion: process.version,
+      agentEnablement: enablement, agentVersionRequirements,
       ...(!this.#qa && (process.platform === "darwin" || process.platform === "win32")
         ? { openCodeTuiTabsEnabled: await openCodeTuiTabsInstalled().catch(() => false) } : {}),
+      agySetup: await this.agySetupInfo(),
       ...(this.#qa ? {} : { openClaw: await readOpenClawDesktopSettings(this.#stateDir) }),
       ...(this.#qa ? {} : { hermesRemote: await readHermesRemoteGatewaySettings(this.#stateDir) }),
       appDownloadQr: await QRCode.toDataURL(APP_DOWNLOAD_URL, { width: 320, margin: 2 }),
@@ -290,6 +304,43 @@ export class DesktopRuntime {
     this.#routing = this.#routing.then(() => wanted ? this.#providers.startRouting() : this.#providers.closeRouting())
       .catch(error => { this.log(error instanceof ProviderError ? error.message : "无法更新 Codex 本地路由"); });
   }
+
+  #agyEnvironmentKey(): string | undefined { return this.#qa ? undefined : agyEnvironmentKey(); }
+  #agyKey(): string | undefined { return this.#agyEnvironmentKey() ?? this.#agySavedKey; }
+
+  async agySetupInfo() {
+    const source = this.#qa ? "unsupported" : this.#agyEnvironmentKey() ? "environment" : this.#agySavedKey ? "saved" : "none";
+    return { source, requiredVersion: AGY_VERSION, installed: !this.#qa && await findAgy() };
+  }
+
+  // These methods are reachable from the private GUI stdio bridge only. The Qt
+  // parent owns the OS credential store; a candidate is never applied before it commits.
+  async checkAgyCredential(candidate: unknown) {
+    if (this.#qa || this.#agyEnvironmentKey()) throw new Error("当前无法更改 Antigravity CLI 密钥");
+    return { verification: await this.agyCredentialVerifier(candidate, { signal: this.#agySetupAbort.signal }) };
+  }
+
+  async applyAgyCredential(value: unknown) {
+    if (this.#qa || this.#agyEnvironmentKey()) throw new Error("当前无法更改 Antigravity CLI 密钥");
+    this.#agySetupAbort.signal.throwIfAborted();
+    const key = value === null ? undefined : agyKey(value);
+    if (value !== null && !key) throw new Error("Antigravity CLI 密钥格式无效");
+    if (key !== this.#agySavedKey) {
+      this.#agySavedKey = key;
+      await this.#service?.refreshAgyConnection();
+    }
+    return this.agySetupInfo();
+  }
+
+  async retryAgyCredential() {
+    if (this.#qa) throw new Error("Antigravity CLI 设置不可用");
+    const verification = await this.agyCredentialVerifier(this.#agyKey(), { signal: this.#agySetupAbort.signal });
+    if (verification === "verified") this.#service?.retryAgyConnection();
+    else if (verification === "rejected") await this.#service?.refreshAgyConnection();
+    return { ...(await this.agySetupInfo()), verification };
+  }
+
+  cancelAgySetup(): void { this.#agySetupAbort.abort(); }
 
   async readAgentEnablement(): Promise<AgentEnablementSnapshot> {
     if (!this.#qa) {
@@ -309,8 +360,12 @@ export class DesktopRuntime {
     if (!choice.success) throw new Error("此 Agent 暂不支持启用设置");
     try {
       if (choice.data.review !== undefined && !scoped) throw new Error("Unnegotiated Agent review");
-      return await this.#agentEnablement.set(choice.data, undefined, (kind, revision, review) => this.#service?.verifyAgentDisable(kind, revision, review), scoped);
+      const credentialAvailable = () => choice.data.kind !== "agy" || !choice.data.enabled || this.#agyKey() !== undefined;
+      if (!credentialAvailable()) throw new Error("请先在 Host 本机验证并保存 Antigravity CLI 密钥");
+      return await this.#agentEnablement.set(choice.data, credentialAvailable,
+        (kind, revision, review) => this.#service?.verifyAgentDisable(kind, revision, review), scoped);
     } catch (error) {
+      if (error instanceof Error && error.message === "请先在 Host 本机验证并保存 Antigravity CLI 密钥") throw error;
       if (error instanceof AgentDisableConfirmationRequired) {
         if (scoped) return { status: "review", review: error.review };
         throw error;
@@ -321,22 +376,31 @@ export class DesktopRuntime {
 
   async setAgentEnablementBatch(input: unknown): Promise<AgentEnablementResult | { status: "review"; reviews: AgentDisableReview[] }> {
     try {
-      return await this.#agentEnablement.setBatch(input, (kind, revision, scope) => this.#service?.reviewAgentDisable(kind, revision, scope));
+      const batch = input && typeof input === "object" ? input as { kinds?: unknown; enabled?: unknown } : {};
+      const includesAgy = Array.isArray(batch.kinds) && batch.kinds.includes("agy");
+      const credentialAvailable = () => !includesAgy || batch.enabled !== true || this.#agyKey() !== undefined;
+      if (!credentialAvailable()) throw new Error("请先在 Host 本机验证并保存 Antigravity CLI 密钥");
+      return await this.#agentEnablement.setBatch(input,
+        (kind, revision, scope) => this.#service?.reviewAgentDisable(kind, revision, scope), credentialAvailable);
     } catch (error) {
+      if (error instanceof Error && error.message === "请先在 Host 本机验证并保存 Antigravity CLI 密钥") throw error;
       if (error instanceof AgentBatchConfirmationRequired) return { status: "review", reviews: error.reviews };
       throw new Error("无法保存 Agent 设置，请检查 Host 状态目录权限");
     }
   }
 
-  async saveOpenClaw(url: unknown, token: unknown): Promise<Awaited<ReturnType<typeof saveOpenClawDesktopSettings>>> {
+  async saveOpenClaw(url: unknown, token: unknown, access?: unknown, clearToken?: unknown, auth?: unknown): Promise<Awaited<ReturnType<typeof saveOpenClawDesktopSettings>>> {
     if (this.#qa) throw new Error("QA Host 不修改 OpenClaw 配置");
-    try { return await saveOpenClawDesktopSettings(this.#stateDir, url, token); }
+    try { return await saveOpenClawDesktopSettings(this.#stateDir, url, token, process.env, { access, clearToken, auth }); }
     catch (error) {
       // Filesystem diagnostics can contain paths; expose only the safe validation messages.
       if (error instanceof Error && !("code" in error)) throw error;
       throw new Error("无法保存 OpenClaw 配置，请检查 Host 状态目录权限");
     }
   }
+
+  async readOpenClawNativeSettings() { return this.#openClawNative.read(); }
+  async applyOpenClawNativeSettings(ticket: unknown, changes: unknown) { return this.#openClawNative.apply(ticket, changes); }
 
   async saveHermesRemote(host: unknown, port: unknown, profile: unknown): Promise<Awaited<ReturnType<typeof saveHermesRemoteGatewaySettings>>> {
     if (this.#qa) throw new Error("QA Host 不修改 Hermes Gateway 配置");
@@ -907,6 +971,10 @@ export class DesktopRuntime {
       };
       let relayAuthenticated = false;
       const service = await HostService.create({
+        ...(!this.#qa ? {
+          agyCredentialConfigured: () => this.#agyKey() !== undefined,
+          createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(this.#stateDir, signal, { key: this.#agyKey() }), hostId, agySubmissionFence(this.#stateDir)),
+        } : {}),
         ...(this.#qa ? {} : { createKimiCodeRuntime, kimiCodeDesktopSupported: supportsKimiDesktop, openClawLauncher: createOpenClawLocalLauncher(),
           createOpenCodeConnection: () => new OpenCodeServiceConnection({ launcher: createOpenCodeLocalLauncher() }) }),
         agentEnablement: this.#agentEnablement,
@@ -1176,7 +1244,8 @@ export class DesktopRuntime {
     const model = service.readHostState(["backends", "connections", "management", "operations"]);
     const backends = model.domains.find(domain => domain.domain === "backends")?.value as { backends?: { runtimeCount: number }[] } | undefined;
     const status = { event: "status", devices, runtimeCount: backends?.backends?.reduce((sum, backend) => sum + backend.runtimeCount, 0) ?? 0,
-      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, kimiCodeDesktopState: service.kimiCodeDesktopConnectionState, activeAgentSessions: service.runningAgentSessions(), model };
+      lan: service.lanEndpoints, kimiCodeState: service.kimiCodeConnectionState, kimiCodeDesktopState: service.kimiCodeDesktopConnectionState,
+      activeAgentSessions: service.runningAgentSessions(), openClawConnection: service.openClawConnectionState, model };
     const text = JSON.stringify({ ...status, model: { ...model, domains: model.domains.map(domain => ({ ...domain, checkedAt: 0 })) } });
     if (text !== this.#lastStatus) { this.#lastStatus = text; this.#emit(status); }
   }
@@ -1506,18 +1575,18 @@ export class DesktopRuntime {
   }
 
   async listProviders(kind: string): Promise<(ProviderSummary & { usage?: UsageSnapshot | undefined })[]> {
-    return (await this.#providers.list(agentKind(kind))).map(profile => ({ ...profile, usage: this.#usage.get(kind, profile.id) }));
+    return (await this.#providers.list(providerKind(kind))).map(profile => ({ ...profile, usage: this.#usage.get(kind, profile.id) }));
   }
   piDefaultProvider(): Promise<string> { return this.#providers.piDefaultProvider(); }
   async checkProvider(kind: string, id: string): Promise<unknown> {
-    const selected = agentKind(kind);
+    const selected = providerKind(kind);
     const current = await this.#requireProviderEnabled(selected);
     const { baseUrl } = providerFields(await this.#providers.get(selected, id));
     current();
     return checkProviderEndpoint(baseUrl);
   }
   async fetchProviderModels(params: Record<string, unknown>): Promise<unknown> {
-    await this.#requireProviderEnabled(agentKind(params.kind));
+    await this.#requireProviderEnabled(providerKind(params.kind));
     if (params.fields && typeof params.fields === "object") {
       const fields = params.fields as ProviderFields;
       if ([fields.baseUrl, fields.apiKey, fields.api].some(value => typeof value !== "string")) throw new ProviderError("模型查询配置无效");
@@ -1527,12 +1596,12 @@ export class DesktopRuntime {
     return fetchProviderModels(preview.fields);
   }
   async querySubscription(kind: string, id: string): ReturnType<ProviderManager["querySubscription"]> {
-    const selected = agentKind(kind);
+    const selected = providerKind(kind);
     const current = await this.#requireProviderEnabled(selected);
     return this.#providers.querySubscription(selected, id, current);
   }
   async queryProviderUsage(kind: string, id: string): Promise<unknown> {
-    const selected = agentKind(kind);
+    const selected = providerKind(kind);
     const current = await this.#requireProviderEnabled(selected);
     const profile = await this.#providers.get(selected, id);
     current();
@@ -1540,7 +1609,7 @@ export class DesktopRuntime {
     return this.#usage.refresh(profile);
   }
   async saveProviderUsage(kind: string, id: string, script: unknown): Promise<void> {
-    const selected = agentKind(kind);
+    const selected = providerKind(kind);
     await this.#requireProviderEnabled(selected);
     await this.#providers.updateMetadata(selected, id, { usageScript: script });
     this.#usage.invalidate(kind, id);
@@ -1548,32 +1617,32 @@ export class DesktopRuntime {
     void this.#usage.tick().catch(() => {});
   }
   async providerUsageTemplate(kind: string, id: string, template: string, baseUrl: string): Promise<unknown> {
-    const profile = await this.#providers.get(agentKind(kind), id);
+    const profile = await this.#providers.get(providerKind(kind), id);
     return usageTemplate(template, baseUrl || providerFields(profile).baseUrl);
   }
-  getProvider(kind: string, id: string): ReturnType<ProviderManager["get"]> { return this.#providers.get(agentKind(kind), id); }
+  getProvider(kind: string, id: string): ReturnType<ProviderManager["get"]> { return this.#providers.get(providerKind(kind), id); }
   oauth(operation: string, id: string): Promise<unknown> { return this.#providers.oauth(operation, id); }
   providerPresets(kind: string): unknown {
-    return providerPresets.filter(p => p.kind === agentKind(kind)).map(p => ({ id: p.id, name: p.name, category: p.category, websiteUrl: p.websiteUrl, requiresOAuth: p.requiresOAuth === true, requiresProxy: p.apiFormat !== undefined && !["responses", "openai_responses"].includes(p.apiFormat) }));
+    return providerPresets.filter(p => p.kind === providerKind(kind)).map(p => ({ id: p.id, name: p.name, category: p.category, websiteUrl: p.websiteUrl, requiresOAuth: p.requiresOAuth === true, requiresProxy: p.apiFormat !== undefined && !["responses", "openai_responses"].includes(p.apiFormat) }));
   }
   async providerDraft(kind: string, id?: string, presetId?: string): Promise<unknown> {
-    const selected = agentKind(kind);
-    const profile: ProviderProfile = id ? await this.#providers.get(selected, id) : { kind: selected, id: selected === "pi" ? "" : randomUUID(), name: "", config: newProviderConfig(selected) };
+    const selected = providerKind(kind);
+    const profile: ProviderProfile = id ? await this.#providers.get(selected, id) : { kind: selected, id: selected === "pi" || isNativeProviderKind(selected) ? "" : randomUUID(), name: "", config: newProviderConfig(selected) };
     if (presetId && !id) {
       const preset = providerPresets.find(p => p.id === presetId && p.kind === selected);
       if (!preset) throw new ProviderError("供应商预设不存在");
       if (preset.requiresOAuth) throw new ProviderError("此预设依赖其他托管 OAuth 账号，尚未接入");
       Object.assign(profile, { config: structuredClone(preset.config), name: preset.name, category: preset.category, websiteUrl: preset.websiteUrl, ...(preset.icon ? { icon: preset.icon } : {}) });
       if (selected === "codex") profile.config.apiFormat = preset.apiFormat === "openai_chat" ? "openai_chat" : "responses";
-      if (selected === "pi") profile.id = preset.providerKey ?? "";
+      if (selected === "pi" || isNativeProviderKind(selected)) profile.id = preset.providerKey ?? "";
     }
     const fields = providerFields(profile);
-    const official = selected === "codex" ? codexOfficial(profile.config) : selected === "claude" && claudeOfficial(profile.config);
-    const nativeOnly = selected === "codex" ? !official && ["openai", "ollama", "lmstudio", "amazon-bedrock", "amazon-bedrock-runtime"].includes(fields.providerKey) : selected === "claude" ? Object.entries(profile.config.env ?? {}).some(([key, value]) => claudeProtocolSelectors.includes(key) && ["1", "true"].includes(String(value).toLowerCase())) : selected === "dsh" && fields.providerKey === "";
+    const official = selected === "codex" ? codexOfficial(profile.config) : selected === "claude" ? claudeOfficial(profile.config) : selected === "kimiCode" && kimiOfficial(profile.config);
+    const nativeOnly = selected === "codex" ? !official && ["openai", "ollama", "lmstudio", "amazon-bedrock", "amazon-bedrock-runtime"].includes(fields.providerKey) : selected === "claude" ? Object.entries(profile.config.env ?? {}).some(([key, value]) => claudeProtocolSelectors.includes(key) && ["1", "true"].includes(String(value).toLowerCase())) : selected === "dsh" ? fields.providerKey === "" : selected === "opencode" && openCodeV2(profile.config, profile.nativeFormat === "v2");
     return { ...profile, fields, official, nativeOnly, presetId: presetId ?? "custom", create: !id, accounts: selected === "codex" ? await this.#providers.oauth("list") : [] };
   }
   providerPreview(params: Record<string, unknown>): unknown {
-    const kind = agentKind(params.kind);
+    const kind = providerKind(params.kind);
     let config: unknown;
     try { config = typeof params.config === "string" ? JSON.parse(params.config) : params.config; } catch { throw new ProviderError("原生 JSON 格式无效"); }
     if (!config || typeof config !== "object" || Array.isArray(config)) throw new ProviderError("配置必须是对象");
@@ -1603,13 +1672,13 @@ export class DesktopRuntime {
     return this.#service ? this.#service.changeProvider("codex", work) : work();
   }
   async reorderProviders(kind: string, ids: unknown): Promise<ProviderSummary[]> {
-    await this.#requireProviderEnabled(agentKind(kind));
-    const result = await this.#providers.reorder(agentKind(kind), ids);
-    this.#service?.announceProviderChange(agentKind(kind));
+    await this.#requireProviderEnabled(providerKind(kind));
+    const result = await this.#providers.reorder(providerKind(kind), ids);
+    this.#service?.announceProviderChange(providerKind(kind));
     return result;
   }
-  async mutateProvider(kind: string, operation: "save" | "switch" | "remove" | "copy", params: Record<string, unknown>): Promise<ProviderSummary[]> {
-    const selected = agentKind(kind);
+  async mutateProvider(kind: string, operation: "save" | "switch" | "remove" | "copy" | "default", params: Record<string, unknown>): Promise<ProviderSummary[]> {
+    const selected = providerKind(kind);
     await this.#requireProviderEnabled(selected);
     if (this.#starting) throw new ProviderError("Host 正在启动，请稍后重试");
     const work = async (): Promise<ProviderSummary[]> => {
@@ -1622,6 +1691,7 @@ export class DesktopRuntime {
         result = await this.#providers.save(selected, String(params.id ?? ""), String(params.name ?? ""), config, params.create === true, params.addToLive !== false, providerMetadata(params.metadata ?? {}));
       }
       else if (operation === "switch") result = await this.#providers.switch(selected, String(params.id), params.enabled !== false);
+      else if (operation === "default") result = await this.#providers.setDefault(selected, String(params.id));
       else if (operation === "copy") result = await this.#providers.copy(selected, String(params.id));
       else result = await this.#providers.remove(selected, String(params.id));
       if (operation === "save" || operation === "remove") this.#usage.invalidate(selected, String(params.id));
@@ -1660,7 +1730,7 @@ export class DesktopRuntime {
   #providerCurrent(kind: AgentKind): () => boolean {
     const lease = this.#agentEnablement.lease(kind);
     const desktop = kind === "codex" ? this.#agentEnablement.lease("codexDesktop")
-      : kind === "dsh" ? this.#agentEnablement.lease("dshDesktop") : undefined;
+      : kind === "dsh" ? this.#agentEnablement.lease("dshDesktop") : kind === KIMI_KIND ? this.#agentEnablement.lease(KIMI_DESKTOP_KIND) : undefined;
     return () => lease?.isCurrent() === true || desktop?.isCurrent() === true;
   }
 
@@ -1669,6 +1739,10 @@ export class DesktopRuntime {
     const current = this.#providerCurrent(kind);
     const requireCurrent = () => { if (!current()) throw new ProviderError("请先在 Agent 设置中启用此接入"); };
     requireCurrent();
+    // A remote Agent reads its own computer's file; editing the local one would silently do nothing.
+    const remote = kind === "hermes" ? (await readHermesRemoteGatewaySettings(this.#stateDir)).host
+      : kind === "openclaw" ? (await readOpenClawDesktopSettings(this.#stateDir)).url.replace(/^wss?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/, "") : "";
+    if (remote) throw new ProviderError("此 Agent 运行在远程主机，请在该主机上配置供应商");
     return requireCurrent;
   }
 
@@ -1692,7 +1766,7 @@ export class DesktopRuntime {
   }
 
   async openAgent(kind: string, mode = "setup", cwd?: string): Promise<void> {
-    const startLocal = kind === "opencode" || kind === "openclaw" || kind === "hermes";
+    const startLocal = kind === "agy" || kind === "opencode" || kind === "openclaw" || kind === "hermes";
     if (this.#qa && (kind === "codexDesktop" || kind === "dshDesktop" || kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND || startLocal)) throw new Error("QA Host 不打开正式 Agent 会话");
     const source = AgentKindSchema.safeParse(kind);
     if (source.success) await this.#requireAgentEnabled(source.data);
@@ -1733,7 +1807,8 @@ export class DesktopRuntime {
       requireCurrent();
       const service = this.#service;
       if (!this.#desired || !service) throw new Error("请先启动 Host，再启动 Agent");
-      if (kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND) await service.startKimiCode(kind);
+      if (kind === "agy") await service.startAgy();
+      else if (kind === KIMI_KIND || kind === KIMI_DESKTOP_KIND) await service.startKimiCode(kind);
       else await service.startLocalAgent(kind);
       return;
     }
@@ -1883,6 +1958,8 @@ export class DesktopRuntime {
   }
 
   async close(): Promise<void> {
+    this.cancelAgySetup();
+    this.#agySavedKey = undefined;
     this.#dshDesktopOpenAbort?.abort();
     this.#claudeIntegrationAbort?.abort();
     this.cancelInstall();

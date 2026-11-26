@@ -379,6 +379,7 @@ final class HostConnection: ObservableObject {
         didSet { if oldValue != kimiCodeDesktopSupported { directoryInputRevision &+= 1; directoryMetadataRevision &+= 1; directoryViewRevision &+= 1 } }
     }
     @Published private(set) var openClawNegotiated = false
+    @Published private(set) var agyNegotiated = false
     // ADR-0090: only an authenticated Host that advertises `session.spawn.auto` changes the legacy default.
     private var defaultSessionSpawnMode = "tui"
     @Published private(set) var sessionConfiguration: SessionConfigurationSnapshot?
@@ -436,7 +437,7 @@ final class HostConnection: ObservableObject {
     var sessionConfigurationValues: SessionConfigurationValues { proposedSessionConfiguration ?? sessionConfiguration?.values ?? SessionConfigurationValues() }
 
     func supportsSessionConfiguration(for agent: String) -> Bool {
-        enabledAgentKinds?.contains(agent) != false && sessionConfigurationSupported && (agent != "openclaw" || openClawNegotiated) &&
+        enabledAgentKinds?.contains(agent) != false && sessionConfigurationSupported && (agent != "openclaw" || openClawNegotiated) && (agent != "agy" || agyNegotiated) &&
             supportsKimiCode(kind: agent, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported)
     }
 
@@ -528,7 +529,7 @@ final class HostConnection: ObservableObject {
         guard creation == .created else { return false }
         var payload: [String: Any] = ["type": "session.launch", "protocolVersion": orbisProtocolVersion, "requestId": id, "launchId": id,
             "agentKind": agent, "cwd": cwd, "binding": config.binding, "revision": config.revision, "values": agent == "openclaw" ? SessionConfigurationValues().payload : sessionConfigurationValues.payload,
-            "spawnMode": agent == "openclaw" ? "headless" : kimiSpawnMode(agent, otherwise: defaultSessionSpawnMode)]
+            "spawnMode": agent == "openclaw" || agent == "agy" ? "headless" : kimiSpawnMode(agent, otherwise: defaultSessionSpawnMode)]
         if unifiedCodexHistory, ["codex", "codexDesktop"].contains(agent) {
             payload["codexLaunchMode"] = agent == "codexDesktop" ? "desktop" : "terminal"
         }
@@ -1726,7 +1727,7 @@ final class HostConnection: ObservableObject {
             self.recordConnectionEvent(L10n.tr("连接：{0}", state.rawValue))
             self.transfers.setConnection(self.selectedHost, connected: state == .secured)
             if state != .secured {
-                self.openClawNegotiated = false; self.openClawBackendAdvice = nil
+                self.openClawNegotiated = false; self.openClawBackendAdvice = nil; self.agyNegotiated = false
                 self.kimiCodeSupported = false; self.kimiCodeDesktopSupported = false
                 self.hostState.setConnection(self.selectedHost, connected: false); self.agentState.setConnection(self.selectedHost, connected: false); self.notifications.setConnection(self.selectedHost, connected: false)
             }
@@ -2589,6 +2590,7 @@ final class HostConnection: ObservableObject {
         let kimi = resolvedKimiCodeKind(kind: session.agentKind, id: session.sessionId)
         guard supportsKimiCode(kind: kimi, id: session.sessionId, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported) else { return }
         if session.agentKind == "openclaw", !openClawNegotiated { return }
+        if session.sessionId.hasPrefix("agy:"), !agyNegotiated { return }
         if let mismatch = providerMismatch(session) { sessionOperationErrors[session.sessionId] = mismatch; return }
         if codexLaunchMode == nil, let runtime = runtimes.first(where: { (unified ? $0.codexCatalogId : $0.sessionId) == session.sessionId }) {
             selectRuntime(runtime.runtimeId)
@@ -2617,7 +2619,7 @@ final class HostConnection: ObservableObject {
     func createSession(agentKind: String, cwd: String, firstMessage: String) -> Bool {
         reconcilePendingSends()
         guard !cwd.isEmpty, connection == .secured else { return false }
-        if agentKind == "openclaw" || [kimiCodeKind, kimiCodeDesktopKind].contains(agentKind) {
+        if ["openclaw", "agy", kimiCodeKind, kimiCodeDesktopKind].contains(agentKind) {
             guard supportsSessionConfiguration(for: agentKind), (launchableAgents ?? supportedAgents ?? []).contains(agentKind) else { return false }
             if firstMessage.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
                 composerFeedback(L10n.tr("请从命令菜单选择斜杠命令。"), newSession: true); return false
@@ -2906,6 +2908,7 @@ final class HostConnection: ObservableObject {
 
     /// ADR-0049 §6.4 `archive`：卡片立即移到目标列表；回执、断线、期限与核对全部交给账本。
     func archive(_ session: SessionSummary, archived: Bool) {
+        guard session.agentKind != "agy", !session.sessionId.hasPrefix("agy:") else { return }
         guard !session.sessionId.hasPrefix("codex-history:") || unifiedCodexHistory else { return }
         if session.agentKind == "openclaw", !openClawNegotiated { return }
         guard connection == .secured, let kind = session.agentKind, supportsKimiCode(kind: kind, id: session.sessionId, web: kimiCodeSupported, desktop: kimiCodeDesktopSupported) else { return }
@@ -2942,24 +2945,24 @@ final class HostConnection: ObservableObject {
         browseDownloadDirectory(selectedHostId.flatMap { downloadBrowserPaths.path(hostId: $0) })
     }
 
-    func browseDownloadDirectory(_ path: String?) {
-        browseDirectory(path, forDownload: true)
+    func browseDownloadDirectory(_ path: String?, rememberPath: Bool = true) {
+        browseDirectory(path, forDownload: true, rememberPath: rememberPath)
     }
 
     func browseDirectory(_ path: String? = nil) {
-        browseDirectory(path, forDownload: false)
+        browseDirectory(path, forDownload: false, rememberPath: false)
     }
 
     var workDirectoryBrowse: DirectoryBrowse? { browse?.forDownload == false ? browse : nil }
 
-    private func browseDirectory(_ path: String?, forDownload: Bool) {
+    private func browseDirectory(_ path: String?, forDownload: Bool, rememberPath: Bool) {
         browseTimeout?.cancel()
         guard connection == .secured else {
-            browse = DirectoryBrowse(requestId: "", path: path, loading: false, error: L10n.tr("未连接到电脑，连接恢复后可重试。"), forDownload: forDownload)
+            browse = DirectoryBrowse(requestId: "", path: path, loading: false, error: L10n.tr("未连接到电脑，连接恢复后可重试。"), forDownload: forDownload, rememberPath: rememberPath)
             return
         }
         let requestId = UUID().uuidString
-        browse = DirectoryBrowse(requestId: requestId, path: path, forDownload: forDownload)
+        browse = DirectoryBrowse(requestId: requestId, path: path, forDownload: forDownload, rememberPath: rememberPath)
         var request: [String: Any] = ["type": "session.browse", "protocolVersion": orbisProtocolVersion, "requestId": requestId]
         if let path { request["path"] = path }
         guard transport.send(request) else { browse?.loading = false; browse?.error = L10n.tr("目录读取请求未送达。"); return }
@@ -4070,6 +4073,7 @@ final class HostConnection: ObservableObject {
             let filtered = features.contains("device.features") && (message["dshDesktop"] == nil || features.contains("agent.openclaw") && !admittedOpenClaw ||
                features.contains(Self.agentEnablementFeature) && !readyAdmitsAgentEnablement(message) ||
                features.contains(agentDialReviewFeature) && !readyAdmitsAgentDialReview(message) ||
+               features.contains(agyFeature) && !readyAdmitsAgy(message) ||
                features.contains("agent.kimiCode") && !(message["deviceFeatures"] as? [String] ?? []).contains("agent.kimiCode") ||
                features.contains("agent.kimiCodeDesktop") && !(message["deviceFeatures"] as? [String] ?? []).contains("agent.kimiCodeDesktop") ||
                features.contains(codexUnifiedHistoryFeature) && !admittedCodex || features.contains(runtimeCloseFeature) && !admittedClose ||
@@ -4102,8 +4106,10 @@ final class HostConnection: ObservableObject {
             expectedMessageDisplayVersion = !supportsRender ? legacyDisplayProjectionVersion :
                 (message["dshDesktop"] == nil ? nil : messageDisplayProjectionVersion)
             let displayVersionChanged = previousDisplayVersion != expectedMessageDisplayVersion
-            let projectionChanged = openClawNegotiated != admittedOpenClaw || unifiedCodexHistory != admittedCodex
+            let admittedAgy = readyAdmitsAgy(message)
+            let projectionChanged = agyNegotiated != admittedAgy || openClawNegotiated != admittedOpenClaw || unifiedCodexHistory != admittedCodex
             openClawNegotiated = admittedOpenClaw
+            agyNegotiated = admittedAgy
             unifiedCodexHistory = admittedCodex
             if projectionChanged { openClawBackendAdvice = nil; hostState.invalidateBackendProjection() }
             let catalogWasConnected = hostState.connected
@@ -4253,7 +4259,7 @@ final class HostConnection: ObservableObject {
             guard entries.count == rows.count else { return }
             browseTimeout?.cancel()
             // FILE-BROWSER-02: only the connection that accepts this download listing can save it.
-            if current.forDownload, let hostId = selectedHostId { downloadBrowserPaths.remember(path, hostId: hostId) }
+            if current.forDownload && current.rememberPath, let hostId = selectedHostId { downloadBrowserPaths.remember(path, hostId: hostId) }
             current.path = path
             current.parent = message["parent"] as? String
             current.entries = entries

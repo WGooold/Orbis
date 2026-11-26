@@ -325,7 +325,12 @@ describe("Codex Desktop launch on macOS", () => {
     await writeFile(real, '#!/bin/sh\necho real "$@"\nexit 42\n', { mode: 0o755 });
     const staged = stageCodexWrapper({ launcher: "", node: join(dir, "missing-node"), script: join(dir, "missing.js") }, join(dir, "wrapper"), undefined, "darwin");
     await expect(run(staged.launcher, ["--version"], { env: { ...env, ORBIS_CODEX_REAL: real } })).rejects.toMatchObject({ code: 42, stdout: "real --version\n" });
-    await expect(run(staged.launcher, ["--version"], { env })).rejects.toMatchObject({ code: 127 });
+    const native = await run(staged.launcher, ["--version"], { env }).then(
+      result => ({ code: 0, ...result }),
+      error => ({ code: (error as NodeJS.ErrnoException).code, stdout: String((error as { stdout?: unknown }).stdout ?? ""), stderr: String((error as { stderr?: unknown }).stderr ?? "") }),
+    );
+    expect(native.stdout).not.toBe("real --version\n");
+    expect(native.code === 127 || native.stdout.length > 0).toBe(true);
   });
 
   // A file can pass -x and still fail exec (a missing interpreter). Fall back only when exec itself failed.

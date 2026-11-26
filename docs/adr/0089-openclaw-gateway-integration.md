@@ -9,7 +9,7 @@
 
 Host 是 OpenClaw Gateway 的独立 operator 客户端，不读写 OpenClaw 的配置、会话库或其他客户端的身份，不停止已有 Gateway。App 和 Relay 不直连 Gateway，也不接收 Gateway 凭据。使用 [官方 SDK](https://github.com/openclaw/openclaw/tree/v2026.11.5/packages/gateway-client) 与协议包 `2026.11.5`，按 Gateway 的 operator wire `4` 握手并检查必要 RPC。此版本与 Orbis 业务协议独立；不尝试降级，CLI 只用于 HOST-AGENT-START-01 的本机冷启动，不替代 RPC。
 
-本机地址允许 `ws://127.0.0.1`／`ws://[::1]`；非本机 Gateway 仅允许显式配置的根地址 `wss://`，拒绝远程明文 `ws://`。稳定 Ed25519 设备身份和 Gateway 签发的配对 token 按规范化端点分开保存到 Host 的状态目录，不复用手机配对密钥。使用 Gateway 的共享认证 token，必要时由用户在 Gateway 批准请求。共享 token 握手不保证签发设备 token；只有 Gateway 实际签发且后续独立认证成功，才能去掉共享 token。远程和 TLS 端点只申请 `operator.read`／`operator.write`；本机回环见 OPENCLAW-LOCAL-ADMIN-01。不单独申请 approvals、questions 或 pairing。真实 Gateway 上，只有 `operator.sessions.read/write` 的普通 operator 握手可成功，但会话 RPC 因没有已验证用户资料被拒；不因此提升至 admin。
+本机地址允许 `ws://127.0.0.1`／`ws://[::1]`；非本机 Gateway 仅允许显式配置的根地址 `wss://`，拒绝远程明文 `ws://`。稳定 Ed25519 设备身份和 Gateway 签发的配对 token 按规范化端点分开保存到 Host 的状态目录，不复用手机配对密钥。使用 Gateway 的共享认证 token，必要时由用户在 Gateway 批准请求。共享 token 握手不保证签发设备 token；只有 Gateway 实际签发且后续独立认证成功，才能去掉共享 token。远程和 TLS 端点默认只申请 `operator.read`／`operator.write`；本机回环见 OPENCLAW-LOCAL-ADMIN-01。不单独申请 approvals、questions 或 pairing。真实 Gateway 上，只有 `operator.sessions.read/write` 的普通 operator 握手可成功，但会话 RPC 因没有已验证用户资料被拒；不因此提升至 admin。
 
 实现：[`openclaw-gateway.ts`](../../packages/host/src/openclaw-gateway.ts)。验证：[`openclaw-gateway.test.ts`](../../packages/host/src/openclaw-gateway.test.ts)（签名、配对 token、拒绝缺 scope／不安全地址）；隔离 Gateway `2026.11.5` 的证据在 `.artifacts/openclaw-20261119/gateway-sdk-smoke.log`。
 
@@ -30,16 +30,16 @@ Orbis 18／19 业务版本不变。通过既有 `hostFeatures` 字符串列表�
 
 ## OPENCLAW-03｜移动端入口与验收
 
-iOS 和 Android 在加密握手内声明能力，按 Host 回显启用 OpenClaw；与 Gateway 当前是否在线分开判断。新建只显示可用的 Agent，目录沿用现有筛选、历史、恢复与归档，未获能力的 Host 不接收 OpenClaw 写操作。协商切换时清除旧投影的分页与基线，保留本机草稿。新建卡仍查询默认配置与启动绑定，但不显示模型、思考深度或权限编辑项，不尝试有头启动。聊天复用既有首句账本、文本输入与停止；不展示附件、斜杠菜单或忙时投递方式，模型和权限仍在 OpenClaw 管理。图标复用已入库的 Lobe Icons 资源，版权声明随两端打包。
+iOS 和 Android 在加密握手内声明能力，按 Host 回显启用 OpenClaw；与 Gateway 当前是否在线分开判断。新建只显示可用的 Agent，目录沿用现有筛选、历史、恢复与归档，未获能力的 Host 不接收 OpenClaw 写操作。协商切换时清除旧投影的分页与基线，保留本机草稿。新建卡仍查询默认配置与启动绑定，但不显示模型、思考深度或权限编辑项，不尝试有头启动；配置读取进行中时，Android OpenClaw 新建卡显示“正在确认配置…”，启动继续等待匹配的配置快照，读取错误沿用错误提示与刷新入口（OPENCLAW-DRAFT-STATUS-01）。聊天复用既有首句账本、文本输入与停止；不展示附件、斜杠菜单或忙时投递方式，模型和权限仍在 OpenClaw 管理。图标复用已入库的 Lobe Icons 资源，版权声明随两端打包。
 
-实现：iOS [`OrbisStore.swift`](../../ios/Orbis/Orbis/OrbisStore.swift) / [`SessionViews.swift`](../../ios/Orbis/Orbis/SessionViews.swift)，Android [`HostConnection.kt`](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt) / [`SessionDraft.kt`](../../android/app/src/main/java/com/orbising/orbis/SessionDraft.kt)。自动验证：iOS [`StoreTests.swift`](../../ios/Orbis/Tests/StoreTests.swift)、[`LaunchLedgerTests.swift`](../../ios/Orbis/Tests/LaunchLedgerTests.swift)；Android [`OpenClawIntegrationTest.kt`](../../android/app/src/test/java/com/orbising/orbis/OpenClawIntegrationTest.kt)。本机定向回归 iOS 173 项、Android 37 项通过；无签名 iOS Simulator 构建成功。Android 首次缺少 Go 路径、首轮运行首次身份投影失败及测试缺少 `ledgerWritten` 的证据保留，修正后同组选例通过。见 `.artifacts/openclaw-20261119/ios-swift-final/`、`ios-xcode-final/`、`android-unit-first/`、`android-unit-final/`、`android-unit-rerun/`。
+实现：iOS [`OrbisStore.swift`](../../ios/Orbis/Orbis/OrbisStore.swift) / [`SessionViews.swift`](../../ios/Orbis/Orbis/SessionViews.swift)，Android [`HostConnection.kt`](../../android/app/src/main/java/com/orbising/orbis/HostConnection.kt) / [`SessionDraft.kt`](../../android/app/src/main/java/com/orbising/orbis/SessionDraft.kt)。自动验证：iOS [`StoreTests.swift`](../../ios/Orbis/Tests/StoreTests.swift)、[`LaunchLedgerTests.swift`](../../ios/Orbis/Tests/LaunchLedgerTests.swift)；Android [`OpenClawIntegrationTest.kt`](../../android/app/src/test/java/com/orbising/orbis/OpenClawIntegrationTest.kt)、[`SessionDraftConfigurationInstrumentedTest.kt`](../../android/app/src/androidTest/java/com/orbising/orbis/SessionDraftConfigurationInstrumentedTest.kt)。本机定向回归 iOS 173 项、Android 37 项通过；无签名 iOS Simulator 构建成功。Android 首次缺少 Go 路径、首轮运行首次身份投影失败及测试缺少 `ledgerWritten` 的证据保留，修正后同组选例通过。见 `.artifacts/openclaw-20261119/ios-swift-final/`、`ios-xcode-final/`、`android-unit-first/`、`android-unit-final/`、`android-unit-rerun/`。OPENCLAW-DRAFT-STATUS-01 仪器测试源本轮编译通过，设备执行未运行；[编译记录](../../.artifacts/openclaw-draft-status-20261125/compile-rerun/run.log)。同轮 OpenClaw Android 协议／启动单测 2 项通过；[Gradle 记录](../../.artifacts/openclaw-draft-status-20261125/unit/run.log)、[JUnit 结果](../../android/app/build/test-results/testDebugUnitTest/TEST-com.orbising.orbis.OpenClawIntegrationTest.xml)。
 
-部署：未发布、未签发设备安装包。设备／用户验收：待用户验证；本轮未使用真机或模拟器。共享 `orbis-qa` 在本机配置端口拒绝连接，未登记或领取。恢复 QA 后，在同一候选轮次安装对应包、配对独立 Host 并连接带可用模型的隔离 Gateway；核对新建及首句、回复与停止、归档恢复、重连、旧 App／Host 回退与现有 Agent 对照。
+部署：未发布、未签发设备安装包。设备／用户验收：待用户验证；本轮未使用真机或模拟器。既有 QA MCP 端口拒绝记录指向之前轮次；本轮服务可读取，但因当前工作树有多项未提交改动、QA 仅接收已推送的远端分支与完整提交 SHA，未登记新候选、未构建／部署，也未领取或运行设备测试。恢复 QA 后，在同一候选轮次安装对应包、配对独立 Host 并连接带可用模型的隔离 Gateway；核对新建及首句、回复与停止、归档恢复、重连、旧 App／Host 回退与现有 Agent 对照。
 
 
 ## OPENCLAW-04｜桌面 Host 基础连接操作
 
-macOS 与 Windows 共用 Qt Agent 卡配置本机 Gateway 地址和可选令牌。概览显示已配置的 OpenClaw；HOST-AGENT-START-01 新增本机启动操作。连接状态取自当前运行的后端；保存成功后，运行中的 Host 沿用暂停／恢复流程，已暂停的 Host 保持暂停。停用移除 Host 配置，不停止 Gateway 或删除原生会话、配对身份；环境变量配置只读。令牌由 Node 核心写入既有 Host 私有状态文件，不回传 Qt；留空仅对同一规范化地址保留原令牌。QA Host 不读取或写入真实配置。桌面不管理 Gateway 的模型、权限或会话。
+macOS 与 Windows 共用 Qt Agent 卡配置本机 Gateway 地址和可选令牌。概览显示已配置的 OpenClaw；HOST-AGENT-START-01 新增本机启动操作。连接状态取自当前运行的后端；保存成功后，运行中的 Host 沿用暂停／恢复流程，已暂停的 Host 保持暂停。停用移除 Host 配置，不停止 Gateway 或删除原生会话、配对身份；环境变量配置只读。令牌由 Node 核心写入既有 Host 私有状态文件，不回传 Qt；留空仅对同一规范化地址保留原令牌。QA Host 不读取或写入真实配置。原始连接卡只负责接入；运行配置见 OPENCLAW-HOST-SETTINGS-01。
 
 远程地址可填 `wss://gateway.example.com`（包括反向代理后的 TLS WebSocket 根地址），仍由同一 Host SDK 身份和 Gateway 配对流程认证；TLS 证书按系统信任链校验。远程令牌不会发往 App 或 Relay。`ORBIS_OPENCLAW_URL`／`ORBIS_OPENCLAW_TOKEN` 与私有状态文件使用相同校验；环境 URL 不继承文件令牌。
 
@@ -59,6 +59,14 @@ Agent 卡以“本机／远程”切换连接方式，不再由所填地址推�
 
 ## OPENCLAW-LOCAL-ADMIN-01｜本机 Gateway 工作目录
 
-本机 `ws://127.0.0.1`／`ws://[::1]` 通过合法共享令牌连接时使用 OpenClaw SDK 默认的 `operator.admin`，允许在显式选择的工作目录新建会话。旧设备令牌按已有授权连接，原生批准规则不变。远程 `wss://` 仍只申请读写权限；不改 Gateway 认证配置。
+本机 `ws://127.0.0.1`／`ws://[::1]` 通过合法共享令牌连接时使用 OpenClaw SDK 默认的 `operator.admin`，允许在显式选择的工作目录新建会话。旧设备令牌按已有授权连接，原生批准规则不变。远程 `wss://` 默认只申请读写权限；不改 Gateway 认证配置。
 
 实现见 [`openclaw-gateway.ts`](../../packages/host/src/openclaw-gateway.ts)；验证见 [`openclaw-gateway.test.ts`](../../packages/host/src/openclaw-gateway.test.ts) 和 [隔离验证记录](../../.artifacts/openclaw-local-admin-20261125/verification.json)。私发 macOS arm64 候选包，未公开发布；安装验收待用户验证。
+
+## OPENCLAW-HOST-SETTINGS-01｜接入权限与 Gateway 运行配置
+
+Host 的 OpenClaw 卡管理本机回环端口或远程 WSS 根地址、令牌或密码、请求权限及实际授予状态。手机只连 Orbis Host；远程 Gateway 必须已运行并提供可信 TLS WebSocket 入口，Host 不开放端口或启动远程服务。自动档沿用本机默认管理员、远程会话读写；显式管理员须在远程保存时确认，由 Gateway 决定是否批准。诊断区给出连接、证书、认证、设备批准和权限问题的处理入口。凭据由 Host 私有状态保存，绑定精确端点和认证方式；环境支持 `ORBIS_OPENCLAW_URL`、`ORBIS_OPENCLAW_TOKEN` 或 `ORBIS_OPENCLAW_PASSWORD`、`ORBIS_OPENCLAW_ACCESS`。
+
+实际获准且 Gateway 支持 `config.get`／`config.patch` 时，可修改默认和备用模型、工作区、思考、并发与超时、工具策略、沙盒、命令审批和会话重置。表单只投影白名单，按当前连接及配置修订提交已确认的最小变更；不传递整份配置或密钥，不重发回执不明的写入。供应商登录、密钥、渠道和高级配置留在 OpenClaw 控制台。
+
+实现见 [`Main.qml`](../../packages/windows-host/src/qml/Main.qml)、[`openclaw-gateway.ts`](../../packages/host/src/openclaw-gateway.ts) 与 [`openclaw-native-settings.ts`](../../packages/host/src/openclaw-native-settings.ts)。自动验证见 [`openclaw-gateway.test.ts`](../../packages/host/src/openclaw-gateway.test.ts)、[`openclaw-native-settings.test.ts`](../../packages/host/src/openclaw-native-settings.test.ts)、[`HostLiveChangeTest.cpp`](../../packages/windows-host/src/tests/HostLiveChangeTest.cpp)、[`OverviewRowHoverTest.cpp`](../../packages/windows-host/src/tests/OverviewRowHoverTest.cpp) 和 [验证记录](../../.artifacts/openclaw-host-settings-20261125/verification.json)。未部署、未发包。

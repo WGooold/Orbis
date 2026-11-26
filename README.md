@@ -86,15 +86,17 @@ Orbis 目前为预览版。最新安装包和发布状态以官网为准，历�
 
 Agent 在你自己的电脑上运行。手机与电脑之间的会话和文件传输采用端到端加密，中继服务无法读取这些内容。你可以在电脑端管理已配对设备，并撤销不再使用的设备。
 
+Relay 会统计主页访问、下载类别与字节数、注册/配对码事件，以及 CPU、内存、连接数和事件循环等服务运行指标；不记录 IP、Cookie、邮箱、用户代理、消息内容或 URL 查询参数。设备级消息流量、连接时长和带宽明细默认关闭，可在 App「设置 → 隐私 → 设备使用统计」中开启；关闭后会删除该设备的详细历史，汇总服务指标仍会保留。详见 [`packages/relay/TELEMETRY.md`](packages/relay/TELEMETRY.md)。
+
 ## 加入 Orbis 交流群
 
 欢迎交流使用体验、提出想法，或一起讨论遇到的问题。使用微信扫描下方二维码加入 **Orbis 交流群**。
 
 <p align="center">
-  <img src="docs/assets/weixinqrcode.png" width="360" alt="Orbis 微信交流群二维码，有效期至 2026 年 11 月 25 日前">
+  <img src="https://orbising.com/downloads/wechat-group.png" width="360" alt="Orbis 微信交流群二维码，生成后 7 天内有效">
 </p>
 
-二维码标注有效期至 **2026 年 11 月 25 日前**。如果已失效，可在 [GitHub Issues](https://github.com/WGooold/Orbis/issues) 留言请求更新。反馈问题时，请附上设备系统、Orbis 版本和复现步骤。
+二维码自生成起 **7 天内有效**；重新进入微信二维码页面会更新。如果已失效，可在 [GitHub Issues](https://github.com/WGooold/Orbis/issues) 留言请求更新。反馈问题时，请附上设备系统、Orbis 版本和复现步骤。
 
 ## 开源与许可
 

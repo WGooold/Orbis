@@ -14,6 +14,7 @@ import { codexDesktopEndpointPath } from "./codex-desktop-launcher.js";
 import { clearDesktopRecovery, recordDesktopStdioFallback, recordDesktopStartupFailure } from "./codex-desktop-recovery.js";
 import * as claudeInstallation from "./claude-integration-install.js";
 import * as claudeVersion from "./claude-version.js";
+import { verifyAgyKey } from "./agy-credential.js";
 import { KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import * as dshDesktopLifecycle from "./dsh-desktop-lifecycle.js";
@@ -49,6 +50,45 @@ describe("desktop Host lifecycle", () => {
       try { expect(await reopened.readAgentEnablement()).toEqual(changed.snapshot); }
       finally { await reopened.close(); }
     } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
+  // AGY-15: the private bridge only projects safe setup status. An empty Orbis
+  // state has the local setup row but no native process or usable credential.
+  it("keeps AGY setup local, verifies candidates without applying them, and requires an explicit environment opt-in", async () => {
+    vi.stubEnv("ORBIS_AGY_ENABLED", undefined);
+    vi.stubEnv("GEMINI_API_KEY", "fixture-ambient-ignored");
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-agy-setup-"));
+    const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 200 }));
+    const runtime = new DesktopRuntime(() => {}, root, undefined, undefined,
+      async (value, options) => verifyAgyKey(value, options?.signal, request));
+    const key = "fixture-user-entered-key";
+    try {
+      expect((await runtime.readAgentEnablement()).agents).toContainEqual({ kind: "agy", label: "Antigravity CLI", enabled: false });
+      expect(await runtime.agySetupInfo()).toMatchObject({ source: "none" });
+      const empty = await runtime.readAgentEnablement();
+      await expect(runtime.setAgentEnablement({ kind: "agy", enabled: true, expectedRevision: empty.revision })).rejects.toThrow("先在 Host 本机");
+      await expect(runtime.setAgentEnablementBatch({ kinds: ["agy"], enabled: true, expectedRevision: empty.revision })).rejects.toThrow("先在 Host 本机");
+      expect(await runtime.checkAgyCredential(key)).toEqual({ verification: "verified" });
+      expect(await runtime.agySetupInfo()).toMatchObject({ source: "none" });
+      expect(await runtime.applyAgyCredential(key)).toMatchObject({ source: "saved" });
+      const configured = await runtime.readAgentEnablement();
+      expect(await runtime.setAgentEnablement({ kind: "agy", enabled: true, expectedRevision: configured.revision }))
+        .toMatchObject({ status: "applied", snapshot: { revision: configured.revision + 1 } });
+      expect(JSON.stringify(await runtime.retryAgyCredential())).not.toContain(key);
+      expect(await runtime.applyAgyCredential(null)).toMatchObject({ source: "none" });
+      const enabled = await runtime.readAgentEnablement();
+      await runtime.setAgentEnablement({ kind: "agy", enabled: false, expectedRevision: enabled.revision });
+      await expect(runtime.retryAgyCredential()).resolves.toMatchObject({ verification: "invalid" });
+      expect(await readFile(join(root, "agent-enablement.json"), "utf8")).not.toContain(key);
+      expect(request).toHaveBeenCalledTimes(2);
+      vi.stubEnv("ORBIS_AGY_ENABLED", "1");
+      expect(await runtime.agySetupInfo()).toMatchObject({ source: "environment" });
+      await expect(runtime.applyAgyCredential(key)).rejects.toThrow("无法更改");
+    } finally {
+      vi.unstubAllEnvs();
+      await runtime.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   // CODEX-DESKTOP-MAC-RECOVERY-01: the Qt status event follows a wrapper result produced after launch,

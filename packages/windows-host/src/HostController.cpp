@@ -51,6 +51,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
     : QObject(parent), m_runtimeRoot(std::move(runtimeRoot)), m_dataDir(std::move(dataDir)), m_hostStateDir(std::move(hostStateDir)), m_credentialDir(std::move(credentialDir)),
       m_settings(m_dataDir + "/settings.ini", QSettings::IniFormat) {
     m_activationPool.setMaxThreadCount(1);
+    m_agyVaultPool.setMaxThreadCount(1);
     m_automaticIntegrations = automaticIntegrations;
 #ifdef ORBIS_QA_BUILD
     m_qaMode = true;
@@ -128,6 +129,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_hostPub = obj.value("hostPub").toString();
             m_devices = obj.value("devices").toArray().toVariantList();
             refreshDeviceUpdateIndicators();
+            m_agentVersionRequirements = obj.value("agentVersionRequirements").toObject().toVariantMap();
             applyAgentEnablement(obj.value("agentEnablement").toObject());
             m_openClaw = obj.value("openClaw").toObject().toVariantMap();
             m_hermesRemote = obj.value("hermesRemote").toObject().toVariantMap();
@@ -137,6 +139,14 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_kimiDesktopSupported = obj.value("kimiDesktopSupported").toBool();
             m_kimiCodeDefaultSource = obj.value("kimiCodeDefaultSource").toString("web");
             m_bridgeReady = true;
+            const auto agy = obj.value("agySetup").toObject();
+            const auto stateDir = obj.value("stateDir").toString();
+            // Scope the vault slot to the core's actual state directory, not the
+            // activation directory shared by normal and preview desktop launches.
+            m_agyVaultPath = QDir::isAbsolutePath(stateDir) && !stateDir.isEmpty()
+                ? QDir(stateDir).filePath("antigravity-api-key.dat") : QString();
+            finishAgySetup(agy);
+            if (agy.value("source").toString() == "none") loadAgyCredential();
             emit openClawChanged();
             emit hermesRemoteChanged();
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
@@ -170,6 +180,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
         if (error == QProcess::FailedToStart) { m_state = "error"; setMessage("无法启动内置 Host：" + m_bridge.errorString()); }
     });
     connect(&m_bridge, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
+        m_agentVersionRequirements.clear();
+        ++m_agyBridgeGeneration; m_agySetup.clear(); m_agyVaultPath.clear(); emit agySetupChanged();
         m_agentEnablement.clear(); m_agentChoices.clear(); m_agentReview.reset(); m_agentInFlight.reset(); m_agentWriteId = -1; m_agentChoiceRecheck = false; m_agentReadPending = false;
         emit agentEnablementChanged();
         m_kimiCodeSupported = false;
@@ -241,7 +253,7 @@ static bool isProviderBackgroundRequest(const QString &method) {
  * not grey out unrelated controls; their own controls read activityKinds instead.
  */
 static bool isBackgroundRequest(const QString &method) {
-    return isProviderBackgroundRequest(method) || method == "detect" || method.startsWith("agent.enablement.");
+    return isProviderBackgroundRequest(method) || method == "detect" || method.startsWith("agent.enablement.") || method.startsWith("agy.setup.") || method == "openclaw.config.read";
 }
 /**
  * 每个桥命令在界面上叫什么。返回空 = 不值得单独提示（Agent 安装/更新有自己一套进度 UI）。
@@ -263,17 +275,20 @@ static QPair<QString, QString> activityFor(const QString &method, const QJsonObj
     if (method == "revoke" || method == "renameDevice") return { "device", "正在保存设备变更" };
     if (method.startsWith("agent.enablement.write")) return { "agentEnablement", "正在保存 Agent 设置" };
     if (method == "openclaw.save") return { "openClaw", "正在保存 OpenClaw 配置" };
+    if (method == "openclaw.config.read") return { "openClawConfig", "正在读取 Gateway 配置" };
+    if (method == "openclaw.config.apply") return { "openClawConfig", "正在应用 Gateway 配置" };
     if (method == "hermes.remote.save") return { "hermesRemote", "正在保存 Hermes SSH 配置" };
     if (method == "rename") return { "host", "正在保存电脑名称" };
     if (method.startsWith("provider.")) {
         if (method == "provider.save") return { "provider", "正在保存供应商" };
         if (method == "provider.saveCodexPreferences") return { "provider", "正在保存通用配置" };
+        if (method == "provider.default") return { "provider", "正在设置默认供应商" };
         if (method == "provider.switch") return { "provider", "正在切换供应商" };
         if (method == "provider.remove") return { "provider", "正在删除供应商" };
         if (method == "provider.open") return { "provider", "正在打开供应商" };
         if (method == "provider.copy") return { "provider", "正在复制供应商" };
-        if (method == "provider.piDefault") return { "provider", "正在保存默认供应商" };
-        return { "provider", "正在读取供应商配置" };
+        // Reads have their own kind: an empty list shows as loading, and the list caption only names changes.
+        return { "providerList", "正在读取供应商配置" };
     }
     return {};
 }
@@ -330,7 +345,7 @@ int HostController::command(const QString &method, const QJsonObject &params, Ca
     if (m_bridge.state() != QProcess::Running) { setMessage("Host 核心尚未就绪"); return -1; }
     int id = m_nextId++;
     m_pending.insert(id, std::move(done)); m_methods.insert(id, method);
-    if (method != "openclaw.save" && method != "hermes.remote.save") m_requestParams.insert(id, params);
+    if (method != "openclaw.save" && method != "hermes.remote.save" && !method.startsWith("agy.setup.")) m_requestParams.insert(id, params);
     if (!isBackgroundRequest(method)) ++m_busy;
     const auto activity = activityFor(method, params);
     if (!activity.first.isEmpty() || !activity.second.isEmpty()) { m_activity.insert(id, activity); m_activityOrder.append(id); }
@@ -374,6 +389,8 @@ void HostController::resumeAfterChange() {
 void HostController::clearRunningFacts() {
     // Desktop connections belong to this Host run; their lifecycles report again on the next start.
     m_backends.clear(); m_activeAgentSessions.clear(); m_runtimeCount = 0; m_codexDesktop.clear(); m_dshDesktop.clear(); m_kimiCodeState.clear(); m_kimiCodeDesktopState.clear();
+    m_openClawConnection.clear();
+    if (!m_openClawNative.isEmpty()) { m_openClawNative.clear(); emit openClawNativeChanged(); }
     // 终端 Codex 与 DeepSeek 后端的准备属于这一次运行：停了就不再有“正在准备”。
     // Claude 插件登记属于 Host 核心本身，暂停连接不影响它。
     m_preparations.remove("codex"); m_preparations.remove("dsh");
@@ -388,12 +405,16 @@ void HostController::receiveLine(const QJsonObject &line) {
         auto callback = m_pending.take(id); auto method = m_methods.take(id); const auto params = m_requestParams.take(id);
         if (!isBackgroundRequest(method)) m_busy = qMax(0, m_busy - 1);
         if (m_activity.remove(id)) m_activityOrder.removeAll(id);
-        if (line.contains("error")) {
+        if (line.contains("error") && method.startsWith("agy.setup.")) {
+            // Credential operations report a local, fixed status, never arbitrary bridge error text.
+            if (callback) callback(QJsonValue());
+        } else if (line.contains("error")) {
             if (method.startsWith("agent.enablement.write")) failAgentChoice();
             else if (method == "agent.enablement.read") m_agentReadPending = false;
             if (method == "start") { m_desiredRunning = false; m_state = "error"; }
             if (method == "updateAgent" || method == "installAll") { if (m_agentInstallStage != "cancelled") m_agentInstallStage = "error"; clearDownload(); detectAgents(); }
-            if (method == "selectAgentEntry") emit agentEntryFinished(params.value("kind").toString(), line.value("error").toString());
+            if (method.startsWith("openclaw.config.")) m_openClawNativeFeedback = line.value("error").toString();
+            else if (method == "selectAgentEntry") emit agentEntryFinished(params.value("kind").toString(), line.value("error").toString());
             else setMessage(line.value("error").toString());
             if (method == "start" && line.value("error").toString().startsWith("Relay 认证失败：unauthorized ")) invalidateActivation();
         }
@@ -447,6 +468,7 @@ void HostController::receiveLine(const QJsonObject &line) {
                     backends = domain.toObject().value("value").toObject().value("backends").toArray().toVariantList();
             }
             m_backends = backends;
+            m_openClawConnection = m_desiredRunning ? line.value("openClawConnection").toObject().toVariantMap() : QVariantMap{};
             m_activeAgentSessions = m_state == "connected" ? line.value("activeAgentSessions").toObject().toVariantMap() : QVariantMap{};
             m_kimiCodeState = m_desiredRunning && kimiCodeEnabled() ? line.value("kimiCodeState").toString() : QString();
             m_kimiCodeDesktopState = m_desiredRunning && agentEnabled("kimiCodeDesktop") ? line.value("kimiCodeDesktopState").toString() : QString();
@@ -1021,14 +1043,168 @@ void HostController::pumpAgentChoices() {
     }
     emit changed();
 }
-void HostController::saveOpenClaw(const QString &url, const QString &token) {
+static QString normalizedAgyKey(const QString &value) {
+    static const QRegularExpression format("^[A-Za-z0-9._-]{16,512}$");
+    if (value.size() > 512) return {};
+    const auto key = value.trimmed();
+    return format.match(key).hasMatch() ? key : QString();
+}
+
+bool HostController::canEditAgySetup() const {
+    const auto source = m_agySetup.value("source").toString();
+    return m_bridgeReady && !m_qaMode && !m_exiting && !m_agySetup.value("busy").toBool()
+        && !source.isEmpty() && source != "environment" && source != "unsupported";
+}
+
+void HostController::beginAgySetup() {
+    m_agySetup.insert("busy", true);
+    m_agySetup.remove("verification");
+    emit agySetupChanged();
+}
+
+void HostController::finishAgySetup(const QJsonObject &info, const QString &verification) {
+    const auto source = info.value("source").toString();
+    if (QStringList{"none", "saved", "environment", "unsupported", "vaultError"}.contains(source)) m_agySetup.insert("source", source);
+    if (info.contains("requiredVersion")) m_agySetup.insert("requiredVersion", info.value("requiredVersion").toString());
+    if (info.contains("installed")) m_agySetup.insert("installed", info.value("installed").toBool());
+    m_agySetup.insert("busy", false);
+    m_agySetup.insert("verification", verification);
+    emit agySetupChanged();
+}
+
+void HostController::runAgyVault(AgyVaultAction action, const QString &key, std::function<void(std::optional<QString>)> done) {
+    const auto path = m_agyVaultPath;
+    if (path.isEmpty()) { done(std::nullopt); return; }
+    const auto generation = m_agyBridgeGeneration;
+    auto *watcher = new QFutureWatcher<std::optional<QString>>(this);
+    connect(watcher, &QFutureWatcher<std::optional<QString>>::finished, this, [this, watcher, generation, done = std::move(done)] {
+        auto result = watcher->result();
+        watcher->deleteLater();
+        if (generation == m_agyBridgeGeneration && m_bridgeReady && !m_exiting) done(std::move(result));
+    });
+    watcher->setFuture(QtConcurrent::run(&m_agyVaultPool, [path, action, key, testVault = m_agyVaultForTest]() -> std::optional<QString> {
+        if (testVault) return testVault(action, path, key);
+        constexpr auto scope = CredentialStore::Scope::Agy;
+        if (action == AgyVaultAction::Save)
+            return CredentialStore::save(path, {{"key", key}}, nullptr, scope) ? std::optional<QString>(key) : std::nullopt;
+        if (action == AgyVaultAction::Remove)
+            return CredentialStore::clear(path, nullptr, scope) ? std::optional<QString>(QString()) : std::nullopt;
+        QString error;
+        const auto data = CredentialStore::load(path, &error, scope);
+        const auto stored = normalizedAgyKey(data.value("key").toString());
+        if (!error.isEmpty() || (!data.isEmpty() && stored.isEmpty())) return std::nullopt;
+        return stored;
+    }));
+}
+
+void HostController::loadAgyCredential() {
+    if (!canEditAgySetup()) return;
+    beginAgySetup();
+    runAgyVault(AgyVaultAction::Load, {}, [this](auto key) {
+        if (!key) { finishAgySetup({{"source", "vaultError"}}, "vaultError"); return; }
+        if (key->isEmpty()) { applyAgyCredential({}); return; }
+        const auto id = command("agy.setup.verify", {{"key", *key}}, [this, key](const QJsonValue &result) {
+            const auto checked = result.toObject().value("verification").toString();
+            const auto safe = QStringList{"verified", "rejected", "invalid"}.contains(checked) ? checked : QStringLiteral("unavailable");
+            applyAgyCredential(*key, safe);
+        });
+        if (id < 0) finishAgySetup({}, "unavailable");
+    });
+}
+
+void HostController::applyAgyCredential(const QString &key, const QString &verification) {
+    const auto id = command("agy.setup.apply", {{"key", key.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(key)}}, [this, verification](const QJsonValue &result) {
+        finishAgySetup(result.toObject(), result.isObject() ? verification : QStringLiteral("applyError"));
+    });
+    if (id < 0) finishAgySetup({}, "applyError");
+}
+
+void HostController::saveAgyCredential(const QString &key) {
+    if (!canEditAgySetup()) return;
+    const auto candidate = normalizedAgyKey(key);
+    if (candidate.isEmpty()) { finishAgySetup({}, "invalid"); return; }
+    beginAgySetup();
+    const auto id = command("agy.setup.verify", {{"key", candidate}}, [this, candidate](const QJsonValue &result) {
+        const auto checked = result.toObject().value("verification").toString();
+        if (checked != "verified") {
+            finishAgySetup({}, checked == "rejected" ? "candidateRejected" : checked == "invalid" ? "invalid" : "unavailable");
+            return;
+        }
+        runAgyVault(AgyVaultAction::Save, candidate, [this](auto saved) {
+            if (!saved) { finishAgySetup({}, "vaultError"); return; }
+            applyAgyCredential(*saved, "verified");
+        });
+    });
+    if (id < 0) finishAgySetup({}, "unavailable");
+}
+
+void HostController::retryAgySetup() {
+    const auto source = m_agySetup.value("source").toString();
+    if (!m_bridgeReady || m_exiting || m_qaMode || m_agySetup.value("busy").toBool()) return;
+    if (source == "vaultError" || source == "none" || m_agySetup.value("verification").toString() == "applyError") { loadAgyCredential(); return; }
+    if (source != "saved" && source != "environment") return;
+    beginAgySetup();
+    const auto id = command("agy.setup.retry", {}, [this](const QJsonValue &result) {
+        const auto verified = result.toObject().value("verification").toString();
+        finishAgySetup(result.toObject(), QStringList{"verified", "rejected", "invalid"}.contains(verified) ? verified : QStringLiteral("unavailable"));
+    });
+    if (id < 0) finishAgySetup({}, "unavailable");
+}
+
+void HostController::removeAgyCredential() {
+    if (!canEditAgySetup()) return;
+    const auto source = m_agySetup.value("source").toString();
+    if (source != "saved" && source != "vaultError") return;
+    beginAgySetup();
+    runAgyVault(AgyVaultAction::Remove, {}, [this](auto removed) {
+        if (!removed) { finishAgySetup({}, "vaultError"); return; }
+        applyAgyCredential({}, "removed");
+    });
+}
+
+void HostController::saveOpenClaw(const QString &url, const QString &token, const QString &access, bool clearToken, const QString &auth) {
     if (!m_bridgeReady || busy() || m_openClaw.value("source").toString() != "file") return;
-    command("openclaw.save", {{"url", url}, {"token", token}}, [this](const QJsonValue &result) {
+    QJsonObject params{{"url", url}, {"token", token}, {"clearToken", clearToken}};
+    if (!access.isEmpty()) params.insert("access", access);
+    if (!auth.isEmpty()) params.insert("auth", auth);
+    command("openclaw.save", params, [this](const QJsonValue &result) {
         m_openClaw = result.toObject().toVariantMap();
+        m_openClawConnection.clear();
+        m_openClawNative.clear();
+        emit openClawNativeChanged();
         emit openClawChanged();
         // Preserve the current connection when validation or persistence failed.
         reconnectOpenClaw();
         setMessage(m_openClaw.value("url").toString().isEmpty() ? "OpenClaw 连接配置已移除" : "OpenClaw 配置已保存");
+    });
+}
+void HostController::readOpenClawNative() {
+    if (!m_bridgeReady || !m_desiredRunning || busy() || m_methods.values().contains("openclaw.config.read") || !m_openClawConnection.value("canEdit").toBool()) return;
+    m_openClawNative.clear(); m_openClawNativeFeedback.clear();
+    emit openClawNativeChanged();
+    command("openclaw.config.read", {}, [this](const QJsonValue &value) {
+        const auto result = value.toObject();
+        if (!m_desiredRunning || !m_openClawConnection.value("canEdit").toBool()) return;
+        if (result.value("ticket").toString().isEmpty() || !result.value("fields").isArray()) {
+            m_openClawNativeFeedback = "Gateway 配置未确认，请重新读取。";
+            return;
+        }
+        m_openClawNative = result.toVariantMap();
+        emit openClawNativeChanged();
+    });
+}
+void HostController::applyOpenClawNative(const QVariantMap &changes) {
+    const auto ticket = m_openClawNative.value("ticket").toString();
+    if (!m_bridgeReady || !m_desiredRunning || busy() || ticket.isEmpty() || !m_openClawConnection.value("canEdit").toBool() || changes.isEmpty()) return;
+    m_openClawNativeFeedback.clear();
+    command("openclaw.config.apply", {{"ticket", ticket}, {"changes", QJsonObject::fromVariantMap(changes)}}, [this](const QJsonValue &value) {
+        const auto result = value.toObject();
+        const auto state = result.value("state").toString();
+        m_openClawNative.clear();
+        m_openClawNativeFeedback = state == "unchanged" ? "Gateway 配置没有变化。"
+            : state != "saved" ? "未确认是否保存，请重新读取配置。"
+            : result.value("restarting").toBool() ? "已保存。等待 Gateway 重启后重新读取。" : "已保存。";
+        emit openClawNativeChanged();
     });
 }
 void HostController::reconnectOpenClaw() {
@@ -1142,6 +1318,9 @@ void HostController::selectCodexEntry(const QString &entry) {
         setMessage("已切换到 Codex " + value.toObject().value("version").toString()); detectAgents();
     });
 }
+static bool isNativeProviderKind(const QString &kind) {
+    return QStringList{"opencode", "openclaw", "hermes", "kimiCode"}.contains(kind);
+}
 void HostController::setProviders(const QVariantList &providers) {
     if (m_providers == providers) return;
     m_providers = providers; emit providersChanged();
@@ -1150,17 +1329,8 @@ void HostController::setProviderPresets(const QVariantList &presets) {
     if (m_providerPresets == presets) return;
     m_providerPresets = presets; emit providerPresetsChanged();
 }
-void HostController::refreshAgentProviders(const QString &kind) {
-    if (!m_bridgeReady || !QStringList{"codex", "dsh", "claude", "pi"}.contains(kind)) return;
-    if (m_providerKind != kind) {
-        m_providerKind = kind; setProviders({}); setProviderPresets({}); ++m_draftGeneration; emit changed();
-    }
-    const auto generation = m_draftGeneration;
-    command("provider.list", {{"kind", kind}}, [this, kind, generation](const QJsonValue &value) {
-        if (m_providerKind == kind && generation == m_draftGeneration) setProviders(value.toArray().toVariantList());
-    });
-}
 void HostController::loadProviders(const QString &kind) {
+    if (!m_bridgeReady) return;
     if (m_providerKind != kind) { setProviders({}); setProviderPresets({}); ++m_draftGeneration; }
     m_providerKind = kind; emit changed();
     command("provider.list", {{"kind", kind}}, [this, kind](const QJsonValue &value) {
@@ -1269,7 +1439,15 @@ void HostController::switchProvider(const QString &id, bool enabled) {
     command("provider.switch", {{"kind", kind}, {"id", id}, {"enabled", enabled}}, [this, kind](const QJsonValue &value) {
         if (kind != m_providerKind) return;
         setProviders(value.toArray().toVariantList());
-        setMessage(kind == "pi" ? "Pi 显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : "供应商已切换。请重新打开会话；独立终端也需重启。");
+        setMessage(isNativeProviderKind(kind) ? "供应商已更新。请重新打开会话；已运行的服务可能需要重启。" : kind == "pi" ? "Pi 显式供应商已更新；已有 Pi 请重新打开，再用 /model 选择模型。" : "供应商已切换。请重新打开会话；独立终端也需重启。");
+    });
+}
+void HostController::setDefaultProvider(const QString &id) {
+    const auto kind = m_providerKind;
+    command("provider.default", {{"kind", kind}, {"id", id}}, [this, kind](const QJsonValue &value) {
+        if (kind != m_providerKind) return;
+        setProviders(value.toArray().toVariantList());
+        setMessage("默认供应商已更新。请重新打开会话；已运行的服务可能需要重启。");
     });
 }
 void HostController::removeProvider(const QString &id) {
@@ -1304,11 +1482,12 @@ void HostController::restartDshServer() {
 }
 void HostController::openAgent(const QString &kind) {
     if (kind == "pi" || kind == "claude") { openAgentTui(kind); return; }
-    if (kind == "kimiCode" || kind == "kimiCodeDesktop" || kind == "opencode" || kind == "hermes" || kind == "openclaw") {
+    if (kind == "kimiCode" || kind == "kimiCodeDesktop" || kind == "opencode" || kind == "hermes" || kind == "openclaw" || kind == "agy") {
         if (!m_bridgeReady || busy() || !m_desiredRunning ||
+            (kind == "agy" && !agentEnabled(kind)) ||
             (kind == "kimiCode" && (!kimiCodeAvailable() || !kimiCodeEnabled())) ||
             (kind == "kimiCodeDesktop" && (!kimiDesktopSupported() || !agentEnabled(kind)))) return;
-        const auto label = kind == "kimiCode" ? "Kimi Code Web" : kind == "kimiCodeDesktop" ? "Kimi Code 桌面版" : kind == "opencode" ? "OpenCode" : kind == "hermes" ? "Hermes Agent" : "OpenClaw";
+        const auto label = kind == "kimiCode" ? "Kimi Code Web" : kind == "kimiCodeDesktop" ? "Kimi Code 桌面版" : kind == "opencode" ? "OpenCode" : kind == "hermes" ? "Hermes Agent" : kind == "agy" ? "Antigravity CLI" : "OpenClaw";
         command("openAgent", {{"kind", kind}}, [this, label](const QJsonValue &) { setMessage(QString("%1 已接入").arg(label)); });
         return;
     }

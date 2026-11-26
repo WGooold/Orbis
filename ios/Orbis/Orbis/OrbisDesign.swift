@@ -184,10 +184,11 @@ struct OrbisPalette {
         switch kind {
         case "codex", "codexDesktop": return Color(hex: dark ? 0x77D6C7 : 0x00655D)
         case "dsh", "dshDesktop": return Color(hex: dark ? 0xA9BBFF : 0x3550CF)
-        case kimiCodeKind: return Color(hex: dark ? 0xBDC6FF : 0x343B8E)
+        case kimiCodeKind, kimiCodeDesktopKind: return Color(hex: dark ? 0xBDC6FF : 0x343B8E)
         case "hermes": return Color(hex: dark ? 0xF1D58A : 0x765519)
         case "claude": return Color(hex: dark ? 0xF0B48C : 0x9A4521)
         case "openclaw": return Color(hex: dark ? 0xFF8A75 : 0xA93531)
+        case "agy": return Color(hex: dark ? 0x9BC3FF : 0x3569BC)
         case "opencode": return Color(hex: dark ? 0xA99BFF : 0x5E4CAD)
         default: return Color(hex: dark ? 0xF0A9D3 : 0x8C3870)
         }

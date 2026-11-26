@@ -5,7 +5,7 @@ import { CompactStateModel } from "./compact-state-model.js";
 import { agentViews, allowsAgent, allowsAgentRequest, deviceAgentView, hiddenKinds, policyAgentViews, projectAgentMessage } from "./device-agent-visibility.js";
 import { HostStateFacts } from "./host-state-facts.js";
 
-const kinds = ["pi", "dshDesktop", "kimiCode", "kimiCodeDesktop", "openclaw", "hermes"] as const;
+const kinds = ["pi", "dshDesktop", "kimiCode", "kimiCodeDesktop", "openclaw", "hermes", "agy"] as const;
 const row = (index: number): AgentSessionSummary => ({ agentKind: kinds[index % kinds.length]!, sessionId: `s${index}`,
   cwd: `/isolated/${index % 6}`, hostname: "fixture", createdAt: 1, modifiedAt: 200 - index, messageCount: 0, firstMessage: "a".repeat(900) });
 

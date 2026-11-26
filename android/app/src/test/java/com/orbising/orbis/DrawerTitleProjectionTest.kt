@@ -56,7 +56,7 @@ class DrawerTitleProjectionTest {
         val graph = graph()
         val state = RemoteState(sessionGraphs = mapOf("s" to graph), sessions = mapOf("s" to
             SessionCatalogEntry("s", agentKind = "pi", name = "New name", cachedDisplayName = "Fixed Pi title")))
-        assertEquals("Fixed Pi title", cache.resolve(state, "s", null))
+        assertEquals("New name", cache.resolve(state, "s", null))
         val codex = state.copy(sessions = mapOf("s" to SessionCatalogEntry("s", agentKind = "codex", name = "Named")))
         assertEquals("Named", cache.resolve(codex, "s", null))
     }

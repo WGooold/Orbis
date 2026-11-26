@@ -5,6 +5,7 @@ struct InteractionWorkspaceView: View, Equatable {
     let actions: ChatSessionActions
     @Environment(\.colorScheme) private var scheme
     @Environment(\.orbisAppearance) private var visualStyle
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     let runtimeId: String
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.actions == rhs.actions && lhs.runtimeId == rhs.runtimeId
@@ -51,23 +52,27 @@ struct InteractionWorkspaceView: View, Equatable {
             }
         }
         .orbisBottomSheet(isPresented: $open) {
-            VStack(spacing: 14) {
+            let compactHeight = verticalSizeClass == .compact
+            VStack(spacing: compactHeight ? 6 : 14) {
                 OrbisPageHeader(title: L10n.tr("远程交互"), closes: true, back: { open = false }) { Text(L10n.tr("{0} 项", requests.count)).font(.orbisCaption()) }
                 if requests.count > 1 {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
                             ForEach(requests) { request in
                                 OrbisMotionButton { selectedId = request.requestId } label: {
-                                    Text(request.title).font(.orbisCaption()).lineLimit(1).padding(.horizontal, 14).frame(minHeight: 44)
+                                    Text(request.title).font(.orbisCaption()).lineLimit(1).padding(.horizontal, 14).frame(minHeight: compactHeight ? 36 : 44)
                                 }.buttonStyle(NeuButtonStyle(selected: (selectedId ?? requests.first?.requestId) == request.requestId, radius: 12))
                             }
-                        }.padding(6)
+                        }.padding(compactHeight ? 4 : 6)
                     }.padding(.horizontal, 16)
                 }
                 if let request = requests.first(where: { $0.requestId == selectedId }) ?? requests.first {
-                    requestView(request, inSheet: true)
-                        .padding(.horizontal, 16).padding(.bottom, 20)
-                        .frame(maxHeight: .infinity, alignment: .top)
+                    // Keep long forms inside the sheet's real viewport so only the answer list scrolls.
+                    GeometryReader { proxy in
+                        requestView(request, inSheet: true)
+                            .padding(.horizontal, 16).padding(.bottom, compactHeight ? 8 : 20)
+                            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+                    }
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .foregroundStyle(OrbisPalette(scheme).text)
@@ -115,6 +120,7 @@ private struct InteractionRequestView: View {
     @Environment(\.orbisVisualActive) private var visualActive
     @Environment(\.openURL) private var openURL
     @Environment(\.orbisAccent) private var pageAccent
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     let request: InteractionRequest
     let responseError: String?
     let draft: InteractionDraftValue
@@ -140,6 +146,7 @@ private struct InteractionRequestView: View {
 
     private var pending: Bool { request.submitted == true }
     private var valid: Bool { request.acceptsResponse(draftValue.response(for: request)) }
+    private var compactSheet: Bool { inSheet && verticalSizeClass == .compact }
 
     var body: some View {
         TimelineView(OrbisPausablePeriodicSchedule(interval: 1, paused: !visualActive)) { context in
@@ -168,7 +175,7 @@ private struct InteractionRequestView: View {
                                     .rotationEffect(.degrees(expanded ? 180 : 0)).animation(.orbisCollapse, value: expanded)
                                     .frame(width: 24)
                             }
-                        }.frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                        }.frame(maxWidth: .infinity, minHeight: compactSheet ? 36 : 44).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                         .accessibilityHint(request.kind == "confirm" ? "" : expanded ? L10n.tr("收起交互") : L10n.tr("展开交互"))
                     if request.kind == "questionnaire" {
@@ -188,7 +195,7 @@ private struct InteractionRequestView: View {
                 }
             }
             .frame(maxHeight: inSheet && isExpanded ? .infinity : nil, alignment: .top)
-            .neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.6, padding: OrbisRadius.cardPadding)
+            .neuSurface(inset: true, radius: OrbisRadius.card, intensity: 0.6, padding: compactSheet ? 10 : OrbisRadius.cardPadding)
         }.frame(maxHeight: inSheet ? .infinity : nil, alignment: .top)
         .onAppear {
             input = draft.input; choices = draft.choices.intersection(Set((request.options ?? []).map(\.value)))
@@ -201,13 +208,20 @@ private struct InteractionRequestView: View {
 
     @ViewBuilder
     private func expandedContent(expired: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if request.kind == "questionnaire" {
+        VStack(alignment: .leading, spacing: compactSheet ? 8 : 12) {
+            if request.kind == "questionnaire", !compactSheet {
                 questionnaireTabs
                 questionnairePosition
             }
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: compactSheet ? 8 : 14) {
+                    if request.kind == "questionnaire", compactSheet {
+                        HStack(spacing: 8) {
+                            questionnaireTabs
+                            Spacer(minLength: 0)
+                            questionnairePosition
+                        }
+                    }
                     if let description = request.description { Text(description).font(.orbisLabel()) }
                     if let summary = request.argumentSummary { Text(summary).font(.orbisCaption(mono: true)).textSelection(.enabled) }
                     if let external = request.externalUrl, let url = URL(string: external), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
@@ -219,13 +233,13 @@ private struct InteractionRequestView: View {
                     content
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: inSheet ? .infinity : 220)
+            .frame(minHeight: compactSheet ? 130 : 0, maxHeight: inSheet ? .infinity : 220)
+            .layoutPriority(1)
             .scrollBounceBehavior(.basedOnSize)
             .id(request.kind == "questionnaire" ? "question-\(currentQuestion?.id ?? "")" : "interaction-content")
             .accessibilityIdentifier(request.kind == "questionnaire" ? "questionnaire-answer-scroll" : "interaction-content-scroll")
-            if !expired {
-                if request.kind == "questionnaire" { questionnaireProgress }
-                if !pending {
+            if compactSheet && request.kind == "questionnaire" {
+                if !expired && !pending {
                     if let responseError {
                         Text(responseError).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
                             .accessibilityIdentifier("interaction-response-error")
@@ -234,11 +248,34 @@ private struct InteractionRequestView: View {
                         Text(L10n.tr("连接后可提交")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
                     }
                 }
+                HStack(spacing: 12) {
+                    if !expired { questionnaireProgress.fixedSize() }
+                    actionButtons(expired: expired)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    if !expired {
+                        if request.kind == "questionnaire" { questionnaireProgress }
+                        if !pending {
+                            if let responseError {
+                                Text(responseError).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).error)
+                                    .accessibilityIdentifier("interaction-response-error")
+                            }
+                            if !connected {
+                                Text(L10n.tr("连接后可提交")).font(.orbisCaption()).foregroundStyle(OrbisPalette(scheme).secondary)
+                            }
+                        }
+                    }
+                    actionButtons(expired: expired)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
             }
-            actionButtons(expired: expired)
         }
         .frame(maxHeight: inSheet ? .infinity : nil, alignment: .top)
-        .padding(.top, 8)
+        .padding(.top, compactSheet ? 4 : 8)
     }
 
     @ViewBuilder private var questionnaireTabs: some View {
@@ -254,12 +291,12 @@ private struct InteractionRequestView: View {
                             withAnimation(.orbisCollapse) { questionPage = index }
                         } label: {
                             Text("\(index + 1). \(header)\(questionHasAnswer(question) ? " ✓" : "")")
-                                .font(.orbisCaption()).lineLimit(1).padding(.horizontal, 14).frame(minHeight: 44)
+                                .font(.orbisCaption()).lineLimit(1).padding(.horizontal, 14).frame(minHeight: compactSheet ? 36 : 44)
                         }
                         .buttonStyle(NeuButtonStyle(selected: currentQuestionIndex == index, radius: 12))
                         .accessibilityIdentifier("questionnaire-page-\(index)")
                     }
-                }.padding(6)
+                }.padding(compactSheet ? 2 : 6)
             }
             .accessibilityIdentifier("questionnaire-pages")
         }

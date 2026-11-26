@@ -97,9 +97,10 @@ it("validates a real registration before probing and refuses redirects with the 
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("loopback bind failed");
-    await writeFile(registrationPath, JSON.stringify({ url: "http://192.0.2.10:4096", pid: 1, password: "fixture" }));
+    const registrationPid = process.pid;
+    await writeFile(registrationPath, JSON.stringify({ url: "http://192.0.2.10:4096", pid: registrationPid, password: "fixture" }));
     await expect(connection.refresh()).resolves.toEqual({ state: "unavailable", reason: "invalid_endpoint" });
-    await writeFile(registrationPath, JSON.stringify({ url: `http://127.0.0.1:${address.port}`, pid: 1, password: "fixture" }));
+    await writeFile(registrationPath, JSON.stringify({ url: `http://127.0.0.1:${address.port}`, pid: registrationPid, password: "fixture" }));
     await expect(connection.refresh()).resolves.toEqual({ state: "unavailable", reason: "connection_failed" });
     expect(requests).toEqual(["/api/info"]);
   } finally {

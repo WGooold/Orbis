@@ -18,7 +18,8 @@ enum ProviderDialGeometry {
         let agentStep: Double
         init(width: Double, height: Double) {
             self.width = width; self.height = height
-            let base = max(140, min((width * 0.52).rounded(), floor(height / 2) - 28, width - 76 - 28 - 136))
+            let minBase = height < 336 ? max(100, min(140, floor(height / 2) - 10)) : 140
+            let base = max(minBase, min((width * 0.52).rounded(), floor(height / 2) - 28, width - 76 - 28 - 136))
             radius = (base * 1.6).rounded()
             centerX = base + clamp(base * 0.15, 22, 30).rounded() + 24 - radius
             centerY = height / 2
@@ -96,7 +97,8 @@ enum ProviderDialGeometry {
     static func variant(for kind: String) -> String? {
         switch kind {
         case "codex", "dsh": return "terminal"
-        case "codexDesktop", "dshDesktop": return "desktop"
+        case "kimiCode": return "web"
+        case "codexDesktop", "dshDesktop", "kimiCodeDesktop": return "desktop"
         default: return nil
         }
     }

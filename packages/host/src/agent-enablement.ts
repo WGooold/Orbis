@@ -15,6 +15,7 @@ export const agentEnablementCatalog = {
   kimiCode: { label: "Kimi Code Web" },
   kimiCodeDesktop: { label: "Kimi Code 桌面版" },
   opencode: { label: "OpenCode" },
+  agy: { label: "Antigravity CLI" },
   hermes: { label: "Hermes Agent" },
   openclaw: { label: "OpenClaw" },
 } as const satisfies Record<AgentKind, { label: string }>;
@@ -64,13 +65,16 @@ export type AgentEnablementResult = {
  */
 export class AgentEnablementStore {
   readonly #directory: string;
+  readonly #expose: (kind: AgentKind) => boolean;
   readonly #legacyChoices: () => Promise<Readonly<Partial<Record<AgentKind, boolean>>>>;
   #data: File | undefined;
   #queue: Promise<unknown> = Promise.resolve();
 
-  constructor(directory: string, legacyChoices = async (): Promise<Readonly<Partial<Record<AgentKind, boolean>>>> => ({})) {
+  constructor(directory: string, legacyChoices = async (): Promise<Readonly<Partial<Record<AgentKind, boolean>>>> => ({}),
+    expose: (kind: AgentKind) => boolean = () => true) {
     this.#directory = directory;
     this.#legacyChoices = legacyChoices;
+    this.#expose = expose;
   }
 
   read(): Promise<AgentEnablementSnapshot> {
@@ -96,11 +100,12 @@ export class AgentEnablementStore {
     });
   }
 
-  async setBatch(input: unknown, inspectDisable: (kind: AgentKind, revision: number, scope: string) => AgentDisableReview | undefined): Promise<AgentEnablementResult> {
+  async setBatch(input: unknown, inspectDisable: (kind: AgentKind, revision: number, scope: string) => AgentDisableReview | undefined,
+    stillAuthorized: () => boolean = allowed): Promise<AgentEnablementResult> {
     const { kinds, enabled, expectedRevision, reviews } = batchSchema.parse(input);
     // Approval covers this exact selection, not a larger batch or a single write.
     const scope = `desktop:batch:${JSON.stringify([...kinds].sort())}`;
-    return this.#setChoices(kinds, enabled, expectedRevision, allowed, (disabling, revision) => {
+    return this.#setChoices(kinds, enabled, expectedRevision, stillAuthorized, (disabling, revision) => {
       const affected = disabling.flatMap(kind => inspectDisable(kind, revision, scope) ?? []);
       if (affected.some(review => reviews?.[review.kind as AgentKind] !== review.token)) throw new AgentBatchConfirmationRequired(affected);
     });
@@ -110,7 +115,7 @@ export class AgentEnablementStore {
     verify: (disabling: readonly AgentKind[], revision: number) => void): Promise<AgentEnablementResult> {
     return this.#serial(async () => {
       const data = await this.#load();
-      if (!stillAuthorized()) throw new Error("Agent settings request is no longer authorized");
+      if (!stillAuthorized() || kinds.some(kind => !this.#expose(kind))) throw new Error("Agent settings request is no longer authorized");
       const changed = kinds.filter(kind => !Object.hasOwn(data.choices, kind) || data.choices[kind] !== enabled);
       // Duplicate delivery after a successful commit is already satisfied. A stale
       // write with a different target must never undo a newer edit.
@@ -121,7 +126,7 @@ export class AgentEnablementStore {
       const next = fileSchema.parse({ ...data, revision: data.revision + 1, choices });
       // Review all of the affected sources at the same revision before replacing anything.
       await this.#commit(next, () => {
-        if (!stillAuthorized()) throw new Error("Agent settings request is no longer authorized");
+        if (!stillAuthorized() || kinds.some(kind => !this.#expose(kind))) throw new Error("Agent settings request is no longer authorized");
         if (!enabled) verify(changed.filter(kind => data.choices[kind] === true), data.revision);
       });
       return { status: "applied", snapshot: this.#snapshot(next) };
@@ -131,7 +136,7 @@ export class AgentEnablementStore {
   #snapshot(data: File): AgentEnablementSnapshot {
     return {
       revision: data.revision,
-      agents: agentEnablementOrder.map(kind => ({ kind, ...agentEnablementCatalog[kind], enabled: Object.hasOwn(data.choices, kind) && data.choices[kind] === true })),
+      agents: agentEnablementOrder.filter(this.#expose).map(kind => ({ kind, ...agentEnablementCatalog[kind], enabled: Object.hasOwn(data.choices, kind) && data.choices[kind] === true })),
     };
   }
 
@@ -245,8 +250,8 @@ export class AgentEnablementController {
     return result;
   }
 
-  async setBatch(input: unknown, inspectDisable: Parameters<AgentEnablementStore["setBatch"]>[1]): Promise<AgentEnablementResult> {
-    const result = await this.#store.setBatch(input, inspectDisable);
+  async setBatch(input: unknown, inspectDisable: Parameters<AgentEnablementStore["setBatch"]>[1], stillAuthorized?: () => boolean): Promise<AgentEnablementResult> {
+    const result = await this.#store.setBatch(input, inspectDisable, stillAuthorized);
     this.#apply(result.snapshot);
     return result;
   }
@@ -311,34 +316,47 @@ export class AgentLifecycleRegistry {
     const wanted = new Set(running ? snapshot.agents.filter(row => row.enabled).map(row => row.kind) : []);
     // First revoke every removed lease. No source can publish a stale result while its
     // cleanup is queued behind a start that has not returned yet.
-    for (const [kind, slot] of this.#slots) {
-      if (wanted.has(kind) || slot.current === undefined) continue;
-      const controller = slot.current;
-      delete slot.current;
-      delete slot.running;
-      controller.abort();
-      slot.queue = slot.queue.then(() => this.#stop(kind, slot));
-    }
-    for (const [kind, slot] of this.#slots) {
-      if (!wanted.has(kind) || slot.current !== undefined) continue;
-      const controller = slot.current = new AbortController();
-      const lease = { signal: controller.signal, isCurrent: () => slot.current === controller };
-      slot.queue = slot.queue.then(async () => {
-        if (!lease.isCurrent()) return;
-        slot.running = controller;
-        try { await slot.registration.start(lease); }
-        catch (error) {
-          // If revoked during start, the queued stop already owns cleanup.
-          if (!lease.isCurrent()) return;
-          delete slot.current;
-          delete slot.running;
-          controller.abort();
-          this.onError(kind, "start", error);
-          await this.#stop(kind, slot);
-        }
-      });
-    }
+    for (const [kind, slot] of this.#slots) if (!wanted.has(kind)) this.#revoke(kind, slot);
+    for (const [kind, slot] of this.#slots) if (wanted.has(kind)) this.#activate(kind, slot);
     return Promise.all(Array.from(this.#slots.values(), slot => slot.queue)).then(() => undefined);
+  }
+
+  /** Replace one source's local connection without flipping or writing its enabled choice. */
+  restart(kind: AgentKind): Promise<void> {
+    const slot = this.#slots.get(kind);
+    if (!slot?.current) return Promise.resolve();
+    this.#revoke(kind, slot);
+    this.#activate(kind, slot);
+    return slot.queue;
+  }
+
+  #revoke(kind: AgentKind, slot: LifecycleSlot): void {
+    const controller = slot.current;
+    if (!controller) return;
+    delete slot.current;
+    delete slot.running;
+    controller.abort();
+    slot.queue = slot.queue.then(() => this.#stop(kind, slot));
+  }
+
+  #activate(kind: AgentKind, slot: LifecycleSlot): void {
+    if (slot.current) return;
+    const controller = slot.current = new AbortController();
+    const lease = { signal: controller.signal, isCurrent: () => slot.current === controller };
+    slot.queue = slot.queue.then(async () => {
+      if (!lease.isCurrent()) return;
+      slot.running = controller;
+      try { await slot.registration.start(lease); }
+      catch (error) {
+        // If revoked during start, the queued stop already owns cleanup.
+        if (!lease.isCurrent()) return;
+        delete slot.current;
+        delete slot.running;
+        controller.abort();
+        this.onError(kind, "start", error);
+        await this.#stop(kind, slot);
+      }
+    });
   }
 
   async #stop(kind: AgentKind, slot: LifecycleSlot): Promise<void> {

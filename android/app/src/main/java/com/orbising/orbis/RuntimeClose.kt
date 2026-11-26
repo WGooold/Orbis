@@ -57,7 +57,7 @@ internal fun List<RuntimeSlashCommand>.visibleSlashCommands(): List<RuntimeSlash
 internal fun RuntimeSummary.remoteCloseCommand(commands: List<RuntimeSlashCommand>, negotiated: Boolean): RuntimeSlashCommand? {
     val name = when {
         agentKind in sharedViewKinds -> if (negotiated) RUNTIME_VIEW_CLOSE_CAPABILITY else return null
-        negotiated && agentKind == "claude" -> RUNTIME_CLOSE_CAPABILITY
+        negotiated && (agentKind == "claude" || agentKind == AGY_KIND) -> RUNTIME_CLOSE_CAPABILITY
         else -> "quit"
     }
     return commands.firstOrNull { it.name == name && it.argument?.required != true && (!negotiated || it.source == "builtin") &&

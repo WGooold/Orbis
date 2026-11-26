@@ -96,6 +96,17 @@ class BottomSheetInstrumentedTest {
         } finally { frame.recycle() }
     }
 
+    /** RELAY-GROWTH-01: disclose the device-level setting and keep it disabled without a paired Relay. */
+    @Test fun telemetryPreferenceIsDisclosedAndDisabledWithoutRelayPairing() {
+        compose.setContent { OrbisTheme {
+            DesignSettingsScreen(RemoteState(), {}, true, {})
+        } }
+        compose.onNodeWithText(L10n.tr("设备使用统计")).assertIsDisplayed()
+        compose.onNodeWithTag("settings-device-telemetry").assertIsDisplayed().assertIsNotEnabled().assertIsOff()
+        compose.onNodeWithText(L10n.tr("允许当前 Relay 统计本设备消息流量与连接时长。关闭后会删除本 Relay 上本设备的详细记录；网站访问、下载总量及 Relay 运行指标仍会统计。"))
+            .assertIsDisplayed()
+    }
+
     @Test fun languageLastChoiceFitsThePhysicalWindow() {
         compose.setContent { OrbisTheme {
             DesignSettingsScreen(RemoteState(), {}, true, {})

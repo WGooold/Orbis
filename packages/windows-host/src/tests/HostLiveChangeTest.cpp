@@ -9,6 +9,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <atomic>
 #include <memory>
 
 // HOST-LIVE-01 / HOST-GUIDE-01: a running Host applies settings, Agent installs and DSH restarts by
@@ -44,7 +45,15 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     }
     return out({ id, result: { status: "applied", snapshot } });
   }
-  if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token } });
+  if (method === "agy.setup.verify") return out({ id, result: { verification: !params.key || /^fixture-valid-/.test(params.key) ? "verified" : "rejected" } });
+  if (method === "agy.setup.apply") return out({ id, result: { source: params.key ? "saved" : "none", installed: true, requiredVersion: "1.5.17" } });
+  if (method === "agy.setup.retry") return out({ id, result: { source: "saved", verification: "rejected" } });
+  if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token, access: params.access ?? "auto" } });
+  if (method === "openclaw.config.read") return out({ id, result: { ticket: "fixture", fields: [{ key: "workspace", editable: true, value: "/fixture" }] } });
+  if (method === "openclaw.config.apply") {
+    fs.writeFileSync(path.join(__dirname, method + ".json"), JSON.stringify(params));
+    return out({ id, result: { state: "saved", restarting: true } });
+  }
   if (method === "hermes.remote.save") return out({ id, result: { source: "file", host: params.host, port: params.port, profile: params.profile } });
   if (method === "selectAgentEntry") return out({ id, result: { entry: params.entry, version: "2.1.322" } });
   if (method === "detect") return out({ id, result: [] });
@@ -88,6 +97,63 @@ private slots:
         m_host->m_settings.setValue("relayUrl", "ws://127.0.0.1:1");
     }
     void cleanup() { m_host.reset(); m_root.reset(); }
+
+    // AGY-15: the secure-vault boundary must commit the verified candidate before the private
+    // bridge receives it. A failed replacement leaves the old connection and key alone.
+    void managesLocalAgyCredentialWithoutRestartingHost() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        auto saved = std::make_shared<QString>();
+        auto failWrite = std::make_shared<std::atomic_bool>(false);
+        host.m_agyVaultPath = root() + "/state/antigravity-api-key.dat";
+        host.m_agyVaultForTest = [saved, failWrite](HostController::AgyVaultAction action, const QString &, const QString &key) -> std::optional<QString> {
+            if (action == HostController::AgyVaultAction::Save) {
+                if (failWrite->load()) return std::nullopt;
+                *saved = key;
+            } else if (action == HostController::AgyVaultAction::Remove) saved->clear();
+            return *saved;
+        };
+        const auto verification = [&host] { return host.agySetup().value("verification").toString(); };
+        const auto source = [&host] { return host.agySetup().value("source").toString(); };
+        const QString first = "fixture-valid-first", next = "fixture-valid-rotation";
+        host.finishAgySetup({{"source", "none"}, {"installed", true}});
+        host.saveAgyCredential("fixture-rejected-key");
+        QTRY_COMPARE(verification(), QString("candidateRejected"));
+        QCOMPARE(methods(root()), QStringList({"agy.setup.verify"}));
+        QCOMPARE(source(), QString("none"));
+        host.saveAgyCredential(first);
+        QVERIFY(!host.busy());
+        for (const auto &request : std::as_const(host.m_requestParams)) QVERIFY(!request.contains("key"));
+        QTRY_COMPARE(source(), QString("saved"));
+        QCOMPARE(verification(), QString("verified"));
+        QCOMPARE(*saved, first);
+        QVERIFY(!QJsonDocument(QJsonObject::fromVariantMap(host.agySetup())).toJson().contains(first.toLatin1()));
+
+        failWrite->store(true);
+        host.saveAgyCredential(next);
+        QTRY_COMPARE(verification(), QString("vaultError"));
+        QCOMPARE(*saved, first);
+        QCOMPARE(methods(root()).count("agy.setup.apply"), 1);
+        failWrite->store(false);
+        host.retryAgySetup();
+        QTRY_COMPARE(verification(), QString("rejected"));
+        host.saveAgyCredential(next);
+        QTRY_COMPARE(verification(), QString("verified"));
+        QCOMPARE(*saved, next);
+
+        // A fresh bridge's initialization brings back only status; the same vault
+        // reload path then restores the saved key without the user entering it again.
+        host.finishAgySetup({{"source", "none"}});
+        host.loadAgyCredential();
+        QTRY_COMPARE(source(), QString("saved"));
+        host.removeAgyCredential();
+        QTRY_COMPARE(source(), QString("none"));
+        QCOMPARE(verification(), QString("removed"));
+        QVERIFY(saved->isEmpty());
+        QCOMPARE(methods(root()).count("agy.setup.apply"), 4);
+        QVERIFY(!methods(root()).contains("stop"));
+        QCOMPARE(host.state(), QString("connected"));
+    }
 
     // HOST-CLI-DISCOVERY-01: a rejected path keeps the previous choice; a
     // successful path/reset survives the pause → change → resume boundary.
@@ -213,10 +279,11 @@ private slots:
         connectHost(host, root());
         host.m_openClaw = {{"source", "file"}};
         const auto url = QString("ws://127.0.0.1:18789");
-        host.saveOpenClaw(url, "fixture-token");
+        host.saveOpenClaw(url, "fixture-token", "sessions");
         settle(host);
         QCOMPARE(methods(root()), QStringList({"openclaw.save", "stop", "start"}));
         QCOMPARE(host.openClaw().value("url").toString(), url);
+        QCOMPARE(host.openClaw().value("access").toString(), QString("sessions"));
         QVERIFY(!host.openClaw().contains("token"));
         QFile marker(root() + "/packages/host/dist/fail-openclaw.save");
         QVERIFY(marker.open(QIODevice::WriteOnly)); marker.close();
@@ -239,6 +306,32 @@ private slots:
         host.saveOpenClaw("", "");
         QVERIFY(!host.busy());
         QVERIFY(methods(root()).isEmpty());
+    }
+
+    // OPENCLAW-HOST-SETTINGS-01: native writes require reported Gateway authority and a loaded form.
+    void openClawNativeSettingsRequireGrantAndRead() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        const QVariantMap changes{{"workspace", "/new-workspace"}, {"resetHour", QVariant::fromValue(nullptr)}};
+        host.receiveLine({{"event", "status"}, {"openClawConnection", QJsonObject{{"phase", "connected"}, {"granted", "sessions"}, {"canEdit", false}}}});
+        host.readOpenClawNative(); host.applyOpenClawNative(changes);
+        QVERIFY(methods(root()).isEmpty());
+        host.receiveLine({{"event", "status"}, {"openClawConnection", QJsonObject{{"phase", "connected"}, {"granted", "admin"}, {"canEdit", true}}}});
+        host.applyOpenClawNative(changes);
+        QVERIFY(methods(root()).isEmpty());
+        host.readOpenClawNative();
+        QTRY_COMPARE(host.openClawNative().value("ticket").toString(), QString("fixture"));
+        host.applyOpenClawNative(changes);
+        settle(host);
+        QCOMPARE(methods(root()), QStringList({"openclaw.config.read", "openclaw.config.apply"}));
+        QVERIFY(host.openClawNative().isEmpty());
+        QVERIFY(host.openClawNativeFeedback().contains("等待 Gateway 重启"));
+        QFile written(root() + "/packages/host/dist/openclaw.config.apply.json");
+        QVERIFY(written.open(QIODevice::ReadOnly));
+        const auto args = QJsonDocument::fromJson(written.readAll()).object();
+        QCOMPARE(args.value("ticket").toString(), QString("fixture"));
+        QCOMPARE(args.value("changes").toObject().value("workspace").toString(), QString("/new-workspace"));
+        QVERIFY(args.value("changes").toObject().value("resetHour").isNull());
     }
 
     // HERMES-REMOTE-01: apply an SSH target by reconnecting the Host; never retain auth material in Qt.

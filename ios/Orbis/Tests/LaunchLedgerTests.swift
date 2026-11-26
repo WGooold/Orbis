@@ -739,6 +739,40 @@ struct LaunchLedgerTests {
         }
     }
 
+    // AGY-13: negotiated AGY launches headless; runtime.online alone does not release the first sentence.
+    @Test func agyUsesHeadlessJournalAndSendsOnlyAfterMatchingReady() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-agy-launch-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = Fixture(root: root)
+        await fixture.transport.ready()
+        #expect(!fixture.host.createSession(agentKind: "agy", cwd: "/repo/app", firstMessage: "hello"))
+        #expect(fixture.transport.activations.isEmpty)
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1, "runtimes": [],
+            "hostFeatures": ["device.features", "agent.agy"], "deviceFeatures": ["agent.dshDesktop", "agent.agy"],
+            "dshDesktop": NSNull(), "agents": ["agy"], "launchableAgents": ["agy"]])
+        fixture.host.loadSessionConfiguration(agent: "agy", cwd: "/repo/app")
+        let read = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.configuration.read" })
+        await fixture.transport.emit(["type": "session.configuration.result", "requestId": read["requestId"]!, "agentKind": "agy", "cwd": "/repo/app",
+            "binding": "agy-acp-v1:isolated", "revision": 0, "values": [:],
+            "catalog": ["binding": "agy-acp-v1:isolated", "defaults": [:], "models": [], "permissions": []]])
+        #expect(fixture.host.createSession(agentKind: "agy", cwd: "/repo/app", firstMessage: "hello"))
+        await fixture.store.waitForPendingEvents()
+        let launch = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.launch" })
+        let id = try #require(launch["launchId"] as? String)
+        #expect(launch["spawnMode"] as? String == "headless")
+        #expect(launch["binding"] as? String == "agy-acp-v1:isolated")
+        #expect(fixture.transport.activations.isEmpty)
+        await fixture.transport.emit(["type": "runtime.online", "runtime": ["runtimeId": "agy:session", "sessionId": "agy:session",
+            "name": "Antigravity CLI", "cwd": "/repo/app", "status": "idle"]])
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "configuring", "sessionId": "agy:session"])
+        #expect(fixture.transport.userMessages.isEmpty)
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": id, "launchId": id, "phase": "ready",
+            "agentKind": "agy", "sessionId": "agy:session", "spawnMode": "headless"])
+        #expect(fixture.transport.userMessages.count == 1)
+        #expect(fixture.transport.userMessages.first?["runtimeId"] as? String == "agy:session")
+        #expect(fixture.host.selectedRuntimeId == "agy:session")
+    }
+
     @Test func configuredLaunchReopensWithTheOriginalIdentityAndDoesNotResendTheFirstSentence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-configured-recovery-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

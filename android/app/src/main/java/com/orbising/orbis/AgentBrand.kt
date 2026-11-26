@@ -33,6 +33,7 @@ internal enum class AgentBrand(val title: String, val icon: Int, val darkIcon: I
     Kimi("Kimi Code", R.drawable.ic_agent_kimi),
     OpenClaw("OpenClaw", R.drawable.ic_agent_openclaw),
     Hermes("Hermes Agent", R.drawable.ic_agent_hermes),
+    Agy("Antigravity CLI", R.drawable.ic_agent_agy),
     OpenCode("OpenCode", R.drawable.ic_agent_opencode, R.drawable.ic_agent_opencode_dark),
 }
 
@@ -51,6 +52,7 @@ internal fun knownAgentBrand(kind: String?): AgentBrand? = when (kind) {
     KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND -> AgentBrand.Kimi
     "openclaw" -> AgentBrand.OpenClaw
     "hermes" -> AgentBrand.Hermes
+    AGY_KIND -> AgentBrand.Agy
     "opencode" -> AgentBrand.OpenCode
     else -> null
 }
@@ -68,6 +70,7 @@ internal fun AgentBrand.accent(): Color = when (this) {
     AgentBrand.Hermes -> if (LocalOrbisDarkTheme.current) Color(0xFFF1D58A) else Color(0xFF765519)
     AgentBrand.Claude -> if (LocalOrbisDarkTheme.current) Color(0xFFF0B48C) else Color(0xFF9A4521)
     AgentBrand.OpenClaw -> if (LocalOrbisDarkTheme.current) Color(0xFFFF8A75) else Color(0xFFA93531)
+    AgentBrand.Agy -> if (LocalOrbisDarkTheme.current) Color(0xFF9BC3FF) else Color(0xFF3569BC)
     AgentBrand.OpenCode -> if (LocalOrbisDarkTheme.current) Color(0xFFA99BFF) else Color(0xFF5E4CAD)
 }
 

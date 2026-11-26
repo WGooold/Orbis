@@ -81,12 +81,34 @@ ApplicationWindow {
         if (reason === "pairing_required") return "请在 OpenClaw 的设备列表批准 Orbis Host，再重新连接 Host。"
         return !reason || reason === "starting" || reason === "backend_not_ready" || reason === "backend_not_attached" ? "" : reason
     }
+    function openClawProblem() {
+        const phase = host.openClawConnection.phase || ""
+        if (!host.desiredRunning) return ["", ""]
+        switch (phase) {
+        case "pairing_required": return ["待批准", "在该 Gateway 的设备列表中批准 Orbis Host，然后重新连接。"]
+        case "pairing_rejected": return ["配对未通过", "重新连接以发起申请，再在 Gateway 端批准。"]
+        case "token_missing": return ["缺少令牌", "请填该 Gateway 的认证令牌，不是模型 API Key。"]
+        case "token_rejected": return ["令牌未通过", "请核对地址和该 Gateway 当前的令牌，再重新连接。"]
+        case "password_missing": return ["缺少密码", "请选择密码认证，并填该 Gateway 的接入密码。"]
+        case "password_rejected": return ["密码未通过", "请核对地址和该 Gateway 当前的接入密码，再重新连接。"]
+        case "tls_failed": return ["证书未通过", "请检查域名和电脑信任的证书。Host 不会跳过 TLS 校验。"]
+        case "access_denied": return ["权限未授予", "请在 Gateway 核对 Orbis Host 的设备授权，或改用已获准的接入权限。"]
+        case "incompatible": return ["版本不兼容", "请核对 Host 和 Gateway 版本是否支持同一协议。"]
+        case "methods_unavailable": return ["会话接口不可用", "Gateway 未提供 Host 所需的会话接口。请核对 Gateway 版本。"]
+        case "rate_limited": return ["连接受限", "Gateway 暂时限制了认证请求，请稍后重连。"]
+        case "auth_failed": return ["连接未通过", "请核对 Gateway 地址、运行状态、认证方式和日志。"]
+        case "unreachable": return ["无法连接", "请检查 Gateway 是否运行；远程接入还需确认电脑能访问该 WSS 地址。"]
+        case "connected": return window.openClawReady ? ["", ""] : ["会话未就绪", "认证已通过，Gateway 尚未确认会话访问。请核对设备授权。"]
+        default: return ["", ""]
+        }
+    }
     function openClawConnectionState(connectedLabel) {
+        const problem = openClawProblem()
         return host.openClaw.invalid ? "配置无效"
             : !host.openClaw.url ? "待配置" : host.resumePending ? "正在重新连接"
             : window.openClawReady ? connectedLabel : !host.desiredRunning ? "Host 未连接"
             : window.backendFor("openclaw")?.reason === "pairing_required" ? "待批准"
-            : window.startingAgent("openclaw") ? "正在启动" : window.startActionVisible("openclaw") ? "可启动" : "Gateway 未就绪"
+            : window.startingAgent("openclaw") ? "正在启动" : window.startActionVisible("openclaw") ? "可启动" : (problem[0] || "Gateway 未就绪")
     }
     readonly property int setupStep: ["activate", "connect", "pair", "enable", "install"].indexOf(nextStep)
     readonly property bool setupComplete: host.activated && host.devices.length > 0 && overviewAgents.some(agent => agent.installed && !agent.broken)
@@ -107,7 +129,7 @@ ApplicationWindow {
     readonly property bool kimiDesktopStartAvailable: host.kimiDesktopSupported && window.agentEnabled("kimiCodeDesktop") && host.desiredRunning
         && window.backendFor("kimiCodeDesktop")?.launchable === true && window.backendFor("kimiCodeDesktop")?.ready !== true
     function isKimiKind(kind) { return kind === "kimiCode" || kind === "kimiCodeDesktop" }
-    function localServiceAgent(kind) { return kind === "opencode" || kind === "openclaw" || kind === "hermes" || window.isKimiKind(kind) }
+    function localServiceAgent(kind) { return kind === "agy" || kind === "opencode" || kind === "openclaw" || kind === "hermes" || window.isKimiKind(kind) }
     function startActionVisible(kind) {
         if (kind === "kimiCode") return window.kimiStartAvailable
         if (kind === "kimiCodeDesktop") return window.kimiDesktopStartAvailable
@@ -115,6 +137,7 @@ ApplicationWindow {
         if (kind === "hermes" && (host.hermesRemote.host || host.hermesRemote.invalid)) return false
         if (kind === "openclaw" && (host.openClaw.invalid || !(host.openClaw.url || "").startsWith("ws://127.0.0.1:"))) return false
         const backend = window.backendFor(kind)
+        if (kind === "agy") return backend !== undefined && backend.ready !== true
         return backend?.launchable === true && backend.ready !== true
     }
     function startingAgent(kind) {
@@ -265,7 +288,6 @@ ApplicationWindow {
     }
     function showAgentBatch() { batchInstallDialog.open() }
     function closeAgentDialogs() { installDialog.close(); batchInstallDialog.close() }
-    property bool providersOpen: false
     property string selectedAgent: "codex"
     property var selectedAgents: []
     property string agentSelectionAnchor: ""
@@ -379,6 +401,20 @@ ApplicationWindow {
             error: "", note: "", installerData: null
         }
     }
+    readonly property string detailVersionRequirement: {
+        const requirement = host.agentVersionRequirements[window.detailKind]
+        const version = window.formatVersion(requirement?.version)
+        if (!version) return "最低版本未确认"
+        switch (requirement.kind) {
+        case "minimum": return "最低支持 " + version
+        case "exact": return "仅支持 " + version
+        case "embeddedService": return "仅支持内嵌服务 " + version
+        case "localLaunch": return "本机启动需要 " + version + "；已有网关最低版本未确认"
+        case "baseline": return "兼容基线 " + version
+        case "reference": return "最低版本未确认 · 接入参考 " + version
+        default: return "最低版本未确认"
+        }
+    }
     readonly property var detailUpdateAction: {
         const meta = window.detailVersionMeta
         const busy = !window.canEditAgent || host.agentInstalling || meta.checking
@@ -427,8 +463,12 @@ ApplicationWindow {
         if (statusDetail && meta.error && statusDetail !== meta.error) return statusDetail + "\n" + meta.error
         return statusDetail || meta.error || ""
     }
-    readonly property string inlineListOwner: page === 2 && detailPowered && !providersOpen ? detailProviderGroup : ""
-    onInlineListOwnerChanged: if (inlineListOwner) host.refreshAgentProviders(inlineListOwner)
+    readonly property string inlineListOwner: page === 2 && detailPowered && host.bridgeReady ? detailProviderGroup : ""
+    // Deferred: loading notifies host state that this owner is itself bound to.
+    onInlineListOwnerChanged: { providerSearch.text = ""; Qt.callLater(loadInlineProviders) }
+    function loadInlineProviders() { if (inlineListOwner) host.loadProviders(inlineListOwner) }
+    readonly property bool canEditProviders: canEditAgent && detailPowered && !detailChange && detailProviderGroup.length > 0 && host.providerKind === detailProviderGroup
+    readonly property bool canReorderProviders: canEditProviders && host.providers.length > 1 && providerSearch.text.trim().length === 0
     function formatVersion(version) {
         const text = String(version || "").trim()
         if (!text) return ""
@@ -447,7 +487,11 @@ ApplicationWindow {
     function providerGroup(kind) {
         return kind === "codexDesktop" ? "codex"
             : kind === "dshDesktop" ? "dsh"
-            : ["codex", "claude", "pi", "dsh"].includes(kind) ? kind : ""
+            : kind === "kimiCodeDesktop" ? "kimiCode"
+            // A remote Agent reads its own computer's configuration, not this one's.
+            : kind === "hermes" && !!host.hermesRemote.host ? ""
+            : kind === "openclaw" && !!host.openClaw.url && !/^wss?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/.test(host.openClaw.url) ? ""
+            : ["codex", "claude", "pi", "dsh"].concat(ProviderFlow.nativeKinds).includes(kind) ? kind : ""
     }
     function twinKind(kind) {
         return ({codex: "codexDesktop", codexDesktop: "codex", dsh: "dshDesktop", dshDesktop: "dsh"})[kind] || ""
@@ -515,17 +559,19 @@ ApplicationWindow {
             selectedAgents = kind === detailKind && !selectedAgents.length ? [kind] : values.includes(kind) ? values.filter(id => id !== kind) : values.concat(kind)
             agentSelectionAnchor = kind
         } else { selectedAgents = []; agentSelectionAnchor = kind }
-        selectedAgent = kind; providersOpen = false; previewProviderId = ""
+        selectedAgent = kind; previewProviderId = ""
     }
     function goAgent(kind) {
         selectPage(2)
         if (kind) chooseAgent(kind, 0)
-        else { providersOpen = false; selectedAgents = [] }
+        else selectedAgents = []
         if (scroll.contentItem) scroll.contentItem.contentY = 0
     }
     function agentStatus(row) {
         const change = choiceFor(row.kind)
         if (change) return {text: change.queued ? "已排队" : "待确认", color: Theme.accent, sync: !change.queued}
+        if (row.kind === "agy" && (host.agySetup.source === "none" || host.agySetup.source === "vaultError"))
+            return {text: host.agySetup.busy ? "准备中" : "待配置", color: Theme.warning, idle: !host.agySetup.busy}
         if (!row.enabled) return {text: "未启用", color: Theme.inkFaint, idle: true}
         const agent = window.overviewAgents.find(candidate => candidate.kind === row.kind)
         const backend = window.backendFor(row.kind)
@@ -561,7 +607,8 @@ ApplicationWindow {
     function askProvider(row) {
         if (!detailPowered || !detailProviderGroup || host.providerKind !== detailProviderGroup || host.busy || detailChange || !row) return
         if (row.enabled) {
-            if (row.mode === "additive") { window.removeProviderId = row.id; removeProviderDialog.open() }
+            if (ProviderFlow.isNative(detailProviderGroup)) { if (row.canSetDefault) host.setDefaultProvider(row.id) }
+            else if (row.mode === "additive") { window.removeProviderId = row.id; removeProviderDialog.open() }
         } else if (row.mode === "additive" || window.groupSessionCount(detailProviderGroup) === 0) host.switchProvider(row.id, true)
         else { agentProviderConfirm.profile = row; agentProviderConfirm.group = detailProviderGroup; agentProviderConfirm.open() }
     }
@@ -569,9 +616,14 @@ ApplicationWindow {
     property bool loadingProviderDraft: false
     property string pendingPresetId: ""
     property string draggedProviderId: ""
-    readonly property bool officialProvider: ["codex", "claude"].indexOf(providerDraft.kind) >= 0 && providerDraft.official === true
+    readonly property bool officialProvider: ["codex", "claude", "kimiCode"].indexOf(providerDraft.kind) >= 0 && providerDraft.official === true
     readonly property var visibleProviders: host.providers.filter(function(p) { return ProviderFlow.matchesProvider(p, providerSearch.text) })
     function changePreset(id) { if (id === (providerDraft.presetId || "custom")) { presetExpanded.checked = false; return } if (providerFormDirty) { pendingPresetId = id; changePresetDialog.open() } else host.presetProvider(id) }
+    function isDefaultProvider(id) { return (host.providerKind === "pi" && host.piDefaultProvider === id) || host.providers.some(row => row.id === id && row.globalDefault === true) }
+    function providerSubtitle(row) {
+        const details = [row.notes, row.websiteUrl].filter(text => !!text)
+        return details.length ? details.join(" · ") : row.category === "official" || row.official ? "官方配置" : row.id
+    }
     function moveProvider(source, target) { var ids = ProviderFlow.reorderedIds(host.providers, source, target); if (ids !== null) host.reorderProviders(ids) }
     function acceptDiscoveredModels() {
         var selected = fetchedModels.filter(function(model) { return model.selected })
@@ -630,7 +682,7 @@ ApplicationWindow {
         providerKey.text = draft.fields.providerKey
         providerUrl.text = draft.fields.baseUrl; providerApiKey.text = draft.fields.apiKey
         providerModel.text = draft.fields.model || (window.providerDraft.kind === "codex" ? "gpt-5.6-sol" : "")
-        providerApi.model = window.providerDraft.kind === "claude" ? ["anthropic-messages"] : window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ["", "openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "bedrock-converse-stream"]
+        providerApi.model = window.providerDraft.kind === "claude" ? ["anthropic-messages"] : window.providerDraft.kind === "codex" ? ["openai-responses", "openai-completions", "anthropic-messages"] : ProviderFlow.apiFormats(window.providerDraft.kind)
         if (providerApi.find(draft.fields.api) < 0) providerApi.model = providerApi.model.concat([draft.fields.api])
         providerApi.currentIndex = Math.max(0, providerApi.find(draft.fields.api))
         var claude = draft.fields.claude || {}
@@ -642,7 +694,7 @@ ApplicationWindow {
         // Keep an independent JS draft, just like rows created by addProviderModel().
         window.providerModels = window.providerDraft.kind === "codex" ? [] : JSON.parse(JSON.stringify(draft.fields.models || []))
         window.explicitProviderModels = draft.fields.models !== undefined
-        if (draft.create && window.providerDraft.kind === "pi") window.providerModels = window.providerModels.map(function(model) { return !model.id ? Object.assign(ProviderFlow.newModel("pi"), model) : model })
+        if (draft.create && ProviderFlow.ownsKey(window.providerDraft.kind)) window.providerModels = window.providerModels.map(function(model) { return !model.id ? Object.assign(ProviderFlow.newModel(window.providerDraft.kind), model) : model })
         codexReasoning.currentIndex = Math.max(0, codexReasoning.find(draft.fields.reasoningEffort || "high"))
         providerJson.text = JSON.stringify(draft.config, null, 2)
         var advanced = draft.config || {}
@@ -703,15 +755,15 @@ ApplicationWindow {
     function buildProviderDraft(basic) {
         var configText = basic ? providerJson.text : window.advancedConfigText()
         if (configText === null) return null
-        var draft = {kind: window.providerDraft.kind, id: window.providerDraft.kind === "pi" ? providerKey.text.trim() : window.providerDraft.id, name: providerName.text, config: configText, create: !!window.providerDraft.create, addToLive: providerAddToLive.checked,
+        var draft = {kind: window.providerDraft.kind, id: ProviderFlow.ownsKey(window.providerDraft.kind) ? providerKey.text.trim() : window.providerDraft.id, name: providerName.text, config: configText, create: !!window.providerDraft.create, addToLive: providerAddToLive.checked,
             metadata: {category: window.officialProvider ? "official" : providerCategory.text, notes: providerNotes.text, websiteUrl: providerWebsite.text, icon: providerIcon.text, sortIndex: Number(providerOrder.text || "0"), commonConfigEnabled: providerCommon.checked}}
         if (draft.kind === "codex") draft.metadata.authBinding = providerAccount.currentValue ? {source:"managed_account",authProvider:"codex_oauth",accountId:providerAccount.currentValue === "$default" ? "" : providerAccount.currentValue} : null
         if (basic) {
             draft.fields = {providerKey: providerKey.text.trim(), baseUrl: providerUrl.text.trim(), apiKey: providerApiKey.text, model: providerModel.text.trim(), api: providerApi.currentText}
             if (draft.kind === "claude") draft.fields.claude = {apiKeyField: claudeCredential.currentText, haiku: claudeHaiku.text.trim(), sonnet: claudeSonnet.text.trim(), opus: claudeOpus.text.trim()}
             if (draft.kind === "codex") draft.fields.reasoningEffort = codexReasoning.currentText
-            if (draft.kind === "pi" || (draft.kind === "dsh" && window.explicitProviderModels)) draft.fields.models = window.providerModels
-            if (draft.kind === "pi" || draft.kind === "codex") {
+            if (ProviderFlow.ownsKey(draft.kind) || (draft.kind === "dsh" && window.explicitProviderModels)) draft.fields.models = window.providerModels
+            if (ProviderFlow.ownsKey(draft.kind) || draft.kind === "codex") {
                 try {
                     draft.fields.headers = JSON.parse(piHeaders.text || "{}")
                     if (draft.kind === "pi") draft.fields.compat = JSON.parse(piCompat.text || "{}")
@@ -739,11 +791,6 @@ ApplicationWindow {
     }
     onVisibleChanged: if (visible) host.refreshRegistrationPolicy()
     function selectPage(index) { if (page !== index) { page = index; if (window.motionEnabled) { pageContent.entryProgress = 0; pageArrival.restart() } } if (index === 3) settingsPane.load() }
-    function openProviders(kind) {
-        if (detailProviderGroup !== kind || !detailPowered) { selectPage(2); chooseAgent(window.agentEnabled(kind) ? kind : kind === "codex" ? "codexDesktop" : kind, 0) }
-        if (!detailPowered || detailProviderGroup !== kind) return
-        selectPage(2); providersOpen = true; providerSearch.text = ""; host.loadProviders(kind)
-    }
     function closeProviderEditor() { providerDialog.close() }
     function requestCloseProviderEditor() { if (providerFormDirty) discardProviderDialog.open(); else closeProviderEditor() }
     function setProviderEditorMode(nativeMode) {
@@ -1191,6 +1238,65 @@ ApplicationWindow {
             cornerRadius: 20; inset: softTool.down || softTool.checked
             focused: softTool.activeFocus; disabled: !softTool.enabled; hovered: softTool.hovered
         }
+    }
+    // Quiet in-list controls: one flat target that only gains a fill under the pointer.
+    component RowToolButton: ToolButton {
+        id: rowTool
+        property string symbol: "more_horiz"
+        property string label: ""
+        implicitWidth: 36; implicitHeight: 36
+        hoverEnabled: true
+        Accessible.name: label
+        ToolTip.visible: hovered && label.length > 0; ToolTip.text: label; ToolTip.delay: 500
+        contentItem: Item {
+            SymbolIcon {
+                anchors.centerIn: parent; width: Theme.iconSm; height: Theme.iconSm
+                name: rowTool.symbol; color: !rowTool.enabled ? Theme.inkFaint : rowTool.hovered ? Theme.ink : Theme.inkMuted
+                scale: rowTool.down ? 0.94 : 1
+                Behavior on scale { enabled: window.motionEnabled; NumberAnimation { duration: rowTool.down ? Theme.durPress : Theme.durRelease; easing.type: Easing.OutCubic } }
+            }
+        }
+        background: Rectangle { radius: Theme.radiusXs; color: rowTool.hovered && rowTool.enabled ? Theme.surfaceTop : "transparent"; border.width: rowTool.visualFocus ? 1 : 0; border.color: Theme.accent }
+    }
+    component RowTextButton: AbstractButton {
+        id: rowText
+        property string symbol: ""
+        implicitHeight: 40; implicitWidth: rowTextContent.implicitWidth + 20
+        hoverEnabled: true
+        Accessible.name: text
+        contentItem: Item {
+            RowLayout {
+                id: rowTextContent
+                anchors.left: parent.left; anchors.leftMargin: 10; anchors.verticalCenter: parent.verticalCenter; spacing: 8
+                SymbolIcon { visible: rowText.symbol.length > 0; name: rowText.symbol; Layout.preferredWidth: Theme.iconXs; Layout.preferredHeight: Theme.iconXs; color: rowTextLabel.color }
+                Label { id: rowTextLabel; text: rowText.text; color: !rowText.enabled ? Theme.inkFaint : rowText.hovered ? Theme.ink : Theme.inkMuted; font.pixelSize: Theme.caption; font.weight: Font.DemiBold; Accessible.ignored: true }
+            }
+        }
+        background: Rectangle { radius: Theme.radiusSm; color: rowText.hovered && rowText.enabled ? Theme.surfaceLift : "transparent"; border.width: rowText.visualFocus ? 1 : 0; border.color: Theme.accent }
+    }
+    component SoftMenuItem: MenuItem {
+        id: softMenuItem
+        property bool danger: false
+        implicitHeight: visible ? 40 : 0
+        leftPadding: 14; rightPadding: 14
+        contentItem: Label { text: softMenuItem.text; verticalAlignment: Text.AlignVCenter; font.pixelSize: Theme.label; color: !softMenuItem.enabled ? Theme.inkFaint : softMenuItem.danger ? Theme.danger : Theme.ink }
+        background: Rectangle { radius: Theme.radiusXs; color: softMenuItem.highlighted && softMenuItem.enabled ? Theme.surfaceTop : "transparent" }
+    }
+    component QuotaMeter: RowLayout {
+        id: meter
+        property string label: ""
+        property var remaining
+        visible: remaining !== undefined && remaining !== null
+        spacing: 6
+        Label { text: meter.label; color: Theme.inkMuted; font.pixelSize: Theme.caption }
+        Rectangle {
+            Layout.fillWidth: true; Layout.minimumWidth: 28; Layout.preferredWidth: 60; Layout.preferredHeight: 5; radius: 2.5; color: Theme.hairline
+            Rectangle {
+                width: parent.width * Math.max(0, Math.min(1, Number(meter.remaining || 0) / 100)); height: parent.height; radius: 2.5
+                color: Number(meter.remaining) <= 20 ? Theme.warning : Theme.agent(window.detailKind)
+            }
+        }
+        Label { text: (meter.remaining || 0) + "%"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
     }
     component InfoHintButton: SoftToolButton {
         property bool expanded: false
@@ -2102,7 +2208,6 @@ ApplicationWindow {
                                                 Menu {
                                                     id: agentMenu
                                                     MenuItem { text: railRow.change && railRow.change.withdrawable ? "撤回排队" : railRow.modelData.enabled ? "停用" : "启用"; enabled: window.canEditAgent && (!railRow.change || railRow.change.withdrawable); onTriggered: window.flipAgent(railRow.kind) }
-                                                    MenuItem { text: "供应商配置"; visible: !!window.providerGroup(railRow.kind); enabled: railRow.modelData.enabled && !host.busy; onTriggered: window.openProviders(window.providerGroup(railRow.kind)) }
                                                     MenuItem { text: "复制诊断信息"; onTriggered: host.copyDiagnostics() }
                                                 }
                                                 RowLayout {
@@ -2190,7 +2295,24 @@ ApplicationWindow {
                                                 Item { Layout.fillWidth: true }
                                             }
                                         }
+                                        InfoHintButton {
+                                            id: agentVersionInfo
+                                            objectName: "agentVersionInfo"
+                                            visible: window.selectedAgentRow !== null
+                                            Accessible.name: "版本要求"
+                                            Connections {
+                                                target: window
+                                                function onDetailKindChanged() { agentVersionInfo.expanded = false }
+                                                function onPageChanged() { agentVersionInfo.expanded = false }
+                                            }
+                                        }
                                         AgentLatch { objectName: "detailAgentLatch"; large: true; powered: window.agentVisualOn(window.selectedAgentRow); change: window.detailChange; tint: Theme.agent(window.detailKind); enabled: window.canEditAgent && (!change || change.withdrawable); Accessible.name: window.selectedAgentRow ? window.selectedAgentRow.label : "Agent"; onClicked: window.flipAgent(window.detailKind) }
+                                    }
+                                    Hint {
+                                        objectName: "agentVersionRequirement"
+                                        visible: agentVersionInfo.visible && agentVersionInfo.expanded
+                                        text: window.detailVersionRequirement
+                                        Layout.fillWidth: true
                                     }
                                     RowLayout {
                                         visible: window.agentFeedbackText().length > 0 || host.agentChoicesNeedRetry
@@ -2200,6 +2322,132 @@ ApplicationWindow {
                                         ActionButton {
                                             text: "撤销"; visible: window.agentFeedback.status === "disabled" && window.agentFeedback.revision === host.agentEnablement.revision
                                             enabled: window.canEditAgent; onClicked: { const receipt = window.agentFeedback; window.agentFeedback = ({}); host.setAgentsEnabled(receipt.kinds, true, receipt.revision) }
+                                        }
+                                    }
+                                    ColumnLayout {
+                                        id: agyCard
+                                        objectName: "agySetupCard"
+                                        visible: window.detailKind === "agy" && !!source && source !== "unsupported"
+                                        Layout.fillWidth: true; spacing: 8
+                                        readonly property string source: host.agySetup.source || ""
+                                        readonly property string verification: host.agySetup.verification || ""
+                                        readonly property bool checking: host.agySetup.busy === true
+                                        readonly property bool editable: source === "saved" || source === "none" || source === "vaultError"
+                                        readonly property var backend: window.backendFor("agy")
+                                        readonly property string credentialMessage: {
+                                            switch (verification) {
+                                            case "invalid": return "请输入有效的 Gemini API Key。"
+                                            case "candidateRejected": return "Google 未接受这个密钥；原配置未更改。"
+                                            case "rejected": return "Google 未接受已配置的密钥，请检查权限或更换。"
+                                            case "unavailable": return "暂时无法验证密钥，请检查网络后重试。"
+                                            case "vaultError": return "无法访问系统凭据存储，请授权后重试。"
+                                            case "applyError": return "无法应用密钥，请重试。"
+                                            default: return ""
+                                            }
+                                        }
+                                        onVisibleChanged: if (!visible && agyCandidate) agyCandidate.clear()
+                                        Heading { text: "接入" }
+                                        RowLayout {
+                                            Layout.fillWidth: true; spacing: 8
+                                            Label { text: "Gemini API Key"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                            Label {
+                                                objectName: "agyCredentialStatus"
+                                                text: agyCard.checking ? "处理中" : agyCard.source === "environment" ? "由环境变量配置"
+                                                    : agyCard.source === "vaultError" ? "无法读取" : agyCard.source !== "saved" ? "未配置"
+                                                    : agyCard.verification === "rejected" ? "需更换" : agyCard.verification === "verified" ? "已验证" : "已保存"
+                                                color: agyCard.verification === "verified" ? Theme.success : Theme.inkMuted
+                                            }
+                                            InfoHintButton { id: agyHelp; Accessible.name: "Antigravity CLI 接入帮助" }
+                                        }
+                                        Hint {
+                                            visible: agyHelp.expanded; Layout.fillWidth: true
+                                            text: "使用 Google AI Studio 的 Gemini API Key，不使用个人 Google AI 订阅。密钥只保存在这台电脑。需要 Antigravity CLI " + (host.agySetup.requiredVersion || "") + "。"
+                                        }
+                                        Field {
+                                            id: agyCandidate; objectName: "agyApiKey"
+                                            visible: agyCard.editable; enabled: !agyCard.checking && host.bridgeReady
+                                            Layout.fillWidth: true; marksProviderDirty: false
+                                            maximumLength: 512; echoMode: TextInput.Password
+                                            inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                                            placeholderText: agyCard.source === "saved" ? "输入新密钥" : "输入密钥"
+                                            Accessible.name: "Gemini API Key"
+                                        }
+                                        Flow {
+                                            Layout.fillWidth: true; spacing: 8
+                                            ActionButton {
+                                                objectName: "agySaveCredential"
+                                                visible: agyCard.editable
+                                                text: agyCard.source === "saved" ? "验证并更换" : "验证并保存"
+                                                enabled: host.bridgeReady && !agyCard.checking && agyCandidate.text.trim().length > 0
+                                                onClicked: {
+                                                    if (agyCard.source === "saved" || agyCard.source === "vaultError") {
+                                                        agyCredentialDialog.removing = false
+                                                        agyCredentialDialog.open()
+                                                    } else { host.saveAgyCredential(agyCandidate.text); agyCandidate.clear() }
+                                                }
+                                            }
+                                            ActionButton {
+                                                objectName: "agyRetryCredential"; text: "重新检测"
+                                                enabled: host.bridgeReady && !agyCard.checking
+                                                onClicked: host.retryAgySetup()
+                                            }
+                                            ActionButton {
+                                                objectName: "agyRemoveCredential"; text: "移除密钥"
+                                                visible: agyCard.source === "saved" || agyCard.source === "vaultError"
+                                                enabled: host.bridgeReady && !agyCard.checking
+                                                onClicked: { agyCredentialDialog.removing = true; agyCredentialDialog.open() }
+                                            }
+                                            ActionButton {
+                                                objectName: "agyGetKey"; text: "获取密钥"
+                                                visible: agyCard.editable && (agyCard.source !== "saved" || agyHelp.expanded)
+                                                onClicked: Qt.openUrlExternally("https://aistudio.google.com/apikey")
+                                            }
+                                        }
+                                        Hint { visible: agyCard.credentialMessage.length > 0; Layout.fillWidth: true; color: Theme.warning; text: agyCard.credentialMessage }
+                                        RowLayout {
+                                            Layout.fillWidth: true; spacing: 8
+                                            Label { text: "ACP"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                            Label {
+                                                objectName: "agyConnectionStatus"
+                                                text: agyCard.backend?.ready === true ? "已连接" : agyCard.backend?.reason === "starting" ? "正在连接"
+                                                    : host.agySetup.installed !== true ? "未找到 CLI" : !window.agentEnabled("agy") ? "未启用"
+                                                    : !host.desiredRunning ? "Host 已暂停" : "等待接入"
+                                                color: agyCard.backend?.ready === true ? Theme.success : Theme.inkMuted
+                                            }
+                                            ActionButton {
+                                                objectName: "agyInstallGuide"; text: "安装指南"
+                                                visible: host.agySetup.installed !== true || agyHelp.expanded
+                                                onClicked: Qt.openUrlExternally("https://antigravity.google/docs/getting-started/#antigravity-cli")
+                                            }
+                                        }
+                                        Hint {
+                                            visible: text.length > 0 && text !== "starting" && !agyCard.credentialMessage.length
+                                            text: agyCard.backend?.reason || ""
+                                            Layout.fillWidth: true
+                                        }
+                                        SoftDialog {
+                                            id: agyCredentialDialog
+                                            property bool removing: false
+                                            parent: Overlay.overlay
+                                            anchors.centerIn: parent
+                                            modal: true; width: 410
+                                            title: removing ? "移除密钥？" : "更换密钥？"
+                                            Hint { width: parent.width; text: "Antigravity CLI 会断开，已保存的会话会保留。" }
+                                            footer: SoftDialogButtons {
+                                                ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+                                                ActionButton {
+                                                    text: agyCredentialDialog.removing ? "移除" : "验证并更换"
+                                                    danger: agyCredentialDialog.removing
+                                                    DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                                                }
+                                                onAccepted: agyCredentialDialog.accept()
+                                                onRejected: agyCredentialDialog.reject()
+                                            }
+                                            onAccepted: {
+                                                if (removing) host.removeAgyCredential()
+                                                else host.saveAgyCredential(agyCandidate.text)
+                                                agyCandidate.clear()
+                                            }
                                         }
                                     }
                                     ColumnLayout {
@@ -2216,6 +2464,7 @@ ApplicationWindow {
                                             visible: !window.detailPowered
                                             text: window.detailChange ? "正在启用" : "启用 " + (window.selectedAgentRow ? window.selectedAgentRow.label : "Agent")
                                             primary: true; enabled: window.canEditAgent && !window.detailChange
+                                                && (window.detailKind !== "agy" || host.agySetup.verification === "verified")
                                             Layout.alignment: Qt.AlignHCenter
                                             onClicked: window.flipAgent(window.detailKind)
                                         }
@@ -2284,17 +2533,34 @@ ApplicationWindow {
                                             Hint { text: window.installationStage(); Layout.fillWidth: true }
                                             ActionButton { text: "取消安装"; enabled: host.bridgeReady && host.agentInstallStage !== "cancelling" && host.agentInstallStage !== "restarting"; danger: true; onClicked: host.cancelInstall() }
                                         }
+                                        // HOST-PROVIDER-INLINE-01: the Agent detail owns the whole provider catalog; there is no second-level page.
                                         ColumnLayout {
+                                            id: providerSection
+                                            objectName: "agentProviderSection"
                                             visible: !!window.detailProviderGroup; Layout.fillWidth: true; spacing: 8
+                                            readonly property var rows: host.providerKind === window.detailProviderGroup ? window.visibleProviders : []
+                                            readonly property int total: host.providerKind === window.detailProviderGroup ? host.providers.length : 0
                                             RowLayout {
-                                                visible: !window.providersOpen; Layout.fillWidth: true; spacing: 8
+                                                Layout.fillWidth: true; spacing: 8
                                                 Heading { text: "供应商" }
-                                                Hint { visible: host.providerKind === window.detailProviderGroup && host.providers.length > 0; text: host.providers.length + " 个配置"; font.pixelSize: Theme.caption; color: Theme.inkFaint }
-                                                Item { Layout.fillWidth: true }
-                                                ActionButton { objectName: "openAgentProviders"; text: "供应商配置"; enabled: window.canEditAgent && !window.detailChange; onClicked: window.openProviders(window.detailProviderGroup) }
+                                                Label {
+                                                    objectName: "agentProviderCount"
+                                                    Layout.fillWidth: true; elide: Text.ElideRight
+                                                    text: window.activity.kind === "provider" ? window.activityText
+                                                        : providerSection.total === 0 ? "" : providerSearch.text.trim() ? providerSection.rows.length + " / " + providerSection.total : providerSection.total + " 个配置"
+                                                    font.pixelSize: Theme.caption; color: Theme.inkFaint
+                                                }
+                                                RowToolButton { objectName: "refreshAgentProviders"; symbol: "refresh"; label: "刷新供应商"; enabled: window.canEditProviders; onClicked: host.loadProviders(window.detailProviderGroup) }
+                                            }
+                                            Field {
+                                                id: providerSearch
+                                                objectName: "providerSearch"
+                                                visible: providerSection.total > 5 || text.length > 0
+                                                marksProviderDirty: false
+                                                Layout.fillWidth: true; implicitHeight: Theme.controlHeight
+                                                placeholderText: "搜索名称、标识、备注或网站"; Accessible.name: "搜索供应商"
                                             }
                                             Item {
-                                                visible: !window.providersOpen
                                                 Layout.fillWidth: true
                                                 implicitHeight: inlineProviderColumn.implicitHeight + 12
                                                 Surface {
@@ -2305,189 +2571,152 @@ ApplicationWindow {
                                                     id: inlineProviderColumn
                                                     x: 6; y: 6; width: parent.width - 12; spacing: 2
                                                     Hint {
-                                                        visible: host.providerKind === window.detailProviderGroup && host.providers.length === 0
-                                                        text: window.activityKinds.indexOf("providerList") >= 0 ? "正在读取供应商" : "没有可用供应商"
+                                                        visible: providerSection.rows.length === 0
+                                                        text: providerSection.total > 0 ? "没有匹配的供应商" : host.providerKind !== window.detailProviderGroup || window.activityKinds.indexOf("providerList") >= 0 ? "正在读取供应商" : "没有可用供应商"
                                                         Layout.margins: 8
                                                     }
                                                     Repeater {
-                                                        model: !window.providersOpen && host.providerKind === window.detailProviderGroup ? host.providers : []
+                                                        model: providerSection.rows
                                                         delegate: Item {
                                                             id: providerRow
+                                                            objectName: "providerRow-" + modelData.id
                                                             required property var modelData
+                                                            required property int index
+                                                            readonly property bool additive: modelData.mode === "additive"
+                                                            readonly property bool multi: ProviderFlow.isNative(window.detailProviderGroup)
+                                                            readonly property bool engaged: providerHover.hovered || activeFocus || window.previewProviderId === modelData.id
+                                                            readonly property bool checking: host.checkingProviderIds.indexOf(modelData.id) >= 0
                                                             readonly property var quota: host.providerQuotas[window.detailProviderGroup + ":" + modelData.id] || null
-                                                            Layout.fillWidth: true; Layout.preferredHeight: 52
+                                                            Layout.fillWidth: true
+                                                            implicitHeight: providerRowContent.implicitHeight + 16
+                                                            z: dragMouse.drag.active ? 1 : 0
                                                             activeFocusOnTab: true
                                                             Accessible.role: Accessible.ListItem; Accessible.name: modelData.name + (modelData.enabled ? "，使用中" : "")
                                                             Accessible.onPressAction: window.previewProviderId = modelData.id
                                                             Keys.onReturnPressed: window.askProvider(modelData)
-                                                            Rectangle { anchors.fill: parent; radius: Theme.radiusSm; color: providerHover.hovered || window.previewProviderId === providerRow.modelData.id ? Theme.surfaceLift : "transparent"; border.width: providerRow.activeFocus ? 1 : 0; border.color: Theme.accent }
+                                                            Rectangle {
+                                                                anchors.fill: parent; radius: Theme.radiusSm
+                                                                color: providerRow.engaged ? Theme.surfaceLift : "transparent"
+                                                                border.width: providerDrop.containsDrag ? 2 : providerRow.activeFocus ? 1 : 0; border.color: Theme.accent
+                                                            }
                                                             HoverHandler { id: providerHover }
                                                             TapHandler { onTapped: window.previewProviderId = providerRow.modelData.id; onDoubleTapped: window.askProvider(providerRow.modelData) }
-                                                            RowLayout {
-                                                                anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 10
-                                                                Item {
-                                                                    Layout.preferredWidth: 14; Layout.preferredHeight: 14
-                                                                    Label { anchors.centerIn: parent; visible: providerRow.modelData.enabled; text: "▸"; color: Theme.agent(window.detailKind); Accessible.ignored: true }
-                                                                    Rectangle { anchors.centerIn: parent; visible: !providerRow.modelData.enabled; width: 6; height: 6; radius: 3; color: Theme.hairline }
-                                                                }
-                                                                ColumnLayout {
-                                                                    Layout.fillWidth: true; spacing: 1
-                                                                    Label { text: providerRow.modelData.name; color: Theme.ink; font.weight: providerRow.modelData.enabled ? Font.DemiBold : Font.Normal; elide: Text.ElideRight; Layout.fillWidth: true }
-                                                                    Label { text: providerRow.modelData.category === "official" || providerRow.modelData.official ? "官方配置" : "已保存的配置"; color: Theme.inkMuted; font.pixelSize: Theme.caption; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                            TapHandler { acceptedButtons: Qt.RightButton; onTapped: providerMenu.showFor(providerRow, null) }
+                                                            DropArea {
+                                                                id: providerDrop
+                                                                anchors.fill: parent; keys: ["provider-card"]; enabled: window.canReorderProviders
+                                                                onDropped: function(drop) { window.moveProvider(window.draggedProviderId, providerRow.modelData.id); drop.acceptProposedAction() }
+                                                            }
+                                                            ColumnLayout {
+                                                                id: providerRowContent
+                                                                x: 6; y: 8; width: parent.width - 10; spacing: 4
+                                                                RowLayout {
+                                                                    Layout.fillWidth: true; spacing: 4
+                                                                    Item {
+                                                                        Layout.preferredWidth: 22; Layout.preferredHeight: 36
+                                                                        Label { anchors.centerIn: parent; visible: providerRow.modelData.enabled && !providerDrag.visible; text: "▸"; color: Theme.agent(window.detailKind); Accessible.ignored: true }
+                                                                        Rectangle { anchors.centerIn: parent; visible: !providerRow.modelData.enabled && !providerDrag.visible; width: 6; height: 6; radius: 3; color: Theme.hairline }
+                                                                        SymbolIcon {
+                                                                            id: providerDrag
+                                                                            objectName: "providerDragHandle-" + providerRow.modelData.id
+                                                                            anchors.centerIn: parent; width: Theme.iconSm; height: Theme.iconSm
+                                                                            visible: window.canReorderProviders && (providerRow.engaged || dragMouse.pressed)
+                                                                            name: "more_horiz"; rotation: 90; color: Theme.inkMuted
+                                                                            Drag.active: dragMouse.drag.active; Drag.source: providerRow; Drag.keys: ["provider-card"]; Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
+                                                                        }
+                                                                        MouseArea {
+                                                                            id: dragMouse
+                                                                            anchors.fill: parent; enabled: window.canReorderProviders; preventStealing: true
+                                                                            cursorShape: Qt.OpenHandCursor; drag.target: providerDrag; drag.axis: Drag.YAxis
+                                                                            onPressed: { window.draggedProviderId = providerRow.modelData.id; providerDrag.anchors.centerIn = undefined }
+                                                                            onReleased: { providerDrag.Drag.drop(); providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                                                                            onCanceled: { providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                                                                        }
+                                                                    }
+                                                                    ColumnLayout {
+                                                                        Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 1
+                                                                        Label { objectName: "providerName-" + providerRow.modelData.id; text: providerRow.modelData.name; color: Theme.ink; font.weight: providerRow.modelData.enabled ? Font.DemiBold : Font.Normal; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                                        Label {
+                                                                            text: (providerRow.modelData.globalDefault && !providerRow.multi ? "全局默认 · " : "") + window.providerSubtitle(providerRow.modelData)
+                                                                            textFormat: Text.PlainText
+                                                                            color: Theme.inkMuted; font.pixelSize: Theme.caption; elide: Text.ElideRight; maximumLineCount: 1; Layout.fillWidth: true
+                                                                            HoverHandler { id: providerNoteHover }
+                                                                            ToolTip.visible: providerNoteHover.hovered && truncated; ToolTip.text: text; ToolTip.delay: 500
+                                                                        }
+                                                                    }
+                                                                    // One fixed slot: hovering swaps its content without re-eliding the name.
+                                                                    Item {
+                                                                        id: providerSlot
+                                                                        readonly property bool offersAction: providerRow.engaged && (!providerRow.modelData.enabled || (providerRow.multi ? providerRow.modelData.canSetDefault === true : providerRow.additive))
+                                                                        Layout.preferredWidth: providerRow.multi ? 76 : 64; Layout.preferredHeight: 36; Layout.leftMargin: 4
+                                                                        Label {
+                                                                            anchors.right: parent.right; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter
+                                                                            visible: !providerSlot.offersAction
+                                                                            text: providerRow.checking ? "检测中" : !providerRow.modelData.enabled ? "" : providerRow.multi && providerRow.modelData.globalDefault ? "默认" : providerRow.additive ? "已启用" : "使用中"
+                                                                            color: providerRow.checking ? Theme.inkMuted : Theme.success; font.pixelSize: Theme.caption; font.weight: Font.DemiBold
+                                                                        }
+                                                                        ActionButton {
+                                                                            objectName: "providerSwitch-" + providerRow.modelData.id
+                                                                            anchors.fill: parent; font.pixelSize: Theme.label
+                                                                            visible: providerSlot.offersAction
+                                                                            text: providerRow.modelData.enabled ? (providerRow.multi ? "设为默认" : "移出") : providerRow.additive ? "启用" : "切换"
+                                                                            primary: !providerRow.modelData.enabled || providerRow.multi
+                                                                            enabled: window.canEditProviders; loading: providerRow.checking
+                                                                            onClicked: window.askProvider(providerRow.modelData)
+                                                                        }
+                                                                    }
+                                                                    RowToolButton { objectName: "providerEdit-" + providerRow.modelData.id; symbol: "edit"; label: "编辑"; Accessible.name: "编辑 " + providerRow.modelData.name; enabled: window.canEditProviders && providerRow.modelData.readOnly !== true; onClicked: host.editProvider(providerRow.modelData.id) }
+                                                                    RowToolButton { id: providerMore; objectName: "providerMore-" + providerRow.modelData.id; symbol: "more_horiz"; label: "更多"; Accessible.name: providerRow.modelData.name + " 更多操作"; onClicked: providerMenu.showFor(providerRow, providerMore) }
                                                                 }
                                                                 RowLayout {
-                                                                    visible: providerRow.modelData.enabled && providerRow.quota !== null
-                                                                    spacing: 10
-                                                                    RowLayout {
-                                                                        visible: providerRow.quota && providerRow.quota.fiveHour !== undefined
-                                                                        spacing: 5
-                                                                        Label { text: "5 小时"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
-                                                                        Rectangle {
-                                                                            Layout.preferredWidth: 44; Layout.preferredHeight: 5; radius: 2.5; color: Theme.hairline
-                                                                            Rectangle {
-                                                                                width: parent.width * Math.max(0, Math.min(1, Number(providerRow.quota ? providerRow.quota.fiveHour : 0) / 100))
-                                                                                height: parent.height; radius: 2.5
-                                                                                color: Number(providerRow.quota ? providerRow.quota.fiveHour : 100) <= 20 ? Theme.warning : Theme.agent(window.detailKind)
-                                                                            }
-                                                                        }
-                                                                        Label { text: (providerRow.quota ? providerRow.quota.fiveHour : 0) + "%"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
-                                                                    }
-                                                                    RowLayout {
-                                                                        visible: providerRow.quota && providerRow.quota.sevenDay !== undefined
-                                                                        spacing: 5
-                                                                        Label { text: "7 天"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
-                                                                        Rectangle {
-                                                                            Layout.preferredWidth: 44; Layout.preferredHeight: 5; radius: 2.5; color: Theme.hairline
-                                                                            Rectangle {
-                                                                                width: parent.width * Math.max(0, Math.min(1, Number(providerRow.quota ? providerRow.quota.sevenDay : 0) / 100))
-                                                                                height: parent.height; radius: 2.5
-                                                                                color: Theme.agent(window.detailKind)
-                                                                            }
-                                                                        }
-                                                                        Label { text: (providerRow.quota ? providerRow.quota.sevenDay : 0) + "%"; color: Theme.inkMuted; font.pixelSize: Theme.caption }
-                                                                    }
-                                                                }
-                                                                SoftToolButton {
-                                                                    objectName: "providerQuotaRefresh-" + providerRow.modelData.id
-                                                                    symbol: "refresh"
-                                                                    Accessible.name: "刷新配额"
-                                                                    ToolTip.visible: hovered
-                                                                    ToolTip.text: "刷新配额"
-                                                                    visible: providerRow.modelData.enabled && providerRow.modelData.subscriptionSupported === true
-                                                                    enabled: !host.busy && !window.detailChange
-                                                                    onClicked: host.querySubscription(providerRow.modelData.id)
-                                                                }
-                                                                Label { visible: providerRow.modelData.enabled && !(providerRow.modelData.mode === "additive" && (providerHover.hovered || providerRow.activeFocus || window.previewProviderId === providerRow.modelData.id)); text: "使用中"; color: Theme.success; font.pixelSize: Theme.caption; font.weight: Font.DemiBold }
-                                                                ActionButton { text: providerRow.modelData.enabled ? "移出" : "切换"; visible: (!providerRow.modelData.enabled || providerRow.modelData.mode === "additive") && (providerHover.hovered || providerRow.activeFocus || window.previewProviderId === providerRow.modelData.id); enabled: !host.busy && !window.detailChange; onClicked: window.askProvider(providerRow.modelData) }
-                                                            }
-                                                        }
-                                                    }
-                                                    AbstractButton {
-                                                        Layout.fillWidth: true; implicitHeight: 40
-                                                        hoverEnabled: true
-                                                        enabled: window.canEditAgent && !host.busy && !window.detailChange
-                                                        Accessible.name: "添加供应商"
-                                                        onClicked: { window.openProviders(window.detailProviderGroup); host.editProvider("") }
-                                                        background: Rectangle {
-                                                            radius: Theme.radiusSm
-                                                            color: parent.hovered ? Theme.surfaceLift : "transparent"
-                                                        }
-                                                        contentItem: RowLayout {
-                                                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
-                                                            SymbolIcon { name: "add"; width: 16; height: 16; color: Theme.inkMuted }
-                                                            Label { text: "添加供应商"; color: Theme.inkMuted; font.pixelSize: Theme.caption; font.weight: Font.DemiBold; Layout.fillWidth: true }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        ColumnLayout {
-                                            visible: window.providersOpen; Layout.fillWidth: true; spacing: 12
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                ActionButton { text: "‹ 供应商"; onClicked: window.providersOpen = false }
-                                                Item { Layout.fillWidth: true }
-                                            }
-                                            Flow {
-                                                Layout.fillWidth: true; spacing: 14
-                                                ActionButton { text: "刷新"; enabled: !host.busy; onClicked: host.loadProviders(host.providerKind) }
-                                                ActionButton { text: "通用配置"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: host.loadCodexPreferences() }
-                                                ActionButton { text: "账号管理"; visible: host.providerKind === "codex"; enabled: !host.busy; onClicked: { host.clearMessage(); host.oauthAccount("list"); oauthDialog.open() } }
-                                                ActionButton { text: "添加供应商"; symbol: "add"; primary: true; enabled: !host.busy; onClicked: host.editProvider("") }
-                                            }
-                                            RowLayout { Layout.fillWidth: true
-                                                Field { id: providerSearch; objectName: "providerSearch"; Layout.fillWidth: true; placeholderText: "搜索名称、标识、备注或网站"; Accessible.name: "搜索供应商" }
-                                                Hint { text: String(window.visibleProviders.length) + " / " + host.providers.length }
-                                            }
-                                            Card {
-                                                visible: host.providers.length === 0; Layout.fillWidth: true
-                                                ColumnLayout { anchors.fill: parent; spacing: 12
-                                                    Heading { text: "添加第一个供应商" }
-                                                }
-                                            }
-                                            Hint { visible: host.providers.length > 0 && window.visibleProviders.length === 0; text: "没有匹配的供应商"; Layout.fillWidth: true }
-                                            Repeater {
-                                                model: window.providersOpen ? window.visibleProviders : []
-                                                delegate: Card {
-                                                    id: providerCard
-                                                    objectName: "providerCard-" + modelData.id
-                                                    required property var modelData
-                                                    required property int index
-                                                    Layout.fillWidth: true
-                                                    contentWidth: availableWidth
-                                                    contentHeight: providerCardContent.implicitHeight
-                                                    Item {
-                                                        width: parent.width; height: providerCardContent.implicitHeight
-                                                        Rectangle { anchors.fill: parent; color: "transparent"; border.color: Theme.accent; border.width: 2; radius: Theme.radiusLg; visible: providerDrop.containsDrag }
-                                                        DropArea { id: providerDrop; anchors.fill: parent; keys: ["provider-card"]; enabled: !host.busy && providerSearch.text.trim().length === 0
-                                                            onDropped: function(drop) { window.moveProvider(window.draggedProviderId, providerCard.modelData.id); drop.acceptProposedAction() }
-                                                        }
-                                                        ColumnLayout { id: providerCardContent; width: parent.width; spacing: 12
-                                                          RowLayout { Layout.fillWidth: true; spacing: 12
-                                                            Item { Layout.preferredWidth: 30; Layout.preferredHeight: 40
-                                                                SymbolIcon { id: providerDrag; objectName: "providerDragHandle-" + modelData.id; anchors.centerIn: parent; name: "more_horiz"; width: Theme.iconMd; height: Theme.iconMd; rotation: 90; color: dragMouse.enabled ? Theme.inkMuted : Theme.inkFaint
-                                                                    Drag.active: dragMouse.drag.active; Drag.source: providerCard; Drag.keys: ["provider-card"]; Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
-                                                                    MouseArea { id: dragMouse; anchors.fill: parent; enabled: !host.busy && providerSearch.text.trim().length === 0; cursorShape: Qt.OpenHandCursor; drag.target: providerDrag
-                                                                        onPressed: { window.draggedProviderId = modelData.id; providerDrag.anchors.centerIn = undefined }
-                                                                        onReleased: { providerDrag.Drag.drop(); providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
-                                                                        onCanceled: { providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                                                                    visible: providerRow.modelData.enabled && (providerRow.quota !== null || providerRow.modelData.subscriptionSupported === true)
+                                                                    Layout.fillWidth: true; Layout.leftMargin: 26; spacing: 10
+                                                                    Label { visible: providerRow.quota === null; text: "配额"; color: Theme.inkMuted; font.pixelSize: Theme.caption; Layout.fillWidth: true }
+                                                                    QuotaMeter { label: "5 小时"; remaining: providerRow.quota ? providerRow.quota.fiveHour : undefined; Layout.fillWidth: true }
+                                                                    QuotaMeter { label: "7 天"; remaining: providerRow.quota ? providerRow.quota.sevenDay : undefined; Layout.fillWidth: true }
+                                                                    RowToolButton {
+                                                                        objectName: "providerQuotaRefresh-" + providerRow.modelData.id
+                                                                        Layout.preferredHeight: 28
+                                                                        symbol: "refresh"; label: "刷新配额"
+                                                                        visible: providerRow.modelData.enabled && providerRow.modelData.subscriptionSupported === true
+                                                                        enabled: window.canEditProviders
+                                                                        onClicked: host.querySubscription(providerRow.modelData.id)
                                                                     }
                                                                 }
                                                             }
-                                                            ColumnLayout { Layout.fillWidth: true
-                                                                Heading { text: modelData.name; font.pixelSize: Theme.body; color: Theme.agent(modelData.kind || host.providerKind); Layout.fillWidth: true; elide: Text.ElideRight }
-                                                                Hint { text: (modelData.enabled ? (modelData.mode === "additive" ? "已启用" : "当前使用") : "未启用") + (modelData.globalDefault ? "（Pi 全局默认）" : ""); color: modelData.enabled ? Theme.success : Theme.inkMuted }
-                                                                Hint { text: modelData.notes || ""; visible: text.length > 0; Layout.fillWidth: true }
-                                                            }
-                                                          }
-                                                          Flow { Layout.fillWidth: true; spacing: 6
-                                                            ActionButton { text: modelData.enabled ? (modelData.mode === "additive" ? "移除" : "已在用") : "启用"; primary: !modelData.enabled; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: window.askProvider(modelData) }
-                                                            ActionButton { text: "编辑"; enabled: !host.busy; onClicked: host.editProvider(modelData.id) }
-                                                            ActionButton { text: "复制"; enabled: !host.busy; onClicked: host.copyProvider(modelData.id) }
-                                                            ActionButton { text: "删除"; danger: true; enabled: !host.busy && (!modelData.enabled || modelData.mode === "additive"); onClicked: { window.deleteProviderId = modelData.id; deleteProviderDialog.open() } }
-                                                          }
-                                                          Hint { text: modelData.websiteUrl || modelData.id; Layout.fillWidth: true }
-                                                          Flow { Layout.fillWidth: true; spacing: 6
-                                                            ActionButton { text: "检测连通"; loading: host.checkingProviderIds.indexOf(modelData.id) >= 0; visible: modelData.category !== "official"; enabled: !host.busy && host.checkingProviderIds.indexOf(modelData.id) < 0; onClicked: host.checkProvider(modelData.id) }
-                                                            SoftToolButton {
-                                                                objectName: "providerManagerQuotaRefresh-" + modelData.id
-                                                                symbol: "refresh"
-                                                                Accessible.name: "刷新配额"
-                                                                ToolTip.visible: hovered
-                                                                ToolTip.text: "刷新配额"
-                                                                visible: modelData.enabled && modelData.subscriptionSupported === true
-                                                                enabled: !host.busy
-                                                                onClicked: host.querySubscription(modelData.id)
-                                                            }
-                                                            SoftToolButton { symbol: "arrow_upward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index > 0; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index - 1].id); ToolTip.visible: hovered; ToolTip.text: "上移" }
-                                                            SoftToolButton { symbol: "arrow_downward"; enabled: !host.busy && providerSearch.text.trim().length === 0 && index + 1 < window.visibleProviders.length; onClicked: window.moveProvider(modelData.id, window.visibleProviders[index + 1].id); ToolTip.visible: hovered; ToolTip.text: "下移" }
-                                                          }
                                                         }
+                                                    }
+                                                    Rectangle { visible: providerSection.rows.length > 0; Layout.fillWidth: true; Layout.leftMargin: 10; Layout.rightMargin: 10; Layout.topMargin: 2; Layout.bottomMargin: 2; implicitHeight: 1; color: Theme.hairline }
+                                                    RowLayout {
+                                                        Layout.fillWidth: true; spacing: 2
+                                                        RowTextButton { objectName: "addAgentProvider"; text: "添加供应商"; symbol: "add"; Layout.fillWidth: true; enabled: window.canEditProviders; onClicked: host.editProvider("") }
+                                                        RowTextButton { objectName: "codexProviderAccounts"; text: "账号管理"; visible: window.detailProviderGroup === "codex"; enabled: window.canEditProviders; onClicked: { host.clearMessage(); host.oauthAccount("list"); oauthDialog.open() } }
+                                                        RowTextButton { objectName: "codexProviderPreferences"; text: "通用配置"; visible: window.detailProviderGroup === "codex"; enabled: window.canEditProviders; onClicked: host.loadCodexPreferences() }
                                                     }
                                                 }
                                             }
-                                            Hint { visible: host.busy; text: "正在处理供应商配置…"; Layout.fillWidth: true }
-                                        }
-
+                                            // Shared by every row: list refreshes rebuild the delegates and must not act on a stale position.
+                                            Menu {
+                                                id: providerMenu
+                                                objectName: "providerMenu"
+                                                property string providerId: ""
+                                                readonly property int rowIndex: window.visibleProviders.findIndex(row => row.id === providerId)
+                                                readonly property var row: rowIndex >= 0 ? window.visibleProviders[rowIndex] : ({})
+                                                readonly property bool actionable: window.canEditProviders && rowIndex >= 0
+                                                function showFor(item, anchor) {
+                                                    providerId = item.modelData.id; window.previewProviderId = providerId
+                                                    if (anchor) popup(anchor, anchor.width - width, anchor.height); else popup()
+                                                }
+                                                padding: 6
+                                                background: Surface { implicitWidth: 168; anchors.fill: parent; anchors.margins: -16; margin: 16; cornerRadius: Theme.radiusMd; surface: Theme.surfaceBase; shadowScale: 0.8 }
+                                                SoftMenuItem { objectName: "providerMenuDefault"; text: "设为默认"; visible: providerMenu.row.canSetDefault === true; enabled: providerMenu.actionable; onTriggered: host.setDefaultProvider(providerMenu.providerId) }
+                                                SoftMenuItem { objectName: "providerMenuCopy"; text: "复制"; enabled: providerMenu.actionable; onTriggered: host.copyProvider(providerMenu.providerId) }
+                                                SoftMenuItem { objectName: "providerMenuCheck"; text: "检测连通"; visible: providerMenu.row.category !== "official"; enabled: providerMenu.actionable && host.checkingProviderIds.indexOf(providerMenu.providerId) < 0; onTriggered: host.checkProvider(providerMenu.providerId) }
+                                                SoftMenuItem { objectName: "providerMenuUp"; text: "上移"; enabled: window.canReorderProviders && providerMenu.rowIndex > 0; onTriggered: window.moveProvider(providerMenu.providerId, window.visibleProviders[providerMenu.rowIndex - 1].id) }
+                                                SoftMenuItem { objectName: "providerMenuDown"; text: "下移"; enabled: window.canReorderProviders && providerMenu.rowIndex >= 0 && providerMenu.rowIndex + 1 < window.visibleProviders.length; onTriggered: window.moveProvider(providerMenu.providerId, window.visibleProviders[providerMenu.rowIndex + 1].id) }
+                                                SoftMenuItem { objectName: "providerMenuRemove"; text: "移出"; visible: ProviderFlow.isNative(window.detailProviderGroup) && providerMenu.row.enabled === true; enabled: providerMenu.actionable && providerMenu.row.readOnly !== true; onTriggered: { window.removeProviderId = providerMenu.providerId; removeProviderDialog.open() } }
+                                                SoftMenuItem { objectName: "providerMenuDelete"; text: "删除"; danger: true; enabled: providerMenu.actionable && providerMenu.row.readOnly !== true && (!providerMenu.row.enabled || providerMenu.row.mode === "additive"); onTriggered: { window.deleteProviderId = providerMenu.providerId; deleteProviderDialog.open() } }
+                                            }
                                         }
                                         ColumnLayout {
                                             objectName: "agentRunningSessions"
@@ -2718,26 +2947,50 @@ ApplicationWindow {
                                                 id: openClawCard
                                                 objectName: "openClawCard"
                                                 Layout.fillWidth: true; spacing: 12
-                                                visible: host.bridgeReady && !!host.openClaw.source && window.detailKind === "openclaw" && window.detailPowered
+                                                visible: host.bridgeReady && !!host.openClaw.source && window.detailKind === "openclaw"
                                                 readonly property bool editable: host.openClaw.source === "file"
                                                 readonly property string savedUrl: host.openClaw.url || ""
                                                 readonly property string savedMode: savedUrl && !/^ws:\/\/(127\.0\.0\.1|\[::1\])(:\d+)?\/?$/.test(savedUrl) ? "remote" : "local"
-                                                readonly property string savedPort: { var m = /:(\d+)\/?$/.exec(savedUrl); return savedMode === "local" && m ? m[1] : "18789" }
+                                                readonly property string savedPort: { var m = /:(\d+)\/?$/.exec(savedUrl); return savedMode === "local" && savedUrl ? (m ? m[1] : "80") : "18789" }
+                                                readonly property string localAddress: savedUrl.indexOf("ws://[::1]") === 0 ? "[::1]" : "127.0.0.1"
+                                                readonly property string savedAccess: host.openClaw.access || "auto"
+                                                readonly property string savedAuth: host.openClaw.auth || "token"
+                                                readonly property bool hasSavedSecret: savedAuth === "password" ? !!host.openClaw.hasPassword : !!host.openClaw.hasToken
+                                                readonly property var accessIds: ["auto", "sessions", "admin"]
                                                 property string mode: "local"
+                                                property string access: "auto"
+                                                property string auth: "token"
+                                                property bool clearToken: false
                                                 readonly property string remoteUrl: { var t = clawUrl.text.trim(); return t && t.indexOf("://") < 0 ? "wss://" + t : t }
-                                                readonly property bool remoteInsecure: /^ws:/i.test(remoteUrl)
+                                                readonly property string endpoint: mode === "local"
+                                                    ? "ws://" + localAddress + (Number(clawPort.text) === 80 ? "" : ":" + Number(clawPort.text)) : remoteUrl
+                                                readonly property bool remoteInsecure: remoteUrl.length > 0 && !/^wss:\/\//i.test(remoteUrl)
                                                 readonly property bool valid: mode === "local"
                                                     ? /^\d{1,5}$/.test(clawPort.text.trim()) && Number(clawPort.text) >= 1 && Number(clawPort.text) <= 65535
                                                     : remoteUrl.length > 0 && !remoteInsecure
-                                                readonly property bool dirty: mode !== savedMode || !savedUrl || clawToken.text.length > 0
-                                                    || (mode === "local" ? clawPort.text.trim() !== savedPort : remoteUrl !== savedUrl)
+                                                readonly property bool dirty: endpoint !== savedUrl || access !== savedAccess || auth !== savedAuth || clawToken.text.length > 0 || clearToken
+                                                readonly property string credentialLabel: auth === "password" ? "密码" : "令牌"
+                                                readonly property bool sameCredential: endpoint === savedUrl && auth === savedAuth && hasSavedSecret
                                                 function reset() {
                                                     mode = savedMode
+                                                    access = savedAccess
+                                                    auth = savedAuth
+                                                    clearToken = false
                                                     clawPort.text = savedPort
                                                     clawUrl.text = savedMode === "remote" ? savedUrl : ""
                                                     clawToken.clear()
                                                 }
-                                                onVisibleChanged: { reset(); if (!visible) openClawInfoBtn.expanded = false }
+                                                function endpointEdited() {
+                                                    access = endpoint === savedUrl ? savedAccess : "auto"
+                                                    auth = endpoint === savedUrl ? savedAuth : "token"
+                                                    clearToken = false
+                                                    clawToken.clear()
+                                                }
+                                                function save() {
+                                                    host.saveOpenClaw(endpoint, clawToken.text, access, clearToken, auth)
+                                                    clawToken.clear()
+                                                }
+                                                onVisibleChanged: { reset(); if (!visible) { openClawInfoBtn.expanded = false; openClawAccessInfo.expanded = false } }
                                                 Component.onCompleted: reset()
                                                 Connections { target: host; function onOpenClawChanged() { openClawCard.reset() } }
                                                 RowLayout {
@@ -2762,7 +3015,14 @@ ApplicationWindow {
                                                 }
                                                 Hint {
                                                     visible: openClawInfoBtn.expanded; Layout.fillWidth: true
-                                                    text: "本机：连接这台电脑上运行的 Gateway，只需填写端口。\n远程：连接另一台主机上的 Gateway，须使用 wss:// 加密地址，不接受明文 ws://。"
+                                                    text: "手机仍连接 Orbis Host；只有 Host 连接 Gateway。\n本机填写回环端口。远程填写启用 TLS、可转发 WebSocket 的 wss:// 根地址。认证方式须与 Gateway 一致。首次接入或提高权限时，可能需要在 Gateway 端批准 Orbis Host。"
+                                                }
+                                                Hint {
+                                                    objectName: "openClawProblem"
+                                                    readonly property string detail: window.openClawProblem()[1]
+                                                    visible: detail.length > 0 && !host.resumePending; Layout.fillWidth: true
+                                                    text: detail + (host.openClawConnection.approvalId ? "\n申请编号：" + host.openClawConnection.approvalId : "")
+                                                    color: Theme.warning
                                                 }
                                                 ConnectionModePicker {
                                                     objectName: "openClawMode"
@@ -2770,18 +3030,62 @@ ApplicationWindow {
                                                     options: ["本机", "远程"]
                                                     currentIndex: openClawCard.mode === "remote" ? 1 : 0
                                                     enabled: !host.busy && openClawCard.editable
-                                                    onPicked: function(i) { openClawCard.mode = i === 1 ? "remote" : "local" }
+                                                    onPicked: function(i) {
+                                                        openClawCard.mode = i === 1 ? "remote" : "local"
+                                                        openClawCard.endpointEdited()
+                                                    }
                                                 }
-                                                Field { id: clawPort; objectName: "openClawPort"; visible: openClawCard.mode === "local"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 5; inputMethodHints: Qt.ImhDigitsOnly; marksProviderDirty: false; placeholderText: "Gateway 端口（默认 18789）"; Accessible.name: "OpenClaw 本机 Gateway 端口" }
-                                                Field { id: clawUrl; objectName: "openClawUrl"; visible: openClawCard.mode === "remote"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "wss://gateway.example.com"; Accessible.name: "OpenClaw 远程 Gateway 地址" }
+                                                Field { id: clawPort; objectName: "openClawPort"; visible: openClawCard.mode === "local"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 5; inputMethodHints: Qt.ImhDigitsOnly; marksProviderDirty: false; placeholderText: "Gateway 端口（默认 18789）"; Accessible.name: "OpenClaw 本机 Gateway 端口"; onTextEdited: openClawCard.endpointEdited() }
+                                                Field { id: clawUrl; objectName: "openClawUrl"; visible: openClawCard.mode === "remote"; Layout.fillWidth: true; enabled: !host.busy; readOnly: !openClawCard.editable; maximumLength: 2048; marksProviderDirty: false; placeholderText: "wss://gateway.example.com"; Accessible.name: "OpenClaw 远程 Gateway 地址"; onTextEdited: openClawCard.endpointEdited() }
                                                 Hint { visible: openClawCard.mode === "remote" && openClawCard.remoteInsecure; text: "远程 Gateway 须使用 wss:// 加密连接。"; Layout.fillWidth: true; color: Theme.warning }
-                                                Field {
-                                                    id: clawToken; objectName: "openClawToken"
-                                                    visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
-                                                    marksProviderDirty: false; maximumLength: 4096; echoMode: TextInput.Password
-                                                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                                                    placeholderText: host.openClaw.hasToken && openClawCard.mode === openClawCard.savedMode && !openClawCard.dirty ? "已保存令牌" : "Gateway 令牌（可选）"
-                                                    Accessible.name: "OpenClaw Gateway 令牌"
+                                                RowLayout {
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    SoftComboBox {
+                                                        objectName: "openClawAuth"; Accessible.name: "OpenClaw 认证方式"
+                                                        Layout.preferredWidth: 146
+                                                        model: ["令牌认证", "密码认证"]
+                                                        currentIndex: openClawCard.auth === "password" ? 1 : 0
+                                                        enabled: !host.busy && openClawCard.editable
+                                                        onActivated: function(i) {
+                                                            openClawCard.auth = i === 1 ? "password" : "token"
+                                                            openClawCard.clearToken = false
+                                                            clawToken.clear()
+                                                        }
+                                                    }
+                                                    Field {
+                                                        id: clawToken; objectName: "openClawToken"
+                                                        visible: openClawCard.editable; Layout.fillWidth: true; enabled: !host.busy
+                                                        marksProviderDirty: false; maximumLength: 4096; echoMode: TextInput.Password
+                                                        inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                                                        placeholderText: openClawCard.clearToken ? "应用后清除" + openClawCard.credentialLabel
+                                                            : openClawCard.sameCredential ? "已保存" + openClawCard.credentialLabel + "，留空保留" : "Gateway " + openClawCard.credentialLabel
+                                                        Accessible.name: "OpenClaw Gateway " + openClawCard.credentialLabel
+                                                        onTextEdited: openClawCard.clearToken = false
+                                                    }
+                                                }
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    Label { text: "请求权限"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                                    Hint {
+                                                        objectName: "openClawGrantedAccess"
+                                                        visible: host.desiredRunning && !!host.openClawConnection.granted
+                                                        text: host.openClawConnection.granted === "admin" ? "已授予：管理员"
+                                                            : host.openClawConnection.granted === "sessions" ? "已授予：会话读写" : "尚未授予"
+                                                    }
+                                                    InfoHintButton { id: openClawAccessInfo; Accessible.name: "OpenClaw 权限说明" }
+                                                }
+                                                Hint {
+                                                    visible: openClawAccessInfo.expanded; Layout.fillWidth: true
+                                                    text: "自动：本机使用 Gateway 默认权限，远程请求会话读写。\n管理员可配置 Gateway，并可能允许在默认工作区外创建会话。这是 Gateway 权限，不是电脑系统管理员；最终以 Gateway 授权为准。"
+                                                }
+                                                ConnectionModePicker {
+                                                    objectName: "openClawAccess"
+                                                    Accessible.name: "OpenClaw 请求权限"
+                                                    Layout.fillWidth: true
+                                                    options: ["自动", "会话读写", "管理员"]
+                                                    currentIndex: Math.max(0, openClawCard.accessIds.indexOf(openClawCard.access))
+                                                    enabled: !host.busy && openClawCard.editable
+                                                    onPicked: function(i) { openClawCard.access = openClawCard.accessIds[i] }
                                                 }
                                                 Hint { visible: !openClawCard.editable; text: "由环境变量配置" }
                                                 Flow {
@@ -2792,19 +3096,43 @@ ApplicationWindow {
                                                         text: host.desiredRunning ? "应用并重新连接" : "保存配置"
                                                         enabled: !host.busy && openClawCard.dirty && openClawCard.valid
                                                         loading: window.activityKinds.indexOf("openClaw") >= 0
-                                                        onClicked: { host.saveOpenClaw(openClawCard.mode === "local" ? "ws://127.0.0.1:" + Number(clawPort.text) : openClawCard.remoteUrl, clawToken.text); clawToken.clear() }
+                                                        onClicked: {
+                                                            if (openClawCard.mode === "remote" && openClawCard.access === "admin"
+                                                                && (openClawCard.savedAccess !== "admin" || openClawCard.endpoint !== openClawCard.savedUrl)) openClawAdminConfirm.open()
+                                                            else openClawCard.save()
+                                                        }
                                                     }
                                                     ActionButton {
-                                                        objectName: "reconnectOpenClaw"; text: "重新连接 Host"
+                                                        objectName: "reconnectOpenClaw"; text: "重新连接"
                                                         visible: !!host.openClaw.url && !host.openClaw.invalid && host.desiredRunning
                                                         enabled: !host.busy && !openClawCard.dirty
                                                         onClicked: host.reconnectOpenClaw()
+                                                    }
+                                                    ActionButton {
+                                                        objectName: "clearOpenClawToken"
+                                                        text: (openClawCard.clearToken ? "保留" : "清除已保存") + openClawCard.credentialLabel
+                                                        visible: openClawCard.editable && openClawCard.sameCredential
+                                                        enabled: !host.busy
+                                                        onClicked: { clawToken.clear(); openClawCard.clearToken = !openClawCard.clearToken }
                                                     }
                                                     ActionButton {
                                                         objectName: "disableOpenClaw"; text: "移除连接配置"
                                                         visible: openClawCard.editable && (!!host.openClaw.url || !!host.openClaw.invalid)
                                                         enabled: !host.busy
                                                         onClicked: { clawToken.clear(); host.saveOpenClaw("", "") }
+                                                    }
+                                                }
+                                                Flow {
+                                                    Layout.fillWidth: true; spacing: 8
+                                                    ActionButton {
+                                                        objectName: "openClawNativeSettings"; text: "Gateway 运行配置"
+                                                        enabled: !host.busy
+                                                        onClicked: openClawNativeDialog.open()
+                                                    }
+                                                    ActionButton {
+                                                        objectName: "openClawControlUi"; text: "打开 OpenClaw 控制台"
+                                                        enabled: !!openClawCard.savedUrl && !host.openClaw.invalid
+                                                        onClicked: Qt.openUrlExternally(openClawCard.savedUrl.replace(/^wss:/, "https:").replace(/^ws:/, "http:"))
                                                     }
                                                 }
                                             }
@@ -3305,9 +3633,9 @@ ApplicationWindow {
                 }
                 Label { text: "名称"; color: Theme.inkMuted }
                 Field { id: providerName; objectName: "providerName"; Layout.fillWidth: true; maximumLength: 80; placeholderText: "例如：工作账号 / 自建 API" }
-                Label { text: "供应商标识"; visible: window.providerDraft.kind === "pi" || providerDetails.checked; color: Theme.inkMuted }
-                Field { id: providerKey; visible: window.providerDraft.kind === "pi" || providerDetails.checked; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: window.providerDraft.kind !== "pi" || !!window.providerDraft.create }
-                Hint { visible: window.providerDraft.kind === "pi"; text: window.providerDraft.create ? "标识对应 models.json 的节点；保存后不可修改。" : "标识固定；修改名称不会更改模型引用。"; Layout.fillWidth: true }
+                Label { text: "供应商标识"; visible: ProviderFlow.ownsKey(window.providerDraft.kind) || providerDetails.checked; color: Theme.inkMuted }
+                Field { id: providerKey; visible: ProviderFlow.ownsKey(window.providerDraft.kind) || providerDetails.checked; Layout.fillWidth: true; maximumLength: 128; placeholderText: "custom"; enabled: !ProviderFlow.ownsKey(window.providerDraft.kind) || !!window.providerDraft.create }
+                Hint { visible: ProviderFlow.ownsKey(window.providerDraft.kind); text: window.providerDraft.create ? "标识对应 " + ProviderFlow.nativeFile(window.providerDraft.kind) + " 的节点；保存后不可修改。" : "标识固定；修改名称不会更改模型引用。"; Layout.fillWidth: true }
                 Label { text: "ChatGPT 登录来源"; visible: window.officialProvider && window.providerDraft.kind === "codex"; color: Theme.inkMuted }
                 ProviderComboBox { id: providerAccount; visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true; textRole: "label"; valueRole: "id"; model: [] }
                 RowLayout { visible: window.officialProvider && window.providerDraft.kind === "codex"; Layout.fillWidth: true
@@ -3333,7 +3661,7 @@ ApplicationWindow {
                     Field { id: providerWebsite; Layout.fillWidth: true; placeholderText: "供应商网站" }
                     Field { id: providerNotes; Layout.fillWidth: true; placeholderText: "备注"; maximumLength: 4000 }
                 }
-                SoftSwitch { id: providerAddToLive; text: window.providerDraft.kind === "pi" ? "保存后立即启用" : "没有当前供应商时自动启用"; visible: !!window.providerDraft.create }
+                SoftSwitch { id: providerAddToLive; text: ProviderFlow.ownsKey(window.providerDraft.kind) ? "保存后立即启用" : "没有当前供应商时自动启用"; visible: !!window.providerDraft.create }
                 RowLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true
                     SoftSwitch { id: providerCommon; text: "使用 Codex 通用配置" }
                     Item { Layout.fillWidth: true }
@@ -3357,8 +3685,8 @@ ApplicationWindow {
                         Field { id: claudeSonnet; Layout.fillWidth: true; placeholderText: "Sonnet 模型 ID（留空使用原生默认）" }
                         Field { id: claudeOpus; Layout.fillWidth: true; placeholderText: "Opus 模型 ID（留空使用原生默认）" }
                     }
-                    Label { text: "默认模型"; visible: window.providerDraft.kind !== "pi"; color: Theme.inkMuted }
-                    RowLayout { visible: window.providerDraft.kind !== "pi"; Layout.fillWidth: true; spacing: 12
+                    Label { text: "默认模型"; visible: !ProviderFlow.ownsKey(window.providerDraft.kind); color: Theme.inkMuted }
+                    RowLayout { visible: !ProviderFlow.ownsKey(window.providerDraft.kind); Layout.fillWidth: true; spacing: 12
                         Field { id: providerModel; objectName: "providerDefaultModel"; Layout.fillWidth: true; placeholderText: "填写模型 ID，或从模型列表选择" }
                         ActionButton { objectName: "fetchDefaultModel"; text: host.providerModelsLoading ? "获取中…" : "获取模型列表"; visible: window.providerDraft.kind === "codex" && !window.officialProvider; enabled: !host.busy && !host.providerModelsLoading && providerUrl.text.trim().length > 0; onClicked: window.requestProviderModels(-2) }
                     }
@@ -3392,10 +3720,10 @@ ApplicationWindow {
                         Label { text: "请求覆盖（headers / body）"; color: Theme.inkMuted }
                         SoftTextArea { id: providerRequestOverrides; Layout.fillWidth: true; Layout.preferredHeight: 90; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                     }
-                    SoftSwitch { id: providerTransportDetails; marksProviderDirty: false; text: "请求头与兼容配置"; visible: !window.officialProvider && ["pi", "codex"].indexOf(window.providerDraft.kind) >= 0 }
+                    SoftSwitch { id: providerTransportDetails; marksProviderDirty: false; text: "请求头与兼容配置"; visible: !window.officialProvider && (window.providerDraft.kind === "codex" || ProviderFlow.ownsKey(window.providerDraft.kind)) }
                     Label { text: "请求头（JSON 对象）"; visible: providerTransportDetails.visible && providerTransportDetails.checked; color: Theme.inkMuted }
                     SoftTextArea { id: piHeaders; visible: providerTransportDetails.visible && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
-                    ColumnLayout { visible: window.providerDraft.kind === "pi" || window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 8
+                    ColumnLayout { visible: ProviderFlow.ownsKey(window.providerDraft.kind) || window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 8
                         Label { text: "兼容参数（JSON 对象）"; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; color: Theme.inkMuted }
                         SoftTextArea { id: piCompat; visible: window.providerDraft.kind === "pi" && providerTransportDetails.checked; Layout.fillWidth: true; Layout.preferredHeight: 64; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                         RowLayout { Layout.fillWidth: true
@@ -3423,12 +3751,12 @@ ApplicationWindow {
                                     ActionButton { text: "删除"; danger: true; enabled: !host.providerModelsLoading; onClicked: window.deleteProviderModel(index) }
                                 }
                                 RowLayout { Layout.fillWidth: true
-                                    SoftCheckBox { text: "推理"; visible: window.providerDraft.kind === "pi"; checked: modelData.reasoning === true; onToggled: window.updateProviderModel(index, "reasoning", checked) }
+                                    SoftCheckBox { text: "推理"; visible: ProviderFlow.ownsKey(window.providerDraft.kind) && window.providerDraft.kind !== "hermes"; checked: modelData.reasoning === true; onToggled: window.updateProviderModel(index, "reasoning", checked) }
                                     SoftCheckBox { text: "图像输入"; checked: Array.isArray(modelData.input) && modelData.input.indexOf("image") >= 0; onToggled: window.updateProviderModel(index, "input", checked ? ["text", "image"] : ["text"]) }
                                     Label { text: "上下文"; color: Theme.inkMuted }
                                     Field { Layout.fillWidth: true; text: modelData.contextWindow === undefined ? "" : String(modelData.contextWindow); placeholderText: window.providerDraft.kind === "pi" ? "128000" : window.providerDraft.kind === "dsh" ? "262144" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "contextWindow", text) }
-                                    Label { text: "最大输出"; color: Theme.inkMuted }
-                                    Field { Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: window.providerDraft.kind === "pi" ? "16384" : window.providerDraft.kind === "dsh" ? "32768" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "maxTokens", text) }
+                                    Label { text: "最大输出"; visible: ProviderFlow.hasMaxTokens(window.providerDraft.kind); color: Theme.inkMuted }
+                                    Field { visible: ProviderFlow.hasMaxTokens(window.providerDraft.kind); Layout.fillWidth: true; text: modelData.maxTokens === undefined ? "" : String(modelData.maxTokens); placeholderText: window.providerDraft.kind === "pi" ? "16384" : window.providerDraft.kind === "dsh" ? "32768" : "继承原生默认"; inputMethodHints: Qt.ImhDigitsOnly; onTextEdited: window.updateProviderModel(index, "maxTokens", text) }
                                 }
                                 SoftTextArea { visible: window.providerDraft.kind === "pi"; Layout.fillWidth: true; Layout.preferredHeight: 58; placeholderText: "思考档位映射（留空使用 Pi 默认值）"; text: modelData.thinkingLevelMap === undefined ? "" : JSON.stringify(modelData.thinkingLevelMap); selectByMouse: true; wrapMode: TextEdit.Wrap; onTextChanged: if (activeFocus) window.updateProviderModel(index, "thinkingLevelMap", text) }
                                 ColumnLayout { visible: window.providerDraft.kind === "dsh"; Layout.fillWidth: true; spacing: 6
@@ -3476,7 +3804,7 @@ ApplicationWindow {
                     }
                 }
                 ColumnLayout { visible: advancedProvider.checked; Layout.fillWidth: true; spacing: 10
-                    Hint { text: window.providerDraft.kind === "codex" ? "Codex 的 auth.json、config.toml 和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "dsh" ? "DSH 的 patch YAML、环境变量和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "claude" ? "Claude Code：供应商环境变量、模型和认证配置。" : "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
+                    Hint { text: window.providerDraft.kind === "codex" ? "Codex 的 auth.json、config.toml 和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "dsh" ? "DSH 的 patch YAML、环境变量和其他字段分别编辑，保存时会还原为原生配置对象。" : window.providerDraft.kind === "claude" ? "Claude Code：供应商环境变量、模型和认证配置。" : "完整的 " + ProviderFlow.nativeFile(window.providerDraft.kind) + " 供应商节点。"; Layout.fillWidth: true }
                     ColumnLayout { visible: window.providerDraft.kind === "codex"; Layout.fillWidth: true; spacing: 8
                         Label { text: "auth.json（JSON 对象或 null）"; color: Theme.inkMuted }
                         SoftTextArea { id: providerAuthJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
@@ -3493,8 +3821,8 @@ ApplicationWindow {
                         Label { text: "其他字段（JSON 对象，可留空）"; color: Theme.inkMuted }
                         SoftTextArea { id: dshExtraJson; Layout.fillWidth: true; Layout.preferredHeight: 100; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
                     }
-                    ColumnLayout { visible: ["pi", "claude"].indexOf(window.providerDraft.kind) >= 0; Layout.fillWidth: true
-                        Hint { text: window.providerDraft.kind === "claude" ? "Claude Code：settings.json 中的供应商 env、模型和认证字段。Hooks、权限与共享设置保持不变。" : "Pi：完整的 models.json.providers.<标识> 节点。"; Layout.fillWidth: true }
+                    ColumnLayout { visible: window.providerDraft.kind === "claude" || ProviderFlow.ownsKey(window.providerDraft.kind); Layout.fillWidth: true
+                        Hint { text: window.providerDraft.kind === "claude" ? "Claude Code：settings.json 中的供应商 env、模型和认证字段。Hooks、权限与共享设置保持不变。" : "完整的 " + ProviderFlow.nativeFile(window.providerDraft.kind) + " 供应商节点。"; Layout.fillWidth: true }
                         SoftTextArea { id: providerJson; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas"; color: Theme.ink }
                     }
                 }
@@ -3569,6 +3897,178 @@ ApplicationWindow {
         onTriggered: { if (Date.now() >= window.oauthPending.expiresAt) { host.oauthAccount("cancel", window.oauthPending.deviceCode); window.oauthPending = ({}) } else if (!host.busy) host.oauthAccount("poll", window.oauthPending.deviceCode) }
     }
     SoftDialog {
+        id: openClawAdminConfirm; objectName: "openClawAdminConfirm"
+        title: "请求远程管理员权限"; anchors.centerIn: parent; modal: true; width: 470
+        contentItem: ColumnLayout {
+            Hint { Layout.fillWidth: true; text: "Host 将向该远程 Gateway 请求管理员权限。请仅对你信任的 Gateway 启用；Gateway 仍可能要求批准。" }
+        }
+        footer: SoftDialogActions {
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "取消"; onClicked: openClawAdminConfirm.close() }
+            ActionButton { objectName: "confirmOpenClawAdmin"; text: "保存并请求"; primary: true; onClicked: { openClawAdminConfirm.close(); openClawCard.save() } }
+        }
+    }
+    SoftDialog {
+        id: openClawNativeDialog; objectName: "openClawNativeDialog"
+        title: "OpenClaw Gateway 运行配置"; anchors.centerIn: parent; modal: true
+        width: Math.min(window.width - 56, 690); height: Math.min(window.height - 52, 700)
+        readonly property bool working: window.activityKinds.indexOf("openClawConfig") >= 0
+        readonly property bool canEdit: host.openClawConnection.canEdit === true && host.desiredRunning
+        readonly property var rows: host.openClawNative.fields || []
+        readonly property bool loaded: canEdit && !!host.openClawNative.ticket && !freshReadRequired
+        readonly property string invalidField: {
+            for (const row of rows) if (Object.prototype.hasOwnProperty.call(draft, row.key) && valueOf(row) === undefined) return row.label
+            return ""
+        }
+        readonly property var changes: {
+            let result = {}
+            for (const row of rows) {
+                if (!Object.prototype.hasOwnProperty.call(draft, row.key)) continue
+                const value = valueOf(row)
+                if (value !== undefined && JSON.stringify(value) !== JSON.stringify(row.value)) result[row.key] = value
+            }
+            return result
+        }
+        property var draft: ({})
+        property bool freshReadRequired: true
+        function edit(key, value) { draft = Object.assign({}, draft, { [key]: value }) }
+        function valueOf(row) {
+            if (!Object.prototype.hasOwnProperty.call(draft, row.key)) return row.value
+            const value = draft[row.key]
+            if (row.kind === "choice" || row.kind === "flag") return value
+            const text = value.trim()
+            if (!text) return null
+            if (row.kind === "number") {
+                const number = Number(text)
+                return /^\d+$/.test(text) && number >= row.min && number <= row.max ? number : undefined
+            }
+            if (row.kind === "models" || row.kind === "tools") {
+                return text === "[]" ? [] : text.split(",").map(x => x.trim())
+            }
+            return text
+        }
+        function choices(row) {
+            if (row.kind === "flag") return [{label: "Gateway 默认", value: null}, {label: "允许", value: true}, {label: "不允许", value: false}]
+            const choices = [{label: "Gateway 默认", value: null}]
+            for (const key of Object.keys(row.options || {})) choices.push({label: row.options[key], value: key})
+            return choices
+        }
+        function read() {
+            freshReadRequired = true
+            draft = ({})
+            host.readOpenClawNative()
+        }
+        onAboutToShow: if (canEdit) read()
+        onClosed: { draft = ({}); freshReadRequired = true }
+        Connections {
+            target: host
+            function onOpenClawNativeChanged() {
+                if (host.openClawNative.ticket) openClawNativeDialog.freshReadRequired = false
+            }
+        }
+        contentItem: ScrollView {
+            clip: true; contentWidth: availableWidth
+            ColumnLayout {
+                width: openClawNativeDialog.availableWidth - 12; spacing: 10
+                Hint {
+                    visible: !openClawNativeDialog.canEdit; Layout.fillWidth: true
+                    text: host.openClawConnection.granted === "admin"
+                        ? "此 Gateway 未开放配置接口，或 Host 选择了会话读写。可在 OpenClaw 控制台修改。"
+                        : "连接后需获得 Gateway 管理员权限才能修改。可在连接卡申请权限，并在 Gateway 端批准。"
+                }
+                Hint { visible: openClawNativeDialog.working; Layout.fillWidth: true; text: "正在与 Gateway 通信…" }
+                Hint {
+                    objectName: "openClawNativeFeedback"
+                    visible: !!host.openClawNativeFeedback; Layout.fillWidth: true; text: host.openClawNativeFeedback
+                }
+                Repeater {
+                    model: openClawNativeDialog.loaded ? openClawNativeDialog.rows : []
+                    delegate: ColumnLayout {
+                        id: clawSetting
+                        required property int index
+                        required property var modelData
+                        readonly property bool choice: modelData.kind === "choice" || modelData.kind === "flag"
+                        readonly property var options: choice ? openClawNativeDialog.choices(modelData) : []
+                        Layout.fillWidth: true; spacing: 7
+                        Heading {
+                            visible: clawSetting.index === 0 || clawSetting.modelData.group !== openClawNativeDialog.rows[clawSetting.index - 1].group
+                            text: clawSetting.modelData.group; Layout.topMargin: 12; Layout.bottomMargin: 4; Layout.fillWidth: true
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 12
+                            Label { text: clawSetting.modelData.label; Layout.preferredWidth: 161; color: Theme.inkMuted }
+                            SoftComboBox {
+                                objectName: "openClawSetting-" + clawSetting.modelData.key
+                                visible: clawSetting.choice && clawSetting.modelData.editable
+                                enabled: !host.busy && !openClawNativeDialog.working
+                                inModal: true; Layout.fillWidth: true; textRole: "label"; valueRole: "value"
+                                Accessible.name: clawSetting.modelData.label
+                                model: clawSetting.options
+                                currentIndex: Math.max(0, clawSetting.options.findIndex(x => x.value === openClawNativeDialog.valueOf(clawSetting.modelData)))
+                                onActivated: function(i) { openClawNativeDialog.edit(clawSetting.modelData.key, clawSetting.options[i].value) }
+                            }
+                            Field {
+                                objectName: "openClawInput-" + clawSetting.modelData.key
+                                visible: !clawSetting.choice && clawSetting.modelData.editable
+                                enabled: !host.busy && !openClawNativeDialog.working
+                                Layout.fillWidth: true; marksProviderDirty: false; maximumLength: 8192
+                                Accessible.name: clawSetting.modelData.label
+                                inputMethodHints: clawSetting.modelData.kind === "number" ? Qt.ImhDigitsOnly : Qt.ImhNone
+                                placeholderText: clawSetting.modelData.placeholder || "Gateway 默认"
+                                text: {
+                                    const row = clawSetting.modelData
+                                    if (Object.prototype.hasOwnProperty.call(openClawNativeDialog.draft, row.key)) return openClawNativeDialog.draft[row.key]
+                                    const value = row.value
+                                    return value === null ? "" : Array.isArray(value) ? (value.length ? value.join(", ") : "[]") : String(value)
+                                }
+                                onTextEdited: openClawNativeDialog.edit(clawSetting.modelData.key, text)
+                            }
+                            Hint { visible: !clawSetting.modelData.editable; Layout.fillWidth: true; text: "此值需在 OpenClaw 控制台修改" }
+                        }
+                    }
+                }
+                Hint {
+                    visible: openClawNativeDialog.loaded && !!openClawNativeDialog.invalidField; Layout.fillWidth: true
+                    color: Theme.warning; text: "请检查「" + openClawNativeDialog.invalidField + "」"
+                }
+            }
+        }
+        footer: SoftDialogActions {
+            InfoHintButton { id: openClawDefaultsInfo; Accessible.name: "OpenClaw 运行配置说明"; onClicked: openClawDefaultsHelp.open() }
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "关闭"; enabled: !openClawNativeDialog.working; onClicked: openClawNativeDialog.close() }
+            ActionButton { objectName: "readOpenClawNative"; text: "重新读取"; enabled: openClawNativeDialog.canEdit && !host.busy && !openClawNativeDialog.working; onClicked: openClawNativeDialog.read() }
+            ActionButton {
+                objectName: "applyOpenClawNative"; text: "应用到 Gateway"; primary: true
+                enabled: openClawNativeDialog.loaded && !host.busy && !openClawNativeDialog.working && !openClawNativeDialog.invalidField && Object.keys(openClawNativeDialog.changes).length > 0
+                onClicked: openClawNativeConfirm.open()
+            }
+        }
+    }
+    SoftDialog {
+        id: openClawDefaultsHelp; title: "运行配置说明"; anchors.centerIn: parent; modal: true; width: 490
+        contentItem: ColumnLayout {
+            Hint { Layout.fillWidth: true; text: "留空或选择「Gateway 默认」会移除该项覆盖；工具或备用模型列表填 [] 表示显式空列表。\n高级配置、供应商登录、密钥和渠道操作请在 OpenClaw 控制台完成。" }
+        }
+        standardButtons: Dialog.Ok
+    }
+    SoftDialog {
+        id: openClawNativeConfirm; objectName: "openClawNativeConfirm"
+        title: "应用 Gateway 默认配置"; anchors.centerIn: parent; modal: true; width: 475
+        contentItem: ColumnLayout {
+            Hint { Layout.fillWidth: true; text: "此修改会影响该 Gateway 的其他客户端。已有的 Agent 单独配置仍优先；部分改动会触发 Gateway 重启。" }
+        }
+        footer: SoftDialogActions {
+            Item { Layout.fillWidth: true }
+            ActionButton { text: "取消"; onClicked: openClawNativeConfirm.close() }
+            ActionButton {
+                objectName: "confirmOpenClawNative"; text: "确认应用"; primary: true
+                enabled: openClawNativeDialog.loaded && !host.busy && !openClawNativeDialog.working
+                onClicked: { openClawNativeConfirm.close(); host.applyOpenClawNative(openClawNativeDialog.changes) }
+            }
+        }
+    }
+    SoftDialog {
         id: codexPreferencesDialog; title: "Codex 通用配置"; anchors.centerIn: parent; modal: true; width: 660; height: 480
         ColumnLayout { width: parent.width; spacing: 12
             SoftTextArea { id: codexCommonText; Layout.fillWidth: true; Layout.preferredHeight: 230; selectByMouse: true; wrapMode: TextEdit.Wrap; font.family: Qt.platform.os === "osx" ? "Menlo" : "Consolas" }
@@ -3611,14 +4111,14 @@ ApplicationWindow {
         onAccepted: window.acceptDiscoveredModels()
     }
     SoftDialog {
-        id: removeProviderDialog; title: "从 Pi 移除供应商？"; anchors.centerIn: parent; modal: true; width: 440
-        Label { width: parent.width; text: "仅移除 models.json 中的节点，卡片和最新配置仍保留。" + (host.piDefaultProvider === window.removeProviderId ? "\n这是 Pi 的全局默认供应商。" : ""); wrapMode: Text.WordWrap }
+        id: removeProviderDialog; title: "移出供应商？"; anchors.centerIn: parent; modal: true; width: 440
+        Label { width: parent.width; text: "仅移除 " + ProviderFlow.nativeFile(host.providerKind) + " 中的节点，卡片和最新配置仍保留。" + (window.isDefaultProvider(window.removeProviderId) ? "\n这是当前的默认供应商。" : ""); wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.switchProvider(window.removeProviderId, false)
     }
     SoftDialog {
         id: deleteProviderDialog; title: "删除供应商？"; anchors.centerIn: parent; modal: true; width: 410
-        Label { width: parent.width; text: host.providerKind === "pi" ? "删除卡片和 models.json 中的对应供应商。" + (host.piDefaultProvider === window.deleteProviderId ? "\n这是 Pi 的全局默认供应商。" : "") : "删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
+        Label { width: parent.width; text: ProviderFlow.ownsKey(host.providerKind) ? "删除卡片和 " + ProviderFlow.nativeFile(host.providerKind) + " 中的对应供应商。" + (window.isDefaultProvider(window.deleteProviderId) ? "\n这是当前的默认供应商。" : "") : "删除这个未启用的供应商配置。"; wrapMode: Text.WordWrap }
         standardButtons: Dialog.Cancel | Dialog.Ok
         onAccepted: host.removeProvider(window.deleteProviderId)
     }

@@ -37,7 +37,8 @@ class LocalizationTest {
     @Test fun principalSurfacesHaveEnglishCopy() {
         mapOf("设置" to "Settings", "语言" to "Language", "跟随系统" to "Follow system",
             "发送消息" to "Send message", "历史与分支" to "History and branches",
-            "连接你的电脑" to "Connect your computer", "下载" to "Downloads").forEach { (key, expected) ->
+            "连接你的电脑" to "Connect your computer", "下载" to "Downloads",
+            "隐私" to "Privacy", "设备使用统计" to "Device usage sharing").forEach { (key, expected) ->
             assertEquals(expected, L10n.format(key, language = AppLanguage.English))
             assertEquals(key, L10n.format(key, language = AppLanguage.Chinese))
         }

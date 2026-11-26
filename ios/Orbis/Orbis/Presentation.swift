@@ -237,6 +237,7 @@ func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
         "agent.openclaw",
         "agent.hermes",
         "agent.opencode",
+        agyFeature,
         "agent.enablement.v1",
         agentDialReviewFeature,
         "state.compact-bootstrap.v1",
@@ -245,6 +246,12 @@ func deviceAgentFeatures(_ ready: [String: Any]) -> [String] {
         runtimeViewCloseFeature,
         codexUnifiedHistoryFeature,
     ].filter { advertised.contains($0) }
+}
+
+let agyFeature = "agent.agy"
+func readyAdmitsAgy(_ ready: [String: Any]) -> Bool {
+    (ready["hostFeatures"] as? [String] ?? []).contains(agyFeature) &&
+        (ready["deviceFeatures"] as? [String] ?? []).contains(agyFeature)
 }
 
 let runtimeCloseFeature = "runtime.close.v1"
@@ -305,6 +312,7 @@ func runtimeAgentKind(_ runtimeId: String) -> String? {
     if let kimi = resolvedKimiCodeKind(kind: nil, id: runtimeId) { return kimi }
     if runtimeId.hasPrefix("openclaw:") { return "openclaw" }
     if runtimeId.hasPrefix("opencode:") { return "opencode" }
+    if runtimeId.hasPrefix("agy:") { return "agy" }
     return nil
 }
 

@@ -235,7 +235,7 @@ internal class HostConnection(
     private fun createConfiguredSession(kind: String, cwd: String, spawnMode: String? = null, firstMessage: String = ""): FirstSessionSubmission? {
         val connectionGeneration = generation
         val state = mutableState.value; val config = state.sessionConfiguration; val snapshot = config.snapshot
-        if (!state.allowsAgentSource(kind)) return null
+        if (!state.allowsAgentSource(kind) || kind == AGY_KIND && !state.canLaunchAgy()) return null
         if (!state.supportsKimiCode(kind) || kind in setOf(KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND) && !state.sessionConfigurationSupported) return null
         val admission = config.admitConfiguredLaunch(kind, cwd, configuredLaunchJournal.isLoaded)
         if (!admission.allowed) {
@@ -1257,7 +1257,7 @@ internal class HostConnection(
     /** ADR-0049 §6.4 `archive`：卡片立即移到目标列表；回执、断线、期限与核对全部交给账本（替代原 30 秒超时）。 */
     fun setSessionArchived(sessionId: String, archived: Boolean) {
         val state = mutableState.value
-        if (isCodexCatalogId(sessionId) && !state.unifiedCodexHistory) return
+        if (sessionId.startsWith("$AGY_KIND:") || isCodexCatalogId(sessionId) && !state.unifiedCodexHistory) return
         val entry = state.sessions[sessionId] ?: return
         val agentKind = entry.agentKind ?: return
         if (!state.supportsKimiCode(agentKind, sessionId)) return
@@ -1369,7 +1369,7 @@ internal class HostConnection(
         val kimiKind = kimiKind(state.sessions[sessionId]?.agentKind, sessionId)
         val kimi = kimiKind != null
         if (!state.supportsKimiCode(kimiKind, sessionId)) return
-        if (sessionId.startsWith("openclaw:") && !mutableState.value.openClawNegotiated) return
+        if ((sessionId.startsWith("openclaw:") && !state.openClawNegotiated) || (sessionId.startsWith("$AGY_KIND:") && !state.agyNegotiated)) return
         mutableState.value.codexProviderMismatch(sessionId)?.let { reason ->
             updateState { it.sessionFailure(sessionId, reason) }
             return
@@ -1394,9 +1394,9 @@ internal class HostConnection(
     /** L2：在指定目录新建会话（agentKind = pi | codex）。 */
     /** [spawnMode] overrides the Host-negotiated default; the UI-02 capture harness asks for `headless`. */
     fun createSession(agentKind: String, cwd: String, expectedHostId: String?, spawnMode: String? = null): Boolean {
-        if (agentKind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return false
+        if (agentKind == "openclaw" && !mutableState.value.canLaunchOpenClaw() || agentKind == AGY_KIND && !mutableState.value.canLaunchAgy()) return false
         if (!validateNewSessionTarget(expectedHostId)) return false
-        if (agentKind in setOf("openclaw", KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND)) return createConfiguredSession(agentKind, cwd, "headless") != null
+        if (agentKind in setOf("openclaw", KIMI_CODE_KIND, KIMI_CODE_DESKTOP_KIND, AGY_KIND)) return createConfiguredSession(agentKind, cwd, "headless") != null
         if (mutableState.value.supportsSessionConfiguration(agentKind) && spawnMode != "headless") return createConfiguredSession(agentKind, cwd, spawnMode) != null
         return activateTarget(buildJsonObject {
             put("type", "new")
@@ -2202,7 +2202,7 @@ internal class HostConnection(
 
     internal fun sendFirstSessionMessage(kind: String, cwd: String, text: String, expectedHost: String?): FirstSessionSubmission? =
         synchronized(stateWriterLock) {
-            if (!mutableState.value.allowsAgentSource(kind) || kind == "openclaw" && !mutableState.value.canLaunchOpenClaw()) return@synchronized null
+            if (!mutableState.value.allowsAgentSource(kind) || kind == "openclaw" && !mutableState.value.canLaunchOpenClaw() || kind == AGY_KIND && !mutableState.value.canLaunchAgy()) return@synchronized null
             if (!mutableState.value.supportsSessionConfiguration(kind)) updateState { it.copy(sessionConfiguration =
                 it.sessionConfiguration.copy(agentKind = kind, cwd = cwd)) }
             // S49 / SC70: an empty first message launches without a send operation.
@@ -2215,7 +2215,7 @@ internal class HostConnection(
             }
             if (mutableState.value.supportsSessionConfiguration(kind)) {
                 if (!validateNewSessionTarget(expectedHost)) return@synchronized null
-                return@synchronized createConfiguredSession(kind, cwd, firstMessage = text)
+                return@synchronized createConfiguredSession(kind, cwd, spawnMode = "headless".takeIf { kind == AGY_KIND }, firstMessage = text)
             }
             if (!createSession(kind, cwd, expectedHost)) return@synchronized null
             FirstSessionSubmission(sendMessage(text))

@@ -43,10 +43,10 @@ function detectDeviceRecommendation(nav = navigator, architecture = "") {
   }
   if (/Macintosh|Mac OS X/i.test(ua) || /Mac/i.test(platform)) {
     if (arch === "arm" || /arm64|aarch64/i.test(ua)) {
-      return { card: "host", platform: "macos-arm64", label: "Orbis Host（macOS · Apple Silicon）", matches: value => value === "macos-arm64" };
+      return { card: "host", platform: "macos-arm64", label: "Orbis Host（macOS，Apple Silicon）", matches: value => value === "macos-arm64" };
     }
     if (arch === "x86") {
-      return { card: "host", platform: "macos-x64", label: "Orbis Host（macOS · Intel）", matches: value => value === "macos-x64" };
+      return { card: "host", platform: "macos-x64", label: "Orbis Host（macOS，Intel）", matches: value => value === "macos-x64" };
     }
     return { card: "host", platform: "macos-arm64", label: "Orbis Host（macOS）", hint: "按芯片选择 Apple Silicon 或 Intel", matches: value => value === "macos-arm64" || value === "macos-x64" };
   }

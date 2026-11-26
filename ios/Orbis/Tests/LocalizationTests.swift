@@ -59,7 +59,8 @@ struct LocalizationTests {
     @Test func principalSurfacesHaveEnglishCopy() {
         for (key, expected) in [("设置", "Settings"), ("语言", "Language"), ("跟随系统", "Follow system"),
                                 ("发送消息", "Send message"), ("历史与分支", "History and branches"),
-                                ("连接你的电脑", "Connect your computer"), ("下载", "Downloads")] {
+                                ("连接你的电脑", "Connect your computer"), ("下载", "Downloads"),
+                                ("隐私", "Privacy"), ("设备使用统计", "Device usage sharing")] {
             #expect(L10n.format(key, language: .english) == expected)
             #expect(L10n.format(key, language: .chinese) == key)
         }
