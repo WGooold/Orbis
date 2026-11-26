@@ -7,6 +7,7 @@
 #include <QSignalSpy>
 #include <QFile>
 #include <QFileDialog>
+#include <QMouseEvent>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
@@ -910,13 +911,23 @@ private slots:
         const auto to = dragTo->mapToScene(dragTo->boundingRect().center()).toPoint();
         // The handle's mouse area is interactive even before the hover icon
         // is painted. The press assertion verifies the real drag owner.
-        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from);
+        // Deliver a single pressed pointer stream to Qt Quick. Do not let the
+        // runner's real desktop cursor or a synthetic-button timestamp enter it.
+        auto pointer = [window](QEvent::Type type, const QPoint &pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
+            QMouseEvent event(type, pos, window->mapToGlobal(pos), button, buttons, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &event);
+        };
+        pointer(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
         QTRY_COMPARE(window->property("draggedProviderId").toString(), QString("openai-copy"));
-        for (int step = 1; step <= 12; ++step) QTest::mouseMove(window, from + (to - from) * step / 12, 20);
         auto *providerRows = findVisualItem(detail, "inlineProviderRows");
         QVERIFY(providerRows);
-        QTRY_COMPARE(providerRows->property("dragTarget").toString(), QString("openrouter"));
-        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to, 20);
+        for (int step = 1; step <= 12; ++step) {
+            pointer(QEvent::MouseMove, from + (to - from) * step / 12, Qt::NoButton, Qt::LeftButton);
+            QCoreApplication::processEvents();
+        }
+        const auto dragTarget = providerRows->property("dragTarget").toString();
+        pointer(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+        QCOMPARE(dragTarget, QString("openrouter"));
         QTRY_COMPARE(controller.providers().first().toMap().value("id").toString(), QString("openai-copy"));
         QTRY_VERIFY(!controller.busy());
         QTRY_COMPARE(window->property("draggedProviderId").toString(), QString());
