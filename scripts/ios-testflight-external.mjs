@@ -219,7 +219,7 @@ export async function runExternal(request, options, pause = delay) {
 async function main() {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     version: { type: 'string' }, build: { type: 'string' }, 'notes-file': { type: 'string' }, locale: { type: 'string', default: 'zh-Hans' },
-    wait: { type: 'string', default: '0' }, 'notify-approved': { type: 'boolean' }, help: { type: 'boolean' },
+    wait: { type: 'string', default: '0' }, 'notify-approved': { type: 'boolean' }, 'upload-only': { type: 'boolean' }, help: { type: 'boolean' },
   } });
   if (values.help || positionals.length !== 1) {
     console.log('Usage: node scripts/ios-testflight-external.mjs preflight|status|distribute --version 0.1.3 --build 11\nDistribute: --notes-file <file> or ASC_TESTFLIGHT_NOTES, [--locale zh-Hans] [--wait 720] [--notify-approved]; preflight [--upload-only]\nAuth: ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_PATH or ASC_KEY_P8_BASE64 (team key).');

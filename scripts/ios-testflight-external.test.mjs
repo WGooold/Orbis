@@ -1,5 +1,7 @@
 import { generateKeyPairSync, verify } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { makeRequest, makeToken, runExternal } from './ios-testflight-external.mjs';
 
 const app = '6829381852';
@@ -69,6 +71,14 @@ function store(initial = {}) {
 }
 
 describe('external TestFlight release', () => {
+  it('accepts the upload-only preflight option in the CLI', () => {
+    const script = fileURLToPath(new URL('./ios-testflight-external.mjs', import.meta.url));
+    const result = spawnSync(process.execPath, [script, 'preflight', '--upload-only', '--help'], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('preflight [--upload-only]');
+    expect(result.stderr).toBe('');
+  });
+
   it('adds the exact build, enables automatic notifications, and submits once', async () => {
     const { request, writes } = store();
     expect(await runExternal(request, options)).toMatchObject({ inExternalGroup: true, reviewSubmissionAccepted: true,
