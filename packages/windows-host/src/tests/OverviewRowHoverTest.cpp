@@ -1020,10 +1020,14 @@ private slots:
         QVERIFY(inactiveState && enableAction && inactiveState->isVisible() && enableAction->isVisible());
         QCOMPARE(enableAction->property("text").toString(), QString("启用 DeepSeek Web"));
         QCOMPARE(inactiveState->property("horizontalAlignment").toInt(), int(Qt::AlignHCenter));
-        const auto inactiveCenter = inactiveState->mapToItem(inactiveState->parentItem(), inactiveState->boundingRect().center());
-        const auto enableCenter = enableAction->mapToItem(enableAction->parentItem(), enableAction->boundingRect().center());
-        QVERIFY(qAbs(inactiveCenter.x() - inactiveState->parentItem()->width() / 2) <= 0.5);
-        QVERIFY(qAbs(enableCenter.x() - enableAction->parentItem()->width() / 2) <= 0.5);
+        // Visibility changes immediately; the layout centers its new children
+        // on the next polish. Check the same tolerance on settled geometry.
+        const auto isCentered = [](QQuickItem *item) {
+            const auto center = item->mapToItem(item->parentItem(), item->boundingRect().center());
+            return item->width() > 0 && qAbs(center.x() - item->parentItem()->width() / 2) <= 0.5;
+        };
+        QTRY_VERIFY(isCentered(inactiveState));
+        QTRY_VERIFY(isCentered(enableAction));
         QVERIFY(QAccessible::queryAccessibleInterface(enableAction));
         const auto inactiveScreenshot = qEnvironmentVariable("ORBIS_AGENT_INACTIVE_SCREENSHOT");
         if (!inactiveScreenshot.isEmpty()) QVERIFY(window->grabWindow().save(inactiveScreenshot));
