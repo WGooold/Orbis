@@ -60,20 +60,20 @@ export function processTree(rows: ProcessIdentity[], root: ProcessIdentity, pres
 export async function listeningPids(port: number): Promise<number[]> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("无效的后台端口记录");
   if (process.platform === "win32") {
-    // Ask only for this port: enumerating every TCP connection can exceed the
-    // command timeout on a loaded hosted runner even when the listener exists.
-    // An empty result is CIM's "not found" error; only real query failures
-    // propagate to the bounded retry below.
-    const command = `$ErrorActionPreference = 'Stop'; try { Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object -ExpandProperty OwningProcess } catch { if ($_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound*') { } else { throw } }`;
+    // The original query is correct (and returns empty for a free port); only the
+    // full connection enumeration can exceed a tight timeout on a loaded hosted
+    // runner. Keep the semantics and give the query room, then retry once.
+    const command = `$ErrorActionPreference = 'Stop'; Get-NetTCPConnection | Where-Object { $_.State -eq 'Listen' -and $_.LocalPort -eq ${port} } | Select-Object -ExpandProperty OwningProcess`;
+    const query = (timeout: number) => execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { ...options, timeout });
     let stdout: string;
     try {
-      ({ stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], options));
+      ({ stdout } = await query(15_000));
     } catch {
       // A transient CIM failure during desktop shutdown must not be read as an
       // empty port (which could leave an unverified owner) or kill an unrelated
       // process. Retry once with a longer bound before surfacing the error.
       await delay(100);
-      ({ stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { ...options, timeout: 10_000 }));
+      ({ stdout } = await query(20_000));
     }
     return stdout.trim().split(/\s+/u).map(Number).filter(pid => pid > 1);
   }
