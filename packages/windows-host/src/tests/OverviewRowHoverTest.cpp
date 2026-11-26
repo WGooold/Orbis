@@ -908,13 +908,22 @@ private slots:
         QTRY_VERIFY(window->property("canReorderProviders").toBool());
         QTRY_VERIFY(revealForPointer(dragFrom) && revealForPointer(dragTo));
         const auto from = dragFrom->mapToScene(dragFrom->boundingRect().center()).toPoint();
-        const auto to = dragTo->mapToScene(dragTo->boundingRect().center()).toPoint();
+        auto *dragArea = findVisualItem(detail, "providerDragArea-openai-copy");
+        auto *destinationRow = findVisualItem(detail, "providerRow-openrouter");
+        QVERIFY(dragArea && destinationRow);
+        // The source slot and provider rows can move when the floating menu
+        // closes and the layout polishes. Track the destination row, not its
+        // old handle position, while the pointer stream is in progress.
+        const auto target = [&] {
+            const auto row = destinationRow->mapRectToScene(destinationRow->boundingRect());
+            return QPoint(qBound(qCeil(row.left() + 1), from.x(), qFloor(row.right() - 1)), qRound(row.center().y()));
+        };
         // The handle's mouse area is interactive even before the hover icon
         // is painted. The press assertion verifies the real drag owner.
         // Deliver a single pressed pointer stream to Qt Quick. Do not let the
         // runner's real desktop cursor or a synthetic-button timestamp enter it.
         auto pointer = [window](QEvent::Type type, const QPoint &pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
-            QMouseEvent event(type, pos, window->mapToGlobal(pos), button, buttons, Qt::NoModifier);
+            QMouseEvent event(type, pos, pos, window->mapToGlobal(pos), button, buttons, Qt::NoModifier);
             QCoreApplication::sendEvent(window, &event);
         };
         pointer(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
@@ -922,10 +931,19 @@ private slots:
         auto *providerRows = findVisualItem(detail, "inlineProviderRows");
         QVERIFY(providerRows);
         for (int step = 1; step <= 12; ++step) {
-            pointer(QEvent::MouseMove, from + (to - from) * step / 12, Qt::NoButton, Qt::LeftButton);
+            pointer(QEvent::MouseMove, from + (target() - from) * step / 12, Qt::NoButton, Qt::LeftButton);
             QCoreApplication::processEvents();
         }
+        const auto to = target();
         const auto dragTarget = providerRows->property("dragTarget").toString();
+        if (dragTarget != "openrouter") {
+            qInfo() << "Provider drag" << from << to << window->size()
+                    << "viewport" << pageFlick->mapRectToScene(pageFlick->boundingRect())
+                    << "target" << destinationRow->mapRectToScene(destinationRow->boundingRect())
+                    << "pressed" << dragArea->property("pressed") << "reordering" << dragArea->property("reordering")
+                    << "pointer" << dragArea->property("mouseX") << dragArea->property("mouseY")
+                    << "offset" << dragArea->property("offsetY") << "expected local" << dragArea->mapFromScene(to);
+        }
         pointer(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
         QCOMPARE(dragTarget, QString("openrouter"));
         QTRY_COMPARE(controller.providers().first().toMap().value("id").toString(), QString("openai-copy"));

@@ -2639,6 +2639,7 @@ ApplicationWindow {
                                                                         }
                                                                         MouseArea {
                                                                             id: dragMouse
+                                                                            objectName: "providerDragArea-" + providerRow.modelData.id
                                                                             anchors.fill: parent; enabled: window.canReorderProviders; preventStealing: true
                                                                             cursorShape: reordering ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                                                                             property real pressY: 0
