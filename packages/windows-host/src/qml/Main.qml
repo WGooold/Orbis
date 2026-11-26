@@ -2573,12 +2573,27 @@ ApplicationWindow {
                                                 ColumnLayout {
                                                     id: inlineProviderColumn
                                                     x: 6; y: 6; width: parent.width - 12; spacing: 2
+                                                    // HOST-PROVIDER-DRAG-01: reorder within this list. Hit-test the
+                                                    // pointer itself, not a delayed Qt drag item with an offset hotspot.
+                                                    objectName: "inlineProviderRows"
+                                                    property string dragTarget: ""
+                                                    function providerAt(item, x, y) {
+                                                        const viewport = scroll.contentItem
+                                                        const point = item.mapToItem(viewport, x, y)
+                                                        if (!viewport.contains(point)) return ""
+                                                        for (let i = 0; i < inlineProviderRows.count; ++i) {
+                                                            const row = inlineProviderRows.itemAt(i)
+                                                            if (row && row.visible && row.contains(item.mapToItem(row, x, y))) return row.modelData.id
+                                                        }
+                                                        return ""
+                                                    }
                                                     Hint {
                                                         visible: providerSection.rows.length === 0
                                                         text: providerSection.total > 0 ? "没有匹配的供应商" : host.providerKind !== window.detailProviderGroup || window.activityKinds.indexOf("providerList") >= 0 ? "正在读取供应商" : "没有可用供应商"
                                                         Layout.margins: 8
                                                     }
                                                     Repeater {
+                                                        id: inlineProviderRows
                                                         model: providerSection.rows
                                                         delegate: Item {
                                                             id: providerRow
@@ -2592,7 +2607,7 @@ ApplicationWindow {
                                                             readonly property var quota: host.providerQuotas[window.detailProviderGroup + ":" + modelData.id] || null
                                                             Layout.fillWidth: true
                                                             implicitHeight: providerRowContent.implicitHeight + 16
-                                                            z: dragMouse.drag.active ? 1 : 0
+                                                            z: dragMouse.reordering ? 1 : 0
                                                             activeFocusOnTab: true
                                                             Accessible.role: Accessible.ListItem; Accessible.name: modelData.name + (modelData.enabled ? "，使用中" : "")
                                                             Accessible.onPressAction: window.previewProviderId = modelData.id
@@ -2600,16 +2615,11 @@ ApplicationWindow {
                                                             Rectangle {
                                                                 anchors.fill: parent; radius: Theme.radiusSm
                                                                 color: providerRow.engaged ? Theme.surfaceLift : "transparent"
-                                                                border.width: providerDrop.containsDrag ? 2 : providerRow.activeFocus ? 1 : 0; border.color: Theme.accent
+                                                                border.width: inlineProviderColumn.dragTarget === providerRow.modelData.id ? 2 : providerRow.activeFocus ? 1 : 0; border.color: Theme.accent
                                                             }
                                                             HoverHandler { id: providerHover }
                                                             TapHandler { onTapped: window.previewProviderId = providerRow.modelData.id; onDoubleTapped: window.askProvider(providerRow.modelData) }
                                                             TapHandler { acceptedButtons: Qt.RightButton; onTapped: providerMenu.showFor(providerRow, null) }
-                                                            DropArea {
-                                                                id: providerDrop
-                                                                anchors.fill: parent; keys: ["provider-card"]; enabled: window.canReorderProviders
-                                                                onDropped: function(drop) { window.moveProvider(window.draggedProviderId, providerRow.modelData.id); drop.acceptProposedAction() }
-                                                            }
                                                             ColumnLayout {
                                                                 id: providerRowContent
                                                                 x: 6; y: 8; width: parent.width - 10; spacing: 4
@@ -2625,15 +2635,43 @@ ApplicationWindow {
                                                                             anchors.centerIn: parent; width: Theme.iconSm; height: Theme.iconSm
                                                                             visible: window.canReorderProviders && (providerRow.engaged || dragMouse.pressed)
                                                                             name: "more_horiz"; rotation: 90; color: Theme.inkMuted
-                                                                            Drag.active: dragMouse.drag.active; Drag.source: providerRow; Drag.keys: ["provider-card"]; Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
+                                                                            transform: Translate { y: dragMouse.reordering ? dragMouse.offsetY : 0 }
                                                                         }
                                                                         MouseArea {
                                                                             id: dragMouse
+                                                                            objectName: "providerDragArea-" + providerRow.modelData.id
                                                                             anchors.fill: parent; enabled: window.canReorderProviders; preventStealing: true
-                                                                            cursorShape: Qt.OpenHandCursor; drag.target: providerDrag; drag.axis: Drag.YAxis
-                                                                            onPressed: { window.draggedProviderId = providerRow.modelData.id; providerDrag.anchors.centerIn = undefined }
-                                                                            onReleased: { providerDrag.Drag.drop(); providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
-                                                                            onCanceled: { providerDrag.anchors.centerIn = providerDrag.parent; window.draggedProviderId = "" }
+                                                                            cursorShape: reordering ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                                                                            property real pressY: 0
+                                                                            property real offsetY: 0
+                                                                            property bool reordering: false
+                                                                            function resetDrag() {
+                                                                                reordering = false
+                                                                                offsetY = 0
+                                                                                inlineProviderColumn.dragTarget = ""
+                                                                                window.draggedProviderId = ""
+                                                                            }
+                                                                            onPressed: function(mouse) {
+                                                                                pressY = mouse.y
+                                                                                window.draggedProviderId = providerRow.modelData.id
+                                                                            }
+                                                                            onPositionChanged: function(mouse) {
+                                                                                if (!pressed) return
+                                                                                offsetY = mouse.y - pressY
+                                                                                if (Math.abs(offsetY) >= Qt.styleHints.startDragDistance) reordering = true
+                                                                                if (!reordering) return
+                                                                                const target = inlineProviderColumn.providerAt(dragMouse, mouse.x, mouse.y)
+                                                                                inlineProviderColumn.dragTarget = target !== providerRow.modelData.id ? target : ""
+                                                                            }
+                                                                            onReleased: function(mouse) {
+                                                                                const source = providerRow.modelData.id
+                                                                                const moved = reordering || Math.abs(mouse.y - pressY) >= Qt.styleHints.startDragDistance
+                                                                                const target = moved && window.canReorderProviders
+                                                                                    ? inlineProviderColumn.providerAt(dragMouse, mouse.x, mouse.y) : ""
+                                                                                resetDrag()
+                                                                                if (target) window.moveProvider(source, target)
+                                                                            }
+                                                                            onCanceled: resetDrag()
                                                                         }
                                                                     }
                                                                     ColumnLayout {

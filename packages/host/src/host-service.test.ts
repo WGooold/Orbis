@@ -4078,12 +4078,16 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       { id: route.turnId, status: "inProgress", startedAt: 1, items: [{ id: "cmd", type: "commandExecution", status: "inProgress", command: "fixture" }] },
     ];
     let version = 0;
+    let holdNextRead = false;
     let pendingRead: ((reply: unknown) => void) | undefined;
     const request = vi.fn(async (method: string) => {
       if (method === "thread/resume") return { thread };
       if (method === "thread/loaded/list") return { data: [thread.id] };
-      if (method === "thread/turns/list") return version === 65
-        ? new Promise(resolve => { pendingRead = resolve; }) : { data: turns(version) };
+      if (method === "thread/turns/list") {
+        if (!holdNextRead) return { data: turns(version) };
+        holdNextRead = false;
+        return new Promise(resolve => { pendingRead = resolve; });
+      }
       return { data: [] };
     });
     const server = { mode: "desktop", request, notify: vi.fn(), stop: vi.fn(async () => {}) } as unknown as CodexAppServer;
@@ -4133,6 +4137,9 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       // This time history is the first request. Its private replacement preview
       // must wait for the native read, then continue the original page request.
       const dispatch = vi.spyOn(codex, "dispatchCommand");
+      // Arm before the notification: the native read can start before the
+      // encrypted boundary is observed on the device.
+      holdNextRead = true;
       server.onNotification?.("thread/reverted", { threadId: thread.id });
       const boundary = await boundaryAfter(previous.source!.epoch);
       expect(host.readDiagnostics({ category: "recovery", sessionId }).records).toEqual(expect.arrayContaining([
@@ -4142,7 +4149,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       // Attach a rejection handler while the native fixture deliberately waits.
       void history.catch(() => undefined);
       await vi.waitFor(() => expect(dispatch).toHaveBeenCalledWith(runtimeId, expect.any(String), expect.objectContaining({ range: "preview" })));
-      expect(pendingRead).toBeDefined();
+      await vi.waitFor(() => expect(pendingRead).toBeDefined());
       pendingRead!({ data: turns(version) });
       expect(await history).toMatchObject({ range: "history", source: { epoch: boundary.source.epoch, ready: true },
         entries: [{ entryId: "ancestor" }] });

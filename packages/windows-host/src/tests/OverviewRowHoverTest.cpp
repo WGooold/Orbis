@@ -7,6 +7,7 @@
 #include <QSignalSpy>
 #include <QFile>
 #include <QFileDialog>
+#include <QMouseEvent>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
@@ -230,7 +231,12 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   }
   if (method === "openAgent" && ["kimiCode", "opencode", "hermes", "openclaw", "agy"].includes(params.kind)) {
     out(launchStatus(params.kind, "starting", false));
-    setTimeout(() => { out(launchStatus(params.kind, "connected", true)); out({ id, result: {} }); }, 360);
+    const held = require("node:path").resolve(__dirname, "../../../hold-agent-start");
+    const complete = () => {
+      if (require("node:fs").existsSync(held)) return setTimeout(complete, 16);
+      out(launchStatus(params.kind, "connected", true)); out({ id, result: {} });
+    };
+    setTimeout(complete, 360);
     return;
   }
   if (method === "provider.default") {
@@ -404,6 +410,9 @@ private slots:
             emit controller.changed();
             QTRY_VERIFY(detail->isVisible() && detail->isEnabled());
         }
+        QFile holdStart(root.filePath("hold-agent-start"));
+        QVERIFY(holdStart.open(QIODevice::WriteOnly));
+        holdStart.close();
         if (kind == "opencode") {
             auto *syncTabs = findVisualItem(window->contentItem(), "openCodeTuiTabsAction");
             QTRY_VERIFY(syncTabs && syncTabs->isVisible() && syncTabs->isEnabled());
@@ -429,6 +438,7 @@ private slots:
         }
         QTRY_COMPARE(status->property("text").toString(), QString("正在启动"));
         QVERIFY(!detail->isEnabled());
+        QVERIFY(holdStart.remove());
         QTRY_COMPARE(status->property("text").toString(), QString(kind == "kimiCode" ? "已接入" : "可用"));
         if (kind == "opencode") {
             QTRY_VERIFY(detail->isVisible() && detail->isEnabled());
@@ -898,15 +908,47 @@ private slots:
         QTRY_VERIFY(window->property("canReorderProviders").toBool());
         QTRY_VERIFY(revealForPointer(dragFrom) && revealForPointer(dragTo));
         const auto from = dragFrom->mapToScene(dragFrom->boundingRect().center()).toPoint();
-        const auto to = dragTo->mapToScene(dragTo->boundingRect().center()).toPoint();
-        QTest::mouseMove(window, from);
-        QTRY_VERIFY(dragFrom->isVisible());
-        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from);
-        QCOMPARE(window->property("draggedProviderId").toString(), QString("openai-copy"));
-        for (int step = 1; step <= 12; ++step) QTest::mouseMove(window, from + (to - from) * step / 12, 20);
-        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to, 20);
+        auto *dragArea = findVisualItem(detail, "providerDragArea-openai-copy");
+        auto *destinationRow = findVisualItem(detail, "providerRow-openrouter");
+        QVERIFY(dragArea && destinationRow);
+        // The source slot and provider rows can move when the floating menu
+        // closes and the layout polishes. Track the destination row, not its
+        // old handle position, while the pointer stream is in progress.
+        const auto target = [&] {
+            const auto row = destinationRow->mapRectToScene(destinationRow->boundingRect());
+            return QPoint(qBound(qCeil(row.left() + 1), from.x(), qFloor(row.right() - 1)), qRound(row.center().y()));
+        };
+        // The handle's mouse area is interactive even before the hover icon
+        // is painted. The press assertion verifies the real drag owner.
+        // Deliver a single pressed pointer stream to Qt Quick. Do not let the
+        // runner's real desktop cursor or a synthetic-button timestamp enter it.
+        auto pointer = [window](QEvent::Type type, const QPoint &pos, Qt::MouseButton button, Qt::MouseButtons buttons) {
+            QMouseEvent event(type, pos, pos, window->mapToGlobal(pos), button, buttons, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &event);
+        };
+        pointer(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+        QTRY_COMPARE(window->property("draggedProviderId").toString(), QString("openai-copy"));
+        auto *providerRows = findVisualItem(detail, "inlineProviderRows");
+        QVERIFY(providerRows);
+        for (int step = 1; step <= 12; ++step) {
+            pointer(QEvent::MouseMove, from + (target() - from) * step / 12, Qt::NoButton, Qt::LeftButton);
+            QCoreApplication::processEvents();
+        }
+        const auto to = target();
+        const auto dragTarget = providerRows->property("dragTarget").toString();
+        if (dragTarget != "openrouter") {
+            qInfo() << "Provider drag" << from << to << window->size()
+                    << "viewport" << pageFlick->mapRectToScene(pageFlick->boundingRect())
+                    << "target" << destinationRow->mapRectToScene(destinationRow->boundingRect())
+                    << "pressed" << dragArea->property("pressed") << "reordering" << dragArea->property("reordering")
+                    << "pointer" << dragArea->property("mouseX") << dragArea->property("mouseY")
+                    << "offset" << dragArea->property("offsetY") << "expected local" << dragArea->mapFromScene(to);
+        }
+        pointer(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+        QCOMPARE(dragTarget, QString("openrouter"));
         QTRY_COMPARE(controller.providers().first().toMap().value("id").toString(), QString("openai-copy"));
         QTRY_VERIFY(!controller.busy());
+        QTRY_COMPARE(window->property("draggedProviderId").toString(), QString());
 
         // A long catalog offers search; filtering blocks reordering, and leaving the Agent clears it.
         QVariantList many;
@@ -978,10 +1020,14 @@ private slots:
         QVERIFY(inactiveState && enableAction && inactiveState->isVisible() && enableAction->isVisible());
         QCOMPARE(enableAction->property("text").toString(), QString("启用 DeepSeek Web"));
         QCOMPARE(inactiveState->property("horizontalAlignment").toInt(), int(Qt::AlignHCenter));
-        const auto inactiveCenter = inactiveState->mapToItem(inactiveState->parentItem(), inactiveState->boundingRect().center());
-        const auto enableCenter = enableAction->mapToItem(enableAction->parentItem(), enableAction->boundingRect().center());
-        QVERIFY(qAbs(inactiveCenter.x() - inactiveState->parentItem()->width() / 2) <= 0.5);
-        QVERIFY(qAbs(enableCenter.x() - enableAction->parentItem()->width() / 2) <= 0.5);
+        // Visibility changes immediately; the layout centers its new children
+        // on the next polish. Check the same tolerance on settled geometry.
+        const auto isCentered = [](QQuickItem *item) {
+            const auto center = item->mapToItem(item->parentItem(), item->boundingRect().center());
+            return item->width() > 0 && qAbs(center.x() - item->parentItem()->width() / 2) <= 0.5;
+        };
+        QTRY_VERIFY(isCentered(inactiveState));
+        QTRY_VERIFY(isCentered(enableAction));
         QVERIFY(QAccessible::queryAccessibleInterface(enableAction));
         const auto inactiveScreenshot = qEnvironmentVariable("ORBIS_AGENT_INACTIVE_SCREENSHOT");
         if (!inactiveScreenshot.isEmpty()) QVERIFY(window->grabWindow().save(inactiveScreenshot));

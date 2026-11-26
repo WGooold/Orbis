@@ -559,9 +559,9 @@ export class RelayLiveActivities {
       if (previous?.ended) { job.resolve(); continue; }
       const launch = this.#launches.get(target.deviceId);
       const after = Math.max(previous?.lastTimestamp ?? -1, launch && launch.id === target.launchId ? Math.floor(launch.issuedAt / 1000) : -1);
-      if (Math.floor(Date.now() / 1000) <= after) {
-        // ActivityKit timestamps are seconds. Coalesce state changes while waiting
-        // for the next second, instead of sending ambiguous same-second payloads.
+      while (!this.#closed && !this.#pending.has(key) && Math.floor(Date.now() / 1000) <= after) {
+        // ActivityKit timestamps are seconds. Recheck after waking: timer and
+        // wall clocks can differ, so one sleep does not guarantee a new second.
         await new Promise<void>(finish => {
           const timer = setTimeout(() => { this.#waits.delete(key); finish(); }, Math.max(1, (after + 1) * 1000 - Date.now()));
           timer.unref(); this.#waits.set(key, { timer, finish });

@@ -423,15 +423,43 @@ int main(int argc, char *argv[]) {
                     if (parser.isSet("screenshot")) window->grabWindow().save(parser.value("screenshot") + ".metric-settled.png");
                 });
             }
-            QList<QRectF> launchBounds;
+            // The clean smoke profile has opt-in agents disabled. Exercise the
+            // geometry of enabled rows with an in-memory snapshot, not a change
+            // to real defaults or to the on-disk activation policy.
+            auto enablement = QJsonObject::fromVariantMap(controller.agentEnablement());
+            auto agents = enablement.value("agents").toArray();
+            for (qsizetype i = 0; i < agents.size(); ++i) {
+                auto row = agents.at(i).toObject();
+                row.insert("enabled", true);
+                agents.replace(i, row);
+            }
+            enablement.insert("revision", enablement.value("revision").toInt() + 1);
+            enablement.insert("agents", agents);
+            controller.smokeReceive({{"event", "agentEnablement"}, {"snapshot", enablement}});
+            // Start-Process can leave the Windows smoke window unexposed. A
+            // software grab runs the pending Qt Quick layout pass even then;
+            // a sleep alone does not lay out the newly created agent rows.
+            if (window->grabWindow().isNull()) {
+                qWarning() << "Could not render the enabled overview fixture" << window->size() << window->isExposed();
+                app.exit(5); return;
+            }
+            QList<QPair<QString, QRectF>> launchBounds;
             for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"}) {
                 auto *button = findVisualItem(window->contentItem(), name);
-                if (!button || !button->isVisible()) { app.exit(44); return; }
+                if (!button || !button->isVisible()) { qWarning() << "Missing smoke overview action:" << name; app.exit(44); return; }
                 const auto bounds = button->mapRectToScene(button->boundingRect());
                 // Rows may scroll below the fold at the minimum height; they must never overflow sideways.
-                if (bounds.left() < 0 || bounds.right() > window->width()) { app.exit(45); return; }
-                for (const auto &other : launchBounds) if (bounds.intersects(other)) { app.exit(46); return; }
-                launchBounds.append(bounds);
+                if (bounds.left() < 0 || bounds.right() > window->width()) {
+                    qWarning() << "Overview action outside window:" << name << bounds << window->size();
+                    app.exit(45); return;
+                }
+                for (const auto &[otherName, otherBounds] : launchBounds) {
+                    if (!bounds.intersects(otherBounds)) continue;
+                    qWarning() << "Overlapping overview actions:" << name << bounds << otherName << otherBounds
+                               << "window:" << window->size() << "DPR:" << window->devicePixelRatio();
+                    app.exit(46); return;
+                }
+                launchBounds.append({QString::fromLatin1(name), bounds});
             }
             // A caption keeps the button's optical center whether or not a glyph sits beside it:
             // a reserved slot without an icon would push the text right by half of its width.
@@ -446,17 +474,43 @@ int main(int argc, char *argv[]) {
             };
             for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"})
                 if (!contentIsCentered(findVisualItem(window->contentItem(), name))) { app.exit(56); return; }
+            // These rows were created by the fixture above, and their data-URL SVGs
+            // load asynchronously. A hidden Windows window renders only on grab, so
+            // give every expected mark a bounded chance to finish before judging it.
+            const auto markImage = [&](const QString &name) -> QQuickItem * {
+                auto *mark = findVisualItem(window->contentItem(), "overviewAgentMark-" + name);
+                return mark ? findVisualItem(mark, "agentMarkImage") : nullptr;
+            };
+            for (const auto &name : {QString("codex"), QString("codexDesktop"), QString("dsh"), QString("dshDesktop"),
+                                     QString("kimiCode"), QString("hermes"), QString("opencode")}) {
+                for (int attempt = 0; attempt < 100; ++attempt) {
+                    auto *image = markImage(name);
+                    const int status = image ? image->property("status").toInt() : 0;
+                    if (!image || status == 1 || status == 3) break;
+                    QTest::qWait(20);
+                }
+            }
             // HOST-AGENT-MARK-02: desktop variants retain the vendor identity.
             // Verify the rendered image as well as the model so a missing SVG cannot pass.
             for (const auto &kind : {QString("codex"), QString("dsh")}) {
                 const auto desktopKind = kind + "Desktop";
                 auto *desktop = findVisualItem(window->contentItem(), "overviewAgentMark-" + desktopKind);
                 auto *terminal = findVisualItem(window->contentItem(), "overviewAgentMark-" + kind);
-                if (!desktop || !terminal || !desktop->isVisible() || desktop->property("kind").toString() != desktopKind) { app.exit(84); return; }
+                if (!desktop || !terminal || !desktop->isVisible() || desktop->property("kind").toString() != desktopKind) {
+                    qWarning() << "Desktop mark missing or mislabelled:" << desktopKind << window->size();
+                    app.exit(84); return;
+                }
                 auto *desktopImage = findVisualItem(desktop, "agentMarkImage");
                 auto *terminalImage = findVisualItem(terminal, "agentMarkImage");
                 if (!desktopImage || !terminalImage || desktopImage->property("status").toInt() != 1
-                    || desktopImage->property("source").toUrl() != terminalImage->property("source").toUrl()) { app.exit(85); return; }
+                    || desktopImage->property("source").toUrl() != terminalImage->property("source").toUrl()) {
+                    qWarning() << "Desktop mark image mismatch:" << desktopKind
+                               << (desktopImage ? desktopImage->property("status") : QVariant())
+                               << (terminalImage ? terminalImage->property("status") : QVariant())
+                               << (desktopImage ? desktopImage->property("source") : QVariant())
+                               << (terminalImage ? terminalImage->property("source") : QVariant());
+                    app.exit(85); return;
+                }
             }
             // AGENT-MARK-01: when the bridge advertises these agents, the overview
             // must actually load their marks rather than going through the fallback.
@@ -467,7 +521,11 @@ int main(int argc, char *argv[]) {
                 auto *mark = findVisualItem(window->contentItem(), "overviewAgentMark-" + kind);
                 auto *image = mark ? findVisualItem(mark, "agentMarkImage") : nullptr;
                 if (!mark || !mark->isVisible() || !image || image->property("status").toInt() != 1 ||
-                    !image->property("source").toUrl().toString().startsWith("qrc:/agent-marks/")) { app.exit(85); return; }
+                    !image->property("source").toUrl().toString().startsWith("qrc:/agent-marks/")) {
+                    qWarning() << "Agent mark not loaded:" << kind << (image ? image->property("status") : QVariant())
+                               << (image ? image->property("source") : QVariant());
+                    app.exit(85); return;
+                }
             }
             if (auto *plain = findVisualItem(window->contentItem(), "overviewActivate"); !plain || !contentIsCentered(plain)) { app.exit(57); return; }
 #endif
