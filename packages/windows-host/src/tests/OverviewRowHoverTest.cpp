@@ -899,8 +899,8 @@ private slots:
         QTRY_VERIFY(revealForPointer(dragFrom) && revealForPointer(dragTo));
         const auto from = dragFrom->mapToScene(dragFrom->boundingRect().center()).toPoint();
         const auto to = dragTo->mapToScene(dragTo->boundingRect().center()).toPoint();
-        QTest::mouseMove(window, from);
-        QTRY_VERIFY(dragFrom->isVisible());
+        // The handle's mouse area is interactive even before the hover icon
+        // is painted. The press assertion verifies the real drag owner.
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from);
         QCOMPARE(window->property("draggedProviderId").toString(), QString("openai-copy"));
         for (int step = 1; step <= 12; ++step) QTest::mouseMove(window, from + (to - from) * step / 12, 20);

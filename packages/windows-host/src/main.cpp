@@ -423,10 +423,24 @@ int main(int argc, char *argv[]) {
                     if (parser.isSet("screenshot")) window->grabWindow().save(parser.value("screenshot") + ".metric-settled.png");
                 });
             }
+            // The clean smoke profile has opt-in agents disabled. Exercise the
+            // geometry of enabled rows with an in-memory snapshot, not a change
+            // to real defaults or to the on-disk activation policy.
+            auto enablement = QJsonObject::fromVariantMap(controller.agentEnablement());
+            auto agents = enablement.value("agents").toArray();
+            for (qsizetype i = 0; i < agents.size(); ++i) {
+                auto row = agents.at(i).toObject();
+                row.insert("enabled", true);
+                agents.replace(i, row);
+            }
+            enablement.insert("revision", enablement.value("revision").toInt() + 1);
+            enablement.insert("agents", agents);
+            controller.smokeReceive({{"event", "agentEnablement"}, {"snapshot", enablement}});
+            QTest::qWait(100);
             QList<QRectF> launchBounds;
             for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"}) {
                 auto *button = findVisualItem(window->contentItem(), name);
-                if (!button || !button->isVisible()) { app.exit(44); return; }
+                if (!button || !button->isVisible()) { qWarning() << "Missing smoke overview action:" << name; app.exit(44); return; }
                 const auto bounds = button->mapRectToScene(button->boundingRect());
                 // Rows may scroll below the fold at the minimum height; they must never overflow sideways.
                 if (bounds.left() < 0 || bounds.right() > window->width()) { app.exit(45); return; }
