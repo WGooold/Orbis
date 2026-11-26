@@ -143,6 +143,7 @@ jobs:
           NOTIFY_APPROVED: ${{ inputs.notify_approved_build }}
         run: |
           set -euo pipefail
-          notify_args=()
-          if [[ "$NOTIFY_APPROVED" == true ]]; then notify_args+=(--notify-approved); fi
-          node scripts/ios-testflight-external.mjs distribute --version "$IOS_VERSION" --build "$BUILD_NUMBER" --wait 720 "${notify_args[@]}"
+          # Bash 3.2 with nounset rejects expansion of an empty array.
+          set -- scripts/ios-testflight-external.mjs distribute --version "$IOS_VERSION" --build "$BUILD_NUMBER" --wait 720
+          if [[ "$NOTIFY_APPROVED" == true ]]; then set -- "$@" --notify-approved; fi
+          node "$@"
