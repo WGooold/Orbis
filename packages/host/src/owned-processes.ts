@@ -60,8 +60,19 @@ export function processTree(rows: ProcessIdentity[], root: ProcessIdentity, pres
 export async function listeningPids(port: number): Promise<number[]> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("无效的后台端口记录");
   if (process.platform === "win32") {
-    const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-      `$ErrorActionPreference = 'Stop'; Get-NetTCPConnection | Where-Object { $_.State -eq 'Listen' -and $_.LocalPort -eq ${port} } | Select-Object -ExpandProperty OwningProcess`], options);
+    // Ask only for this port: enumerating every TCP connection can exceed the
+    // command timeout on a loaded hosted runner even when the listener exists.
+    const command = `$ErrorActionPreference = 'Stop'; Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object -ExpandProperty OwningProcess`;
+    let stdout: string;
+    try {
+      ({ stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], options));
+    } catch {
+      // A transient CIM failure during desktop shutdown must not be read as an
+      // empty port (which could leave an unverified owner) or kill an unrelated
+      // process. Retry once with a longer bound before surfacing the error.
+      await delay(100);
+      ({ stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { ...options, timeout: 10_000 }));
+    }
     return stdout.trim().split(/\s+/u).map(Number).filter(pid => pid > 1);
   }
   try {
