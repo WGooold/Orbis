@@ -436,7 +436,13 @@ int main(int argc, char *argv[]) {
             enablement.insert("revision", enablement.value("revision").toInt() + 1);
             enablement.insert("agents", agents);
             controller.smokeReceive({{"event", "agentEnablement"}, {"snapshot", enablement}});
-            QTest::qWait(100);
+            // Start-Process can leave the Windows smoke window unexposed. A
+            // software grab runs the pending Qt Quick layout pass even then;
+            // a sleep alone does not lay out the newly created agent rows.
+            if (window->grabWindow().isNull()) {
+                qWarning() << "Could not render the enabled overview fixture" << window->size() << window->isExposed();
+                app.exit(5); return;
+            }
             QList<QPair<QString, QRectF>> launchBounds;
             for (const auto &name : {"overviewAgent-pi", "overviewAgent-codex", "overviewAgent-codexDesktop", "overviewAgent-claude", "overviewAgent-dsh", "overviewAgent-dshDesktop"}) {
                 auto *button = findVisualItem(window->contentItem(), name);
