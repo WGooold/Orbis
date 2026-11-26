@@ -65,3 +65,6 @@ aqtinstall.log
 *.tar.gz
 *.orbis-build.json
 *.pi-remote-build.json
+
+# Blender 保存时自动生成的备份文件；.blend 本身入库
+*.blend1
