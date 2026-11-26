@@ -26,6 +26,24 @@ def mounted_image(image, mountpoint):
     return True
 
 
+def image_attached(image):
+    result = run(['hdiutil', 'info', '-plist'])
+    if result.returncode:
+        raise RuntimeError('Cannot inspect mounted images: ' + result.stderr.decode(errors='replace'))
+    return any(Path(entry.get('image-path', '')).resolve() == image
+               for entry in plistlib.loads(result.stdout).get('images', []))
+
+
+def wait_unattached(image):
+    # Detach can report success while the image is still listed. A convert that
+    # starts in that window fails with "Resource temporarily unavailable".
+    deadline = time.monotonic() + 10
+    while image_attached(image) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if image_attached(image):
+        raise RuntimeError('DMG remains attached after a verified unmount')
+
+
 def detach(image, mountpoint, report_path):
     image, mountpoint = image.resolve(), mountpoint.resolve()
     report = dict(image=str(image), mountpoint=str(mountpoint), attempts=[], forced=False)
@@ -42,6 +60,7 @@ def detach(image, mountpoint, report_path):
             if result.returncode == 0:
                 if mounted_image(image, mountpoint):
                     raise RuntimeError('hdiutil reported success but the owned mount is still active')
+                wait_unattached(image)
                 report['status'] = 'unmounted'
                 return
             if 'resource busy' not in diagnostic.lower():
@@ -50,6 +69,7 @@ def detach(image, mountpoint, report_path):
                 print(f'Owned DMG is busy; retrying detach in {delays[attempt - 1]}s ({attempt}/4)', flush=True)
                 time.sleep(delays[attempt - 1])
         if not mounted_image(image, mountpoint):
+            wait_unattached(image)
             report['status'] = 'unmounted'
             return
         # File copy and sync have already completed. Only this verified mount
@@ -60,6 +80,7 @@ def detach(image, mountpoint, report_path):
         report['attempts'].append(dict(forced=True, exitCode=result.returncode, diagnostic=diagnostic))
         if result.returncode or mounted_image(image, mountpoint):
             raise RuntimeError('Owned DMG remains mounted after bounded detach attempts: ' + diagnostic)
+        wait_unattached(image)
         report['status'] = 'unmounted'
     except BaseException as error:
         report.update(status='failed', error=str(error))

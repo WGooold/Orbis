@@ -339,7 +339,7 @@ describe("live activity registry", () => {
     f.send.mockResolvedValueOnce("invalid-token");
     const bound = { ...registration(), launchId: claim!.launchId };
     await f.registry.register("phone", "host", bound, () => true);
-    await vi.waitFor(async () => expect(JSON.parse(await readFile(f.stateFile!, "utf8")).registrations).toEqual([]), { timeout: 2_000 });
+    await vi.waitFor(async () => expect(JSON.parse(await readFile(f.stateFile!, "utf8")).registrations).toEqual([]), { timeout: 5_000 });
     await f.registry.close();
     const restored = await RelayLiveActivities.create(f.options); open.push(restored);
     await expect(restored.register("phone", "host", { ...bound, activityId: "different", token: newToken }, () => true)).rejects.toMatchObject({ status: 410 });

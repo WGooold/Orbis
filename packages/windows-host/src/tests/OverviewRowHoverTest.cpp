@@ -816,6 +816,11 @@ private slots:
         QTRY_COMPARE(controller.providerKind(), QString("dsh"));
         QVERIFY(QMetaObject::invokeMethod(window, "chooseAgent", Q_ARG(QVariant, QString("codex")), Q_ARG(QVariant, 0)));
 
+        // A hosted runner can defer the Agent page's first paint. Measure the settled
+        // two-column geometry, not a provisional one that the next layout pass widens.
+        QVERIFY(!window->grabWindow().isNull());
+        QTest::qWait(16);
+
         // HOST-PROVIDER-INLINE-01: every catalog action works on the first-level list; a missing second page must
         // not strand an action, and no row may outgrow the two-column page or move its name under the pointer.
         const qreal railWidthBefore = rail->width();

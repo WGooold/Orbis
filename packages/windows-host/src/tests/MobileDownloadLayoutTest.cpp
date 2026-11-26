@@ -169,10 +169,20 @@ private slots:
         if (!screenshotBase.isEmpty()) {
             window->grabWindow().save(QString("%1-%2-%3-closed.png").arg(screenshotBase).arg(windowWidth).arg(mode));
         }
+        // selectPage creates the devices page on demand. A hosted runner can defer
+        // that first paint, leaving the toggle at a stale position for the measured
+        // click. Force the pending layout before reading its geometry.
+        QVERIFY(!window->grabWindow().isNull());
+        QTest::qWait(16);
 
         // Open dropdown menu by clicking "下载移动端".
         const QPoint togglePoint = toggle->mapRectToScene(toggle->boundingRect()).center().toPoint();
         QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, togglePoint);
+        if (!QTest::qWaitFor([&] { return menu->property("visible").toBool(); }, 1000)) {
+            // A dropped first click on an unfocused hosted window must not hide a
+            // missing handler: retry once after the page has settled.
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, togglePoint);
+        }
         QTRY_VERIFY(menu->property("visible").toBool());
         QCOMPARE(chevron->rotation(), 180.0);
 

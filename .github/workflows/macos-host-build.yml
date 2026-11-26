@@ -193,7 +193,14 @@ jobs:
           python3 scripts/macos-dmg.py --image "$rw_image" --mountpoint "$mountpoint" \
             --report .artifacts/host-diagnostics/dmg-detach.json
           rmdir "$mountpoint" 2>/dev/null || true
-          hdiutil convert "$rw_image" -format UDZO -o "$staged_dmg"
+          # Detach can report success before macOS releases the image. Retry the
+          # compression instead of failing the release on a transient resource error.
+          for attempt in 1 2 3; do
+            if hdiutil convert "$rw_image" -format UDZO -o "$staged_dmg"; then break; fi
+            rm -f "$staged_dmg"
+            if [ "$attempt" -eq 3 ]; then echo 'DMG conversion failed after 3 attempts.' >&2; exit 1; fi
+            sleep $((attempt * 5))
+          done
           hdiutil verify "$staged_dmg"
           mv "$staged_dmg" ".artifacts/host/$dmg"
           if [ "$ORBIS_SIGNING_MODE" = developer-id ]; then
