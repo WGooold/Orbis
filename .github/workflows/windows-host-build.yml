@@ -151,6 +151,4 @@ jobs:
         with:
           name: OrbisHost-windows-native-tests
           include-hidden-files: true
-          path: |
-            .artifacts/windows-host-build/diagnostic-log.txt
-            .artifacts/windows-host-build/Testing/Temporary/LastTest.log
+          path: .artifacts/windows-native-test-diagnostics/*

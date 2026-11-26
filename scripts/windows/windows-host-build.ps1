@@ -46,7 +46,20 @@ try {
         $nativeTestExit = $LASTEXITCODE
         $diagnosticLog = Join-Path $buildDir 'diagnostic-log.txt'
         if (Test-Path -LiteralPath $diagnosticLog) { Get-Content -LiteralPath $diagnosticLog }
-        if ($nativeTestExit -ne 0) { throw 'Native tests failed' }
+        if ($nativeTestExit -ne 0) {
+            $testLog = Join-Path $buildDir 'Testing\Temporary\LastTest.log'
+            if (Test-Path -LiteralPath $testLog) {
+                # Print Qt assertion locations before the build tree is removed.
+                Select-String -LiteralPath $testLog -Pattern 'FAIL!|QFATAL|Actual |Expected |Loc:' | ForEach-Object { Write-Output $_.Line }
+                if ($env:GITHUB_ACTIONS -eq 'true') {
+                    $evidence = Join-Path $repoRoot '.artifacts\windows-native-test-diagnostics'
+                    New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+                    Copy-Item -LiteralPath $testLog -Destination $evidence
+                    if (Test-Path -LiteralPath $diagnosticLog) { Copy-Item -LiteralPath $diagnosticLog -Destination $evidence }
+                }
+            }
+            throw 'Native tests failed'
+        }
         if ($Package) {
             # Fresh directory per packaging run: no stale dependency can silently survive an upgrade.
             $releaseRoot = $artifactRoot
