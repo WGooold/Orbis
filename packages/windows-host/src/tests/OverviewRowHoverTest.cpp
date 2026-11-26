@@ -5,10 +5,8 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QSignalSpy>
-#include <QEnterEvent>
 #include <QFile>
 #include <QFileDialog>
-#include <QMouseEvent>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
@@ -57,6 +55,20 @@ QQuickItem *findHoverHighlight(QQuickItem *card, const QColor &expectedColor) {
         queue.append(item->childItems());
     }
     return nullptr;
+}
+
+// A visible QML item may still be clipped by the page's ScrollView.
+bool revealForPointer(QQuickItem *item) {
+    auto *scroll = findVisualItem(item->window()->contentItem(), "pageScroll");
+    auto *viewport = scroll ? scroll->property("contentItem").value<QQuickItem *>() : nullptr;
+    if (!viewport || !viewport->isVisible()) return false;
+    const auto point = item->mapToItem(viewport, item->boundingRect().center());
+    if (viewport->boundingRect().contains(point)) return true;
+    const auto origin = viewport->property("originY").toReal();
+    const auto extent = qMax(qreal(0), viewport->property("contentHeight").toReal() - viewport->height());
+    const auto target = viewport->property("contentY").toReal() + point.y() - viewport->height() / 2;
+    return viewport->setProperty("contentY", qBound(origin, target, origin + extent))
+        && viewport->boundingRect().contains(item->mapToItem(viewport, item->boundingRect().center()));
 }
 
 bool clickWithWorkspacePicker(QQuickItem *action, const QString &workspace, QString &pickerTitle) {
@@ -199,7 +211,13 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (method === "agent.enablement.write") {
     currentAgents = currentAgents.map(agent => agent.kind === params.kind ? { ...agent, enabled: params.enabled } : agent);
     const snapshot = { revision: params.expectedRevision + 1, agents: currentAgents };
-    setTimeout(() => out({ id, result: { status: "applied", snapshot } }), 320);
+    const fs = require("node:fs");
+    const held = require("node:path").resolve(__dirname, "../../../hold-agent-write");
+    const respond = () => {
+      if (params.kind === "dsh" && fs.existsSync(held)) return setTimeout(respond, 16);
+      out({ id, result: { status: "applied", snapshot } });
+    };
+    setTimeout(respond, 320);
     return;
   }
   if (method === "openCodeTuiTabs") {
@@ -633,6 +651,7 @@ private slots:
         viewport->setProperty("contentY", qBound(0.0, targetY, qMax(0.0, viewport->property("contentHeight").toReal() - viewport->height())));
         QTest::qWait(80);
 
+        QTRY_VERIFY(revealForPointer(codexRow));
         const auto cardBounds = card->mapRectToScene(card->boundingRect());
         const auto initialMarkBounds = codexMark->mapRectToScene(codexMark->boundingRect());
         const auto initialDesktopMarkBounds = desktopMark->mapRectToScene(desktopMark->boundingRect());
@@ -643,11 +662,7 @@ private slots:
         QVERIFY(initialActionBounds.right() <= cardBounds.right() + 0.5);
 
         const QPoint hoverPoint = codexRow->mapRectToScene(codexRow->boundingRect()).center().toPoint();
-        QEnterEvent enter(hoverPoint, hoverPoint, window->mapToGlobal(hoverPoint));
-        QCoreApplication::sendEvent(window, &enter);
-        QMouseEvent move(QEvent::MouseMove, hoverPoint, window->mapToGlobal(hoverPoint), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
-        QCoreApplication::sendEvent(window, &move);
-        QTest::qWait(100);
+        QTest::mouseMove(window, hoverPoint);
 
         auto *theme = engine.singletonInstance<QObject *>("Orbis.Host", "Theme");
         QVERIFY(theme);
@@ -880,10 +895,15 @@ private slots:
         auto *dragFrom = findVisualItem(detail, "providerDragHandle-openai-copy");
         auto *dragTo = findVisualItem(detail, "providerDragHandle-openrouter");
         QVERIFY(dragFrom && dragTo);
-        const auto from = dragFrom->mapToScene(QPointF(dragFrom->width() / 2, dragFrom->height() / 2)).toPoint();
-        const auto to = dragTo->mapToScene(QPointF(dragTo->width() / 2, dragTo->height() / 2)).toPoint();
+        QTRY_VERIFY(window->property("canReorderProviders").toBool());
+        QTRY_VERIFY(revealForPointer(dragFrom) && revealForPointer(dragTo));
+        const auto from = dragFrom->mapToScene(dragFrom->boundingRect().center()).toPoint();
+        const auto to = dragTo->mapToScene(dragTo->boundingRect().center()).toPoint();
+        QTest::mouseMove(window, from);
+        QTRY_VERIFY(dragFrom->isVisible());
         QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, from);
-        for (int step = 1; step <= 8; ++step) QTest::mouseMove(window, from + (to - from) * step / 8, 20);
+        QCOMPARE(window->property("draggedProviderId").toString(), QString("openai-copy"));
+        for (int step = 1; step <= 12; ++step) QTest::mouseMove(window, from + (to - from) * step / 12, 20);
         QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, to, 20);
         QTRY_COMPARE(controller.providers().first().toMap().value("id").toString(), QString("openai-copy"));
         QTRY_VERIFY(!controller.busy());
@@ -972,16 +992,20 @@ private slots:
         engine.rootContext()->setContextProperty("orbisMotionEnabled", true);
         QSignalSpy rendered(window, &QQuickWindow::afterRendering);
         const qreal initialX = movingKnob->x();
+        // Keep the receipt pending until movement and multiple frames are observed.
+        QFile holdWrite(root.filePath("hold-agent-write"));
+        QVERIFY(holdWrite.open(QIODevice::WriteOnly));
+        holdWrite.close();
         QElapsedTimer pendingFrameWindow;
         pendingFrameWindow.start();
+        QVERIFY(window->property("canEditAgent").toBool());
         QVERIFY(QMetaObject::invokeMethod(window, "flipAgent", Q_ARG(QVariant, QString("dsh"))));
-        QTest::qWait(80);
-        QVERIFY(movingKnob->x() > initialX + 1);
+        QTRY_VERIFY_WITH_TIMEOUT(movingKnob->x() > initialX + 1 && rendered.count() > 2, 2000);
         QVERIFY(movingKnob->x() < 43);
-        QVERIFY(rendered.count() > 2);
         qInfo() << "Agent-page switch during pending write:" << rendered.count()
                 << "afterRendering frames in" << pendingFrameWindow.elapsed() << "ms; knob moved from"
                 << initialX << "to" << movingKnob->x();
+        QVERIFY(holdWrite.remove());
         QTRY_VERIFY_WITH_TIMEOUT(movingKnob->x() > 42, 2000);
         auto dshEnabled = [&controller] {
             const auto finalAgents = controller.agentEnablement().value("agents").toList();
@@ -1152,7 +1176,7 @@ private slots:
         QVERIFY(!engine.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
         QVERIFY(window);
-        window->resize(1180, 1200); // The provider list sits above the connection card; keep both in the pointer viewport.
+        window->resize(1180, 820);
         QVERIFY(QTest::qWaitForWindowExposed(window));
         QTRY_VERIFY(controller.bridgeReady() && !controller.busy() && !controller.agents().isEmpty());
         const QString localUrl = "ws://127.0.0.1:18789";
@@ -1161,7 +1185,11 @@ private slots:
             controller.m_openClaw.insert("url", localUrl);
             emit controller.openClawChanged();
         }
-        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, hermes ? QString("hermes") : QString("openclaw"))));
+        const QString kind = hermes ? "hermes" : "openclaw";
+        QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, kind)));
+        // Selecting this Agent starts a deferred provider read. Its busy state
+        // disables the mode controls and may resize the connection card.
+        QTRY_VERIFY(controller.providerKind() == kind && !controller.busy());
 
         const QString pickerName = hermes ? "hermesMode" : "openClawMode";
         auto *picker = findVisualItem(window->contentItem(), pickerName);
@@ -1176,7 +1204,15 @@ private slots:
         QCOMPARE(remoteAccess->role(), QAccessible::RadioButton);
         QVERIFY(!remote->property("checked").toBool() && !remoteField->isVisible() && !apply->isEnabled());
         auto click = [window](QQuickItem *item) {
+            // Changing modes reveals fields and can reposition the controls on
+            // the next layout pass. Let that frame settle before hit-testing.
+            QSignalSpy frame(window, &QQuickWindow::afterRendering);
+            window->update();
+            QTRY_VERIFY(frame.count() > 0);
+            QTRY_VERIFY(revealForPointer(item));
+            QSignalSpy clicks(item, SIGNAL(clicked()));
             QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, item->mapToScene(item->boundingRect().center()).toPoint());
+            QTRY_COMPARE(clicks.count(), 1);
         };
         auto savedTarget = [&controller, hermes] {
             return hermes ? controller.hermesRemote().value("host").toString()

@@ -62,6 +62,9 @@ ApplicationWindow {
             ? [{kind: "hermes", name: "Hermes Agent", installed: hermes.installed === true || window.backendFor("hermes")?.ready === true,
                 broken: hermes.cliIssue === "unrunnable", cliIssue: hermes.cliIssue, passive: true}]
             : [])
+         // KIMI-12: retain the Web startup entry after separating Desktop into its own Agent.
+         .concat(host.kimiCodeAvailable ? [{kind: "kimiCode", name: "Kimi Code Web",
+            installed: window.backendFor("kimiCode")?.ready === true, broken: false, passive: true}] : [])
          .concat((host.agentEnablement.agents || []).filter(function(agent) {
             return agent.enabled && ["pi", "codex", "codexDesktop", "claude", "dsh", "dshDesktop", "kimiCode", "kimiCodeDesktop", "openclaw", "hermes"].indexOf(agent.kind) < 0
          }).map(function(agent) {
