@@ -2,7 +2,7 @@ import { generateKeyPairSync, verify } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { makeRequest, makeToken, runExternal } from './ios-testflight-external.mjs';
+import { makeRequest, makeRequestToken, makeToken, runExternal } from './ios-testflight-external.mjs';
 
 const app = '6829381852';
 const group = 'fe9fb1a0-8fbe-4818-86af-f8897c2ac1b4';
@@ -143,4 +143,15 @@ it('signs ES256 JWTs with raw JOSE signatures and does not follow off-origin pag
   expect(verify('sha256', Buffer.from(`${header}.${payload}`), { key: publicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(signature, 'base64url'))).toBe(true);
   const request = makeRequest(() => token, () => { throw new Error('Should not send off-origin.'); });
   await expect(request('GET', 'https://example.test/v1/builds')).rejects.toThrow(/Unexpected App Store Connect API URL/);
+});
+
+// Apple accepts scope entries only for GET. A PATCH with a scoped token
+// failed before the external-group and Beta submission writes ran.
+it('scopes read tokens without adding write scopes to mutations', () => {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const token = makeRequestToken('DEMO123456', 'issuer', privateKey);
+  const claims = (method, path) => JSON.parse(Buffer.from(token(method, path).split('.')[1], 'base64url').toString());
+  expect(claims('GET', buildPath).scope).toEqual([`GET ${buildPath}`]);
+  expect(claims('PATCH', '/v1/betaBuildLocalizations/notes-id')).not.toHaveProperty('scope');
+  expect(claims('POST', '/v1/betaAppReviewSubmissions')).not.toHaveProperty('scope');
 });
