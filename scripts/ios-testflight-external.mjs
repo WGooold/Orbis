@@ -25,6 +25,12 @@ export function makeToken(keyId, issuerId, key, now = Math.floor(Date.now() / 10
   return `${body}.${sign('sha256', Buffer.from(body), { key, dsaEncoding: 'ieee-p1363' }).toString('base64url')}`;
 }
 
+export function makeRequestToken(keyId, issuerId, key) {
+  // App Store Connect scope entries only support GET requests. Keep read
+  // tokens scoped; the authenticated write routes use the team's key role.
+  return (method, path) => makeToken(keyId, issuerId, key, undefined, method === 'GET' ? `${method} ${path}` : undefined);
+}
+
 export function makeRequest(token, transport = fetch) {
   return async (method, path, body) => {
     const url = new URL(path, origin);
@@ -236,7 +242,7 @@ async function main() {
     throw new Error('Cannot read the ASC team signing key (requires a P-256 .p8 key).');
   }
   const action = positionals[0];
-  const result = await runExternal(makeRequest((method, path) => makeToken(ASC_KEY_ID, ASC_ISSUER_ID, key, undefined, `${method} ${path}`)), {
+  const result = await runExternal(makeRequest(makeRequestToken(ASC_KEY_ID, ASC_ISSUER_ID, key)), {
     action, version: values.version, build: values.build, locale: values.locale, wait: Number(values.wait),
     notifyApproved: values['notify-approved'], uploadOnly: values['upload-only'], notes: action === 'status' ? undefined : values['notes-file'] ? readFileSync(values['notes-file'], 'utf8') : ASC_TESTFLIGHT_NOTES || undefined,
   });
