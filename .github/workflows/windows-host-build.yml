@@ -150,6 +150,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: OrbisHost-windows-native-tests
+          include-hidden-files: true
           path: |
             .artifacts/windows-host-build/diagnostic-log.txt
             .artifacts/windows-host-build/Testing/Temporary/LastTest.log
