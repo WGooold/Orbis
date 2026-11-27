@@ -3,10 +3,8 @@ import type { OpenCodeEvent, SessionInfo } from "@opencode/client";
 // This module is copied verbatim after compilation into OpenCode's local TUI plugin directory.
 // Keep it dependency-free at runtime. The types below describe the small public 2.3.2 API it uses.
 export const ORBIS_APP_SESSION_KEY = "orbis.app.session";
-const version = "2.3.2";
 type TabEvent = Extract<OpenCodeEvent, { type: "session.created" | "server.connected" }>;
 type TuiContext = {
-  app: { version: string };
   data: {
     on<Type extends TabEvent["type"]>(type: Type, handler: (event: Extract<TabEvent, { type: Type }>) => void): () => void;
     session: { active(): string[]; get(id: string): SessionInfo | undefined; sync(id: string): Promise<void> };
@@ -19,8 +17,12 @@ type TuiContext = {
 
 export default {
   id: "orbis.opencode-tabs",
-  setup({ app, data, storage, ui: { tabs } }: TuiContext) {
-    if (app.version !== version) return;
+  setup(context: TuiContext) {
+    const { data, storage } = context;
+    const tabs = context.ui?.tabs;
+    if (typeof data?.on !== "function" || typeof data.session?.active !== "function" || typeof data.session.get !== "function"
+        || typeof data.session.sync !== "function" || typeof storage?.memory !== "function" || typeof tabs?.enabled !== "function"
+        || typeof tabs.list !== "function" || typeof tabs.open !== "function") return;
     let disposed = false;
     const pending = new Set<string>();
     // Survives TUI plugin hot reloads. If the user closes an auto-added tab, a later reconnect

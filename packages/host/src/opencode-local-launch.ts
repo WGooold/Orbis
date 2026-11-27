@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { agentTerminalEnvironment, type AgentCommand } from "./agent-command.js";
 import { checkServiceCliVersion, launchLocalService, serviceCli } from "./local-agent-start.js";
-import { OPENCODE_CLIENT_VERSION, openCodeTerminalService, type OpenCodeLocalLauncher, type OpenCodeServiceIdentity } from "./opencode-service-connection.js";
+import { OPENCODE_MIN_VERSION, openCodeTerminalService, type OpenCodeLocalLauncher, type OpenCodeServiceIdentity } from "./opencode-service-connection.js";
 
 export const OPENCODE_TUI_ENV_KEYS = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
   "OPENCODE_CONFIG_DIR", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"] as const;
@@ -28,9 +28,9 @@ function decodeHandoff(value: string | undefined): OpenCodeTerminalHandoff {
 /** Only the non-secret handoff target and CLI invocation go into the terminal launch arguments. */
 export async function prepareOpenCodeTerminalLaunch(target: OpenCodeTerminalTarget, signal: AbortSignal, env: NodeJS.ProcessEnv = process.env) {
   const cli = serviceCli("opencode", env);
-  const entry = await cli.find(OPENCODE_CLIENT_VERSION);
+  const entry = await cli.find(OPENCODE_MIN_VERSION);
   signal.throwIfAborted();
-  if (!entry) throw new Error(`未找到兼容的 OpenCode ${OPENCODE_CLIENT_VERSION} CLI`);
+  if (!entry) throw new Error(`未找到 OpenCode CLI（最低 ${OPENCODE_MIN_VERSION}）`);
   const cliCommand = await cli.resolve(entry);
   const environment = agentTerminalEnvironment(cli.env, OPENCODE_TUI_ENV_KEYS);
   if (process.platform === "win32") {
@@ -40,7 +40,7 @@ export async function prepareOpenCodeTerminalLaunch(target: OpenCodeTerminalTarg
     }
   }
   environment[process.platform === "win32" ? "USERPROFILE" : "HOME"] ??= cli.cwd;
-  await checkServiceCliVersion(cliCommand, cli.cwd, environment, signal, "OpenCode", OPENCODE_CLIENT_VERSION);
+  await checkServiceCliVersion(cliCommand, cli.cwd, environment, signal, "OpenCode", OPENCODE_MIN_VERSION);
   const handoff = Buffer.from(JSON.stringify({ target, cliCommand })).toString("base64url");
   decodeHandoff(handoff);
   return { args: [fileURLToPath(new URL("./opencode-terminal-entry.js", import.meta.url)), handoff], environment };
@@ -107,15 +107,15 @@ export function createOpenCodeLocalLauncher(env: NodeJS.ProcessEnv = process.env
   const cli = serviceCli("opencode", env);
   delete cli.env.OPENCODE_PTY_HANDOFF;
   const configPath = join(env.OPENCODE_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(cli.cwd, ".config"), "opencode"), "service.json");
-  const find = () => cli.find(OPENCODE_CLIENT_VERSION);
+  const find = () => cli.find(OPENCODE_MIN_VERSION);
   return {
     available: async () => await checkServiceConfig(configPath).then(find, () => undefined) !== undefined,
     start: async (guard, shouldStart, confirm) => {
       await checkServiceConfig(configPath);
       const entry = await find();
-      if (!entry) throw new Error(`未找到兼容的 OpenCode ${OPENCODE_CLIENT_VERSION} CLI`);
+      if (!entry) throw new Error(`未找到 OpenCode CLI（最低 ${OPENCODE_MIN_VERSION}）`);
       const command = await cli.resolve(entry);
-      await checkServiceCliVersion(command, cli.cwd, cli.env, guard.signal, "OpenCode", OPENCODE_CLIENT_VERSION);
+      await checkServiceCliVersion(command, cli.cwd, cli.env, guard.signal, "OpenCode", OPENCODE_MIN_VERSION);
       await checkServiceConfig(configPath);
       if (!await shouldStart()) return;
       guard.check();

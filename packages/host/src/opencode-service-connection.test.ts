@@ -15,17 +15,17 @@ const client = (version: string) => ({ server: { info: vi.fn(async () => ({
 })) } });
 
 describe("OpenCode shared-service connection", () => {
-  it("discovers a local service, authenticates with its supplied header, and accepts only the pinned version", async () => {
-    const api = client(OPENCODE_CLIENT_VERSION);
+  it.each([OPENCODE_CLIENT_VERSION, "2.4.0"])("discovers and authenticates with OpenCode %s", async version => {
+    const api = client(version);
     const createClient = vi.fn((options: { baseUrl: string; headers?: HeadersInit | undefined }) => {
       const headers = new Headers(options.headers);
       expect(options.baseUrl).toBe(endpoint.url);
       expect(headers.get("authorization")).toBe("Basic " + Buffer.from("opencode:local-service-secret").toString("base64"));
       return api as never;
     });
-    const connection = new OpenCodeServiceConnection({ discover: async () => endpoint, createClient });
+    const connection = new OpenCodeServiceConnection({ discover: async () => ({ ...endpoint, version }), createClient });
 
-    await expect(connection.refresh()).resolves.toEqual({ state: "ready", version: OPENCODE_CLIENT_VERSION });
+    await expect(connection.refresh()).resolves.toEqual({ state: "ready", version });
     expect(connection.isReady).toBe(true);
     expect(connection.client).toBe(api);
     expect(JSON.stringify(connection.status)).not.toContain("local-service-secret");
@@ -33,10 +33,14 @@ describe("OpenCode shared-service connection", () => {
   });
 
   it("reports missing and unsupported services without retaining a client", async () => {
-    let discovered: Endpoint | undefined;
+    let discovered: (Endpoint & { version?: string }) | undefined;
     const createClient = vi.fn(() => client("2.3.1") as never);
     const connection = new OpenCodeServiceConnection({ discover: async () => discovered, createClient });
     await expect(connection.refresh()).resolves.toEqual({ state: "unavailable", reason: "service_not_found" });
+    expect(createClient).not.toHaveBeenCalled();
+
+    discovered = { ...endpoint, version: "2.3.1" };
+    await expect(connection.refresh()).resolves.toEqual({ state: "unavailable", reason: "unsupported_version" });
     expect(createClient).not.toHaveBeenCalled();
 
     discovered = endpoint;

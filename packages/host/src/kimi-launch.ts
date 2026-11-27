@@ -1,12 +1,13 @@
 import { execFile, spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { agentCommandForEntry, cliSearchDirs, findExternalAgentEntries, stopAgentProcess } from "./agent-command.js";
 import { findKimiDesktopBundle, supportsKimiDesktop, verifyKimiDesktopBundle } from "./kimi-desktop-owner.js";
-import { KIMI_WEB_VERSION, KimiWebError, type KimiSource } from "./kimi-web-client.js";
+import { checkServiceCliVersion, ServiceCliVersionError } from "./local-agent-start.js";
+import { KIMI_WEB_MIN_VERSION, KimiWebError, type KimiSource } from "./kimi-web-client.js";
 
 const run = promisify(execFile);
 type LaunchRequest = {
@@ -26,7 +27,7 @@ export function createKimiLauncher(options: { source?: KimiSource; homeDir: stri
   if (options.endpoint !== undefined || !isAbsolute(options.homeDir)) return undefined;
   const home = homedir();
   if (options.source === "desktop") {
-    // LaunchServices uses the Mac user's Desktop profile. Non-default homes remain attach-only.
+    // The app opens the OS user’s Desktop profile. Non-default homes remain attach-only.
     if (!supportsKimiDesktop || options.homeDir !== join(home, ".kimi-code")) return undefined;
     return {
       available: async () => await findKimiDesktopBundle() !== undefined,
@@ -37,8 +38,14 @@ export function createKimiLauncher(options: { source?: KimiSource; homeDir: stri
         if (!await shouldStart()) return;
         signal.throwIfAborted();
         // Background open, with no new-instance flag. An already-open app is neither duplicated nor quit.
-        try { await run("/usr/bin/open", ["-g", "-a", bundle], { signal, timeout: 5000, maxBuffer: 8192 }); }
-        catch { throw new KimiWebError("unavailable", "无法打开 Kimi Code 桌面版"); }
+        try {
+          if (process.platform === "win32") {
+            const env = Object.fromEntries(Object.entries(options.env ?? process.env).filter(([key]) => !/^(?:ORBIS_|ELECTRON_|NODE_OPTIONS$|NODE_PATH$|KIMI_CODE_HOME$)/iu.test(key)));
+            const child = spawn(bundle, [], { cwd: dirname(bundle), env, detached: true, windowsHide: true, stdio: "ignore" });
+            await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.on("error", reject); });
+            child.unref();
+          } else await run("/usr/bin/open", ["-g", "-a", bundle], { signal, timeout: 5000, maxBuffer: 8192 });
+        } catch { throw new KimiWebError("unavailable", "无法打开 Kimi Code 桌面版"); }
         await waitForConnection();
       },
     };
@@ -63,12 +70,12 @@ export function createKimiLauncher(options: { source?: KimiSource; homeDir: stri
       const installed = await find();
       if (!installed) throw new KimiWebError("not_installed", "未找到 Kimi Code CLI，请先在电脑上安装");
       const cli = await agentCommandForEntry(installed.entry, env).catch(() => { throw new KimiWebError("unavailable", "Kimi Code CLI 启动入口不可用"); });
-      let version: string;
       try {
-        version = (await run(cli.command, [...cli.prefixArgs, "--version"], { cwd: home, env, signal, windowsHide: true, timeout: 5000, maxBuffer: 8192 })).stdout.trim();
-      } catch { throw new KimiWebError("unavailable", "无法检查 Kimi Code CLI 版本"); }
-      if (version !== KIMI_WEB_VERSION && version !== `kimi ${KIMI_WEB_VERSION}` && version !== `Kimi Code ${KIMI_WEB_VERSION}`)
-        throw new KimiWebError("unsupported", "Kimi Code CLI 版本不受支持");
+        await checkServiceCliVersion(cli, home, env, signal, "Kimi Code", KIMI_WEB_MIN_VERSION, ["Kimi Code", "kimi"]);
+      } catch (error) {
+        if (error instanceof ServiceCliVersionError) throw new KimiWebError(error.reason, error.message);
+        throw error;
+      }
       if (!await shouldStart()) return;
       signal.throwIfAborted();
       // The startup banner prints the local bearer token. Discard both streams, never surface their content.

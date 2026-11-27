@@ -53,7 +53,7 @@ Agent 卡以“本机／远程”切换连接方式，不再由所填地址推�
 
 ## HOST-AGENT-START-01｜本机 Gateway 按需启动
 
-已明确配置 `ws://127.0.0.1:<端口>` 时，可在 Host 点击「启动」，或由已协商的手机选中新建或恢复同源会话触发。先连接原端点，只有回环端口确认未监听才用兼容 CLI 在该端口启动本机 Gateway；不使用 `--force`、不覆盖原生认证、不开放局域网或公网。已有 Gateway 继续按原配置接入，远程 WSS、TLS 代理和其他端点仍只连接。首次需要原生设备批准时保留新 Gateway，不宣告会话已可用，不自动批准或扩大权限。Host 暂停只关闭自身连接；失败时只清理尚未交付的自产子进程。
+已明确配置 `ws://127.0.0.1:<端口>` 时，可在 Host 点击「启动」，或由已协商的手机选中新建或恢复同源会话触发。先连接原端点，只有回环端口确认未监听才用兼容 CLI 在该端口启动本机 Gateway；不使用 `--force`、不覆盖原生认证、不开放局域网或公网。本机 CLI 启动下限为 `2026.11.5`，允许更新版本尝试启动；已有 Gateway 不比较产品版本，仍按协议、权限和所需方法接入，远程 WSS、TLS 代理和其他端点仍只连接。首次需要原生设备批准时保留新 Gateway，不宣告会话已可用，不自动批准或扩大权限。Host 暂停只关闭自身连接；失败时只清理尚未交付的自产子进程。
 
 实现见 [`openclaw-local-launch.ts`](../../packages/host/src/openclaw-local-launch.ts)、[`openclaw-gateway.ts`](../../packages/host/src/openclaw-gateway.ts)；隔离官方 Gateway、占用端口／批准、加密请求和 Qt 验证见 [证据索引](../../.artifacts/agent-demand-launch-20261124/verification.json)。未发布，未安装至用户设备。
 

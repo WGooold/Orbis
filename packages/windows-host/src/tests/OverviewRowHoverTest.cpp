@@ -147,11 +147,12 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
           dsh: { kind: "baseline", version: "0.2.2-rc.2" },
           dshDesktop: { kind: "baseline", version: "0.2.2-rc.2" },
           pi: { kind: "reference", version: "0.84.4" },
-          kimiCode: { kind: "exact", version: "2.6.3" },
-          kimiCodeDesktop: { kind: "embeddedService", version: "2.6.2" },
-          opencode: { kind: "exact", version: "2.3.2" },
+          kimiCode: { kind: "minimum", version: "2.6.3" },
+          kimiCodeDesktop: { kind: "embeddedServiceMinimum", version: "2.8.1" },
+          opencode: { kind: "minimum", version: "2.3.2" },
           hermes: { kind: "reference", version: "0.22.5" },
-          openclaw: { kind: "localLaunch", version: "2026.11.5" }
+          openclaw: { kind: "localLaunchMinimum", version: "2026.11.5" },
+          agy: { kind: "minimum", version: "1.5.17" }
         },
         kimiCodeSupported: true,
         kimiDesktopSupported: true,
@@ -333,9 +334,9 @@ private slots:
             {"codex", "最低版本未确认 · 接入参考 v0.167.0"}, {"codexDesktop", "最低版本未确认"},
             {"claude", "最低支持 v2.1.287"}, {"dsh", "兼容基线 v0.2.2-rc.2"},
             {"dshDesktop", "兼容基线 v0.2.2-rc.2"}, {"pi", "最低版本未确认 · 接入参考 v0.84.4"},
-            {"kimiCode", "仅支持 v2.6.3"}, {"kimiCodeDesktop", "仅支持内嵌服务 v2.6.2"},
-            {"opencode", "仅支持 v2.3.2"}, {"hermes", "最低版本未确认 · 接入参考 v0.22.5"},
-            {"openclaw", "本机启动需要 v2026.11.5；已有网关最低版本未确认"}
+            {"kimiCode", "最低支持 v2.6.3"}, {"kimiCodeDesktop", "内嵌服务最低 v2.8.1"},
+            {"opencode", "最低支持 v2.3.2"}, {"hermes", "最低版本未确认 · 接入参考 v0.22.5"},
+            {"openclaw", "本机启动最低 v2026.11.5；已有网关按协议接入"}, {"agy", "最低支持 v1.5.17"}
         };
         for (const auto &[kind, expected] : requirements) {
             QVERIFY(QMetaObject::invokeMethod(window, "goAgent", Q_ARG(QVariant, kind)));

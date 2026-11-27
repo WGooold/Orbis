@@ -91,6 +91,12 @@ Host 设置在「常规 → 接入 Kimi Code」选择 Web／桌面版；CLI 用 
 
 **验证。** 官方桌面包与 Web 服务分别通过实际加密链路：从原生端新建并暂停在审批中的同一会话，可由参考设备续接、拒绝审批，原生订阅者收到终态；另验证 Orbis 新建、历史、重连、精确停止且不清除后续原生队列。Desktop 另通过发布版 Relay 与旧 Host JS runtime 回退；macOS Qt 的来源选择与最小窗口渲染通过。Node 全量 2,576 通过、19 跳过；首轮继承本机 Codex wrapper 配置引起的两项失败保留，隔离该配置后复跑通过。证据：`.artifacts/kimi-desktop-discovery/verification.json`。未部署；Kimi 窗口实际操作、手机安装及用户验收仍待完成。
 
+**Windows x64 补充（2026-11-27）。** 支持官方 Kimi Code Desktop 1.5.1（内嵌服务 2.8.1）。从当前用户的安装登记定位 EXE，校验 Authenticode 签名、签名证书与 `app.asar`，附接时确认登记 PID 的 EXE、用户 SID、启动时间和回环监听地址。通过认证后校验 `/meta` 产品、协议和两份 API 文档 SHA-256；只对该契约使用 v1 会话目录、原生分页 token、`activity` 和 Desktop `session` 事件，模型从主 Agent 帧读取。Web 2.6.3 与 macOS Desktop 2.6.2 保留原有契约。
+
+**版本下限（2026-11-27）。** Web 要求服务与 CLI `>= 2.6.3`；Desktop 的内嵌服务下限为 macOS `2.6.2`、Windows `2.8.1`，桌面包下限为 macOS `1.3.7`、Windows `1.5.1`。符合下限的版本会继续执行身份、认证和 API 契约检查；桌面 API 适配按平台契约选择，不再把产品版本用作 API 格式的标识。登记版本仍须与同一实例的 `/meta.server_version` 一致。Windows 仍要求可信的 `app.asar`：已验证基线哈希，或可由 Windows 验证的同一发布者签名；仅有 EXE 签名不能验证外置 `app.asar`。后续版本如果 API 契约改变或无法验证包完整性，不能接入。
+
+**Windows 验证。** 实际桌面服务上验证了已运行实例发现、认证、列目录、续接、Orbis 新建及标记恢复、一条模型回复、归档、还原及重新加载非空历史。使用独立的 Orbis 适配器状态目录，未重启现用 Host；Windows 冷启动、手机链路及桌面 UI 手动验收不在这次实测范围内。
+
 ## KIMI-12：从 Host 或手机按需启动
 
 启用后，Host 的被动探测、目录读取和启动回执回读不启动 Kimi。Host 的「启动」按钮、已协商设备在有效工作目录请求新会话配置或新建，以及选中同数据源的历史会话，可按需启动。`launchableAgents` 表示可以发起启动，`agents` 仍只在认证、契约验证与 WS 握手完成后公告；沿用 `agent.kimiCode`，不扩展协议。
