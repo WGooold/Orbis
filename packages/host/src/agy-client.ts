@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { AcpCleanupError, AcpClient, AcpResponseError, record, type AcpConnection } from "./acp-client.js";
 import { cliPathDirs } from "./agent-command.js";
+import { meetsMinimumAgentVersion } from "./agent-installation.js";
 import { agyKey, agyKeyFailure, verifyAgyKey, type AgyKeyCheck } from "./agy-credential.js";
 import { agyAuthIssue, agyProfile, agyUsesGoogle, parseAgyAuthConfig, type AgyAuthConfig, type AgyAuthMethod } from "./agy-auth.js";
 import type { PiCommand } from "./spawner.js";
@@ -56,8 +57,8 @@ export async function connectAgy(options: AgyProcessOptions & {
     ...options, ...(key ? { redact: (line: string) => line.replaceAll(key, "[REDACTED]") } : {}), timeoutMs: 15_000, validate(result) {
       const caps = record(result.agentCapabilities);
       const list = record(caps.sessionCapabilities).list;
-      if (record(result.agentInfo).version !== AGY_VERSION || result.protocolVersion !== 1 || caps.loadSession !== true
-        || list === null || typeof list !== "object" || Array.isArray(list)) throw new Error(`需要 Antigravity CLI ${AGY_VERSION} 与 ACP v1 list/load 能力`);
+      if (!meetsMinimumAgentVersion(record(result.agentInfo).version, AGY_VERSION) || result.protocolVersion !== 1 || caps.loadSession !== true
+        || list === null || typeof list !== "object" || Array.isArray(list)) throw new Error(`需要 Antigravity CLI ${AGY_VERSION} 或更新版本与 ACP v1 list/load 能力`);
       if (!Array.isArray(result.authMethods) || !result.authMethods.some(method => record(method).id === authMethod)) {
         throw new Error("Antigravity CLI 未提供所选认证方式");
       }

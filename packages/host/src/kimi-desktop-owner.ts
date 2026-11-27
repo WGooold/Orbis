@@ -5,6 +5,8 @@ import { basename, isAbsolute, join } from "node:path";
 import { isIP } from "node:net";
 import { promisify } from "node:util";
 
+import { meetsMinimumAgentVersion } from "./agent-installation.js";
+
 const run = promisify(execFile);
 export const supportsKimiDesktop = (process.platform === "darwin" && process.arch === "arm64")
   || (process.platform === "win32" && process.arch === "x64");
@@ -28,7 +30,7 @@ export async function verifyKimiDesktopBundle(bundle: string, signal?: AbortSign
   try {
     const limits = { ...options, signal };
     const { stdout } = await run("/usr/bin/plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", join(bundle, "Contents", "Info.plist")], limits);
-    if (stdout.trim() !== "1.3.7") return false;
+    if (!meetsMinimumAgentVersion(stdout, "1.3.7")) return false;
     await run("/usr/bin/codesign", ["--verify", "--strict", "-R", `=${requirement}`, bundle], limits);
     return true;
   } catch { return false; }

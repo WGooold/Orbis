@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createKimiLauncher, type KimiLauncher } from "./kimi-launch.js";
 import { KimiRuntime } from "./kimi-runtime.js";
 import { kimiSourceKey } from "./kimi-sessions.js";
-import { KimiWebClient, KimiWebConnector } from "./kimi-web-client.js";
+import { assertKimiMayStart, KimiWebClient, KimiWebConnector } from "./kimi-web-client.js";
 
 const roots: string[] = [];
 const servers: Array<{ server: Server; sockets: WebSocketServer }> = [];
@@ -25,7 +25,7 @@ async function tempHome(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), "orbis-kimi-client-")); roots.push(path); return path;
 }
 
-async function fixture(options: { homeDir?: string; id?: string; auth?: boolean; bypass?: boolean; redirect?: boolean; delay?: boolean; version?: string; product?: string; protocol?: string } = {}) {
+async function fixture(options: { homeDir?: string; id?: string; auth?: boolean; bypass?: boolean; redirect?: boolean; delay?: boolean; version?: string; windowsDesktop?: boolean; product?: string; protocol?: string } = {}) {
   const homeDir = options.homeDir ?? await tempHome();
   const id = options.id ?? serverId;
   await mkdir(join(homeDir, "server", "instances"), { recursive: true });
@@ -40,7 +40,7 @@ async function fixture(options: { homeDir?: string; id?: string; auth?: boolean;
     if (options.auth !== false && req.headers.authorization !== `Bearer ${token}`) { res.writeHead(401); res.end(); return; }
     if (req.url === "/api/v1/meta") res.end(JSON.stringify({ code: 0, data: {
       server_id: id, server_version: options.version ?? "2.6.3", started_at: new Date(now).toISOString(),
-      ...(options.version === "2.8.1" ? { product: options.product ?? "kimi-code-desktop", kimi_agent_protocol_version: options.protocol ?? "1.0.0" } : { backend: "v2" }),
+      ...(options.windowsDesktop ? { product: options.product ?? "kimi-code-desktop", kimi_agent_protocol_version: options.protocol ?? "1.0.0" } : { backend: "v2" }),
       dangerous_bypass_auth: options.bypass ?? false,
       capabilities: { websocket: true },
     } }));
@@ -91,33 +91,63 @@ describe("Kimi Code local Web client", () => {
 
   // KIMI-11: the embedded contract is not enough without desktop ownership; never fall back to Web.
   it("separates desktop and web even with both registrations in the same data root", async () => {
-    const value = await fixture({ version: "2.6.2" });
+    const value = await fixture({ version: "2.7.1" });
     const endpoint = new URL(value.endpoint);
     await writeFile(join(value.homeDir, "server", "instances", "01KIMICODESECOND123456789AB.json"), JSON.stringify({
       server_id: "01KIMICODESECOND123456789AB", pid: process.pid, host: "127.0.0.1", port: 1,
-      started_at: now, heartbeat_at: now, host_version: "2.6.3",
+      started_at: now, heartbeat_at: now, host_version: "2.7.1",
     }));
-    const options = { homeDir: value.homeDir, expectedContracts: contracts, source: "desktop" as const };
-    await expect(KimiWebClient.connect({ ...options, verifyDesktopOwner: async () => false })).rejects.toMatchObject({ reason: "unsupported" });
-    const client = await KimiWebClient.connect({ ...options, verifyDesktopOwner: async (pid, host, port) =>
-      pid === process.pid && host === endpoint.hostname && port === Number(endpoint.port) });
-    expect(client.meta.server_version).toBe("2.6.2");
-    expect(client.sessionContract).toBe("legacy"); client.close();
-    await expect(KimiWebClient.connect({ ...value, expectedContracts: contracts })).rejects.toMatchObject({ reason: "not_running" });
+    const verifyDesktopOwner = async (pid: number, host: string, port: number) =>
+      pid === process.pid && host === endpoint.hostname && port === Number(endpoint.port);
+    const options = { homeDir: value.homeDir, expectedContracts: contracts, source: "desktop" as const, desktopPlatform: "darwin" as const };
+    await expect(KimiWebClient.connect({ ...options, endpoint: value.endpoint, verifyDesktopOwner: async () => false })).rejects.toMatchObject({ reason: "unsupported" });
+    const client = await KimiWebClient.connect({ ...options, verifyDesktopOwner });
+    expect(client.meta.server_version).toBe("2.7.1");
+    expect(client.sessionContract).toBe("legacy");
+    client.close();
+    await expect(KimiWebClient.connect({ ...value, expectedContracts: contracts, verifyDesktopOwner })).rejects.toMatchObject({ reason: "not_running" });
   });
 
-  it("recognizes Windows Desktop metadata without accepting a mismatched product, protocol or Web source", async () => {
-    const desktop = await fixture({ version: "2.8.1" });
-    const options = { expectedContracts: contracts, source: "desktop" as const, verifyDesktopOwner: async () => true };
-    const client = await KimiWebClient.connect({ ...desktop, ...options });
-    expect(client.meta).toMatchObject({ product: "kimi-code-desktop", server_version: "2.8.1" });
-    expect(client.sessionContract).toBe("desktop-2.8.1");
+  it("accepts higher Web versions and rejects a lower version before fetching", async () => {
+    const newer = await fixture({ version: "2.10.0" });
+    const client = await KimiWebClient.connect({ ...newer, expectedContracts: contracts, verifyDesktopOwner: async () => false });
+    expect(client.meta.server_version).toBe("2.10.0");
     client.close();
-    await expect(KimiWebClient.connect({ ...desktop, expectedContracts: contracts })).rejects.toMatchObject({ reason: "not_running" });
+    const older = await fixture({ version: "2.6.2" });
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(KimiWebClient.connect({ ...older, expectedContracts: contracts, fetch: fetcher, verifyDesktopOwner: async () => false })).rejects.toMatchObject({ reason: "unsupported" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("accepts the Windows Desktop contract at and above the version floor, not as Web", async () => {
+    const options = { expectedContracts: contracts, source: "desktop" as const, desktopPlatform: "win32" as const, verifyDesktopOwner: async () => true };
+    for (const version of ["2.8.1", "2.9.0"]) {
+      const desktop = await fixture({ version, windowsDesktop: true });
+      const client = await KimiWebClient.connect({ ...desktop, ...options });
+      expect(client.meta).toMatchObject({ product: "kimi-code-desktop", server_version: version });
+      expect(client.sessionContract).toBe("desktop-2.8.1");
+      client.close();
+      await expect(KimiWebClient.connect({ ...desktop, expectedContracts: contracts, verifyDesktopOwner: async () => false })).rejects.toMatchObject({ reason: "unsupported" });
+    }
+    const older = await fixture({ version: "2.8.0", windowsDesktop: true });
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(KimiWebClient.connect({ ...older, ...options, fetch: fetcher })).rejects.toMatchObject({ reason: "unsupported" });
+    expect(fetcher).not.toHaveBeenCalled();
     for (const metadata of [{ product: "kimi-code" }, { protocol: "2.0.0" }]) {
-      const value = await fixture({ version: "2.8.1", ...metadata });
+      const value = await fixture({ version: "2.9.0", windowsDesktop: true, ...metadata });
       await expect(KimiWebClient.connect({ ...value, ...options })).rejects.toMatchObject({ reason: "unsupported" });
     }
+    const drifted = await fixture({ version: "2.9.0", windowsDesktop: true });
+    await expect(KimiWebClient.connect({ ...drifted, ...options, expectedContracts: { ...contracts, asyncapi: "0".repeat(64) } })).rejects.toMatchObject({ reason: "unsupported" });
+  });
+
+  // A version overlap doesn't prove an existing listener is the alternate source.
+  it("only allows a Desktop launch alongside an authenticated compatible Web listener", async () => {
+    const web = await fixture({ version: "2.9.0" });
+    const desktop = await fixture({ version: "2.9.0", windowsDesktop: true });
+    const options = { expectedContracts: contracts, source: "desktop" as const, verifyDesktopOwner: async () => false };
+    await expect(assertKimiMayStart({ ...options, homeDir: web.homeDir })).resolves.toBeUndefined();
+    await expect(assertKimiMayStart({ ...options, homeDir: desktop.homeDir })).rejects.toMatchObject({ reason: "unavailable" });
   });
 
   it("requires explicit selection when multiple fresh service registrations exist", async () => {
@@ -199,12 +229,12 @@ describe("KIMI-12 on-demand launch", () => {
     const homeDir = await tempHome();
     const target: KimiLauncher["start"] = async ({ shouldStart, waitForConnection }) => {
       expect(await shouldStart()).toBe(true);
-      await fixture({ homeDir, version: source === "desktop" ? "2.6.2" : "2.6.3" });
+      await fixture({ homeDir, version: source === "desktop" ? "2.7.0" : "2.6.4" });
       expect(await waitForConnection()).toBe(process.pid);
     };
     const start = vi.fn(target);
     const kimi = new KimiRuntime({ stateDir: homeDir, homeDir, source, expectedContracts: contracts, now: () => now,
-      ...(source === "desktop" ? { verifyDesktopOwner: async () => true } : {}), launcher: { start, available: async () => true } });
+      ...(source === "desktop" ? { verifyDesktopOwner: async () => true, desktopPlatform: "darwin" } : {}), launcher: { start, available: async () => true } });
     kimi.start();
     try {
       await vi.waitFor(() => expect(kimi.canLaunch()).toBe(true));

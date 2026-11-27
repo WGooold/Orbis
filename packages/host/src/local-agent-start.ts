@@ -5,6 +5,7 @@ import { delimiter } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { agentCommandForEntry, cliSearchDirs, findExternalAgentEntries, stopAgentProcess, type AgentCommand } from "./agent-command.js";
+import { meetsMinimumAgentVersion } from "./agent-installation.js";
 
 const exec = promisify(execFile);
 export type StartGuard = { signal: AbortSignal; check: () => void };
@@ -52,9 +53,9 @@ export function serviceCli(kind: "opencode" | "openclaw", inherited: NodeJS.Proc
   const env = { ...inherited };
   for (const key of Object.keys(env)) if (/^orbis_/iu.test(key) || (key.toUpperCase() === "PATH" && key !== "PATH")) delete env[key];
   env.PATH = cliSearchDirs(kind, inherited, process.platform, home).join(delimiter);
-  const find = async (version?: string) => {
+  const find = async (minimumVersion?: string) => {
     for (const candidate of await findExternalAgentEntries(kind, inherited)) {
-      if (version && candidate.version && candidate.version !== version) continue;
+      if (minimumVersion && candidate.version && !meetsMinimumAgentVersion(candidate.version, minimumVersion)) continue;
       if (process.platform === "win32" && !/\.(?:exe|[cm]?js)$/iu.test(candidate.entry)) continue;
       if (await stat(candidate.entry).then(info => info.isFile(), () => false)) return candidate.entry;
     }
@@ -63,13 +64,18 @@ export function serviceCli(kind: "opencode" | "openclaw", inherited: NodeJS.Proc
   return { env, cwd: home, find, resolve: async (entry: string) => agentCommandForEntry(entry, env) };
 }
 
-export async function checkServiceCliVersion(cli: AgentCommand, cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal, name: string, version: string): Promise<void> {
+export class ServiceCliVersionError extends Error {
+  constructor(readonly reason: "unavailable" | "unsupported", message: string) { super(message); }
+}
+
+export async function checkServiceCliVersion(cli: AgentCommand, cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal, name: string, minimumVersion: string, aliases: readonly string[] = [name, name.toLowerCase()]): Promise<void> {
   let result: string;
   try { result = (await exec(cli.command, [...cli.prefixArgs, "--version"], { cwd, env, signal, timeout: 4_000, windowsHide: true, maxBuffer: 8192 })).stdout.trim(); }
-  catch { throw new Error(`无法检查 ${name} CLI 版本`); }
-  const versions = [name, name.toLowerCase()].flatMap(prefix => [`${prefix} ${version}`, `${prefix} v${version}`]);
-  if (result !== version && !versions.some(value => result === value || result.startsWith(`${value} (`)))
-    throw new Error(`${name} CLI 版本不受支持，需要 ${version}`);
+  catch { signal.throwIfAborted(); throw new ServiceCliVersionError("unavailable", `无法检查 ${name} CLI 版本`); }
+  const prefix = [...aliases].sort((a, b) => b.length - a.length).find(value => result.startsWith(`${value} `));
+  const reported = prefix ? result.slice(prefix.length + 1).replace(/ \([^\r\n]*\)$/u, "") : result;
+  if (!meetsMinimumAgentVersion(reported, minimumVersion))
+    throw new ServiceCliVersionError("unsupported", `${name} CLI 版本不受支持，最低需要 ${minimumVersion}`);
 }
 
 export async function waitForLocalAgent<T>(signal: AbortSignal, probe: () => T | undefined | Promise<T | undefined>): Promise<T> {

@@ -15,7 +15,7 @@ Orbis App 是交互界面。Host 启动本机官方 `agy acp` 子进程，通过
 ### AGY-11｜Host 所有权与启用边界
 
 - Host 进程须经本机策略授权。桌面 Host 的 Agent 页即使 AGY 未启用也提供本机设置入口；手机不能保存凭据，也不能在 Host 未配置认证时远程启用该 Agent。无头 Host 保留显式环境 Key 接入。
-- CLI 从 Host 登录环境的 PATH、平台官方安装位置或绝对 `ORBIS_AGY_ENTRY` 发现。要求 `agy 1.5.17`、ACP v1、`session/list`/`load` 能力及与所选认证方式相符的原生认证声明；任一检查失败都不发布 ready。
+- CLI 从 Host 登录环境的 PATH、平台官方安装位置或绝对 `ORBIS_AGY_ENTRY` 发现。要求 `agy >= 1.5.17`、ACP v1、`session/list`/`load` 能力及与所选认证方式相符的原生认证声明；任一检查失败都不发布 ready。
 - `agy-acp` 使用 Host 独占 profile 和 owner lock；`--gemini-dir`、`GEMINI_HOME`、缓存、临时目录均限定在该 profile。API Key 只由 Host 受限子进程环境提供，不进入 argv、ACP 请求、Relay/App、Host JSON 配置、诊断或日志。OAuth token 保留在 CLI 自己的实例 profile，不进 Orbis 凭据槽。ACP 输出先按 Key/token 脱敏再解析，原生 stderr 不进入 Host 日志。
 - 桌面设置先验证所选认证，再保存 API Key 到 macOS Keychain／Windows DPAPI，或通过 CLI 登录写入隔离的 OAuth profile；失败时保留原认证。重启后状态不向 App 暴露凭据；环境变量模式只读。没有系统 Key 凭据后端时不回退到明文文件。
 - 用户完成本机验证后再启用 Agent；ACP ready 时手机才可新建。真实推理仍由 Google 和所选模型决定；认证成功或空 `session/list` 不证明某一次模型调用已成功。

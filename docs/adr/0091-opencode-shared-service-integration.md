@@ -55,7 +55,7 @@ Host 将经过验证的 OpenCode catalog、history、message、tool、execution�
 
 ### 5. 版本、安全与恢复门槛
 
-首版固定 `@opencode/client` 与服务端版本均为 `2.3.2`；运行时通过 `server.info` 验证服务端版本，任何不完全匹配的版本都拒绝连接，不作 semver minor 或 patch 兼容推断。后续扩大支持范围必须先加入对应版本的真实服务验收。所有 API 请求仅连接经过校验的 SDK 服务注册 endpoint，并使用 `Service.headers()` 提供的认证 headers；除非将来另立 ADR 并明确授权，不接受任意 LAN / Internet OpenCode server。
+**产品版本下限（2026-11-27）。** Host 接入共享服务、按需启动 CLI 和终端交接要求 OpenCode `>= 2.3.2`，不再要求产品版本与内置 SDK 一致。SDK 暂不升级；回环地址、认证、实例 PID、会话身份和事件流检查不变。会话栏插件检测所需 TUI API，不再按版本号禁用。高于下限不代表已用真实版本完成验收。所有 API 请求仅连接经过校验的 SDK 服务注册 endpoint，并使用 `Service.headers()` 提供的认证 headers；除非将来另立 ADR 并明确授权，不接受任意 LAN / Internet OpenCode server。
 
 验证至少覆盖：service 不存在 / 未就绪 / 认证失败 / 版本不兼容；服务发现和 Host 重启不启动或停止 OpenCode 进程；session 列表分页；session 创建 / 恢复；history 与 live event 对齐；SSE 断线、溢出后的重同步；输入、取消、权限与 question 生命周期；密码和原始工具内容不进入共享日志 / App 消息；未声明 `agent.opencode` 的旧客户端完全不可观察到新 kind。
 
@@ -103,7 +103,7 @@ try {
 }
 ```
 
-待验收：原生服务上的权限批准／拒绝和事件流溢出恢复（目前仅模拟测试通过）、iOS 编译、Android／iOS 与隔离 Host 的设备联调及真实旧版 App 兼容性。现阶段仍是预览候选，不加入正式支持清单，也不扩大 `2.3.2` 版本范围。
+待验收：原生服务上的权限批准／拒绝和事件流溢出恢复（目前仅模拟测试通过）、iOS 编译、Android／iOS 与隔离 Host 的设备联调及真实旧版 App 兼容性。该批验收仍是预览候选，不加入正式支持清单，也未验证其他原生版本。
 
 ## HOST-AGENT-START-01：按需启动本机共享服务
 

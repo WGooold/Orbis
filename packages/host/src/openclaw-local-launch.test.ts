@@ -15,7 +15,7 @@ it.skipIf(process.platform === "win32").each(["pairing_required", "token_missing
   await writeFile(binary, `#!/usr/bin/env node
     const fs = require("node:fs");
     const args = process.argv.slice(2);
-    if (args[0] === "--version") console.log("OpenClaw 2026.11.5 (fixture)");
+    if (args[0] === "--version") console.log("OpenClaw 2026.12.1 (fixture)");
     else {
       fs.appendFileSync(process.env.FIXTURE_LAUNCHES, "start\\n");
       require("node:net").createServer(socket => socket.destroy()).listen(Number(args[args.indexOf("--port") + 1]), "127.0.0.1", () => {
