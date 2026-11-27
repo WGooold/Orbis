@@ -47,6 +47,12 @@ struct MathMarkupTests {
         guard case .text(let value) = doc.rows[0].kind else { Issue.record("Expected source fallback"); return }
         #expect(String(value.characters) == source)
     }
+    @Test func rendersMathFragmentsBeyondTheFormerThirtyTwoFragmentLimit() {
+        let source = (0..<40).map { index in "Paragraph \(index) \\(x_\(index)\\)" }.joined(separator: "\n\n")
+        let document = PreparedMarkdownDocument(source)
+        #expect(document.mathHTML.count == 40)
+        #expect(document.mathHTML.values.contains { $0.contains(#"data-tex="x_39""#) })
+    }
     @Test func sourceRestorationAndTableBoundaries() throws {
         let source = #"""
         | Name | Formula |
