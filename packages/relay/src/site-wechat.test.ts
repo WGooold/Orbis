@@ -36,7 +36,7 @@ function harness() {
   return { fab, trigger, close, inside, documentEvents };
 }
 
-async function fetchAsset(handler: (request: IncomingMessage, response: ServerResponse, path: string) => Promise<boolean>, path: string) {
+async function fetchAsset(handler: Awaited<ReturnType<typeof createWebHandler>>, path: string, method: "GET" | "HEAD" = "GET") {
   let statusCode = 0;
   let headers: Record<string, string | number> = {};
   let body: Buffer | undefined;
@@ -48,7 +48,7 @@ async function fetchAsset(handler: (request: IncomingMessage, response: ServerRe
     },
     end(chunk?: Buffer) { body = chunk; },
   } as unknown as ServerResponse;
-  const handled = await handler({ method: "GET" } as IncomingMessage, response, path);
+  const handled = await handler({ method } as IncomingMessage, response, path);
   return { handled, statusCode, headers, body };
 }
 
@@ -91,18 +91,38 @@ describe("public site WeChat group floating widget", () => {
     expect(html).toContain('<a class="button small" href="#download">下载 <i class="ico i-arrow-right" aria-hidden="true"></i></a>');
     expect(html).toContain('id="wechat-fab"');
     expect(html).toContain('id="wechat-close"');
-    expect(html).toContain('src="assets/promo/weixinqrcode.png"');
+    expect(html).not.toContain('assets/promo/weixinqrcode.png');
 
     const handler = await createWebHandler();
-    const qr = await fetchAsset(handler, "/assets/promo/weixinqrcode.png");
-    expect(qr.handled).toBe(true);
-    expect(qr.statusCode).toBe(200);
-    expect(qr.headers["content-type"]).toBe("image/png");
-    expect(qr.body?.length).toBeGreaterThan(10000);
+    const antigravity = await fetchAsset(handler, "/assets/promo/agents/antigravity.svg");
+    expect(antigravity.handled).toBe(true);
+    expect(antigravity.statusCode).toBe(200);
+    expect(antigravity.headers["content-type"]).toBe("image/svg+xml");
+    expect(antigravity.body?.length).toBeGreaterThan(1000);
 
     const icon = await fetchAsset(handler, "/assets/promo/icons/wechat.svg");
     expect(icon.handled).toBe(true);
     expect(icon.statusCode).toBe(200);
     expect(icon.headers["content-type"]).toBe("image/svg+xml");
+  });
+
+  // SITE-QR-02: the page can use the published URL without requiring an nginx proxy.
+  it("serves the stable QR and retains the old asset URL on a direct Relay", async () => {
+    const html = readFileSync(new URL("./web/index.html", import.meta.url), "utf8");
+    expect(html).toContain('src="/downloads/wechat-group.png"');
+    const handler = await createWebHandler();
+    const stable = await fetchAsset(handler, "/downloads/wechat-group.png");
+    const legacy = await fetchAsset(handler, "/assets/promo/weixinqrcode.png");
+    for (const qr of [stable, legacy]) {
+      expect(qr.handled).toBe(true);
+      expect(qr.statusCode).toBe(200);
+      expect(qr.headers["content-type"]).toBe("image/png");
+      expect(qr.headers["cache-control"]).toBe("no-store");
+      expect(qr.body?.length).toBeGreaterThan(10000);
+    }
+    expect(stable.body).toEqual(legacy.body);
+    const head = await fetchAsset(handler, "/downloads/wechat-group.png", "HEAD");
+    expect(head).toMatchObject({ handled: true, statusCode: 200, headers: { "content-length": stable.body?.length } });
+    expect(head.body).toBeUndefined();
   });
 });

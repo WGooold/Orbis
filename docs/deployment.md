@@ -116,11 +116,13 @@ For existing clients with the former Relay URL, keep that hostname as a reverse 
 
 ## WeChat group QR
 
-`README.md` and `README.en.md` use the stable public URL
+The website and both READMEs use the stable public URL
 `https://orbising.com/downloads/wechat-group.png`. When
 `docs/assets/weixinqrcode.png` changes on `main`, the **Publish WeChat QR**
 workflow uploads it to the existing Nginx downloads directory, atomically
 replaces the served image, and verifies the public SHA-256. To refresh the
 image, generate a new group QR in WeChat and replace that source file; no README
 or server configuration edit is needed. The QR itself remains subject to
-WeChat's seven-day expiry.
+WeChat's seven-day expiry. The public Nginx download directory takes
+precedence; a directly served Relay falls back to the bundled image at the
+same path and still accepts the previous asset URL.

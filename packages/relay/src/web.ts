@@ -6,6 +6,9 @@ import { pipeline } from "node:stream/promises";
 import { z } from "zod";
 import { jsonResponse } from "./http-utils.js";
 
+const wechatGroupQrPath = "/downloads/wechat-group.png";
+const bundledWechatGroupQrPath = "/assets/promo/weixinqrcode.png";
+
 const assets = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/admin/": ["admin.html", "text/html; charset=utf-8"],
@@ -106,7 +109,7 @@ const assets = {
   "/assets/promo/orbis-ring.png": ["promo/orbis-ring.png", "image/png"],
   "/assets/promo/orbis-symbol-2048.png": ["promo/orbis-symbol-2048.png", "image/png"],
   "/assets/promo/qr-orbising.svg": ["promo/qr-orbising.svg", "image/svg+xml"],
-  "/assets/promo/weixinqrcode.png": ["promo/weixinqrcode.png", "image/png"],
+  [bundledWechatGroupQrPath]: ["promo/weixinqrcode.png", "image/png"],
 } as const;
 export const downloadNames = [
   "OrbisHost-0.1.25-windows-x64-setup.exe", "OrbisHost-0.1.25-windows-x64.zip",
@@ -205,7 +208,9 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
       });
       return true;
     }
-    if (path.startsWith("/downloads/")) {
+    // The public proxy serves the published QR first; direct Relay requests use the bundled image.
+    const wechatGroupQr = path === wechatGroupQrPath;
+    if (!wechatGroupQr && path.startsWith("/downloads/")) {
       const name = path.slice("/downloads/".length);
       const release = downloads.find(file => name === file.name || name === `${file.name}.sha256`);
       if (!release || !downloadsDir) { jsonResponse(response, 404, { error: "download_unavailable" }); return true; }
@@ -221,7 +226,7 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
       else await pipeline(createReadStream(join(downloadsDir, name)), response).catch(() => response.destroy());
       return true;
     }
-    const asset = contents.get(path);
+    const asset = contents.get(wechatGroupQr ? bundledWechatGroupQrPath : path);
     if (!asset) return false;
     response.writeHead(200, {
       "content-type": asset.type,
