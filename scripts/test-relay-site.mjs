@@ -56,12 +56,15 @@ async function navigationIdentity(page) {
     const selected = picks.filter(pick => pick.getAttribute("aria-pressed") === "true");
     const tabs = [...globalThis.document.querySelectorAll("[role=tab]")];
     const scenes = tabs.map(tab => tab.dataset.scene);
+    const labels = tabs.map(tab => tab.textContent.trim());
     const selectedTabs = tabs.filter(tab => tab.getAttribute("aria-selected") === "true");
     return required.every(name => names.includes(name)) && names.every(Boolean)
       && new Set(names).size === names.length && selected.length === 1
       && selected[0].title === globalThis.document.querySelector("#agent-name").textContent
       && picks.every(pick => pick.getAttribute("aria-label")?.startsWith(pick.title + "，"))
-      && ["chat", "diff", "download", "sessions", "create", "quota", "pair", "mention", "markdown"].every(scene => scenes.includes(scene))
+      && JSON.stringify(scenes) === JSON.stringify(["chat", "diff", "download", "preview", "sessions", "create", "agent", "privacy"])
+      && !scenes.includes("mention") && !labels.includes("目录引用")
+      && labels.includes("文件预览") && labels.includes("Agent 配置") && labels.includes("隐私安全")
       && new Set(scenes).size === scenes.length && new Set(tabs.map(tab => tab.id)).size === tabs.length
       && tabs.every(tab => tab.id && globalThis.document.getElementById(tab.getAttribute("aria-controls"))?.getAttribute("role") === "tabpanel")
       && selectedTabs.length === 1 && globalThis.document.getElementById(selectedTabs[0].getAttribute("aria-controls"))?.getAttribute("aria-labelledby") === selectedTabs[0].id;
@@ -147,42 +150,67 @@ async function featureAct() {
     await page.locator("#design-demo[data-page=chat]").waitFor();
     check(`draft opens a local session for the selected source at ${width}px`,(await page.locator(".demo-chat .agent-kimi").textContent()).includes("Kimi Code 桌面版"));
 
-    await scene(page,"mention");
-    await page.getByRole("button",{name:"选择引用目录"}).click();
-    await page.getByRole("button",{name:"打开 src 目录",exact:true}).click();
-    check(`folder navigation doesn't insert a reference at ${width}px`,await page.locator(".file-demo-path").textContent()==="/Projects/orbis/src" && await page.locator(".file-demo-mention").count()===0);
-    await screenshot(page,`feature-${width}-directory`,"#film-viewport");
-    await page.getByRole("button",{name:"引用 components 目录"}).click();
-    check(`separate @ control inserts exact directory path at ${width}px`,await page.locator(".file-demo-composer .file-demo-mention").textContent()==="@/Projects/orbis/src/components");
-    await page.getByRole("button",{name:"发送目录引用"}).click();
-    check(`reference reaches only the sample conversation at ${width}px`,await page.locator(".demo-message-user .file-demo-mention").textContent()==="@/Projects/orbis/src/components");
-    await page.getByRole("button",{name:"重置",exact:true}).click();
-    check(`reset clears the reference at ${width}px`,await page.locator(".file-demo-mention").count()===0);
-
-    await scene(page,"markdown");
-    const file=page.getByRole("button",{name:"release-notes.md"});
-    check(`Markdown starts collapsed at ${width}px`,await file.getAttribute("aria-expanded")==="false" && await page.locator(".file-demo-document").count()===0);
-    await file.click();
-    check(`Markdown opens as a heading, list and code at ${width}px`,await page.locator(".file-demo-document h3").textContent()==="移动端回归清单" && await page.locator(".file-demo-document li").count()===3 && await page.locator(".file-demo-document pre code").textContent()==="npm run check");
-    await page.getByRole("button",{name:"全屏阅读"}).click();
-    check(`full reader contains the same Markdown at ${width}px`,await page.locator(".file-demo-reader h3").textContent()==="移动端回归清单");
-    await screenshot(page,`feature-${width}-markdown`,"#film-viewport");
+    await scene(page,"preview");
+    check(`directory mention tab removed at ${width}px`,await page.locator("#tab-mention").count()===0);
+    check(`preview shows HTML, PNG, Markdown and MP4 cards at ${width}px`,await page.locator(".preview-file-btn").count()===4);
+    await screenshot(page,`feature-${width}-preview-chat`,"#film-viewport");
+    await page.locator('[data-preview-action="fullscreen"][data-file="html"]').click();
+    await page.getByRole("tab",{name:"iOS",exact:true}).click();
+    check(`HTML fullscreen interactive filter updates metrics at ${width}px`,(await page.locator(".preview-web-kpis").textContent()).includes("118 ms"));
+    await screenshot(page,`feature-${width}-preview-html`,"#film-viewport");
     await page.keyboard.press("Escape");
-    check(`return to the file card preserves the open preview at ${width}px`,await file.getAttribute("aria-expanded")==="true");
+    await page.locator('[data-preview-action="toggle"][data-file="image"]').click();
+    await page.locator('[data-preview-action="fullscreen"][data-file="image"]').click();
+    await page.getByRole("button",{name:"4×",exact:true}).click();
+    check(`image fullscreen zoom supports 4x at ${width}px`,await page.locator(".preview-image-stage").getAttribute("data-zoom")==="4");
+    await page.keyboard.press("Escape");
+    await page.locator('[data-preview-action="toggle"][data-file="markdown"]').click();
+    check(`Markdown renders heading, list and code at ${width}px`,await page.locator(".file-demo-document h3").textContent()==="移动端回归清单" && await page.locator(".file-demo-document li").count()===3 && await page.locator(".file-demo-document pre code").textContent()==="npm run check");
+    await page.locator('[data-preview-action="toggle"][data-file="video"]').click();
+    await page.locator('[data-preview-action="fullscreen"][data-file="video"]').click();
+    check(`video fullscreen player opens at ${width}px`,await page.locator(".preview-video-stage.is-full").count()===1);
+    await screenshot(page,`feature-${width}-preview-video`,"#film-viewport");
+    await page.keyboard.press("Escape");
     await page.getByRole("button",{name:"播放功能演示"}).click();
-    check(`reduced motion settles the demo at ${width}px`,await page.locator(".file-demo-reader").count()===1 && await page.locator("#feature-demo").getAttribute("data-playing")==="false");
+    check(`reduced motion settles preview playback at ${width}px`,await page.locator(".preview-video-stage.is-full").count()===1 && await page.locator("#feature-demo").getAttribute("data-playing")==="false");
+
+    await scene(page,"agent");
+    check(`Agent dial shows 9 / 12 enabled at ${width}px`,(await page.locator(".demo-enabled-count").textContent())==="9 / 12 已启用" && await page.locator(".demo-dial-agent").count()===12);
+    await screenshot(page,`feature-${width}-agent-dial`,"#film-viewport");
+    await page.locator('[data-dial-layer="agent"]').focus();
+    await page.keyboard.press("End");
+    await page.keyboard.press("ArrowUp");
+    check(`disabled Agent offers enable action at ${width}px`,(await page.locator(".demo-apply").textContent()).includes("启用 Hermes Agent"));
+    await page.locator(".demo-apply").click();
+    check(`enabling Agent updates counter at ${width}px`,(await page.locator(".demo-enabled-count").textContent())==="10 / 12 已启用");
+
+    await scene(page,"privacy");
+    check(`privacy starts at QR key exchange entry at ${width}px`,(await page.locator(".privacy-entry h3").textContent())==="扫码交换密钥" && (await page.locator(".privacy-demo-note").textContent()).includes("不连接真实电脑"));
+    await screenshot(page,`feature-${width}-privacy-entry`,"#film-viewport");
+    await page.locator('[data-privacy-action="start-scan"]').click();
+    check(`QR key exchange reaches end-to-end encrypted state at ${width}px`,await page.locator("#design-demo").getAttribute("data-page")==="secured" && (await page.locator(".privacy-hero-card").textContent()).includes("端到端加密已建立"));
+    await page.locator('[data-privacy-action="route"][data-value="relay"]').click();
+    check(`relay route switches payload lens to ciphertext at ${width}px`,(await page.locator(".privacy-lens-body").textContent()).includes("仅路由头，不可读取"));
+    await screenshot(page,`feature-${width}-privacy-secured`,"#film-viewport");
     check(`no overflow or CSP violations at ${width}px`,await page.evaluate(()=>globalThis.document.documentElement.scrollWidth<=globalThis.innerWidth && globalThis.sitePolicyViolations.length===0));
     await context.close();
   }
   const motion = await browser.newContext({viewport:{width:1440,height:1000}});
   const page = await prepare(motion);
-  await scene(page,"mention");
+  await scene(page,"privacy");
   await page.getByRole("button",{name:"播放功能演示"}).click();
+  await page.waitForSelector(".privacy-finder");
+  await screenshot(page,"feature-1440-privacy-scan-mid","#film-viewport");
   await page.getByRole("button",{name:"暂停功能演示"}).click();
-  check("file playback can be paused",await page.locator("#feature-demo").getAttribute("data-playing")==="false");
+  check("privacy playback can be paused",await page.locator("#feature-demo").getAttribute("data-playing")==="false");
   await page.getByRole("button",{name:"播放功能演示"}).click();
-  await page.locator(".demo-message-user .file-demo-mention").waitFor();
-  check("file playback completes in the sample conversation",await page.locator("#feature-demo").getAttribute("data-playing")==="false");
+  await page.waitForSelector(".privacy-hero-card",{timeout:8000});
+  await page.waitForFunction(()=>globalThis.document.querySelector("#feature-demo").getAttribute("data-playing")==="false",{timeout:8000});
+  check("privacy playback completes end-to-end encrypted flow",await page.locator("#design-demo").getAttribute("data-page")==="secured");
+  await scene(page,"agent");
+  await page.getByRole("button",{name:"播放功能演示"}).click();
+  await page.waitForFunction(()=>globalThis.document.querySelector("#feature-demo").getAttribute("data-playing")==="false",{timeout:10000});
+  check("agent dial playback completes enablement animation",(await page.locator(".demo-enabled-count").textContent())==="10 / 12 已启用");
   await motion.close();
   check("feature demos cause no browser errors",errors.length===0);
 }
@@ -379,25 +407,26 @@ try {
   check("draft becomes a real session card after send",await page.locator('#design-demo [data-session]').count()===6 && (await page.locator('#design-demo [data-session]').first().textContent()).includes('检查首页回弹并补齐测试') && (await page.locator('#design-demo [data-session]').first().textContent()).includes('Codex 桌面版'));
   await screenshot(page,"desktop-create","#feature-demo");
 
-  await scene(page,"quota");
-  check("provider count and current position are separate without usage instructions",(await page.locator('.demo-provider-host small').textContent())==='4 个配置' && (await page.locator('.demo-dial-position').textContent())==='1 / 4' && !(await page.locator('#design-demo').textContent()).includes('里圈选'));
+  await scene(page,"agent");
+  check("Agent count and current position are separate without usage instructions",(await page.locator('.demo-provider-host small').textContent())==='9 / 12 已启用' && (await page.locator('.demo-dial-position').textContent())==='1 / 4' && !(await page.locator('#design-demo').textContent()).includes('里圈选'));
   check("both quota periods are visible at the same time",await page.locator('.demo-quota-window').count()===2 && (await page.locator('.demo-quota').textContent()).includes('5 小时') && (await page.locator('.demo-quota').textContent()).includes('7 天'));
   const dialGeometry=await page.locator('.demo-dial').evaluate(el=>{const g=globalThis.OrbisDemoPolicy.dialGeometry(el.clientWidth,el.clientHeight),box=el.getBoundingClientRect(),scale=box.width/el.clientWidth;return {...g,left:box.left,top:box.top,scale};});
   const dialPoint=(x,y)=>({x:dialGeometry.left+x*dialGeometry.scale,y:dialGeometry.top+y*dialGeometry.scale});
   async function dragDial(point,distance){await page.mouse.move(point.x,point.y);await page.mouse.down();await page.mouse.move(point.x,point.y-distance*dialGeometry.scale,{steps:10});}
   for(const [region,radius] of [['hollow',dialGeometry.hole-4],['moat',dialGeometry.hub+12]]){
-    await dragDial(dialPoint(dialGeometry.cx+radius,dialGeometry.cy),90);await page.mouse.up();
-    check(`dial ${region} ignores a drag without changing either selection`,await page.locator('#design-demo').getAttribute('data-agent')==='codex' && await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuenow')==='0');
+    const dy=region==='moat'?44:0;
+    await dragDial(dialPoint(dialGeometry.cx+radius,dialGeometry.cy+dy),90);await page.mouse.up();
+    check(`dial ${region} ignores a drag without changing either selection`,await page.locator('#design-demo').getAttribute('data-kind')==='codex' && await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuenow')==='0');
   }
-  const agentPoint=dialPoint(dialGeometry.cx+(dialGeometry.hole+dialGeometry.hub)/2,dialGeometry.cy+32);
+  const agentPoint=dialPoint(dialGeometry.cx+(dialGeometry.hole+dialGeometry.hub)/2,dialGeometry.cy+40);
   await dragDial(agentPoint,9);await page.mouse.up();
-  check("Agent dial keeps its ten-point drag threshold",await page.locator('#design-demo').getAttribute('data-agent')==='codex');
+  check("Agent dial keeps its ten-point drag threshold",await page.locator('#design-demo').getAttribute('data-kind')==='codex');
   await dragDial(agentPoint,100);
   check("Agent drag locks its region and disables apply",await page.locator('.demo-dial').getAttribute('data-grab')==='agent' && await page.locator('.demo-apply').isDisabled());
   await screenshot(page,'provider-agent-drag-mid','#film-viewport');await page.waitForTimeout(100);await page.mouse.up();await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
-  check("Agent release settles to the adjacent mark without coasting",await page.locator('#design-demo').getAttribute('data-agent')==='claude' && await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuenow')==='0');
+  check("Agent release settles to the adjacent mark without coasting",await page.locator('#design-demo').getAttribute('data-kind')==='codexDesktop' && await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuenow')==='0');
   await page.locator('[data-dial-layer="agent"]').focus();await page.keyboard.press('Home');await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
-  const profilePoint=dialPoint(dialGeometry.rim-20,dialGeometry.cy);
+  const profilePoint=dialPoint(dialGeometry.rim-20,dialGeometry.cy+44);
   await dragDial(profilePoint,80);
   check("profile drag cannot apply before settling",await page.locator('.demo-apply').isDisabled() && await page.locator('.demo-dial').getAttribute('data-grab')==='profile');
   await page.waitForTimeout(100);await page.mouse.up();await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
@@ -406,9 +435,11 @@ try {
   await dragDial(profilePoint,-100);await page.locator('#design-demo').dispatchEvent('pointercancel',{pointerId:await page.evaluate(()=>globalThis.dialPointer)});await page.mouse.up();await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
   check("profile pointer cancellation restores its starting position",await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuenow')==='1');
   await page.locator('[data-dial-layer="profile"]').focus();await page.keyboard.press('Home');await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
-  await page.locator('[data-demo-action="dial-agent"][data-index="3"]').click();
+  await page.locator('[data-demo-action="dial-agent"][data-kind="claude"]').click();
+  await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
   check("low quota keeps explicit warning text",(await page.locator('.demo-quota-window.danger').textContent()).includes('即将用完'));
   await page.locator('[data-dial-layer="agent"]').focus();await page.keyboard.press('Home');
+  await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
   await page.locator('[data-dial-layer="profile"]').focus();await page.keyboard.press('ArrowDown');
   check("profile apply stays disabled during snap",await page.locator('.demo-apply').isDisabled());
   await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
@@ -420,16 +451,46 @@ try {
   await page.locator('.demo-apply').click();await page.locator('[data-demo-action="provider-confirm"]').click();
   check("confirmed profile becomes active",await page.locator('.demo-apply').isDisabled() && (await page.locator('.demo-apply').textContent()).includes('正在使用 relay-b'));
   await page.locator('[data-demo-action="notice-close"]').click();
-  await page.locator('[data-dial-layer="agent"]').focus();await page.keyboard.press('End');
+  // Horizontal latch pin drag: pull enabled Codex CLI inward -> confirm dialog (cancel), push disabled Hermes outward -> enable.
+  const pinOut = dialPoint(dialGeometry.pinStart + dialGeometry.pinTravel, dialGeometry.cy);
+  const pinIn = dialPoint(dialGeometry.pinStart, dialGeometry.cy);
+  await page.mouse.move(pinOut.x, pinOut.y);
+  await page.mouse.down();
+  await page.mouse.move(pinIn.x, pinIn.y, { steps: 10 });
+  check("inward pin drag arms active Agent disable hint", (await page.locator('.demo-dial-tip').textContent()).includes('松手后确认停用'));
+  await page.mouse.up();
+  check("releasing inward pin drag on running Agent asks confirmation", (await page.locator('#demo-disable-title').textContent()).includes('停用 Codex CLI'));
+  await page.locator('button[data-demo-action="disable-cancel"]').click();
+  await page.locator('[data-dial-layer="agent"]').focus();
+  await page.keyboard.press('End');
   await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  await page.keyboard.press('ArrowUp');
+  await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  await page.mouse.move(pinIn.x, pinIn.y);
+  await page.mouse.down();
+  await page.mouse.move(pinOut.x, pinOut.y, { steps: 10 });
+  check("outward pin drag arms disabled Agent enable hint", (await page.locator('.demo-dial-tip').textContent()).includes('松手启用'));
+  await page.mouse.up();
+  await page.waitForFunction(()=>globalThis.document.querySelector('.demo-enabled-count')?.textContent==='10 / 12 已启用');
+  check("releasing outward pin drag enables disabled Agent", (await page.locator('.demo-enabled-count').textContent())==='10 / 12 已启用');
+  await page.locator('[data-dial-layer="agent"]').focus();
+  await page.keyboard.press('Home');
+  await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');
+  for(let step=0;step<5;step++){await page.keyboard.press('ArrowDown');await page.waitForFunction(()=>globalThis.document.querySelector('#design-demo')?.dataset.moving==='false');}
   check("switching Agent restores its active profile",(await page.locator('[data-dial-layer="profile"]').getAttribute('aria-valuetext'))==='本机配置' && (await page.locator('.demo-apply').textContent()).includes('移出'));
-  await screenshot(page,"desktop-quota-both","#feature-demo");
+  await screenshot(page,"desktop-agent-dial","#feature-demo");
 
-  await scene(page,"pair");await page.locator('[data-action="scan"]').click();await finished(page);
-  check("pairing remains explicitly a demonstration",(await page.locator('#s2-ptxt').textContent()).includes('演示配对完成') && (await page.locator('.film-pair-note').textContent()).includes('不连接真实电脑'));
-  check("pairing reaches connected page",await page.locator('#feature-demo').getAttribute('data-page')==='connected');
-  await screenshot(page,"desktop-pair","#feature-demo");
-  await page.locator('#tab-pair').focus();await page.keyboard.press('Home');
+  await scene(page,"preview");
+  check("preview tab renders four file formats in chat",await page.locator('.preview-file-btn').count()===4);
+  await screenshot(page,"desktop-preview","#feature-demo");
+
+  await scene(page,"privacy");
+  await page.locator('[data-privacy-action="start-scan"]').click();
+  await page.waitForSelector('.privacy-hero-card',{timeout:8000});
+  check("privacy QR key exchange reaches end-to-end encrypted view",(await page.locator('.privacy-hero-card').textContent()).includes('端到端加密已建立'));
+  check("privacy page reports secured stage",await page.locator('#feature-demo').getAttribute('data-page')==='secured');
+  await screenshot(page,"desktop-privacy","#feature-demo");
+  await page.locator('#tab-privacy').focus();await page.keyboard.press('Home');
   check("chapter Home key selects first scene",await page.locator('#tab-chat').getAttribute('aria-selected')==='true');
 
   // SC01 / SC02: the new 40% distance threshold replaces the former whole-phone shake.
@@ -468,11 +529,10 @@ try {
   check("edge-back gesture hands control to chat",await page.locator('#feature-demo').getAttribute('data-page')==='chat');
 
   // Original playback and manual-mode handoff, including intermediate source frames.
-  for(const [id,mid] of [['chat',3.34],['diff',13.5],['download',15.2],['pair',6.3]]) {
+  for(const [id,mid] of [['chat',3.34],['diff',13.5],['download',15.2]]) {
     await scene(page,id);await page.locator('#demo-play').click();
     await page.waitForFunction(t=>{const d=globalThis.document.querySelector('#feature-demo').dataset;return d.mode==='film'&&Number(d.time)>=t;},mid,{timeout:18000});
     await page.locator('#demo-play').click();
-    if(id==='pair')check("pair film includes original laptop",await page.locator('#s2-laptop').evaluate(el=>globalThis.getComputedStyle(el).visibility==='visible'));
     await screenshot(page,`film-${id}-mid`,'#film-viewport');
     await page.locator('#demo-play').click();await finished(page);
     check(`${id} playback returns to an operable scene`,await page.locator('#feature-demo').getAttribute('data-mode')==='interactive');
@@ -519,11 +579,11 @@ try {
     check(`no horizontal overflow at ${width}px`, await narrow.evaluate(() => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth));
     check(`reduced motion starts both stages paused at ${width}px`, await narrow.locator("#agents").getAttribute("data-playing") === "false" && await narrow.locator("#feature-demo").getAttribute("data-playing") === "false");
     await screenshot(narrow,`viewport-${width}-hero`);
-    await scene(narrow,"quota");
+    await scene(narrow,"agent");
     await narrow.locator('[data-dial-layer="profile"]').focus();await narrow.keyboard.press('ArrowDown');
     await narrow.locator('.demo-apply').click();await narrow.locator('[data-demo-action="provider-confirm"]').click();
     check(`reduced-motion provider apply remains operable at ${width}px`,await narrow.locator('.demo-apply').isDisabled());
-    await screenshot(narrow,`viewport-${width}-quota`,"#feature-demo");
+    await screenshot(narrow,`viewport-${width}-agent`,"#feature-demo");
     if(width===390){
       await scene(narrow,"sessions");
       await narrow.evaluate(()=>{globalThis.swipeVibrations=[];Object.defineProperty(globalThis.navigator,'vibrate',{configurable:true,value:duration=>{globalThis.swipeVibrations.push(duration);return true;}});});

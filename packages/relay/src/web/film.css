@@ -46,7 +46,7 @@
 .agent-theatre{height:620px;margin-top:8px}
 .orbit-stage{perspective:none;overflow:clip}
 #orbit-canvas{position:absolute;left:50%;top:50%;width:1920px;height:1080px;margin:-540px 0 0 -960px;transform:scale(var(--orbit-scale,.62));transform-origin:50% 50%}
-#film-s3 #s3-bg{background:transparent}
+#film-s3 #s3-bg,#film-s4 #s4-bg{background:transparent}
 #film-s3 .film-preview-agent .c-user,#film-s3 .film-preview-agent .c-asst,#film-s3 .film-preview-agent .c-path,#film-s3 .film-preview-agent .c-field,#film-s3 .film-preview-agent .c-send,#film-s3 .film-preview-agent .c-clip{display:none}
 #film-s3 .film-preview-agent .card-face::after{content:"即将接入";position:absolute;inset:0;display:grid;place-items:center;font-size:34px;color:var(--secondary)}
 #film-s3 .card-back{backface-visibility:hidden}
