@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import { OpenCode } from "@opencode/client";
 import { fallback, Service, type Endpoint, type Info } from "@opencode/client/service";
 import { LocalAgentStart, waitForLocalAgent, type LocalAgentChild, type StartGuard } from "./local-agent-start.js";
+import { meetsMinimumAgentVersion } from "./agent-installation.js";
 
 export const OPENCODE_CLIENT_VERSION = "2.3.2";
+export const OPENCODE_MIN_VERSION = OPENCODE_CLIENT_VERSION;
 const INFO_TIMEOUT_MS = 3_000;
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 export type OpenCodeClient = ReturnType<typeof OpenCode.make>;
@@ -77,10 +79,10 @@ export async function openCodeTerminalService(expected: OpenCodeServiceIdentity,
     const registration = await readOpenCodeServiceRegistration(registrationPath);
     const url = registration && localServiceUrl(registration.url);
     if (!registration || !url || url.origin !== expected.origin || registration.pid !== expected.pid || registration.id !== expected.registrationId ||
-        (registration.version !== undefined && registration.version !== OPENCODE_CLIENT_VERSION)) throw unavailable();
+        (registration.version !== undefined && !meetsMinimumAgentVersion(registration.version, OPENCODE_MIN_VERSION))) throw unavailable();
     const client = OpenCode.make({ baseUrl: url.origin, headers: Service.headers(registration), fetch: localFetch(url.origin) });
     const info = await client.server.info({ signal: AbortSignal.timeout(INFO_TIMEOUT_MS) });
-    if (info.pid !== expected.pid || info.version !== OPENCODE_CLIENT_VERSION) throw unavailable();
+    if (info.pid !== expected.pid || !meetsMinimumAgentVersion(info.version, OPENCODE_MIN_VERSION)) throw unavailable();
     return { client, password: registration.auth?.password };
   } catch { throw unavailable(); }
 }
@@ -131,7 +133,7 @@ export class OpenCodeServiceConnection {
       if (this.#status.state !== "unavailable") return;
       switch (this.#status.reason) {
         case "service_not_found": return;
-        case "unsupported_version": throw new Error("OpenCode 共享服务版本不兼容");
+        case "unsupported_version": throw new Error(`OpenCode 共享服务版本不兼容，最低需要 ${OPENCODE_MIN_VERSION}`);
         case "invalid_endpoint": throw new Error("OpenCode 共享服务未使用有效的本机地址");
         case "connection_failed": throw new Error("无法验证已有 OpenCode 共享服务，请检查认证和连接");
       }
@@ -199,7 +201,7 @@ export class OpenCodeServiceConnection {
       if (registration) {
         const url = localServiceUrl(registration.url);
         if (!url) next = { state: "unavailable", reason: "invalid_endpoint" };
-        else if (registration.version !== undefined && registration.version !== OPENCODE_CLIENT_VERSION)
+        else if (registration.version !== undefined && !meetsMinimumAgentVersion(registration.version, OPENCODE_MIN_VERSION))
           next = { state: "unavailable", reason: "unsupported_version" };
         else {
           const headers = new Headers(Service.headers(registration));
@@ -209,7 +211,7 @@ export class OpenCodeServiceConnection {
           const create = () => this.#createClient({ baseUrl: registration.url, headers, fetch: localFetch(url.origin) });
           const client = sameEndpoint && (registration.pid === undefined || registration.pid === previous.pid) ? previous.client : create();
           const info = await client.server.info({ signal: AbortSignal.any([this.#lifetime.signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]) });
-          if (info.version !== OPENCODE_CLIENT_VERSION) next = { state: "unavailable", reason: "unsupported_version" };
+          if (!meetsMinimumAgentVersion(info.version, OPENCODE_MIN_VERSION)) next = { state: "unavailable", reason: "unsupported_version" };
           else if (registration.pid !== undefined && registration.pid !== info.pid) next = { state: "unavailable", reason: "connection_failed" };
           else {
             next = { state: "ready", version: info.version };

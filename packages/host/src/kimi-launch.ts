@@ -6,7 +6,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { agentCommandForEntry, cliSearchDirs, findExternalAgentEntries, stopAgentProcess } from "./agent-command.js";
 import { findKimiDesktopBundle, supportsKimiDesktop, verifyKimiDesktopBundle } from "./kimi-desktop-owner.js";
-import { KIMI_WEB_VERSION, KimiWebError, type KimiSource } from "./kimi-web-client.js";
+import { checkServiceCliVersion, ServiceCliVersionError } from "./local-agent-start.js";
+import { KIMI_WEB_MIN_VERSION, KimiWebError, type KimiSource } from "./kimi-web-client.js";
 
 const run = promisify(execFile);
 type LaunchRequest = {
@@ -63,12 +64,12 @@ export function createKimiLauncher(options: { source?: KimiSource; homeDir: stri
       const installed = await find();
       if (!installed) throw new KimiWebError("not_installed", "未找到 Kimi Code CLI，请先在电脑上安装");
       const cli = await agentCommandForEntry(installed.entry, env).catch(() => { throw new KimiWebError("unavailable", "Kimi Code CLI 启动入口不可用"); });
-      let version: string;
       try {
-        version = (await run(cli.command, [...cli.prefixArgs, "--version"], { cwd: home, env, signal, windowsHide: true, timeout: 5000, maxBuffer: 8192 })).stdout.trim();
-      } catch { throw new KimiWebError("unavailable", "无法检查 Kimi Code CLI 版本"); }
-      if (version !== KIMI_WEB_VERSION && version !== `kimi ${KIMI_WEB_VERSION}` && version !== `Kimi Code ${KIMI_WEB_VERSION}`)
-        throw new KimiWebError("unsupported", "Kimi Code CLI 版本不受支持");
+        await checkServiceCliVersion(cli, home, env, signal, "Kimi Code", KIMI_WEB_MIN_VERSION, ["Kimi Code", "kimi"]);
+      } catch (error) {
+        if (error instanceof ServiceCliVersionError) throw new KimiWebError(error.reason, error.message);
+        throw error;
+      }
       if (!await shouldStart()) return;
       signal.throwIfAborted();
       // The startup banner prints the local bearer token. Discard both streams, never surface their content.

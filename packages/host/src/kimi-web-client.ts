@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import WebSocket from "ws";
+import { meetsMinimumAgentVersion } from "./agent-installation.js";
 import { kimiDesktopOwner, supportsKimiDesktop } from "./kimi-desktop-owner.js";
 
 export const KIMI_API_CONTRACT_SHA256 = Object.freeze({
@@ -17,8 +18,8 @@ export const KIMI_API_CONTRACT_SHA256 = Object.freeze({
 });
 
 export type KimiSource = "web" | "desktop";
-export const KIMI_WEB_VERSION = "2.6.3";
-export const KIMI_DESKTOP_SERVER_VERSION = "2.6.2";
+export const KIMI_WEB_MIN_VERSION = "2.6.3";
+export const KIMI_DESKTOP_MIN_VERSION = "2.6.2";
 const DESKTOP_CONTRACTS = Object.freeze({
   openapi: "9920b34adcf9458d7dcf00d42c8d4ce794f27f4a6a8f21b570e9e6b100ea985f",
   asyncapi: "6f415309b2946045b0df41f0a529a6699821359fcf0237215ad69baab53ffd59",
@@ -64,7 +65,7 @@ export type KimiWebClientOptions = {
   endpoint?: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
-  /** Test seam; production always uses KIMI_API_CONTRACT_SHA256. */
+  /** Test seam; production checks the known API schema hashes for the selected source. */
   expectedContracts?: ContractHashes;
   requestTimeoutMs?: number;
 };
@@ -155,9 +156,13 @@ export async function assertKimiMayStart(options: KimiWebClientOptions): Promise
   const instances = await readRegistrations(options.homeDir ?? defaultKimiHome(), (options.now ?? Date.now)());
   for (const item of instances) {
     if (!isLoopbackLiteral(item.host)) throw new KimiWebError("unsafe", "Kimi Code 实例未使用本机回环地址");
-    if (options.source === "desktop" && item.version === KIMI_WEB_VERSION) continue;
-    if (options.source !== "desktop" && item.version === KIMI_DESKTOP_SERVER_VERSION &&
-        await (options.verifyDesktopOwner ?? kimiDesktopOwner)(item.pid, item.host, item.port)) continue;
+    const verifyOwner = options.verifyDesktopOwner ?? kimiDesktopOwner;
+    if (options.source !== "desktop" && await verifyOwner(item.pid, item.host, item.port)) continue;
+    if (options.source === "desktop") {
+      // A version may be used by both products. Confirm the other source before starting alongside it.
+      const web = await KimiWebClient.connect({ ...options, source: "web", endpoint: instanceEndpoint(item).origin }).catch(() => undefined);
+      if (web) { web.close(); continue; }
+    }
     // A newly registered listener or an older standalone CLI is not evidence that it is safe to start another one.
     throw new KimiWebError("unavailable", "检测到 Kimi Code 实例，等待当前实例完成接入");
   }
@@ -216,6 +221,10 @@ async function boundedBody(response: Response, limit: number): Promise<Uint8Arra
   return output;
 }
 
+function instanceEndpoint(item: KimiInstance): URL {
+  return parseEndpoint(`http://${item.host.includes(":") ? `[${item.host}]` : item.host}:${item.port}`);
+}
+
 function validMeta(value: unknown): value is KimiServerMeta {
   if (typeof value !== "object" || value === null) return false;
   const meta = value as Partial<KimiServerMeta>;
@@ -252,27 +261,27 @@ export class KimiWebClient {
     const desktop = options.source === "desktop";
     if (desktop && !supportsKimiDesktop && !options.verifyDesktopOwner) throw new KimiWebError("unsupported", "当前平台不支持 Kimi Code Desktop 接入");
     const requested = options.endpoint === undefined ? undefined : parseEndpoint(options.endpoint);
+    const minimum = desktop ? KIMI_DESKTOP_MIN_VERSION : KIMI_WEB_MIN_VERSION;
     const registered = await readRegistrations(homeDir, now);
-    const registrations = registered.filter(item => item.version === (desktop ? KIMI_DESKTOP_SERVER_VERSION : KIMI_WEB_VERSION));
-    if (registered.length && !registrations.length && !desktop && !registered.every(item => item.version === KIMI_DESKTOP_SERVER_VERSION)) {
-      throw new KimiWebError("unsupported", "Kimi Code Web 服务版本不受支持");
-    }
-    if (registrations.length === 0) throw new KimiWebError("not_running", desktop ? "未发现支持的 Kimi Code Desktop 内嵌服务" : "未发现正在运行的 Kimi Code Web 服务");
-
-    let selected: KimiInstance[];
-    if (requested) {
-      selected = registrations.filter(item => item.host === requested.hostname.replace(/^\[|\]$/gu, "") && item.port === Number(requested.port));
-      if (selected.length === 0) throw new KimiWebError("not_running", "指定的 Kimi Code 地址不在当前服务登记中");
-    } else selected = registrations;
-    if (selected.length !== 1) throw new KimiWebError("ambiguous", "发现多个 Kimi Code 服务，请指定一个本机回环地址");
-
-    const instance = selected[0]!;
-    if (!isLoopbackLiteral(instance.host)) throw new KimiWebError("unsafe", "Kimi Code 实例未使用本机回环地址");
+    const candidates = requested ? registered.filter(item =>
+      item.host === requested.hostname.replace(/^\[|\]$/gu, "") && item.port === Number(requested.port)) : registered;
     const verifyOwner = options.verifyDesktopOwner ?? kimiDesktopOwner;
-    if (desktop && !await verifyOwner(instance.pid, instance.host, instance.port)) {
-      throw new KimiWebError("unsupported", "Kimi Code 服务不是已验证的桌面应用实例");
+    const selected: KimiInstance[] = [];
+    let belowMinimum = false;
+    for (const item of candidates) {
+      if (!isLoopbackLiteral(item.host)) throw new KimiWebError("unsafe", "Kimi Code 实例未使用本机回环地址");
+      if (await verifyOwner(item.pid, item.host, item.port) !== desktop) continue;
+      if (meetsMinimumAgentVersion(item.version, minimum)) selected.push(item);
+      else belowMinimum = true;
+      if (selected.length > 1) throw new KimiWebError("ambiguous", "发现多个 Kimi Code 服务，请指定一个本机回环地址");
     }
-    const endpoint = parseEndpoint(`http://${instance.host.includes(":") ? `[${instance.host}]` : instance.host}:${instance.port}`);
+    if (!selected.length) {
+      if (belowMinimum) throw new KimiWebError("unsupported", `Kimi Code 服务版本不受支持，最低需要 ${minimum}`);
+      if (desktop && requested && candidates.length) throw new KimiWebError("unsupported", "Kimi Code 服务不是已验证的桌面应用实例");
+      throw new KimiWebError("not_running", desktop ? "未发现支持的 Kimi Code Desktop 内嵌服务" : "未发现正在运行的 Kimi Code Web 服务");
+    }
+    const instance = selected[0]!;
+    const endpoint = instanceEndpoint(instance);
     const token = await readPrivateToken(homeDir);
     const fetcher = options.fetch ?? globalThis.fetch;
     const timeoutMs = options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;

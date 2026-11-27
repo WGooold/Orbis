@@ -66,6 +66,9 @@ export function compareAgentVersions(left: string, right: string): number | unde
   }
   return 0;
 }
+export function meetsMinimumAgentVersion(version: unknown, minimum: string): boolean {
+  return typeof version === "string" && (compareAgentVersions(version.trim().replace(/^v/u, ""), minimum) ?? -1) >= 0;
+}
 export function extractAgentVersion(output: string): string | undefined {
   return output.match(/(?:^|[\s(])v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=[\s)]|$)/m)?.[1];
 }

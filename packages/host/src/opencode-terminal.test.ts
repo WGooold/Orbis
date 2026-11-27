@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { runOpenCodeTerminalHandoff } from "./opencode-local-launch.js";
-import { OPENCODE_CLIENT_VERSION } from "./opencode-service-connection.js";
 
 vi.mock("node:child_process", async importOriginal => ({
   ...await importOriginal<typeof import("node:child_process")>(), spawn: vi.fn(),
@@ -18,7 +17,7 @@ it("rechecks the service and exact session before spawning the native CLI, passi
   const registration = join(directory, "opencode", "service.json");
   const password = "synthetic-registration-password";
   const sessionId = "ses_handoff-test";
-  const pin = { pid: process.pid, version: OPENCODE_CLIENT_VERSION };
+  const pin = { pid: process.pid, version: "2.4.0" };
   const current = { id: sessionId, location: { directory }, time: { updated: 2 } };
   let info: typeof pin = pin;
   let session: object | undefined = current;

@@ -91,6 +91,8 @@ Host 设置在「常规 → 接入 Kimi Code」选择 Web／桌面版；CLI 用 
 
 **验证。** 官方桌面包与 Web 服务分别通过实际加密链路：从原生端新建并暂停在审批中的同一会话，可由参考设备续接、拒绝审批，原生订阅者收到终态；另验证 Orbis 新建、历史、重连、精确停止且不清除后续原生队列。Desktop 另通过发布版 Relay 与旧 Host JS runtime 回退；macOS Qt 的来源选择与最小窗口渲染通过。Node 全量 2,576 通过、19 跳过；首轮继承本机 Codex wrapper 配置引起的两项失败保留，隔离该配置后复跑通过。证据：`.artifacts/kimi-desktop-discovery/verification.json`。未部署；Kimi 窗口实际操作、手机安装及用户验收仍待完成。
 
+**产品版本下限（2026-11-27）。** Web 的服务与 CLI 要求 `>= 2.6.3`；macOS Desktop 安装包要求 `>= 1.3.7`，内嵌服务要求 `>= 2.6.2`。达到下限后仍须核对桌面签名与监听归属、认证和 API 契约。登记版本仍须与同一实例的 `/meta.server_version` 一致；不再用产品版本区分 Web 与 Desktop，也不凭版本号宣告新 API 兼容。
+
 ## KIMI-12：从 Host 或手机按需启动
 
 启用后，Host 的被动探测、目录读取和启动回执回读不启动 Kimi。Host 的「启动」按钮、已协商设备在有效工作目录请求新会话配置或新建，以及选中同数据源的历史会话，可按需启动。`launchableAgents` 表示可以发起启动，`agents` 仍只在认证、契约验证与 WS 握手完成后公告；沿用 `agent.kimiCode`，不扩展协议。

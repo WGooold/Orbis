@@ -67,10 +67,11 @@ describe("QA-ACT-02 isolated desktop bridge", () => {
         codexDesktop: { kind: "unknown" },
         dsh: { kind: "baseline", version: "0.2.2-rc.2" },
         dshDesktop: { kind: "baseline", version: "0.2.2-rc.2" },
-        kimiCode: { kind: "exact", version: "2.6.3" },
-        kimiCodeDesktop: { kind: "embeddedService", version: "2.6.2" },
-        opencode: { kind: "exact", version: "2.3.2" },
-        openclaw: { kind: "localLaunch", version: "2026.11.5" },
+        kimiCode: { kind: "minimum", version: "2.6.3" },
+        kimiCodeDesktop: { kind: "embeddedServiceMinimum", version: "2.6.2" },
+        opencode: { kind: "minimum", version: "2.3.2" },
+        openclaw: { kind: "localLaunchMinimum", version: "2026.11.5" },
+        agy: { kind: "minimum", version: "1.5.17" },
       });
       expect(result.agentEnablement.agents.some(row => !row.enabled)).toBe(true);
       for (const row of result.agentEnablement.agents) expect(Object.keys(row).sort()).toEqual(["enabled", "kind", "label"]);

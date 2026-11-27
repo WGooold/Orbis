@@ -410,9 +410,8 @@ ApplicationWindow {
         if (!version) return "最低版本未确认"
         switch (requirement.kind) {
         case "minimum": return "最低支持 " + version
-        case "exact": return "仅支持 " + version
-        case "embeddedService": return "仅支持内嵌服务 " + version
-        case "localLaunch": return "本机启动需要 " + version + "；已有网关最低版本未确认"
+        case "embeddedServiceMinimum": return "内嵌服务最低 " + version
+        case "localLaunchMinimum": return "本机启动最低 " + version + "；已有网关按协议接入"
         case "baseline": return "兼容基线 " + version
         case "reference": return "最低版本未确认 · 接入参考 " + version
         default: return "最低版本未确认"
@@ -2852,7 +2851,7 @@ ApplicationWindow {
                                                 }
                                                 Hint {
                                                     Layout.fillWidth: true
-                                                    text: "将 App 新建的会话加入已连接同一服务的 OpenCode 2.3.2 会话栏，并显示原生运行状态。不会打开新窗口或切换当前标签。"
+                                                    text: "将 App 新建的会话加入已连接同一服务且支持会话栏 API 的 OpenCode 会话栏，并显示原生运行状态。不会打开新窗口或切换当前标签。"
                                                 }
                                             }
                                             SoftSwitch {
