@@ -1422,6 +1422,9 @@ final class HostConnection: ObservableObject {
             self.updateSyncing()
             return true
         }
+        agentState.didCommitIdentity = { [weak self] runtimeId in
+            self?.reconcileIdentityLaunch(runtimeId: runtimeId)
+        }
         hostState.didProject = { [weak self] domains, missing in
             guard let self else { return }
             if domains["providers"] != nil { self.directoryViewRevision &+= 1; self.objectWillChange.send() }
@@ -2802,6 +2805,26 @@ final class HostConnection: ObservableObject {
         }
         if following { selectedOfflineSession = nil; selectedRuntimeId = runtime.runtimeId; activationRevision += 1 }
         else if selectedRuntimeId == launch.placeholder { selectedRuntimeId = nil }
+    }
+
+    /// `runtime.online` omits `agentKind`; Codex launch-mode matching completes once the committed
+    /// `identity` domain confirms the Runtime's kind and catalog route.
+    private func reconcileIdentityLaunch(runtimeId: String) {
+        let previousSelection = selectedRuntimeId
+        let landed = reconcileRuntimeLaunches(complete: false)
+        if !landed, launching == nil, let runtime = runtimes.first(where: { $0.runtimeId == runtimeId }),
+           pendingActivation == runtime.sessionId, pendingActivation != nil {
+            if let session = runtime.sessionId, let text = pendingBranchDrafts.removeValue(forKey: offlineSessionKey(host: selectedHost, sessionId: session)) {
+                saveDraft(text, for: runtime)
+            }
+            clearActivation(); selectedRuntimeId = runtime.runtimeId; activationRevision += 1
+        }
+        if landed || selectedRuntimeId != previousSelection {
+            publishMessages()
+            if let runtime = selectedRuntime, runtime.runtimeId != previousSelection {
+                syncSession(runtime)
+            }
+        }
     }
 
     /// A full readiness inventory and an online event can supply the last piece of
@@ -4487,9 +4510,13 @@ final class HostConnection: ObservableObject {
             if fields["model"] != nil || fields["thinkingLevel"] != nil { ledgerAuthority(OperationKinds.modelDomain(runtimeId), read: nil, complete: true) }
             if previous.sessionId != next.sessionId || previous.codexCatalogId != next.codexCatalogId {
                 invalidateConversation(runtimeId)
+                let previousSelection = selectedRuntimeId
+                let landed = reconcileRuntimeLaunches(complete: false)
                 notifications.online(next)
                 agentState.subscribe(runtime: next)
-                if runtimeId == selectedRuntimeId { syncSession(next) }
+                if runtimeId == selectedRuntimeId || (landed && selectedRuntimeId != previousSelection) {
+                    if let runtime = selectedRuntime { syncSession(runtime) }
+                }
                 publishMessages()
             } else if previous.sessionLeafId != next.sessionLeafId, runtimeId == selectedRuntimeId {
                 syncSession(next, force: true)

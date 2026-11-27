@@ -406,6 +406,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     var launch = launching
     var background = backgroundLaunches
     var selected = selectedRuntimeId
+    var syncRequests = sessionSyncRequests
     var draftMoves = launchDraftMoves
     fun findLaunch(id: String) = launch?.takeIf { it.requestId == id } ?: background[id]
     fun saveLaunch(value: LaunchState) {
@@ -476,7 +477,12 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
             val real = current.sessionId?.let { runtimeForLaunch(current, it) }
             if (real != null) draftMoves = draftMoves + (current.runtime() to real)
             if (launch?.requestId == current.requestId) {
-                if (selected == current.placeholder) selected = real?.runtimeId?.takeIf { current.following }
+                if (selected == current.placeholder) {
+                    selected = real?.runtimeId?.takeIf { current.following }
+                    if (selected != null && real?.sessionGraphSync == true && nextConversations[selected]?.hasLiveSnapshot != true) {
+                        syncRequests = syncRequests + selected
+                    }
+                }
                 launch = null
             } else background = background - current.requestId
         } ?: (event.operation.payload as? LedgerPayload.Respond)?.let { respond ->
@@ -488,7 +494,7 @@ internal fun RemoteState.withLedgerStep(step: LedgerStep<LedgerPayload>): Remote
     }
     return copy(ledger = nextLedger, sessionOperationErrors = objectErrors, conversations = nextConversations, ledgerVerifyWanted = verify, interactionOutcomes = outcomes, pendingSends = sends,
         configFailures = configurationFailures,
-        launching = launch, backgroundLaunches = background, selectedRuntimeId = selected, launchDraftMoves = draftMoves, sessionActivateRequests = activateRequests)
+        launching = launch, backgroundLaunches = background, selectedRuntimeId = selected, sessionSyncRequests = syncRequests, launchDraftMoves = draftMoves, sessionActivateRequests = activateRequests)
 }
 
 private val LedgerPhase.awaitsVerification get() = this == LedgerPhase.Unknown || this == LedgerPhase.Unconfirmed

@@ -512,6 +512,88 @@ struct LaunchLedgerTests {
         #expect(fixture.host.selectedRuntimeId == "codex-desktop:native-second")
     }
 
+    // CODEX-DESKTOP-LAUNCH-01: real `runtime.online` / `runtime.metadata` frames carry no `agentKind`;
+    // unified Codex Desktop configured launches must settle and flush their first message once
+    // `agent.state.snapshot(identity)` confirms `codexDesktop`, whether the user stayed or returned Home.
+    @Test(arguments: [true, false])
+    func unifiedConfiguredDesktopLaunchSettlesAfterIdentityProjectionWithoutOnlineAgentKind(stayOnLaunchPage: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("orbis-unified-desktop-launch-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = Fixture(root: root)
+        let features = ["device.features", codexUnifiedHistoryFeature, "session.spawn.auto"]
+        let catalogId = "codex-history:" + String(repeating: "d", count: 64)
+        await fixture.transport.emit(["type": "device.ready", "modelEpoch": "epoch", "sessionConfiguration": 1,
+            "hostFeatures": features, "deviceFeatures": ["agent.dshDesktop", codexUnifiedHistoryFeature],
+            "dshDesktop": NSNull(), "agents": ["codex", "codexDesktop"], "launchableAgents": ["codex", "codexDesktop"], "runtimes": []])
+        fixture.host.loadSessionConfiguration(agent: "codexDesktop", cwd: "/repo/app")
+        let configReq = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.configuration.read" })
+        await fixture.transport.emit(["type": "session.configuration.result", "requestId": configReq["requestId"]!,
+            "agentKind": "codexDesktop", "cwd": "/repo/app", "binding": "fixture", "revision": 0,
+            "values": ["model": "gpt-5.5", "thinking": "high"],
+            "catalog": ["binding": "fixture", "defaults": [:],
+                        "models": [["value": "gpt-5.5", "label": "GPT-5.5", "thinking": [["value": "high", "label": "High"]]]],
+                        "permissions": []]])
+
+        #expect(fixture.host.createSession(agentKind: "codexDesktop", cwd: "/repo/app", firstMessage: "first desktop message"))
+        await fixture.store.waitForPendingEvents()
+        let launchReq = try #require(fixture.transport.sent.last { $0["type"] as? String == "session.launch" })
+        let launchId = try #require(launchReq["launchId"] as? String)
+        #expect(launchReq["codexLaunchMode"] as? String == "desktop")
+
+        let runtimeId = "codex-desktop:desktop-1"
+        let sessionId = "codex-desktop:desktop-1"
+        await fixture.transport.emit(["type": "runtime.online", "runtime": [
+            "runtimeId": runtimeId, "sessionId": sessionId, "codexCatalogId": catalogId,
+            "name": "Codex", "cwd": "/repo/app", "status": "idle", "sessionGraphSync": true,
+        ]])
+        await fixture.transport.emit(["type": "session.launch.result", "requestId": launchId, "launchId": launchId,
+            "phase": "ready", "sessionId": sessionId, "spawnMode": "headless"])
+        #expect(fixture.transport.userMessages.isEmpty, "unverified runtime without agentKind must not release a mode-scoped send")
+
+        if !stayOnLaunchPage {
+            fixture.host.stopFollowingLaunch()
+            #expect(fixture.host.canReviewPreviousLaunch)
+        }
+
+        let stateReq = try #require(fixture.transport.sent.last {
+            $0["type"] as? String == "agent.state.request" && $0["scope"] as? String == "agent" && $0["runtimeId"] as? String == runtimeId
+        })
+        let identityDomain: [String: Any] = [
+            "domain": "identity", "modelEpoch": "epoch", "revision": 1,
+            "availability": "ready", "completeness": "complete", "projectionComplete": true, "checkedAt": 1,
+            "source": ["producer": "host", "sourceId": "host-1", "sourceEpoch": "epoch", "sourceRevision": 1],
+            "value": ["runtimeId": runtimeId, "sessionId": sessionId, "codexCatalogId": catalogId,
+                      "agentKind": "codexDesktop", "name": "Codex", "cwd": "/repo/app", "hostId": "host-1"],
+        ]
+        let requestedDomains = stateReq["domains"] as? [String] ?? []
+        let missing = requestedDomains.filter { $0 != "identity" }.map { ["domain": $0, "reason": "no_state"] }
+        var snapshot: [String: Any] = [
+            "type": "agent.state.snapshot", "requestId": stateReq["requestId"]!, "scope": "agent",
+            "runtimeId": runtimeId, "sessionId": sessionId, "modelEpoch": "epoch",
+            "domains": [identityDomain], "missing": missing, "truncated": false,
+        ]
+        if let stateFormat = stateReq["stateFormat"] { snapshot["stateFormat"] = stateFormat }
+        await fixture.transport.emit(snapshot)
+        await fixture.transport.emit(["type": "runtime.event", "runtimeId": runtimeId, "sequence": 1,
+            "event": ["type": "runtime.metadata", "metadata": [
+                "runtimeId": runtimeId, "sessionId": sessionId, "codexCatalogId": catalogId,
+                "name": "Codex", "cwd": "/repo/app", "status": "idle", "sessionGraphSync": true,
+            ]]])
+
+        #expect(fixture.host.launching == nil)
+        #expect(!fixture.host.canReviewPreviousLaunch)
+        #expect(fixture.transport.userMessages.count == 1)
+        #expect(fixture.transport.userMessages.first?["runtimeId"] as? String == runtimeId)
+        #expect((fixture.transport.userMessages.first?["command"] as? [String: Any])?["text"] as? String == "first desktop message")
+        #expect(fixture.host.runtimes.first { $0.runtimeId == runtimeId }?.agentKind == "codexDesktop")
+        if stayOnLaunchPage {
+            #expect(fixture.host.selectedRuntimeId == runtimeId)
+            #expect(fixture.transport.sent.contains {
+                $0["runtimeId"] as? String == runtimeId && ($0["command"] as? [String: Any])?["type"] as? String == "session.sync"
+            })
+        }
+    }
+
     // LAUNCH-FIRST-01: B can settle while A is still in native create; a later
     // acknowledgement of A never changes B's selection or its outbox.
     @Test(arguments: ["creating", "unknown"])
