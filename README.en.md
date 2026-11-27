@@ -39,24 +39,24 @@ Run **Orbis Host** on your computer, install **Orbis App** on your phone, and sc
 <table>
   <tr>
     <td align="center" width="33%"><img src="docs/assets/promo/01-agents-everywhere.jpg" width="290" alt="Your agents, with you"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/02-four-agents.jpg" width="290" alt="Four agents, one palm"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/03-provider-dial.jpg" width="290" alt="A turn switches the pick"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/02-nine-agents.jpg" width="290" alt="One place, nine agents"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/03-agent-dial.jpg" width="290" alt="A turn for full control"></td>
   </tr>
   <tr>
-    <td align="center" width="33%"><img src="docs/assets/promo/04-scan-and-connect.jpg" width="290" alt="One scan connects your computer"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/05-approval.jpg" width="290" alt="Nothing runs until you decide"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/06-review-changes.jpg" width="290" alt="Every change in plain sight"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/04-approval.jpg" width="290" alt="Nothing runs until you decide"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/05-review-changes.jpg" width="290" alt="Every change in plain sight"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/06-rich-file-preview.jpg" width="290" alt="Preview images, videos and HTML right in chat"></td>
   </tr>
   <tr>
-    <td align="center" width="33%"><img src="docs/assets/promo/07-files-to-phone.jpg" width="290" alt="Files from your computer, on your phone"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/08-completion-and-push.jpg" width="290" alt="Know when it matters"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/09-smooth-experience.jpg" width="290" alt="Refined in every interaction"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/07-live-activity.jpg" width="290" alt="Live Activity on Dynamic Island and push alerts"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/08-share-to-orbis.jpg" width="290" alt="Share from any app straight to your agent"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/09-e2e-privacy.jpg" width="290" alt="End-to-end encrypted privacy"></td>
   </tr>
 </table>
 
 ## Supported agents
 
-**Claude Code · Codex · Codex Desktop · Pi · DeepSeek (via DeepSeek Harness)**
+**Codex (CLI / Desktop) · Claude Code · DeepSeek (CLI / Desktop) · Pi · Kimi Code (Web / Desktop) · OpenCode · Antigravity CLI · Hermes Agent · OpenClaw**
 
 Set up the agent on your computer and complete any required sign-in or model configuration before connecting. Available actions depend on the agent and are shown in the app.
 

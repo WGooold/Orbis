@@ -39,24 +39,24 @@
 <table>
   <tr>
     <td align="center" width="33%"><img src="docs/assets/promo/01-agents-everywhere.jpg" width="290" alt="手机在手，Agent 随行"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/02-four-agents.jpg" width="290" alt="四位搭档，一掌掌控"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/03-provider-dial.jpg" width="290" alt="轻轻一转，切换所选"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/02-nine-agents.jpg" width="290" alt="九位搭档，一处掌控"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/03-agent-dial.jpg" width="290" alt="轻轻一转，启停与切换"></td>
   </tr>
   <tr>
-    <td align="center" width="33%"><img src="docs/assets/promo/04-scan-and-connect.jpg" width="290" alt="轻松一扫，连上你的电脑"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/05-approval.jpg" width="290" alt="该你决定，才继续执行"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/06-review-changes.jpg" width="290" alt="每一处改动，看得清楚"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/04-approval.jpg" width="290" alt="该你决定，才继续执行"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/05-review-changes.jpg" width="290" alt="每一处改动，看得清楚"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/06-rich-file-preview.jpg" width="290" alt="图片视频 HTML，对话里直接看"></td>
   </tr>
   <tr>
-    <td align="center" width="33%"><img src="docs/assets/promo/07-files-to-phone.jpg" width="290" alt="电脑里的文件，手机拿到"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/08-completion-and-push.jpg" width="290" alt="重要进展，及时知道"></td>
-    <td align="center" width="33%"><img src="docs/assets/promo/09-smooth-experience.jpg" width="290" alt="深度优化，丝滑体验"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/07-live-activity.jpg" width="290" alt="灵动岛上，进展抬眼即见"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/08-share-to-orbis.jpg" width="290" alt="随时分享，直达你的 Agent"></td>
+    <td align="center" width="33%"><img src="docs/assets/promo/09-e2e-privacy.jpg" width="290" alt="端到端加密，隐私完全安心"></td>
   </tr>
 </table>
 
 ## 支持的 Agent
 
-**Claude Code · Codex · Codex Desktop · Pi · DeepSeek（通过 DeepSeek Harness）**
+**Codex（CLI / Desktop）· Claude Code · DeepSeek（CLI / Desktop）· Pi · Kimi Code（Web / 桌面版）· OpenCode · Antigravity CLI · Hermes Agent · OpenClaw**
 
 使用前，请在电脑端准备好对应的 Agent，并完成所需的登录或模型配置。各 Agent 的可用操作以应用内显示为准。
 
