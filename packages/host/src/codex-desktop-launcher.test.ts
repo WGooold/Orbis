@@ -28,7 +28,7 @@ vi.mock("./codex-desktop-cli.js", () => ({ windowsDesktopCliCandidates: activati
 vi.mock("./codex-desktop-startup.js", async original => ({ ...await original<typeof import("./codex-desktop-startup.js")>(), selectStartupCli: activation.select }));
 
 import { codexWrapperRoot, launchCodexDesktop, repairWindowsCodexDesktopEntry, resolveCodexWrapper, stageCodexWrapper } from "./codex-desktop-launcher.js";
-import { readDesktopRecoveryStatus, recoverNativeDesktop } from "./codex-desktop-recovery.js";
+import { readDesktopRecoveryStatus, recordDesktopUnattached, recoverNativeDesktop } from "./codex-desktop-recovery.js";
 
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); });
 
@@ -249,6 +249,8 @@ describe("staged Codex wrapper runtime on Windows", () => {
     const wrapper = await source();
     const root = await testDirectory(join(tmpdir(), "orbis-wrapper-activate-"));
     const endpointPath = join(root, "state", "codex-desktop-endpoint.json");
+    // CODEX-DESKTOP-WIN-ENTRY-01: users retry after v0.1.25 recorded the native-open rejection.
+    recordDesktopUnattached(endpointPath, "Previous launch treated the Store CLI as foreign");
     let enabled!: () => void;
     activation.ensureEntry.mockReset().mockImplementation(() => new Promise(resolve => { enabled = () => resolve({ state: "enabled" }); }));
     activation.launch.mockReset().mockResolvedValue(undefined);
@@ -257,6 +259,7 @@ describe("staged Codex wrapper runtime on Windows", () => {
     expect(activation.launch).not.toHaveBeenCalled();
     enabled();
     await opened;
+    expect(readDesktopRecoveryStatus(endpointPath, true)).toBeUndefined();
     const staged = stageCodexWrapper(wrapper, root, endpointPath, "win32");
     expect(activation.ensureEntry).toHaveBeenCalledWith(staged.launcher);
     expect(activation.launch).toHaveBeenCalledWith(expect.objectContaining({

@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { launchCodexDesktopApp } from "./codex-desktop-app.js";
 import { windowsDesktopCliCandidates } from "./codex-desktop-cli.js";
 import { launcherEndpoint, macDesktopCliCandidates, readLaunchdEnvironment, renderMacCodexLauncher } from "./codex-desktop-macos.js";
-import { desktopDigestCachePath, markDesktopRecoveryRetry, nativeDesktopEnvironment, readDesktopRecoveryPhase, recordDesktopStartupFailure, recordDesktopUnattached, recoverNativeDesktop } from "./codex-desktop-recovery.js";
+import { clearDesktopRecovery, desktopDigestCachePath, markDesktopRecoveryRetry, nativeDesktopEnvironment, readDesktopRecoveryPhase, recordDesktopStartupFailure, recordDesktopUnattached, recoverNativeDesktop } from "./codex-desktop-recovery.js";
 import { selectStartupCli, startupProbeArgs } from "./codex-desktop-startup.js";
 import { CODEX_DESKTOP_ENTRY_NAME, ensureCodexDesktopEntry, looksLikeOrbisWrapperEntry, readWindowsCodexDesktopEntry, suspendCodexDesktopEntry } from "./codex-shim-install.js";
 
@@ -347,6 +347,8 @@ async function launchWindowsCodexDesktop(wrapper: CodexDesktopWrapper | undefine
     refused = entryRefused(entry.detail);
     if (entry.state === "enabled") {
       if (recovering) markDesktopRecoveryRetry(endpointPath, "匹配 CLI 已通过启动检查，正在等待桌面接入。若 Codex 已在原生模式运行，请自行完全退出，再从 Orbis 打开；无需重启 Host。");
+      // The previous native-open result must not abort the wait for this newly enabled launch.
+      else if (phase === "unattached") clearDesktopRecovery(endpointPath);
       await launchCodexDesktopApp({
         ...process.env,
         CODEX_CLI_PATH: staged.launcher,

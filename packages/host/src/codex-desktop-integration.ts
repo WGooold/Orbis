@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import type { CodexDesktopAttach } from "@orbis/protocol";
 import { reapOrphanedDesktopBackends, startingBackendLease } from "./codex-desktop-backends.js";
+import { isRegisteredWindowsDesktopCli } from "./codex-desktop-cli.js";
 import { codexDesktopEndpointPath, readCodexDesktopEndpoint } from "./codex-desktop-endpoint.js";
 import { launchCodexDesktop, resolveCodexWrapper } from "./codex-desktop-launcher.js";
 import { CodexDesktopLifecycle, type CodexDesktopLifecycleOptions } from "./codex-desktop-lifecycle.js";
@@ -43,6 +44,9 @@ export async function diagnoseNoEndpoint(endpointPath: string, options: {
   catch { return undefined; }
   const quit = platform === "darwin" ? "完全退出 Codex（⌘Q）" : "从托盘完全退出 Codex";
   if (entry !== undefined && !looksLikeOrbisWrapperEntry(entry)) {
+    if (platform === "win32" && await isRegisteredWindowsDesktopCli(entry)) {
+      return { status: { state: "closed", reason: `Codex 桌面版以原生方式运行，尚未接入。请${quit}，再从 Orbis 打开。` } };
+    }
     return { status: { state: "error", reason: `${CODEX_DESKTOP_ENTRY_NAME} 已被其他程序设置为 ${entry}，Orbis 没有改动它，因此无法接入 Codex 桌面版。如需接入，请移除该设置，再${quit}后从 Orbis 打开。` } };
   }
   if (entry === undefined) {

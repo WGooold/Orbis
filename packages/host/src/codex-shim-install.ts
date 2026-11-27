@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { isRegisteredWindowsDesktopCli } from "./codex-desktop-cli.js";
 import { clearLaunchdEnvironment, readLaunchdEnvironment, writeLaunchdEnvironment } from "./codex-desktop-macos.js";
 
 const execFileAsync = promisify(execFile);
@@ -232,19 +233,87 @@ export function codexDesktopEntryDecision(current: string | undefined, launcher:
   if (value.length === 0) return { state: "enabled", write: launcher, detail: ready };
   if (samePath(value, launcher)) return { state: "enabled", detail: ready };
   if (looksLikeOrbisWrapperEntry(value)) return { state: "enabled", write: launcher, detail: "包装器位置已更新，已重新指向" };
-  return { state: "foreign", detail: `${CODEX_DESKTOP_ENTRY_NAME} 已被其他程序占用（${value}），未改动；桌面版需由 Orbis 打开才能接入` };
+  return { state: "foreign", detail: `${CODEX_DESKTOP_ENTRY_NAME} 已被其他程序占用（${value}），未改动` };
 }
 
-async function readUserEnvironmentValue(name: string): Promise<string | undefined> {
-  const { stdout } = await execFileAsync("reg.exe", ["query", "HKCU\\Environment", "/v", name], { windowsHide: true }).catch(() => ({ stdout: "" }));
-  const match = stdout.match(new RegExp(`^\\s*${name}\\s+REG_\\w+\\s+(.*)$`, "imu"));
-  return match ? expandVariables(match[1]!.trim()) : undefined;
+type WindowsEntry = { raw: string; kind: "String" | "ExpandString"; value: string };
+type WindowsEntryRequest = { action: "read" }
+  | { action: "register"; expected: WindowsEntry | null; launcher: string; preserveOriginal: boolean }
+  | { action: "suspend"; expected: WindowsEntry };
+
+// Keep the displaced value out of the environment. Preserve its registry type as well as its text.
+const WINDOWS_ENTRY_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new()
+$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($requestJson)) | ConvertFrom-Json
+$registry = [Microsoft.Win32.Registry]::CurrentUser
+$name = '${CODEX_DESKTOP_ENTRY_NAME}'
+$environment = $registry.OpenSubKey('Environment', ($request.action -ne 'read'))
+function Read-CliEntry($key) {
+    if ($null -eq $key) { return $null }
+    $raw = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    if ($null -eq $raw) {
+        if ($key.GetValueNames() -contains $name) { throw 'Unable to read CODEX_CLI_PATH' }
+        return $null
+    }
+    $kind = $key.GetValueKind($name).ToString()
+    if ($kind -notin @('String', 'ExpandString')) { throw 'Invalid CODEX_CLI_PATH registry type' }
+    $value = if ($kind -eq 'ExpandString') { [Environment]::ExpandEnvironmentVariables($raw) } else { $raw }
+    return @{ raw = $raw; kind = $kind; value = $value }
+}
+function Test-SameEntry($left, $right) {
+    return [object]::Equals($left.raw, $right.raw) -and [object]::Equals($left.kind, $right.kind)
+}
+$current = Read-CliEntry $environment
+if ($request.action -eq 'read') {
+    @{ entry = $current } | ConvertTo-Json -Compress
+    exit 0
+}
+if (-not (Test-SameEntry $current $request.expected)) { throw 'CODEX_CLI_PATH changed' }
+$backupPath = 'Software\Orbis\CodexDesktop'
+$backup = $registry.OpenSubKey($backupPath, $true)
+if ($request.action -eq 'register') {
+    if ($request.preserveOriginal) {
+        if ($null -eq $backup) { $backup = $registry.CreateSubKey($backupPath) }
+        $backup.SetValue($name, $current.raw, [Microsoft.Win32.RegistryValueKind]$current.kind)
+    } elseif ($null -ne $backup -and [string]::IsNullOrWhiteSpace($current.value)) {
+        $backup.DeleteValue($name, $false)
+    }
+    $next = @{ raw = $request.launcher; kind = 'String' }
+} else {
+    $next = Read-CliEntry $backup
+}
+if ($null -eq $environment) { $environment = $registry.CreateSubKey('Environment') }
+if (-not (Test-SameEntry (Read-CliEntry $environment) $current)) { throw 'CODEX_CLI_PATH changed' }
+if ($null -eq $next) { $environment.DeleteValue($name, $false) }
+else { $environment.SetValue($name, $next.raw, [Microsoft.Win32.RegistryValueKind]$next.kind) }
+if (-not (Test-SameEntry (Read-CliEntry $environment) $next)) { throw 'CODEX_CLI_PATH write did not take effect' }
+if ($request.action -eq 'suspend' -and $null -ne $backup) {
+    try { $backup.DeleteValue($name, $false) } catch { }
+}
+`;
+
+async function runWindowsEntry(request: WindowsEntryRequest): Promise<string> {
+  const json = Buffer.from(JSON.stringify(request), "utf8").toString("base64");
+  const script = `$requestJson = '${json}'\n${WINDOWS_ENTRY_SCRIPT}`;
+  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { windowsHide: true, timeout: 10_000 });
+  return stdout;
 }
 
-async function writeUserEnvironmentValue(name: string, value: string | undefined): Promise<void> {
-  if (value === undefined) await execFileAsync("reg.exe", ["delete", "HKCU\\Environment", "/v", name, "/f"], { windowsHide: true });
-  else await execFileAsync("reg.exe", ["add", "HKCU\\Environment", "/v", name, "/t", "REG_SZ", "/d", value, "/f"], { windowsHide: true });
-  // 广播只是尽力而为：注册表已改好，本来就没开的程序下次启动也会读到。
+async function readWindowsEntry(): Promise<WindowsEntry | undefined> {
+  const stdout = await runWindowsEntry({ action: "read" });
+  const { entry } = JSON.parse(stdout.trim()) as { entry: WindowsEntry | null };
+  if (entry === null) return undefined;
+  if (typeof entry?.value !== "string" || typeof entry.raw !== "string" || !["String", "ExpandString"].includes(entry.kind)) {
+    throw new Error("无法读取 CODEX_CLI_PATH");
+  }
+  return entry;
+}
+
+async function updateWindowsEntry(request: Exclude<WindowsEntryRequest, { action: "read" }>): Promise<void> {
+  await runWindowsEntry(request);
+  // Registry writes are verified before the best-effort notification to Explorer.
   await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ENVIRONMENT_BROADCAST], { windowsHide: true, timeout: 10_000 }).catch(() => {});
 }
 
@@ -252,37 +321,28 @@ async function writeUserEnvironmentValue(name: string, value: string | undefined
 export async function ensureCodexDesktopEntry(launcher: string): Promise<CodexDesktopEntry> {
   if (process.platform === "darwin") return ensureMacCodexDesktopEntry(launcher);
   if (process.platform !== "win32") return { state: "unsupported", detail: "Codex 桌面版只支持 Windows 与 macOS" };
-  let current: string | undefined;
-  try { current = await readWindowsCodexDesktopEntry(); }
+  let current: WindowsEntry | undefined;
+  try { current = await readWindowsEntry(); }
   catch { return { state: "foreign", detail: "无法读取用户环境变量 CODEX_CLI_PATH，未改动桌面入口" }; }
-  const decision = codexDesktopEntryDecision(current, launcher);
+  let decision = codexDesktopEntryDecision(current?.value, launcher);
+  // CODEX-DESKTOP-WIN-ENTRY-01: the current Store package's CLI is a reversible native entry.
+  const preserveOriginal = decision.state === "foreign" && current !== undefined && await isRegisteredWindowsDesktopCli(current.value);
+  if (preserveOriginal) decision = codexDesktopEntryDecision(undefined, launcher);
   if (decision.write !== undefined) {
-    try { await writeUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME, decision.write); }
-    catch { return { state: "foreign", detail: `无法写入用户环境变量 ${CODEX_DESKTOP_ENTRY_NAME}；桌面版需由 Orbis 打开才能接入` }; }
+    try { await updateWindowsEntry({ action: "register", expected: current ?? null, launcher: decision.write, preserveOriginal }); }
+    catch { return { state: "foreign", detail: `无法登记用户环境变量 ${CODEX_DESKTOP_ENTRY_NAME}` }; }
   }
   return { state: decision.state, detail: decision.detail };
 }
 
-/** 只在值确实是我们的时候才删：用户自己设过别的 CLI，不该被顺手抹掉。 */
+/** Uninstall and recovery both restore any displaced native entry, without touching a foreign one. */
 export async function removeCodexDesktopEntry(): Promise<void> {
-  if (process.platform === "darwin") {
-    await suspendCodexDesktopEntry().catch(() => {});
-    return;
-  }
-  if (process.platform !== "win32") return;
-  const current = await readUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME);
-  if (current === undefined || !looksLikeOrbisWrapperEntry(current)) return;
-  await writeUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME, undefined).catch(() => {});
+  await suspendCodexDesktopEntry().catch(() => {});
 }
 
 /** A failed registry read must never count as an absent user override. */
 export async function readWindowsCodexDesktopEntry(): Promise<string | undefined> {
-  const script = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [Text.UTF8Encoding]::new(); @{ value = [Environment]::GetEnvironmentVariable('CODEX_CLI_PATH', 'User') } | ConvertTo-Json -Compress";
-  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 10_000 });
-  const record = JSON.parse(stdout.trim()) as { value: unknown };
-  if (record.value === null || record.value === "") return undefined;
-  if (typeof record.value !== "string") throw new Error("无法读取 CODEX_CLI_PATH");
-  return record.value;
+  return (await readWindowsEntry())?.value || undefined;
 }
 
 /** Recovery must report a failed write rather than silently claiming native launch is restored. */
@@ -297,12 +357,15 @@ export async function suspendCodexDesktopEntry(expectedLauncher?: string): Promi
     return;
   }
   if (process.platform !== "win32") return;
-  const current = await readWindowsCodexDesktopEntry();
-  if (current === undefined) return;
-  if (!looksLikeOrbisWrapperEntry(current)) throw new Error("CODEX_CLI_PATH 不是 Orbis 入口，未修改");
-  if (expectedLauncher !== undefined && !samePath(current, expectedLauncher)) throw new Error("CODEX_CLI_PATH 已改变，未修改");
-  await writeUserEnvironmentValue(CODEX_DESKTOP_ENTRY_NAME, undefined);
-  if (await readWindowsCodexDesktopEntry() !== undefined) throw new Error("CODEX_CLI_PATH 未成功移除");
+  const current = await readWindowsEntry();
+  if (!current?.value) return;
+  if (!looksLikeOrbisWrapperEntry(current.value)) {
+    // A repeated native recovery may find the original Store path already restored.
+    if (expectedLauncher === undefined && await isRegisteredWindowsDesktopCli(current.value)) return;
+    throw new Error("CODEX_CLI_PATH 不是 Orbis 入口，未修改");
+  }
+  if (expectedLauncher !== undefined && !samePath(current.value, expectedLauncher)) throw new Error("CODEX_CLI_PATH 已改变，未修改");
+  await updateWindowsEntry({ action: "suspend", expected: current });
 }
 /**
  * macOS 的入口在 launchd 用户会话里：从程序坞、启动台、Finder 打开的应用都从这里继承环境。
