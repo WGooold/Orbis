@@ -38,7 +38,7 @@ async function requiredImages(page, name) {
 
 // AGENT-MARK-01: cover the visible picker and its separately rendered film art.
 async function agentArtwork(page, dark) {
-  const assets = [["Kimi Code", ".a-kimi", "kimi-code.svg"], ["OpenCode", ".a-opencode", dark ? "opencode-dark.svg" : "opencode-light.svg"], ["ZCode", ".a-zcode", "zcode.png"]];
+  const assets = [["Kimi Code", ".a-kimi", "kimi-code.svg"], ["OpenCode", ".a-opencode", dark ? "opencode-dark.svg" : "opencode-light.svg"], ["Antigravity", ".a-antigravity", "antigravity.svg"]];
   for (const [name, selector, file] of assets) {
     const picker = page.locator(`.agent-pick[title="${name}"] img:visible`);
     check(`${name} picker uses ${file}`, await picker.count() === 1 && await picker.evaluate((image, expected) => image.complete && image.naturalWidth > 0 && image.currentSrc.endsWith(`/promo/agents/${expected}`), file));
@@ -61,7 +61,7 @@ async function navigationIdentity(page) {
       && new Set(names).size === names.length && selected.length === 1
       && selected[0].title === globalThis.document.querySelector("#agent-name").textContent
       && picks.every(pick => pick.getAttribute("aria-label")?.startsWith(pick.title + "，"))
-      && ["chat", "diff", "download", "sessions", "create", "quota", "pair"].every(scene => scenes.includes(scene))
+      && ["chat", "diff", "download", "sessions", "create", "quota", "pair", "mention", "markdown"].every(scene => scenes.includes(scene))
       && new Set(scenes).size === scenes.length && new Set(tabs.map(tab => tab.id)).size === tabs.length
       && tabs.every(tab => tab.id && globalThis.document.getElementById(tab.getAttribute("aria-controls"))?.getAttribute("role") === "tabpanel")
       && selectedTabs.length === 1 && globalThis.document.getElementById(selectedTabs[0].getAttribute("aria-controls"))?.getAttribute("aria-labelledby") === selectedTabs[0].id;
@@ -118,7 +118,78 @@ async function foreground(page, name, underneath) {
   check(`${name} paints above its previous page`,maxDelta<=2);
 }
 
+// FILE-SITE-01/02 and AGENT-SITE-01: the new chapters are real local interactions.
+async function featureAct() {
+  for (const [width, colorScheme] of [[1440, "light"], [390, "dark"], [320, "light"]]) {
+    const context = await browser.newContext({viewport:{width,height:900},colorScheme,reducedMotion:"reduce"});
+    const page = await prepare(context);
+    await page.locator('.agent-pick[title="Kimi Code"]').click();
+    check(`Kimi Desktop platform scope at ${width}px`, (await page.locator("#agent-detail").textContent()).includes("Windows x64"));
+    await scene(page,"create");
+    await page.getByRole("button",{name:"新建会话",exact:true}).click();
+    const more = page.getByRole("button",{name:"选择更多 Agent",exact:true});
+    await more.click();
+    const agentSheet = page.getByRole("dialog",{name:"选择 Agent"});
+    const agentKinds = await agentSheet.locator("[data-kind]").evaluateAll(nodes=>nodes.map(node=>node.dataset.kind).sort());
+    check(`all 12 Host sources, no preview source at ${width}px`,JSON.stringify(agentKinds)===JSON.stringify([
+      "agy","claude","codex","codexDesktop","dsh","dshDesktop","hermes","kimiCode","kimiCodeDesktop","openclaw","opencode","pi",
+    ]));
+    const openCodeIcon=agentSheet.locator('[data-kind="opencode"] img:visible');
+    check(`OpenCode source icon follows ${colorScheme} at ${width}px`,await openCodeIcon.count()===1 && await openCodeIcon.evaluate((image,scheme)=>image.complete && image.naturalWidth>0 && image.src.endsWith(`opencode-${scheme}.svg`),colorScheme));
+    await screenshot(page,`feature-${width}-agents`,"#film-viewport");
+    await page.keyboard.press("Escape");
+    check(`source picker restores focus at ${width}px`,await agentSheet.count()===0 && await more.evaluate(el=>el===globalThis.document.activeElement));
+    await more.click();
+    await agentSheet.getByRole("button",{name:"Kimi Code 桌面版",exact:true}).click();
+    check(`chosen desktop source remains in draft at ${width}px`,(await page.locator("#demo-first-message").getAttribute("placeholder")).includes("Kimi Code 桌面版"));
+    await page.locator("#demo-first-message").fill("核对刚才的修改");
+    await page.getByRole("button",{name:"发送第一句话",exact:true}).click();
+    await page.locator("#design-demo[data-page=chat]").waitFor();
+    check(`draft opens a local session for the selected source at ${width}px`,(await page.locator(".demo-chat .agent-kimi").textContent()).includes("Kimi Code 桌面版"));
+
+    await scene(page,"mention");
+    await page.getByRole("button",{name:"选择引用目录"}).click();
+    await page.getByRole("button",{name:"打开 src 目录",exact:true}).click();
+    check(`folder navigation doesn't insert a reference at ${width}px`,await page.locator(".file-demo-path").textContent()==="/Projects/orbis/src" && await page.locator(".file-demo-mention").count()===0);
+    await screenshot(page,`feature-${width}-directory`,"#film-viewport");
+    await page.getByRole("button",{name:"引用 components 目录"}).click();
+    check(`separate @ control inserts exact directory path at ${width}px`,await page.locator(".file-demo-composer .file-demo-mention").textContent()==="@/Projects/orbis/src/components");
+    await page.getByRole("button",{name:"发送目录引用"}).click();
+    check(`reference reaches only the sample conversation at ${width}px`,await page.locator(".demo-message-user .file-demo-mention").textContent()==="@/Projects/orbis/src/components");
+    await page.getByRole("button",{name:"重置",exact:true}).click();
+    check(`reset clears the reference at ${width}px`,await page.locator(".file-demo-mention").count()===0);
+
+    await scene(page,"markdown");
+    const file=page.getByRole("button",{name:"release-notes.md"});
+    check(`Markdown starts collapsed at ${width}px`,await file.getAttribute("aria-expanded")==="false" && await page.locator(".file-demo-document").count()===0);
+    await file.click();
+    check(`Markdown opens as a heading, list and code at ${width}px`,await page.locator(".file-demo-document h3").textContent()==="移动端回归清单" && await page.locator(".file-demo-document li").count()===3 && await page.locator(".file-demo-document pre code").textContent()==="npm run check");
+    await page.getByRole("button",{name:"全屏阅读"}).click();
+    check(`full reader contains the same Markdown at ${width}px`,await page.locator(".file-demo-reader h3").textContent()==="移动端回归清单");
+    await screenshot(page,`feature-${width}-markdown`,"#film-viewport");
+    await page.keyboard.press("Escape");
+    check(`return to the file card preserves the open preview at ${width}px`,await file.getAttribute("aria-expanded")==="true");
+    await page.getByRole("button",{name:"播放功能演示"}).click();
+    check(`reduced motion settles the demo at ${width}px`,await page.locator(".file-demo-reader").count()===1 && await page.locator("#feature-demo").getAttribute("data-playing")==="false");
+    check(`no overflow or CSP violations at ${width}px`,await page.evaluate(()=>globalThis.document.documentElement.scrollWidth<=globalThis.innerWidth && globalThis.sitePolicyViolations.length===0));
+    await context.close();
+  }
+  const motion = await browser.newContext({viewport:{width:1440,height:1000}});
+  const page = await prepare(motion);
+  await scene(page,"mention");
+  await page.getByRole("button",{name:"播放功能演示"}).click();
+  await page.getByRole("button",{name:"暂停功能演示"}).click();
+  check("file playback can be paused",await page.locator("#feature-demo").getAttribute("data-playing")==="false");
+  await page.getByRole("button",{name:"播放功能演示"}).click();
+  await page.locator(".demo-message-user .file-demo-mention").waitFor();
+  check("file playback completes in the sample conversation",await page.locator("#feature-demo").getAttribute("data-playing")==="false");
+  await motion.close();
+  check("feature demos cause no browser errors",errors.length===0);
+}
+
 try {
+  if (process.env.ORBIS_SITE_FEATURE_ACT_ONLY === "1") await featureAct();
+  else {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, colorScheme: "light", deviceScaleFactor: 1 });
   const page = await prepare(context);
   await requiredImages(page, "required brand and Agent images load through the Relay prefix");
@@ -138,7 +209,9 @@ try {
   await page.keyboard.press("ArrowRight");
   check("Agent keyboard arrow selects Pi", await page.locator("#agent-name").textContent() === "Pi");
   await page.keyboard.press("End");
-  check("planned Agent is identified", await page.locator("#agent-name").textContent() === "OpenClaw" && await page.locator("#agent-availability").textContent() === "即将接入");
+  check("OpenClaw is identified as integrated", await page.locator("#agent-name").textContent() === "OpenClaw" && await page.locator("#agent-availability").textContent() === "已接入");
+  await page.locator('.agent-pick[title="Oh My Pi"]').click();
+  check("only Oh My Pi is marked as planned", await page.locator("#agent-availability").textContent() === "即将接入" && await page.locator('.agent-pick[data-preview="true"]').count() === 1);
   await page.locator(".agent-pick").first().click();
   await settle(page);
   const orbit = await page.locator("#orbit-stage").boundingBox();
@@ -283,7 +356,7 @@ try {
   await page.locator('[data-demo-action="directory-new"][data-directory="/Projects/website"]').click();
   await page.locator('#demo-first-message').waitFor();
   check("new draft inherits the selected directory",(await page.locator('#demo-draft-directory').textContent()).includes('/Projects/website'));
-  check("empty first message cannot create a session",await page.locator('[data-demo-action="draft-send"]').isDisabled() && await page.locator('#design-demo [data-session]').count()===5);
+  check("empty draft starts only on explicit activation",await page.getByRole("button",{name:"启动",exact:true}).isEnabled() && await page.locator('#design-demo [data-session]').count()===5);
   await page.locator('[data-demo-action="draft-agent"][data-index="1"]').click();
   await page.locator('[data-demo-action="codex-menu"]').click();
   check("Codex versions open in an anchored menu",await page.locator('.demo-codex-menu [role="menuitemradio"]').count()===2 && await page.locator('.demo-protocol-sheet').count()===0);
@@ -486,6 +559,7 @@ try {
   await noScript.close();
   await context.close();
   check("all browser contexts remained error-free",errors.length===0);
+  }
 } finally {
   await writeFile(`${output}/browser-results.json`,JSON.stringify({base,browser:browser.version(),checks,errors},null,2));
   await browser.close();

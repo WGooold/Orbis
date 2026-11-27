@@ -21,3 +21,5 @@
 .platform-select>span{flex-shrink:0;white-space:nowrap}
 .skip-link:not(:focus){width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%)}
 @media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition:none!important}.agent-card{filter:none}.orbit-camera{transform:none}}
+
+.agent-detail{margin:2px 0 0;min-height:20px;color:var(--muted);font-size:12px;line-height:20px}

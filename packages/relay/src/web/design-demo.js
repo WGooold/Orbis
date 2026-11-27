@@ -21,10 +21,22 @@ window.OrbisDemoPolicy = {
 window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback }) {
   const policy = window.OrbisDemoPolicy;
   const agents = [
-    { id: "pi", name: "Pi", icon: "pi.svg" },
-    { id: "codex", name: "Codex", icon: "codex.svg" },
-    { id: "deepseek", name: "DeepSeek", icon: "deepseek.svg" },
-    { id: "claude", name: "Claude Code", icon: "lobe-claudecode-color.svg" },
+    { id: "pi", kind: "pi", name: "Pi", icon: "pi.svg" },
+    { id: "codex", kind: "codex", name: "Codex", icon: "codex.svg" },
+    { id: "deepseek", kind: "dsh", name: "DeepSeek CLI", icon: "deepseek.svg" },
+    { id: "claude", kind: "claude", name: "Claude Code", icon: "lobe-claudecode-color.svg" },
+    { id: "deepseek", kind: "dshDesktop", name: "DeepSeek 桌面版", icon: "deepseek.svg" },
+    { id: "kimi", kind: "kimiCode", name: "Kimi Code Web", icon: "kimi-code.svg" },
+    { id: "kimi", kind: "kimiCodeDesktop", name: "Kimi Code 桌面版", icon: "kimi-code.svg" },
+    { id: "opencode", kind: "opencode", name: "OpenCode", icon: "opencode-light.svg", darkIcon: "opencode-dark.svg" },
+    { id: "agy", kind: "agy", name: "Antigravity CLI", icon: "antigravity.svg" },
+    { id: "hermes", kind: "hermes", name: "Hermes Agent", icon: "lobe-hermesagent.svg" },
+    { id: "openclaw", kind: "openclaw", name: "OpenClaw", icon: "lobe-openclaw-color.svg" },
+  ];
+  const draftSources = [
+    { kind: "codex", index: 1, variant: "terminal" },
+    { kind: "codexDesktop", index: 1, variant: "desktop" },
+    ...[3, 2, 4, 0, 5, 6, 7, 8, 9, 10].map(index => ({ kind: agents[index].kind, index })),
   ];
   const agentOrder=[1,3,2,0];
   const profiles = ["本机配置", "relay-b", "openrouter", "azure"];
@@ -34,12 +46,14 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
   const chrome = [...screen.querySelectorAll("#s4-home > .ui-time,#s4-home > .ui-sys")].map(el => el.outerHTML).join("");
   const esc = value => String(value).replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
   const icon = name => name === "play" ? `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>` : `<i class="ico i-${name}" aria-hidden="true"></i>`;
-  const mark = agent => `<span class="demo-agentmark demo-mark-${agent.id}" role="img" aria-label="${agent.name}"></span>`;
+  const mark = agent => agentOrder.some(index => agents[index].id === agent.id)
+    ? `<span class="demo-agentmark demo-mark-${agent.id}" aria-hidden="true"></span>`
+    : `<span class="demo-agentmark demo-agent-image" aria-hidden="true"><img src="assets/promo/agents/${agent.icon}" alt="" class="${agent.darkIcon ? "agent-mark-on-light" : ""}">${agent.darkIcon ? `<img src="assets/promo/agents/${agent.darkIcon}" alt="" class="agent-mark-on-dark">` : ""}</span>`;
   const button = (action, label, name, extra = "") => `<button type="button" class="demo-icon" data-demo-action="${action}" aria-label="${label}" ${extra}>${icon(name)}</button>`;
   const codexName = variant => variant === "desktop" ? "Codex 桌面版" : "Codex 终端版";
   const sessionAgentName = session => session.agent === 1 ? codexName(session.codexVariant) : agents[session.agent].name;
   const protocolName = value => ({auto:"自动",ws:"WebSocket",quic:"QUIC"})[value];
-  const state = { codexVariant: "terminal", codexMenu: null, protocolInfo: false, page: scene === "quota" ? "providers" : "home", draft: false, text: "", directory: "/Projects/orbis", agent: 1, profile: 0, active: [0,0,0,0], piEnabled: new Set([0]), drawer: false, search: "", expanded: new Set(["/Projects/orbis"]), selected: new Set(), moving: false, dialog: false, protocolSheet: false, languageSheet: false, language: "system", draftLanguage: "system", directorySheet: false, protocol: "auto", draftProtocol: "auto", notice: "" };
+  const state = { codexVariant: "terminal", codexMenu: null, agentSheet: false, draftAgent: 1, protocolInfo: false, page: scene === "quota" ? "providers" : "home", draft: false, text: "", directory: "/Projects/orbis", agent: 1, profile: 0, active: [0,0,0,0], piEnabled: new Set([0]), drawer: false, search: "", expanded: new Set(["/Projects/orbis"]), selected: new Set(), moving: false, dialog: false, protocolSheet: false, languageSheet: false, language: "system", draftLanguage: "system", directorySheet: false, protocol: "auto", draftProtocol: "auto", notice: "" };
   let sessions = [
     { id: 1, title: "统一子代理逻辑并添加界面提示", directory: "/Projects/orbis", agent: 2, status: "运行中", tone: "success", syncing: true },
     { id: 2, title: "配置 iOS 应用 TestFlight 上传", directory: "/Projects/orbis", agent: 1 },
@@ -62,8 +76,8 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
   function render() {
     if (disposed) return;
     const agent = agents[state.agent];
-    root.dataset.agent = agent.id; root.dataset.page = state.page; root.dataset.selecting = String(state.selected.size > 0); root.dataset.moving = String(state.moving);
-    root.innerHTML = chrome + `<div class="demo-content">${state.page === "home" ? home() : state.page === "providers" ? providers() : state.page === "settings" ? settings() : state.page === "downloads" ? downloads() : chat()}</div>${state.drawer ? drawer() : ""}${state.codexMenu ? `<div class="demo-menu-scrim" data-demo-action="codex-menu-close"></div>` : ""}${state.dialog ? confirmation() : ""}${state.protocolSheet ? protocolSheet() : ""}${state.languageSheet ? languageSheet() : ""}${state.protocolInfo ? protocolInfo() : ""}${state.directorySheet ? directorySheet() : ""}${state.notice ? `<div class="demo-notice" role="status">${esc(state.notice)}${button("notice-close","关闭提示","close")}</div>` : ""}<div class="film-home-indicator"></div>`;
+    root.dataset.agent = state.draft ? agents[state.draftAgent].id : agent.id; root.dataset.page = state.page; root.dataset.selecting = String(state.selected.size > 0); root.dataset.moving = String(state.moving);
+    root.innerHTML = chrome + `<div class="demo-content" ${state.agentSheet ? "inert" : ""}>${state.page === "home" ? home() : state.page === "providers" ? providers() : state.page === "settings" ? settings() : state.page === "downloads" ? downloads() : chat()}</div>${state.drawer ? drawer() : ""}${state.codexMenu ? `<div class="demo-menu-scrim" data-demo-action="codex-menu-close"></div>` : ""}${state.dialog ? confirmation() : ""}${state.protocolSheet ? protocolSheet() : ""}${state.languageSheet ? languageSheet() : ""}${state.protocolInfo ? protocolInfo() : ""}${state.directorySheet ? directorySheet() : ""}${state.agentSheet ? agentSheet() : ""}${state.notice ? `<div class="demo-notice" role="status">${esc(state.notice)}${button("notice-close","关闭提示","close")}</div>` : ""}<div class="film-home-indicator"></div>`;
     layoutDial();
     for(const el of root.querySelectorAll("[data-remaining]"))el.style.width=`${el.dataset.remaining}%`;
   }
@@ -76,7 +90,18 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
   }
   function draft() {
     const action=policy.draftAction(state.text);
-    return `<section class="demo-draft" aria-label="新建会话草稿"><div class="demo-agent-choices" role="group" aria-label="Agent">${agentOrder.map(index=>{const agent=agents[index];return `<button type="button" class="demo-agent-choice agent-${agent.id}" data-demo-action="draft-agent" data-index="${index}" aria-label="${agent.name}" aria-pressed="${state.agent===index}">${mark(agent)}</button>`;}).join("")}${state.agent===1?`<span class="demo-codex-anchor"><button type="button" class="demo-draft-agent-name demo-codex-trigger" data-demo-action="codex-menu" aria-label="选择 Codex 版本" aria-haspopup="menu" aria-expanded="${!!state.codexMenu}">${codexName(state.codexVariant)}${icon("chevron-down")}</button>${state.codexMenu?codexMenu():""}</span>`:`<strong class="demo-draft-agent-name">${agents[state.agent].name}</strong>`}</div><button type="button" class="demo-directory-label" data-demo-action="draft-directory" aria-label="工作目录" id="demo-draft-directory">${icon("folder")}<span>${esc(state.directory)}</span>${icon("chevron-down")}</button><div class="demo-draft-compose"><label class="demo-draft-input"><textarea id="demo-first-message" aria-label="第一句话" placeholder="让 ${state.agent===1?codexName(state.codexVariant):agents[state.agent].name} 做什么？">${esc(state.text)}</textarea></label>${button("draft-send",action.label,action.icon)}</div></section>`;
+    const draftName = state.draftAgent === 1 ? codexName(state.codexVariant) : agents[state.draftAgent].name;
+    return `<section class="demo-draft" aria-label="新建会话草稿"><div class="demo-agent-choices" role="group" aria-label="Agent">${agentOrder.map(index=>{const agent=agents[index];return `<button type="button" class="demo-agent-choice agent-${agent.id}" data-demo-action="draft-agent" data-index="${index}" aria-label="${index === 2 ? "DeepSeek" : agent.name}" aria-pressed="${state.draftAgent===index}">${mark(agent)}</button>`;}).join("")}${state.draftAgent===1?`<span class="demo-codex-anchor"><button type="button" class="demo-draft-agent-name demo-codex-trigger" data-demo-action="codex-menu" aria-label="选择 Codex 版本" aria-haspopup="menu" aria-expanded="${!!state.codexMenu}">${codexName(state.codexVariant)}${icon("chevron-down")}</button>${state.codexMenu?codexMenu():""}</span>`:`<strong class="demo-draft-agent-name">${draftName}</strong>`}${button("draft-more", "选择更多 Agent", "more", 'aria-haspopup="dialog"')}</div><button type="button" class="demo-directory-label" data-demo-action="draft-directory" aria-label="工作目录" id="demo-draft-directory">${icon("folder")}<span>${esc(state.directory)}</span>${icon("chevron-down")}</button><div class="demo-draft-compose"><label class="demo-draft-input"><textarea id="demo-first-message" aria-label="第一句话" placeholder="让 ${draftName} 做什么？">${esc(state.text)}</textarea></label>${button("draft-send",action.label,action.icon)}</div></section>`;
+  }
+  function agentSheet() {
+    const choices = draftSources.map(({ kind, index, variant }) => {
+      const agent = agents[index], selected = index === state.draftAgent && (!variant || variant === state.codexVariant);
+      return `<button type="button" class="demo-agent-option" data-demo-action="draft-source" data-kind="${kind}" aria-pressed="${selected}">${mark(agent)}<span>${variant ? codexName(variant) : agent.name}</span></button>`;
+    }).join("");
+    return `<div class="demo-modal-scrim" data-demo-action="draft-more-close"></div><section class="demo-protocol-sheet demo-agent-sheet" role="dialog" aria-modal="true" aria-labelledby="demo-agent-title"><h2 id="demo-agent-title">选择 Agent</h2><div class="demo-agent-grid">${choices}</div><button type="button" class="demo-sheet-cancel" data-demo-action="draft-more-close">取消</button></section>`;
+  }
+  function closeAgentSheet() {
+    state.agentSheet = false; render(); $("[data-demo-action=draft-more]")?.focus();
   }
   function codexMenu() {
     return `<div class="demo-codex-menu" role="menu" aria-label="Codex 版本">${["terminal","desktop"].map(variant=>`<button type="button" role="menuitemradio" aria-checked="${state.codexVariant===variant}" data-demo-action="codex-variant" data-value="${variant}"><span>${codexName(variant)}</span>${state.codexVariant===variant?icon("check"):""}</button>`).join("")}</div>`;
@@ -180,7 +205,7 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
     const cover=draft.cloneNode(true); cover.classList.add("demo-draft-morph"); root.append(cover);
     await motion(cover,[{left:`${(rect.left-screenRect.left)/scale}px`,top:`${(rect.top-screenRect.top)/scale}px`,width:`${rect.width/scale}px`,height:`${rect.height/scale}px`,borderRadius:"24px"},{left:"0px",top:"0px",width:"393px",height:"852px",borderRadius:"0px"}],320,"cubic-bezier(.32,.72,0,1)");
     if(disposed)return;
-    const session={id:nextId++,title:firstMessage||state.directory.split("/").filter(Boolean).pop()||"新会话",directory:state.directory,agent:state.agent,codexVariant:state.agent===1?state.codexVariant:undefined,firstMessage};
+    const session={id:nextId++,title:firstMessage||state.directory.split("/").filter(Boolean).pop()||"新会话",directory:state.directory,agent:state.draftAgent,codexVariant:state.draftAgent===1?state.codexVariant:undefined,firstMessage};
     sessions.unshift(session); state.session=session.id; state.page="chat"; state.draft=false; state.text=""; state.moving=false; render();
     if(firstMessage)void motion($(".demo-message-user"),[{opacity:0,transform:"translateY(24px)"},{opacity:1,transform:"none"}],440);
   }
@@ -210,7 +235,14 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
     if(action==="language-choice"){state.draftLanguage=target.dataset.value;render();return;}
     if(action==="language-cancel"){state.languageSheet=false;render();return;}
     if(action==="language-apply"){state.language=state.draftLanguage;state.languageSheet=false;render();return;}
-    if(action==="draft-agent") { state.agent=Number(target.dataset.index);state.codexMenu=null; render(); return; }
+    if(action==="draft-agent") { state.draftAgent=Number(target.dataset.index);state.codexMenu=null; render(); return; }
+    if(action==="draft-more") { state.agentSheet=true;state.codexMenu=null;render();$(".demo-agent-option[aria-pressed=true]")?.focus();return; }
+    if(action==="draft-more-close") { closeAgentSheet();return; }
+    if(action==="draft-source") {
+      const source=draftSources.find(item=>item.kind===target.dataset.kind);
+      if(source){state.draftAgent=source.index;if(source.variant)state.codexVariant=source.variant;closeAgentSheet();}
+      return;
+    }
     if(action==="draft-send") { void sendDraft(); return; }
     if(action==="drawer-open") { state.drawer=true; render(); void motion($(".demo-drawer"),[{transform:"translateX(-320px)"},{transform:"none"}],320); return; }
     if(action==="drawer-close") { void motion($(".demo-drawer"),[{transform:"none"},{transform:"translateX(-320px)"}],180).then(()=>{state.drawer=false;render();});return; }
@@ -250,7 +282,13 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
   });
   root.addEventListener("change",event=>{if(event.target.id==="demo-draft-directory")state.directory=event.target.value;});
   root.addEventListener("keydown",event=>{
-    if(event.key==="Escape"){if(state.protocolInfo){handleAction("protocol-info-close",event.target);}else if(state.codexMenu){handleAction("codex-menu-close",event.target);}else if(state.languageSheet){state.languageSheet=false;render();}else if(state.directorySheet){state.directorySheet=false;render();}else if(state.protocolSheet){state.protocolSheet=false;render();}else if(state.dialog){state.dialog=false;render();}else if(state.drawer)handleAction("drawer-close",event.target);else if(state.draft)void closeDraft();else{state.page="home";render();}return;}
+    if (state.agentSheet && event.key === "Tab") {
+      const items = [...root.querySelectorAll(".demo-agent-sheet button")], first = items[0], last = items.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      return;
+    }
+    if(event.key==="Escape"){if(state.agentSheet){closeAgentSheet();}else if(state.protocolInfo){handleAction("protocol-info-close",event.target);}else if(state.codexMenu){handleAction("codex-menu-close",event.target);}else if(state.languageSheet){state.languageSheet=false;render();}else if(state.directorySheet){state.directorySheet=false;render();}else if(state.protocolSheet){state.protocolSheet=false;render();}else if(state.dialog){state.dialog=false;render();}else if(state.drawer)handleAction("drawer-close",event.target);else if(state.draft)void closeDraft();else{state.page="home";render();}return;}
     if(state.codexMenu&&["ArrowUp","ArrowDown","Home","End","Tab"].includes(event.key)){const options=[...root.querySelectorAll(".demo-codex-menu button")];if(event.key==="Tab"){event.preventDefault();handleAction("codex-menu-close",event.target);return;}const index=options.indexOf(document.activeElement);event.preventDefault();options[event.key==="Home"?0:event.key==="End"?options.length-1:(index+(event.key==="ArrowUp"?-1:1)+options.length)%options.length]?.focus();return;}
     if(state.protocolInfo&&event.key==="Tab"){event.preventDefault();$(".demo-info-dialog button")?.focus();return;}
     if(state.dialog&&event.key==="Tab"){const buttons=[...root.querySelectorAll(".demo-dialog button")];const index=buttons.indexOf(document.activeElement);event.preventDefault();buttons[(index+(event.shiftKey?-1:1)+buttons.length)%buttons.length].focus();return;}
@@ -310,5 +348,94 @@ window.createOrbisDesignDemo = function ({ screen, scene, reduced, onPlayback })
       playback.push(window.setTimeout(()=>{playing=false;onPlayback(false);},duration(4400)));
     },
     destroy(){disposed=true;window.cancelAnimationFrame(dialAnimation);unsubscribe?.();stopPlayback();window.clearTimeout(selectionHold);root.remove();},
+  };
+};
+
+/* FILE-SITE-01 / FILE-SITE-02: safe, local fixtures for the native file flows. */
+window.createOrbisFileDemo = function ({ screen, scene, reduced, onPlayback }) {
+  const mention = scene === "mention";
+  const root = document.createElement("div");
+  root.className = "design-demo file-demo";
+  root.id = "design-demo";
+  const chrome = [...screen.querySelectorAll("#s4-home > .ui-time,#s4-home > .ui-sys")].map(el => el.outerHTML).join("");
+  const icon = name => `<i class="ico i-${name}" aria-hidden="true"></i>`;
+  const button = (action, label, name) => `<button type="button" class="demo-icon" data-file-action="${action}" aria-label="${label}">${icon(name)}</button>`;
+  const folders = {
+    "/Projects/orbis": ["docs", "src", "tests"],
+    "/Projects/orbis/src": ["chat", "components"],
+    "/Projects/orbis/docs": ["guides"],
+  };
+  const documentPreview = `<article class="file-demo-document" aria-label="Markdown 正文"><h3>移动端回归清单</h3><p>这次重点检查对话和文件流程。</p><h4>验证项目</h4><ul><li><strong>对话：</strong>重连后继续原有会话</li><li><strong>文件：</strong>展开预览与全屏阅读</li><li><strong>目录：</strong>引用路径后发给 Agent</li></ul><blockquote>验证完成后，将结果写回发布记录。</blockquote><pre><code>npm run check</code></pre></article>`;
+  const topbar = (title, back = "", label = "返回对话") => `<header class="demo-topbar">${back ? button(back, label, "arrow-left") : ""}<h2>${title}</h2></header>`;
+  let page = "chat", path = "/Projects/orbis", directory = "", sent = false, expanded = false;
+  let timers = [], playing = false;
+  const focus = action => root.querySelector(`[data-file-action="${action}"]`)?.focus({ preventScroll: true });
+  function stop() {
+    timers.forEach(timer => window.clearTimeout(timer)); timers = [];
+    if (playing) { playing = false; onPlayback(false); }
+  }
+  function directoryBrowser() {
+    const parent = path !== "/Projects/orbis";
+    return `${topbar("选择目录", parent ? "parent" : "cancel", parent ? "上一级目录" : "返回对话")}
+      <div class="file-demo-scroll file-demo-browser"><code class="file-demo-path">${path}</code>
+      ${(folders[path] ?? []).map(folder => `<div class="file-demo-folder">
+        <button type="button" data-file-action="open-folder" data-path="${path}/${folder}" aria-label="打开 ${folder} 目录">${icon("folder")}<span>${folder}</span>${icon("chevron-right")}</button>
+        <button type="button" class="file-demo-reference" data-file-action="reference" data-path="${path}/${folder}" aria-label="引用 ${folder} 目录">@</button>
+      </div>`).join("") || `<p class="file-demo-empty">没有子目录</p>`}</div>`;
+  }
+  function directoryChat() {
+    const reference = directory ? `<code class="file-demo-mention">@${directory}</code>` : "";
+    return `${topbar("项目整理")}
+      <div class="file-demo-scroll"><div class="demo-message-assistant"><p>你想让我先检查哪个目录？</p></div>
+      ${sent ? `<div class="demo-message-user"><p>${reference}</p><p>帮我检查这个目录的实现。</p></div><div class="demo-message-assistant" role="status"><p>收到，我会从这个目录开始。</p></div>` : ""}</div>
+      <div class="file-demo-composer">${button("browse", "选择引用目录", "mention")}<div class="file-demo-field">${reference && !sent ? reference : `<span>发给 Claude Code</span>`}</div>
+      ${!directory || sent ? "" : button("send", "发送目录引用", "arrow-up")}</div>`;
+  }
+  function markdownChat() {
+    return `${topbar("发布准备")}
+      <div class="file-demo-scroll"><div class="demo-message-user">整理一份移动端回归清单。</div>
+      <div class="demo-message-assistant"><p>清单已整理好了。</p><div class="file-demo-attachment">
+      <button type="button" class="file-demo-file" data-file-action="toggle-preview" aria-expanded="${expanded}">${icon("doc")}<span>release-notes.md</span>${icon("chevron-down")}</button>
+      ${expanded ? `${documentPreview}<button type="button" class="demo-text-button file-demo-full" data-file-action="full">全屏阅读 ${icon("arrow-up-left")}</button>` : ""}</div></div></div>`;
+  }
+  function render() {
+    root.dataset.page = page;
+    root.innerHTML = chrome + `<div class="demo-content">${mention ? page === "browser" ? directoryBrowser() : directoryChat()
+      : page === "reader" ? `${topbar("release-notes.md", "close-reader", "返回文件卡片")}<div class="file-demo-scroll file-demo-reader">${documentPreview}</div>` : markdownChat()}</div><div class="film-home-indicator"></div>`;
+  }
+  function act(action, target) {
+    if (action === "browse") { page = "browser"; path = "/Projects/orbis"; render(); focus("open-folder"); }
+    if (action === "open-folder") { path = target.dataset.path; render(); focus("parent"); }
+    if (action === "parent") { path = path.slice(0,path.lastIndexOf("/")); render(); focus("open-folder"); }
+    if (action === "cancel") { page = "chat"; render(); focus("browse"); }
+    if (action === "reference") { directory = target.dataset.path; page = "chat"; sent = false; render(); focus("send"); }
+    if (action === "send") { sent = true; render(); focus("browse"); }
+    if (action === "toggle-preview") { expanded = !expanded; render(); focus("toggle-preview"); }
+    if (action === "full") { page = "reader"; render(); focus("close-reader"); }
+    if (action === "close-reader") { page = "chat"; render(); focus("full"); }
+  }
+  root.addEventListener("click", event => {
+    const target = event.target.closest("[data-file-action]");
+    if (target) { stop(); act(target.dataset.fileAction, target); }
+  });
+  root.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    if (page === "browser") { stop(); act("cancel"); }
+    if (page === "reader") { stop(); act("close-reader"); }
+  });
+  screen.append(root); render();
+  return {
+    togglePlayback() {
+      if (playing) { stop(); return; }
+      page = "chat"; path = "/Projects/orbis"; directory = ""; sent = expanded = false; render();
+      const steps = mention ? [() => { page = "browser"; }, () => { path += "/src"; }, () => {
+        directory = `${path}/components`; page = "chat";
+      }, () => { sent = true; }] : [() => { expanded = true; }, () => { page = "reader"; }];
+      if (reduced()) { steps.forEach(step => step()); render(); return; }
+      playing = true; onPlayback(true);
+      timers = steps.map((step, index) => window.setTimeout(() => { step(); render(); if (index === steps.length - 1) stop(); }, 650 + index * 900));
+    },
+    pause: stop,
+    destroy() { stop(); root.remove(); },
   };
 };

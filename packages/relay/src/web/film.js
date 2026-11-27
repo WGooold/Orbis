@@ -12,7 +12,7 @@ window.setupFilmDemo = function () {
   const $$ = selector => [...canvas.querySelectorAll(selector)];
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const swipeCloseThreshold = (393 - 32) * 0.4;
-  let designDemo;
+  let designDemo, designPlaying = false;
   let film, scene = "chat", page = "chat", action, raf, last;
   let visible = true, paused = true, watching = false;
   let selected = new Set(), closed = new Set(), chosen = "claude", downloaded = new Set();
@@ -26,14 +26,15 @@ window.setupFilmDemo = function () {
   };
   const ready = () => !paused && visible && !document.hidden && action;
   function state() {
-    root.dataset.animating = String(Boolean(action));
-    root.dataset.playing = String(Boolean(ready()));
+    const playing = designDemo ? designPlaying : !paused;
+    root.dataset.animating = String(designDemo ? designPlaying : Boolean(action));
+    root.dataset.playing = String(designDemo ? designPlaying : Boolean(ready()));
     root.dataset.scene = scene;
     root.dataset.page = page;
     root.dataset.mode = watching ? "film" : "interactive";
-    play.setAttribute("aria-label", paused ? "播放功能演示" : "暂停功能演示");
-    play.querySelector(".play-icon").textContent = paused ? "▶" : "Ⅱ";
-    play.querySelector(".play-label").textContent = paused ? "播放" : "暂停";
+    play.setAttribute("aria-label", playing ? "暂停功能演示" : "播放功能演示");
+    play.querySelector(".play-icon").textContent = playing ? "Ⅱ" : "▶";
+    play.querySelector(".play-label").textContent = playing ? "暂停" : "播放";
   }
   function schedule() {
     if (raf) window.cancelAnimationFrame(raf);
@@ -197,7 +198,7 @@ window.setupFilmDemo = function () {
     const home=document.createElement("div");home.className="film-home-indicator";$("#s4-scr").append(home);
   }
   function mount(id, replaying = false) {
-    designDemo?.destroy();designDemo=undefined;
+    designDemo?.destroy();designDemo=undefined;designPlaying=false;
     halt(); gesture=undefined; selected=new Set(); closed=new Set(); downloaded=new Set();
     delete root.dataset.closed; delete root.dataset.lastClosed;
     chosen="claude"; queried=false; weekly=false; diffIndex=0; pairingDone=false; watching=replaying;
@@ -205,7 +206,8 @@ window.setupFilmDemo = function () {
     canvas.innerHTML=window.OrbisFilmMarkup[id==="pair"?"s2":"s4"];
     film=(id==="pair"?window.createS2Film:window.createS4Film)();
     const m=film.marks;
-    const start=replaying?0:id==="pair"?4.29:{chat:2.98,diff:m.OPEN+.8,download:m.BACK1+.6,sessions:m.L-.05,create:m.D-.05,quota:m.S+.55}[id];
+    const fileScene = id === "mention" || id === "markdown";
+    const start=replaying?0:id==="pair"?4.29:{chat:2.98,diff:m.OPEN+.8,download:m.BACK1+.6,sessions:m.L-.05,create:m.D-.05,quota:m.S+.55}[id]??2.98;
     film.timeline.time(start,true);
     if(!replaying)frameForInteraction();
     decorate();
@@ -230,9 +232,10 @@ window.setupFilmDemo = function () {
     }
     tabs.forEach(tab=>{const on=tab.dataset.scene===id;tab.setAttribute("aria-selected",String(on));tab.tabIndex=on?0:-1;});
     viewport.setAttribute("aria-labelledby",`tab-${id}`);
-    if(["create","quota","sessions"].includes(id)) {
+    if(fileScene || ["create","quota","sessions"].includes(id)) {
       gsap.set("#s4-home",{x:0});
-      designDemo=window.createOrbisDesignDemo({screen:$("#s4-scr"),scene:id,reduced,onPlayback:playing=>{play.setAttribute("aria-label",playing?"暂停功能演示":"播放功能演示");play.querySelector(".play-label").textContent=playing?"暂停":"播放";root.dataset.playing=String(playing);}});
+      const createDemo = fileScene ? window.createOrbisFileDemo : window.createOrbisDesignDemo;
+      designDemo=createDemo({screen:$("#s4-scr"),scene:id,reduced,onPlayback:playing=>{designPlaying=playing;state();}});
       accessible();
     }
     root.dataset.time=start.toFixed(3); state(); size();
@@ -531,8 +534,8 @@ window.setupFilmDemo = function () {
   });
   play.addEventListener("click",()=>{if(designDemo){designDemo.togglePlayback();return;}if(action){paused=!paused;schedule();}else replay();});
   document.getElementById("demo-replay").addEventListener("click",()=>mount(scene));
-  document.addEventListener("visibilitychange",schedule);
-  if("IntersectionObserver" in window)new window.IntersectionObserver(entries=>{visible=entries[0].isIntersecting;schedule();},{threshold:.08}).observe(viewport);
+  document.addEventListener("visibilitychange",()=>{if(document.hidden)designDemo?.pause?.();schedule();});
+  if("IntersectionObserver" in window)new window.IntersectionObserver(entries=>{visible=entries[0].isIntersecting;if(!visible)designDemo?.pause?.();schedule();},{threshold:.08}).observe(viewport);
   window.addEventListener("resize",size);
   preference.addEventListener("change",()=>{if(reduced())mount(scene);});
   mount("chat");

@@ -161,3 +161,50 @@
 .demo-info>span{display:grid;place-items:center;width:18px;height:18px;border:1.5px solid currentColor;border-radius:50%;font:600 12px/16px var(--font-sans)}
 .demo-info-scrim{position:absolute;inset:0;z-index:132;background:var(--scrim);opacity:.34}
 .demo-info-dialog{z-index:133}
+
+/* The extra launch sources use the same sheet and controls as the phone demo. */
+.demo-agent-choices .demo-draft-agent-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.demo-agent-choices>.demo-icon{flex:none;margin-left:auto}
+.demo-agent-image{background:none!important;mask:none!important;-webkit-mask:none!important}
+.demo-agent-image img{width:100%;height:100%;object-fit:contain}
+.demo-agent-image .agent-mark-on-dark{display:none}
+:root[data-ob$="dark"] .demo-agent-image .agent-mark-on-dark{display:block}
+:root[data-ob$="dark"] .demo-agent-image .agent-mark-on-light{display:none}
+.demo-agent-sheet{max-height:calc(100% - 72px);overflow:auto}
+.demo-agent-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:4px}
+.design-demo .demo-agent-option{display:flex;align-items:center;gap:8px;min-height:54px;padding:8px 12px;border-radius:16px;background:var(--surface-base);box-shadow:var(--raised-sm);text-align:left;font-size:13px;line-height:18px}
+.design-demo .demo-agent-option[aria-pressed=true]{box-shadow:var(--inset-sm);color:var(--accent)}
+
+.file-demo .i-doc{--i:url(promo/icons/doc.svg)}
+.file-demo .i-arrow-up-left{--i:url(promo/icons/arrow-up-left.svg)}
+.file-demo .i-mention{display:grid;place-items:center;mask:none;-webkit-mask:none;background:none}.file-demo .i-mention::before{content:"@";font:600 22px/1 var(--font-sans)}
+.file-demo .file-demo-scroll{position:absolute;inset:72px 0 96px;overflow:auto;padding:12px 20px 24px;scrollbar-width:thin}
+.file-demo .file-demo-browser,.file-demo .file-demo-reader{bottom:30px}
+.file-demo-scroll>.demo-message-user,.file-demo-scroll>.demo-message-assistant{margin:0 0 16px}
+.file-demo-scroll>.demo-message-user p,.file-demo-scroll>.demo-message-assistant p{margin:0}
+.file-demo-path{display:block;margin:0 0 16px;padding:12px 16px;border-radius:16px;box-shadow:var(--inset-sm);font:13px/22px var(--font-mono);color:var(--ink-muted);overflow-wrap:anywhere}
+.file-demo-folder{display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:4px 8px 4px 12px;border-radius:16px;box-shadow:var(--raised-sm)}
+.file-demo-folder>button:first-child{display:flex;flex:1;align-items:center;gap:12px;min-width:0;text-align:left}
+.file-demo-folder>button:first-child>span{flex:1}
+.file-demo-folder .ico,.file-demo-file .ico,.file-demo-full .ico{width:18px;height:18px;color:var(--ink-muted)}
+.design-demo .file-demo-reference{width:44px;flex:none;border-radius:12px;color:var(--accent);font-size:20px}
+.file-demo-reference:hover,.file-demo-reference:focus-visible{box-shadow:var(--inset-sm)}
+.file-demo-empty{color:var(--ink-muted);text-align:center}
+.file-demo-composer{position:absolute;inset:auto 16px 32px;display:flex;align-items:center;gap:8px;padding:8px;border-radius:24px;background:var(--surface-base);box-shadow:var(--raised-md)}
+.file-demo-composer .demo-icon{flex:none;color:var(--accent)}
+.file-demo-field{flex:1;min-width:0;color:var(--ink-muted);font-size:14px}
+.file-demo-mention{color:var(--accent);font:12px/1.6 var(--font-mono);overflow-wrap:anywhere}
+.file-demo-attachment{margin-top:12px;padding:4px 10px 10px;border-radius:16px;box-shadow:var(--inset-sm)}
+.file-demo-file{display:flex;align-items:center;gap:8px;width:100%;text-align:left}
+.file-demo-file span{flex:1;min-width:0;font:13px/20px var(--font-mono);overflow-wrap:anywhere}
+.file-demo-file[aria-expanded=true]>.ico:last-child{transform:rotate(180deg)}
+.file-demo-document{padding:12px;color:var(--ink);font:15px/1.6 var(--font-sans)}
+.file-demo-document h3{margin:0 0 8px;font-size:22px;line-height:1.3;letter-spacing:0}
+.file-demo-document h4{margin:18px 0 6px;font-size:15px}
+.file-demo-document ul{padding-left:20px;margin:0 0 14px}
+.file-demo-document blockquote{margin:0 0 14px;border-inline-start:2px solid var(--hairline);padding-inline-start:10px;color:var(--ink-muted)}
+.file-demo-document pre{padding:10px;border-radius:10px;background:var(--surface-lift);font:12px/1.6 var(--font-mono)}
+.file-demo-full{display:flex;align-items:center;gap:6px;margin-left:auto}
+.file-demo-reader .file-demo-document{padding:16px 4px}
+
+:root[data-ob$="dark"] .demo-agent-image img[src$="/lobe-hermesagent.svg"]{filter:invert(1)}

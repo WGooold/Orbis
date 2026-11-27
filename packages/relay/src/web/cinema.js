@@ -31,14 +31,14 @@ const agents = [
   { name: "Claude Code", image: "lobe-claudecode-color.svg" },
   { name: "Codex", image: "lobe-codex-color.svg" },
   { name: "Pi", image: "pi.svg" },
-  { name: "Codex Desktop", image: "lobe-codex-color.svg" },
-  { name: "DeepSeek", image: "deepseek.svg" },
-  { name: "Antigravity", image: "antigravity.svg" },
-  { name: "OpenCode", image: "opencode-light.svg", darkImage: "opencode-dark.svg" },
-  { name: "Kimi Code", image: "kimi-code.svg" },
-  { name: "Oh My Pi", image: "omp-icon.svg", preview: true },
-  { name: "Hermes", image: "lobe-hermesagent.svg" },
-  { name: "OpenClaw", image: "lobe-openclaw-color.svg" },
+  { name: "Codex Desktop", image: "lobe-codex-color.svg", detail: "续接电脑上的 Codex 桌面会话" },
+  { name: "DeepSeek", image: "deepseek.svg", detail: "终端版与桌面版" },
+  { name: "Antigravity", image: "antigravity.svg", detail: "通过 Antigravity CLI 接入" },
+  { name: "OpenCode", image: "opencode-light.svg", darkImage: "opencode-dark.svg", detail: "通过共享服务接入" },
+  { name: "Kimi Code", image: "kimi-code.svg", detail: "Web 与桌面版 · 桌面版支持 Windows x64" },
+  { name: "Oh My Pi", image: "omp-icon.svg", preview: true, detail: "尚未开放接入" },
+  { name: "Hermes", image: "lobe-hermesagent.svg", detail: "通过 Hermes Gateway 接入" },
+  { name: "OpenClaw", image: "lobe-openclaw-color.svg", detail: "通过本机或远程 Gateway 接入" },
 ];
 
 function setupOrbit() {
@@ -75,6 +75,7 @@ function setupOrbit() {
     const index=normalized(Math.round(value)),agent=agents[index];
     root.dataset.selected=String(index);
     byId("agent-name").textContent=agent.name;byId("agent-availability").textContent=agent.preview?"即将接入":"已接入";
+    byId("agent-detail").textContent=agent.detail??"在 Host 启用后即可连接";
     byId("agent-name").parentElement.classList.toggle("is-preview",Boolean(agent.preview));
     buttons.forEach((button,i)=>button.setAttribute("aria-pressed",String(i===index)));
   }

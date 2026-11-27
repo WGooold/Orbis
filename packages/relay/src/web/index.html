@@ -62,6 +62,7 @@
       </div>
       <div class="agent-controls shell">
         <div class="agent-current"><span class="status-dot" aria-hidden="true"></span><span id="agent-name">Claude Code</span><span class="agent-availability" id="agent-availability">已接入</span></div>
+        <p class="agent-detail" id="agent-detail">在 Host 启用后即可连接</p>
         <div class="orbit-navigation"><button class="icon-button" type="button" id="agent-prev" aria-label="上一个 Agent"><i class="ico i-arrow-left" aria-hidden="true"></i></button><p>转一转，找到你的 Agent</p><button class="icon-button" type="button" id="agent-next" aria-label="下一个 Agent"><i class="ico i-arrow-right" aria-hidden="true"></i></button></div>
         <div class="agent-picks" id="agent-picks" role="group" aria-label="选择 Agent"></div>
         <button class="playback subtle" type="button" id="orbit-play" aria-label="暂停 Agent 自动旋转"><span class="play-icon" aria-hidden="true">Ⅱ</span><span class="play-label">暂停旋转</span></button>
@@ -70,12 +71,14 @@
       <a class="scroll-cue" href="#experience"><span>往下，亲手感受</span><i class="ico i-arrow-down" aria-hidden="true"></i></a>
     </section>
     <section class="experience-section" id="experience" aria-labelledby="experience-title">
-      <div class="experience-heading shell"><p class="eyebrow">MADE TO BE FELT.</p><h2 id="experience-title">拿起手机，<br><span class="accent">接着做</span>。</h2><p class="experience-lead">对话、改动、文件，都在手边。</p></div>
+      <div class="experience-heading shell"><p class="eyebrow">MADE TO BE FELT.</p><h2 id="experience-title">拿起手机，<br><span class="accent">接着做</span>。</h2><p class="experience-lead">切换 Agent、引用目录、预览文件，不用回到电脑。</p></div>
       <div class="film-demo" id="feature-demo">
         <div class="chapter-tabs" role="tablist" aria-label="选择功能">
           <button id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="film-viewport" tabindex="0" data-scene="chat">实时对话</button>
           <button id="tab-diff" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="diff">文件审阅</button>
           <button id="tab-download" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="download">文件下载</button>
+          <button id="tab-mention" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="mention">目录引用</button>
+          <button id="tab-markdown" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="markdown">Markdown 预览</button>
           <button id="tab-sessions" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="sessions">会话管理</button>
           <button id="tab-create" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="create">新建会话</button>
           <button id="tab-quota" type="button" role="tab" aria-selected="false" aria-controls="film-viewport" tabindex="-1" data-scene="quota">订阅配额</button>
@@ -83,7 +86,7 @@
         </div>
         <div class="film-viewport" id="film-viewport" role="tabpanel" aria-labelledby="tab-chat">
           <div id="film-canvas"></div>
-          <noscript><p class="film-fallback">实时对话、文件审阅、文件下载、会话管理、新建会话、订阅配额、扫码配对</p></noscript>
+          <noscript><p class="film-fallback">实时对话、文件审阅、文件下载、目录引用、Markdown 预览、会话管理、新建会话、订阅配额、扫码配对</p></noscript>
         </div>
         <div class="film-controls">
           <button class="playback" id="demo-play" type="button" aria-label="播放功能演示"><span class="play-icon" aria-hidden="true">▶</span><span class="play-label">播放</span></button>
