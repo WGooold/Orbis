@@ -12,6 +12,7 @@ type AcpLaunchOptions = {
   validate: (result: JsonObject) => void;
   signal?: AbortSignal;
   redact?: (line: string) => string;
+  onAuthorizationUrl?: (url: string) => void;
 };
 
 export type AcpRequest = {
@@ -47,9 +48,11 @@ export class AcpClient implements AcpConnection {
   #closed = false;
   #stopping: Promise<void> | undefined;
   supportsClose = false;
+  supportsLogout = false;
   get connected(): boolean { return !this.#closed; }
 
-  private constructor(child: ChildProcess, private readonly label: string, redact?: (line: string) => string) {
+  private constructor(child: ChildProcess, private readonly label: string, redact?: (line: string) => string,
+    onAuthorizationUrl?: (url: string) => void) {
     this.#child = child;
     const decoder = new StringDecoder("utf8");
     let buffered = "";
@@ -62,6 +65,11 @@ export class AcpClient implements AcpConnection {
         buffered = buffered.slice(end + 1);
         if (!line) continue;
         try {
+          const authPrefix = "Open the following link to authenticate the ACP server: ";
+          if (line.startsWith(authPrefix)) {
+            onAuthorizationUrl?.(line.slice(authPrefix.length));
+            continue;
+          }
           if (Buffer.byteLength(line) > 16 * 1024 * 1024) throw new Error("ACP frame too large");
           this.#receive(JSON.parse(redact ? redact(line) : line));
         }
@@ -69,8 +77,39 @@ export class AcpClient implements AcpConnection {
       }
       if (Buffer.byteLength(buffered) > 16 * 1024 * 1024) { this.#fail(`${this.label} ACP 消息超过 16 MiB`); void this.stop().catch(() => {}); }
     });
-    // Native stderr and errors may contain credentials, local paths or prompt text.
-    child.stderr!.resume();
+    // Native stderr may contain credentials, local paths or prompt text. Only the
+    // private browser-helper marker is inspected; all other text is discarded.
+    const stderrDecoder = new StringDecoder("utf8");
+    let stderrBuffer = "";
+    let stderrDiscardingLine = false;
+    child.stderr!.on("data", (chunk: Buffer) => {
+      const text = stderrDecoder.write(chunk);
+      for (const char of text) {
+        if (char === "\n") {
+          if (!stderrDiscardingLine) {
+            const line = stderrBuffer.endsWith("\r") ? stderrBuffer.slice(0, -1) : stderrBuffer;
+            const marker = "__ORBIS_ANTIGRAVITY_AUTH_URL__";
+            if (line.startsWith(marker) && line.length <= 16_384) {
+              let value: unknown;
+              try { value = JSON.parse(line.slice(marker.length)); }
+              catch { value = undefined; }
+              if (typeof value === "string") {
+                try { onAuthorizationUrl?.(value); }
+                catch {
+                  this.#fail(`${this.label} 返回了无效的 Google 登录链接`);
+                  void this.stop().catch(() => {});
+                }
+              }
+            }
+          }
+          stderrBuffer = "";
+          stderrDiscardingLine = false;
+        } else if (!stderrDiscardingLine) {
+          stderrBuffer += char;
+          if (stderrBuffer.length > 16_384) { stderrBuffer = ""; stderrDiscardingLine = true; }
+        }
+      }
+    });
     child.stdout!.on("error", () => { this.#fail(`${this.label} 输出管道关闭`); void this.stop().catch(() => {}); });
     child.stdin!.on("error", () => this.#fail(`${this.label} 输入管道关闭`));
     child.on("error", () => this.#fail(`${this.label} 启动失败`));
@@ -87,7 +126,7 @@ export class AcpClient implements AcpConnection {
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
       ...(options.env === undefined ? {} : { env: options.env }),
     });
-    const client = new AcpClient(child, label, options.redact);
+    const client = new AcpClient(child, label, options.redact, options.onAuthorizationUrl);
     const abort = () => { void client.stop().catch(() => {}); };
     options.signal?.addEventListener("abort", abort, { once: true });
     try {
@@ -96,8 +135,10 @@ export class AcpClient implements AcpConnection {
       }, options.timeoutMs ?? 60_000));
       options.signal?.throwIfAborted();
       options.validate(result);
-      const close = record(record(result.agentCapabilities).sessionCapabilities).close;
-      client.supportsClose = close !== null && typeof close === "object" && !Array.isArray(close);
+      const capabilities = record(result.agentCapabilities);
+      const advertised = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value);
+      client.supportsClose = advertised(record(capabilities.sessionCapabilities).close);
+      client.supportsLogout = advertised(record(capabilities.auth).logout);
       return client;
     } catch (error) {
       await client.stop();

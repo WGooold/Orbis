@@ -221,12 +221,27 @@ struct SubscriptionQuota: Decodable {
         let resetsAt: Int64?
         var id: String { name }
         var title: String { name == "five_hour" ? L10n.tr("5 小时配额") : L10n.tr("周配额") }
+        var valid: Bool {
+            ["five_hour", "seven_day"].contains(name) &&
+            (remainingPercent.map { $0.isFinite && (0...100).contains($0) } ?? true) &&
+            (resetsAt.map { $0 >= 0 } ?? true)
+        }
+    }
+    struct Pool: Decodable, Identifiable {
+        let id: String
+        let label: String
+        let windows: [Window]
+        var valid: Bool {
+            !id.isEmpty && id.count <= 256 && !label.isEmpty && label.count <= 128 && windows.count == 2 &&
+            Set(windows.map(\.name)) == ["five_hour", "seven_day"] && windows.allSatisfy(\.valid)
+        }
     }
     let checkedAt: Int64
     let windows: [Window]
+    let pools: [Pool]?
     var valid: Bool {
         checkedAt >= 0 && windows.count == 2 && Set(windows.map(\.name)) == ["five_hour", "seven_day"] &&
-        windows.allSatisfy { ($0.remainingPercent.map { $0.isFinite && (0...100).contains($0) } ?? true) && ($0.resetsAt.map { $0 >= 0 } ?? true) }
+        windows.allSatisfy(\.valid) && (pools.map { $0.count <= 32 && Set($0.map(\.id)).count == $0.count && $0.allSatisfy(\.valid) } ?? true)
     }
 }
 
@@ -475,7 +490,7 @@ final class HostState: ObservableObject {
     }
 
     func loadProviders(_ kind: String) {
-        guard ["pi", "codex", "dsh", "claude"].contains(kind), !changingProvider else { return }
+        guard ["pi", "codex", "dsh", "claude", "agy"].contains(kind), !changingProvider else { return }
         providerKind = kind; providerError = nil; providerNotice = nil
         refresh(["providers"])
     }

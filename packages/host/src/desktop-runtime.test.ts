@@ -15,6 +15,7 @@ import { clearDesktopRecovery, recordDesktopStdioFallback, recordDesktopStartupF
 import * as claudeInstallation from "./claude-integration-install.js";
 import * as claudeVersion from "./claude-version.js";
 import { verifyAgyKey } from "./agy-credential.js";
+import { agyProfile } from "./agy-auth.js";
 import { KimiRuntime } from "./kimi-runtime.js";
 import { DshRuntime } from "./dsh-runtime.js";
 import * as dshDesktopLifecycle from "./dsh-desktop-lifecycle.js";
@@ -60,7 +61,7 @@ describe("desktop Host lifecycle", () => {
     const root = await mkdtemp(join(tmpdir(), "orbis-desktop-agy-setup-"));
     const request = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 200 }));
     const runtime = new DesktopRuntime(() => {}, root, undefined, undefined,
-      async (value, options) => verifyAgyKey(value, options?.signal, request));
+      async (value, options) => verifyAgyKey(typeof value === "string" ? value : (value as { apiKey?: unknown } | null)?.apiKey, options?.signal, request));
     const key = "fixture-user-entered-key";
     try {
       expect((await runtime.readAgentEnablement()).agents).toContainEqual({ kind: "agy", label: "Antigravity CLI", enabled: false });
@@ -89,6 +90,56 @@ describe("desktop Host lifecycle", () => {
       await runtime.close();
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  // AGY-16: the child owns the login. A fresh ACP list must confirm it without reading or exporting any OAuth credential.
+  it.skipIf(process.platform === "win32")("uses the official Google login flow before enabling AGY", async () => {
+    vi.stubEnv("ORBIS_AGY_ENABLED", undefined);
+    vi.stubEnv("GEMINI_API_KEY", "ambient-gemini-secret");
+    vi.stubEnv("GOOGLE_API_KEY", "ambient-google-secret");
+    vi.stubEnv("GOOGLE_APPLICATION_CREDENTIALS", "/secret/ambient-adc.json");
+    vi.stubEnv("DISPLAY", ":9");
+    const root = await mkdtemp(join(tmpdir(), "orbis-desktop-agy-login-"));
+    const cli = join(root, "agy-fixture");
+    const profile = agyProfile(root, "oauth-personal");
+    await writeFile(cli, `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+const stdin = require('node:readline').createInterface({ input: process.stdin });
+const marker = path.join(process.env.GEMINI_HOME, 'fixture-signed-in');
+if (process.env.DISPLAY || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_APPLICATION_CREDENTIALS) process.exit(2);
+if (!process.env.SSH_CONNECTION || !process.argv.includes(process.env.GEMINI_HOME) || !process.argv.includes('antigravity-acp')) process.exit(3);
+if (process.argv.includes('--login')) {
+  if (process.argv.includes('--stdio') || process.argv.includes('--sandbox') || !process.argv.includes('--app-data-dir')) process.exit(5);
+  console.log('https://accounts.google.com/o/oauth2/auth?state=fixture&response_type=code&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback');
+  stdin.on('line', code => { if (code !== 'fixture-code') process.exit(4); fs.writeFileSync(marker, 'ok'); process.exit(0); });
+} else stdin.on('line', line => {
+  const { id, method } = JSON.parse(line);
+  const send = result => console.log(JSON.stringify({ jsonrpc: '2.0', id, result }));
+  if (method === 'initialize') send({ protocolVersion: 1, agentInfo: { version: '1.5.17' },
+    agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} }, auth: { logout: {} } }, authMethods: [{ id: 'oauth-personal' }] });
+  else if (method === 'session/list' && fs.existsSync(marker)) send({ sessions: [] });
+  else if (method === 'logout') { fs.unlinkSync(marker); send({}); }
+  else console.log(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: 'authentication required' } }));
+});
+`, { mode: 0o700 });
+    vi.stubEnv("ORBIS_AGY_ENTRY", cli);
+    const runtime = new DesktopRuntime(() => {}, root);
+    try {
+      expect(await runtime.agySetupInfo()).toMatchObject({ source: "none", authMethod: "oauth-personal" });
+      await expect(runtime.retryAgyCredential()).resolves.toMatchObject({ source: "none", verification: "rejected" });
+      const started = await runtime.startAgyLogin();
+      expect(started).toMatchObject({ authorizationUrl: expect.stringMatching(/^https:\/\/accounts\.google\.com\//) });
+      const snapshot = await runtime.readAgentEnablement();
+      await expect(runtime.setAgentEnablement({ kind: "agy", enabled: true, expectedRevision: snapshot.revision })).rejects.toThrow("Host 本机");
+      const receipt = await runtime.completeAgyLogin("fixture-code");
+      expect(receipt).toMatchObject({ source: "saved", authMethod: "oauth-personal", verification: "verified" });
+      expect(JSON.stringify(receipt)).not.toContain("fixture-code");
+      expect(JSON.parse(await readFile(join(profile.geminiDir, profile.appDataDir, "settings.json"), "utf8"))).toEqual({ auth: { type: "oauth-personal" } });
+      await expect(runtime.logoutAgyGoogle()).resolves.toMatchObject({ source: "none" });
+      await expect(readFile(join(profile.directory, "fixture-signed-in"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(profile.lock)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await runtime.close(); vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
 
   // CODEX-DESKTOP-MAC-RECOVERY-01: the Qt status event follows a wrapper result produced after launch,

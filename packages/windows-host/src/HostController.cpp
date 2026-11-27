@@ -121,7 +121,8 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             {"piIntegrationEnabled", m_settings.contains("piIntegrationEnabled") && piIntegrationEnabled()},
             {"legacyClaudeEnabled", m_settings.contains("claudeIntegrationEnabled") && claudeIntegrationEnabled()},
             {"legacyKimiEnabled", m_settings.contains("kimiCodeEnabled") ? QJsonValue(m_settings.value("kimiCodeEnabled").toBool()) : QJsonValue(QJsonValue::Null)},
-            {"agentEntryOverrides", QJsonObject::fromVariantMap(agentEntryOverrides())}}, [this](const QJsonValue &result) {
+            {"agentEntryOverrides", QJsonObject::fromVariantMap(agentEntryOverrides())},
+            {"agyAuth", agyAuthSettings(m_settings.value("agyAuthMethod", "oauth-personal").toString(), {}, {})}}, [this](const QJsonValue &result) {
             const auto obj = result.toObject();
             const auto actualId = obj.value("hostId").toString();
             m_hostName = obj.value("hostName").toString(); m_appDownloadQr = obj.value("appDownloadQr").toString();
@@ -146,7 +147,7 @@ HostController::HostController(QString runtimeRoot, QString dataDir, QString hos
             m_agyVaultPath = QDir::isAbsolutePath(stateDir) && !stateDir.isEmpty()
                 ? QDir(stateDir).filePath("antigravity-api-key.dat") : QString();
             finishAgySetup(agy);
-            if (agy.value("source").toString() == "none") loadAgyCredential();
+            if (agy.value("source").toString() == "none") retryAgySetup();
             emit openClawChanged();
             emit hermesRemoteChanged();
             appendLog("Host 核心已就绪 · " + obj.value("nodeVersion").toString());
@@ -435,6 +436,27 @@ void HostController::receiveLine(const QJsonObject &line) {
                 line.value("message").toString().startsWith("Relay 认证失败：unauthorized "))) invalidateActivation();
         }
         else if (event == "log") { appendLog(line.value("message").toString()); return; }
+        else if (event == "agyLoginUrl") {
+            const auto authMethod = line.value("authMethod").toString();
+            const QUrl url(line.value("authorizationUrl").toString(), QUrl::StrictMode);
+            const QUrlQuery query(url);
+            const auto redirect = query.queryItemValue("redirect_uri", QUrl::FullyDecoded);
+            const auto stateValues = query.allQueryItemValues("state");
+            const auto responseValues = query.allQueryItemValues("response_type");
+            const auto redirectValues = query.allQueryItemValues("redirect_uri");
+            const QUrl callback(redirect, QUrl::StrictMode);
+            if (authMethod == "oauth-business" && url.scheme() == "https" && url.host() == "accounts.google.com" &&
+                url.path() == "/o/oauth2/v2/auth" && url.userInfo().isEmpty() && url.fragment().isEmpty() &&
+                stateValues.size() == 1 && !stateValues.first().trimmed().isEmpty() &&
+                responseValues == QStringList{"code"} && redirectValues.size() == 1 &&
+                callback.isValid() && callback.scheme() == "http" && callback.host() == "127.0.0.1" && callback.port() >= 1024 &&
+                callback.path() == "/" && callback.query().isEmpty() && callback.userInfo().isEmpty() && callback.fragment().isEmpty()) {
+                m_agySetup.insert("authorizationUrl", url.toString(QUrl::FullyEncoded));
+                m_agySetup.insert("authMethod", authMethod);
+                m_agySetup.insert("verification", "loginRequired");
+                emit agySetupChanged();
+            }
+        }
         else if (event == "providersChanged" && line.value("kind").toString() == m_providerKind) loadProviders(m_providerKind);
         else if (event == "agentInstall") {
             const auto kind = line.value("kind").toString();
@@ -1050,10 +1072,29 @@ static QString normalizedAgyKey(const QString &value) {
     return format.match(key).hasMatch() ? key : QString();
 }
 
+QJsonObject HostController::agyAuthSettings(const QString &requestedMethod, const QString &project,
+                                             const QString &location, const QString &key) const {
+    const auto storedMethod = m_settings.value("agyAuthMethod", "oauth-personal").toString();
+    const auto method = requestedMethod.isEmpty() ? storedMethod : requestedMethod;
+    QJsonObject auth{{"authMethod", method}, {"apiKey", key}};
+    if (method == "oauth-business" || method == "agent-platform") {
+        auth.insert("gcpProject", project.isEmpty() ? m_settings.value("agyGcpProject").toString() : project.trimmed());
+        auth.insert("gcpLocation", location.isEmpty() ? m_settings.value("agyGcpLocation").toString() : location.trimmed());
+    } else {
+        auth.insert("gcpProject", QString());
+        auth.insert("gcpLocation", QString());
+    }
+    return auth;
+}
+
 bool HostController::canEditAgySetup() const {
     const auto source = m_agySetup.value("source").toString();
     return m_bridgeReady && !m_qaMode && !m_exiting && !m_agySetup.value("busy").toBool()
         && !source.isEmpty() && source != "environment" && source != "unsupported";
+}
+
+static bool agyGoogleMethod(const QString &method) {
+    return method == "oauth-personal" || method == "oauth-business";
 }
 
 void HostController::beginAgySetup() {
@@ -1065,11 +1106,26 @@ void HostController::beginAgySetup() {
 void HostController::finishAgySetup(const QJsonObject &info, const QString &verification) {
     const auto source = info.value("source").toString();
     if (QStringList{"none", "saved", "environment", "unsupported", "vaultError"}.contains(source)) m_agySetup.insert("source", source);
-    if (info.contains("requiredVersion")) m_agySetup.insert("requiredVersion", info.value("requiredVersion").toString());
+    for (const auto key : {"requiredVersion", "authMethod", "gcpProject", "gcpLocation"}) {
+        if (info.contains(key)) m_agySetup.insert(QString::fromLatin1(key), info.value(key).toString());
+    }
+    if (verification == "loginRequired") m_agySetup.insert("authorizationUrl", info.value("authorizationUrl").toString());
+    else {
+        m_agySetup.remove("authorizationUrl");
+        m_agySetup.remove("loginInProgress");
+        m_agySetup.remove("loginCancelling");
+    }
     if (info.contains("installed")) m_agySetup.insert("installed", info.value("installed").toBool());
     m_agySetup.insert("busy", false);
     m_agySetup.insert("verification", verification);
     emit agySetupChanged();
+}
+
+void HostController::persistAgyAuth(const QJsonObject &config) {
+    m_settings.setValue("agyAuthMethod", config.value("authMethod").toString("oauth-personal"));
+    m_settings.setValue("agyGcpProject", config.value("gcpProject").toString());
+    m_settings.setValue("agyGcpLocation", config.value("gcpLocation").toString());
+    m_settings.sync();
 }
 
 void HostController::runAgyVault(AgyVaultAction action, const QString &key, std::function<void(std::optional<QString>)> done) {
@@ -1102,47 +1158,104 @@ void HostController::loadAgyCredential() {
     beginAgySetup();
     runAgyVault(AgyVaultAction::Load, {}, [this](auto key) {
         if (!key) { finishAgySetup({{"source", "vaultError"}}, "vaultError"); return; }
-        if (key->isEmpty()) { applyAgyCredential({}); return; }
-        const auto id = command("agy.setup.verify", {{"key", *key}}, [this, key](const QJsonValue &result) {
+        auto method = m_settings.value("agyAuthMethod").toString();
+        if (method.isEmpty() && !key->isEmpty()) method = "gemini-api-key"; // Existing Key-only install.
+        if (method != "agent-platform" && key->isEmpty()) { finishAgySetup({{"source", "none"}}); return; }
+        const auto auth = agyAuthSettings(method, {}, {}, *key);
+        const auto id = command("agy.setup.verify", {{"auth", auth}}, [this, auth](const QJsonValue &result) {
             const auto checked = result.toObject().value("verification").toString();
-            const auto safe = QStringList{"verified", "rejected", "invalid"}.contains(checked) ? checked : QStringLiteral("unavailable");
-            applyAgyCredential(*key, safe);
+            if (checked == "verified") applyAgyCredential(auth, checked);
+            else finishAgySetup({}, checked == "rejected" || checked == "invalid" ? checked : QStringLiteral("unavailable"));
         });
         if (id < 0) finishAgySetup({}, "unavailable");
     });
 }
 
-void HostController::applyAgyCredential(const QString &key, const QString &verification) {
-    const auto id = command("agy.setup.apply", {{"key", key.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(key)}}, [this, verification](const QJsonValue &result) {
-        finishAgySetup(result.toObject(), result.isObject() ? verification : QStringLiteral("applyError"));
+void HostController::applyAgyCredential(const QJsonValue &auth, const QString &verification) {
+    const auto id = command("agy.setup.apply", {{"auth", auth}}, [this, auth, verification](const QJsonValue &result) {
+        if (!result.isObject()) { finishAgySetup({}, "applyError"); return; }
+        persistAgyAuth(auth.toObject());
+        finishAgySetup(result.toObject(), verification);
     });
     if (id < 0) finishAgySetup({}, "applyError");
 }
 
-void HostController::saveAgyCredential(const QString &key) {
-    if (!canEditAgySetup()) return;
+void HostController::saveAgyCredential(const QString &key, const QString &authMethod, const QString &project, const QString &location) {
+    if (!canEditAgySetup() || m_agySetup.value("loginInProgress").toBool()) return;
+    const auto method = authMethod.isEmpty() ? QStringLiteral("gemini-api-key") : authMethod;
     const auto candidate = normalizedAgyKey(key);
-    if (candidate.isEmpty()) { finishAgySetup({}, "invalid"); return; }
+    if ((method != "gemini-api-key" && method != "agent-platform") || (!key.isEmpty() && candidate.isEmpty()) ||
+        (candidate.isEmpty() && (method == "gemini-api-key" || project.trimmed().isEmpty() || location.trimmed().isEmpty()))) {
+        finishAgySetup({}, "invalid"); return;
+    }
+    const auto auth = agyAuthSettings(method, project, location, candidate);
     beginAgySetup();
-    const auto id = command("agy.setup.verify", {{"key", candidate}}, [this, candidate](const QJsonValue &result) {
+    const auto id = command("agy.setup.verify", {{"auth", auth}}, [this, auth, candidate](const QJsonValue &result) {
         const auto checked = result.toObject().value("verification").toString();
         if (checked != "verified") {
             finishAgySetup({}, checked == "rejected" ? "candidateRejected" : checked == "invalid" ? "invalid" : "unavailable");
             return;
         }
-        runAgyVault(AgyVaultAction::Save, candidate, [this](auto saved) {
+        runAgyVault(candidate.isEmpty() ? AgyVaultAction::Remove : AgyVaultAction::Save, candidate, [this, auth](auto saved) {
             if (!saved) { finishAgySetup({}, "vaultError"); return; }
-            applyAgyCredential(*saved, "verified");
+            applyAgyCredential(auth, "verified");
         });
     });
     if (id < 0) finishAgySetup({}, "unavailable");
 }
 
+void HostController::finishAgyLogin(const QJsonValue &result) {
+    const auto info = result.toObject();
+    if (info.value("verification").toString() == "verified" && agyGoogleMethod(info.value("authMethod").toString())) {
+        persistAgyAuth(info);
+        finishAgySetup(info, "verified");
+    } else finishAgySetup({}, m_agySetup.value("loginCancelling").toBool() ? "cancelled" : "loginFailed");
+}
+
+void HostController::startAgyLogin(const QString &method, const QString &project, const QString &location) {
+    if (!canEditAgySetup() || m_agySetup.value("loginInProgress").toBool()) return;
+    if (!agyGoogleMethod(method) || (method == "oauth-business" && (project.trimmed().isEmpty() || location.trimmed().isEmpty()))) {
+        finishAgySetup({}, "invalid"); return;
+    }
+    m_agySetup.insert("loginInProgress", true);
+    m_agySetup.insert("loginMode", method);
+    beginAgySetup();
+    const auto id = command("agy.setup.login.start", {{"auth", agyAuthSettings(method, project, location)}}, [this, method](const QJsonValue &result) {
+        const auto info = result.toObject();
+        const QUrl url(info.value("authorizationUrl").toString(), QUrl::StrictMode);
+        if (method == "oauth-personal" && !m_agySetup.value("loginCancelling").toBool() && url.isValid() &&
+                url.scheme() == "https" && url.host() == "accounts.google.com" && url.userInfo().isEmpty()) {
+            finishAgySetup(info, "loginRequired");
+        } else finishAgyLogin(result);
+    });
+    if (id < 0) finishAgySetup({}, "loginFailed");
+}
+
+void HostController::completeAgyLogin(const QString &code) {
+    if (!canEditAgySetup() || m_agySetup.value("verification").toString() != "loginRequired") return;
+    beginAgySetup();
+    const auto id = command("agy.setup.login.complete", {{"code", code}}, [this](const QJsonValue &result) { finishAgyLogin(result); });
+    if (id < 0) finishAgySetup({}, "loginFailed");
+}
+
+void HostController::cancelAgyLogin() {
+    if (!m_bridgeReady || !m_agySetup.value("loginInProgress").toBool() || m_agySetup.value("loginCancelling").toBool()) return;
+    m_agySetup.insert("loginCancelling", true);
+    const bool wasBusy = m_agySetup.value("busy").toBool();
+    beginAgySetup();
+    const auto id = command("agy.setup.login.cancel", {}, [this, wasBusy](const QJsonValue &result) {
+        if (!wasBusy) finishAgySetup({}, result.isObject() ? "cancelled" : "loginFailed");
+        // An in-flight start/complete owns its result, including success that won the race.
+    });
+    if (id < 0) finishAgySetup({}, "loginFailed");
+}
+
 void HostController::retryAgySetup() {
     const auto source = m_agySetup.value("source").toString();
-    if (!m_bridgeReady || m_exiting || m_qaMode || m_agySetup.value("busy").toBool()) return;
-    if (source == "vaultError" || source == "none" || m_agySetup.value("verification").toString() == "applyError") { loadAgyCredential(); return; }
-    if (source != "saved" && source != "environment") return;
+    if (!m_bridgeReady || m_exiting || m_qaMode || m_agySetup.value("busy").toBool() || m_agySetup.value("loginInProgress").toBool()) return;
+    const auto savedMethod = m_settings.value("agyAuthMethod").toString();
+    if (source != "environment" && !agyGoogleMethod(savedMethod) &&
+        (source != "saved" || m_agySetup.value("verification").toString() == "applyError")) { loadAgyCredential(); return; }
     beginAgySetup();
     const auto id = command("agy.setup.retry", {}, [this](const QJsonValue &result) {
         const auto verified = result.toObject().value("verification").toString();
@@ -1152,13 +1265,18 @@ void HostController::retryAgySetup() {
 }
 
 void HostController::removeAgyCredential() {
-    if (!canEditAgySetup()) return;
+    if (!canEditAgySetup() || m_agySetup.value("loginInProgress").toBool()) return;
     const auto source = m_agySetup.value("source").toString();
     if (source != "saved" && source != "vaultError") return;
     beginAgySetup();
-    runAgyVault(AgyVaultAction::Remove, {}, [this](auto removed) {
+    if (source == "saved" && agyGoogleMethod(m_agySetup.value("authMethod").toString())) {
+        const auto id = command("agy.setup.logout", {}, [this](const QJsonValue &result) {
+            finishAgySetup(result.toObject(), result.isObject() ? "removed" : "applyError");
+        });
+        if (id < 0) finishAgySetup({}, "applyError");
+    } else runAgyVault(AgyVaultAction::Remove, {}, [this](auto removed) {
         if (!removed) { finishAgySetup({}, "vaultError"); return; }
-        applyAgyCredential({}, "removed");
+        applyAgyCredential(QJsonValue(QJsonValue::Null), "removed");
     });
 }
 

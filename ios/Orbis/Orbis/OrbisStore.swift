@@ -33,7 +33,7 @@ enum HomePresentation: Equatable {
 func legacyAgentDialKinds(supported: [String]?, launchable: [String]?) -> [String]? {
     guard supported != nil || launchable != nil else { return nil }
     let announced = Set((supported ?? []) + (launchable ?? []))
-    return ["codex", "claude", "dsh", "pi"].filter(announced.contains)
+    return ["codex", "claude", "dsh", "pi", "agy"].filter(announced.contains)
 }
 
 /// 首页同步进度。首版快照发布前由列表区域显示，发布后由连接胶囊显示，不再占用单独一行。

@@ -7,7 +7,7 @@ import Testing
 @Suite("Provider dial handle ownership and detents")
 struct ProviderDialGeometryTests {
     @Test func legacyRosterFiltersOnlyWhenTheHostAdvertisesCapabilities() {
-        #expect(legacyAgentDialKinds(supported: ["pi", "codexDesktop"], launchable: ["codex", "hermes"]) == ["codex", "pi"])
+        #expect(legacyAgentDialKinds(supported: ["pi", "codexDesktop", "agy"], launchable: ["codex", "hermes"]) == ["codex", "pi", "agy"])
         #expect(legacyAgentDialKinds(supported: [], launchable: []) == [])
         #expect(legacyAgentDialKinds(supported: nil, launchable: nil) == nil)
     }

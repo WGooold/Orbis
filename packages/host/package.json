@@ -17,6 +17,7 @@
     "pair": "node --enable-source-maps dist/cli.js pair"
   },
   "dependencies": {
+    "@napi-rs/keyring": "^1.3.0",
     "@openclaw/gateway-client": "2026.11.5",
     "@openclaw/gateway-protocol": "2026.11.5",
     "@opencode/client": "2.3.2",
@@ -25,6 +26,7 @@
     "@orbis/runtime-bridge": "0.1.0",
     "diff": "9.0.0",
     "eventsource-parser": "^3.0.6",
+    "ffi-rs": "^1.3.2",
     "marked": "18.0.5",
     "qrcode": "^1.5.4",
     "quickjs-emscripten": "0.31.0",

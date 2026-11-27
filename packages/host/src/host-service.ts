@@ -31,6 +31,7 @@ import { LiveActivityPublisher } from "./live-activity.js";
 import { AgyRuntime, AGY_KIND, isAgyId } from "./agy-runtime.js";
 import { sharedViewBackend } from "./shared-session-view.js";
 import { KeyedLanes, ProviderLaunchGate, providerGroup } from "./launch-lanes.js";
+import type { ProviderSummary } from "./provider-manager.js";
 
 import {
   E2eError,
@@ -79,6 +80,7 @@ import {
   type AgentDisableReview,
   type AgentKind,
   type HostProviderSummary,
+  type SubscriptionQuota,
   type AgentSessionSummary,
   type CodexDesktopAttach,
   type CodexLaunchMode,
@@ -304,6 +306,10 @@ export type HostServiceOptions = {
   opencodeConnection?: OpenCodeServiceConnection | false;
   createAgyRuntime?: (hostId: string) => AgyRuntime;
   agyCredentialConfigured?: () => boolean;
+  agyCredentialVerified?: () => boolean;
+  agyAuthenticationMethod?: () => "managed_account" | "native_oauth" | "api_key" | "none" | "unknown";
+  agySubscriptionSupported?: () => boolean;
+  queryAgySubscription?: () => Promise<SubscriptionQuota>;
   createOpenCodeConnection?: () => OpenCodeServiceConnection;
   /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
   ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
@@ -684,14 +690,28 @@ export class HostService {
     const generation = ++this.#providerFactsGeneration;
     const modelEpoch = this.#agentStateRegistry.currentModelEpoch();
     const kinds: AgentKind[] = ["pi", "codex", "dsh", "claude"];
+    if (this.#options.createAgyRuntime) kinds.push("agy");
     if (this.#backends.some(backend => backend.kind === "codexDesktop")) kinds.push("codexDesktop");
-    const providers = await Promise.all(kinds.filter(kind => !this.#disabledSources.has(kind) || (kind === "codex" && !this.#disabledSources.has("codexDesktop"))).map(async (kind) => {
+    const providers = await Promise.all(kinds.filter(kind => kind === "agy" || !this.#disabledSources.has(kind) || (kind === "codex" && !this.#disabledSources.has("codexDesktop"))).map(async (kind) => {
       const switching = providerSwitchingFact(this.#providerChanging, kind);
       const empty = { agentKind: kind, availability: "unknown" as const, current: null, profiles: null, authenticated: null, switching,
         usage: { availability: "unknown" as const, detail: null } };
       let summary: HostProviderSummary = empty;
       try {
-        if (manager && kind !== "codexDesktop") summary = await manager.publicState(kind, { switching,
+        if (kind === "agy" && this.#options.createAgyRuntime) {
+          const authenticated = this.#options.agyCredentialConfigured?.() === true;
+          summary = { agentKind: "agy", availability: "ready", current: authenticated ? "antigravity" : null,
+            profiles: [{ id: "antigravity", name: "Antigravity", enabled: authenticated, globalDefault: true,
+              mode: "exclusive", official: true, subscriptionSupported: this.#options.agySubscriptionSupported?.() === true }],
+            profilesTruncated: false, authenticated, authentication: { availability: authenticated ? "ready" : "unknown",
+              method: this.#options.agyAuthenticationMethod?.() ?? (authenticated ? "unknown" : "none"),
+              credentialPresent: authenticated, bindingReady: authenticated,
+              verified: this.#options.agyCredentialVerified?.() === true ? true : null },
+            switching, usage: { availability: "unknown", detail: null },
+            health: { availability: "unknown", circuits: [] },
+            routing: { availability: "unknown", enabled: null, running: null, failoverEnabled: null, queue: [],
+              activeRequests: null, lastProviderId: null, totalRequests: null, successfulRequests: null, failoverCount: null, requests: [] } };
+        } else if (manager && kind !== "codexDesktop") summary = await manager.publicState(kind, { switching,
           ...(this.#options.providerUsage === undefined ? {} : { usage: this.#options.providerUsage }) });
       } catch (error) {
         if (this.#providerFactsClosing) return empty;
@@ -1166,8 +1186,12 @@ export class HostService {
     return this.#providerFactsClosing ? Promise.resolve() : this.#managedAgents.restart(AGY_KIND);
   }
 
-  retryAgyConnection(): void {
-    if (!this.#providerFactsClosing && this.#managedAgents.lease(AGY_KIND)?.isCurrent()) void this.#agy?.start();
+  async retryAgyConnection(): Promise<boolean | undefined> {
+    const runtime = this.#agy;
+    const lease = this.#managedAgents.lease(AGY_KIND);
+    if (this.#providerFactsClosing || !lease?.isCurrent() || !runtime) return undefined;
+    await runtime.start();
+    return lease.isCurrent() && this.#agy === runtime && runtime.isReady();
   }
 
   #startManagedAgy(lease: AgentLifecycleLease): void {
@@ -2038,10 +2062,32 @@ export class HostService {
 
   async #handleProviderRequest(deviceId: string, request: ProviderRequest): Promise<void> {
     const send = (message: object): void => this.#sendJsonToDevice(deviceId, message, "ctl");
-    const current = this.#providerCurrent(request.kind);
+    const current = request.kind === "agy"
+      ? () => !this.#providerFactsClosing && !this.#serviceClosed && this.#options.createAgyRuntime !== undefined &&
+        this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_AGY) === true
+      : this.#providerCurrent(request.kind);
     const requireCurrent = () => { if (!current()) throw new ProviderError("此 Agent 未启用"); };
     try {
       requireCurrent();
+      if (request.kind === "agy") {
+        if (request.type === "provider.list") {
+          const authenticated = this.#options.agyCredentialConfigured?.() === true;
+          const providers: ProviderSummary[] = [{ id: "antigravity", kind: "agy", name: "Antigravity", enabled: authenticated,
+            mode: "exclusive", globalDefault: true, official: true,
+            subscriptionSupported: this.#options.agySubscriptionSupported?.() === true }];
+          send(providerResult(request, providers));
+          return;
+        }
+        if (request.type !== "provider.subscription" || request.id !== "antigravity") throw new ProviderError("Antigravity 供应商请求无效");
+        if (this.#options.agySubscriptionSupported?.() !== true || !this.#options.queryAgySubscription) {
+          throw new ProviderError("当前 Antigravity 认证不提供 Google 账号订阅配额");
+        }
+        const quota = await this.#options.queryAgySubscription();
+        requireCurrent();
+        send({ type: "provider.subscription.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId,
+          kind: request.kind, id: request.id, quota });
+        return;
+      }
       const manager = this.#options.providers;
       if (!manager) throw new ProviderError("此 Host 尚未启用供应商管理，请升级并重启 Host");
       if (request.type === "provider.subscription") {
@@ -3074,7 +3120,9 @@ export class HostService {
       return;
     }
     if (!((message.type === "provider.list" || message.type === "provider.switch" || message.type === "provider.subscription")
-      ? this.#providerCurrent(message.kind)() : this.#allowsDeviceRequest(deviceId, message))) { this.#rejectAgentFeature(deviceId, message as { requestId?: unknown; commandId?: unknown }); return; }
+      ? message.kind === "agy" ? !this.#providerFactsClosing && !this.#serviceClosed && this.#options.createAgyRuntime !== undefined &&
+        this.#deviceFeatures.get(deviceId)?.has(DEVICE_FEATURE_AGY) === true
+        : this.#providerCurrent(message.kind)() : this.#allowsDeviceRequest(deviceId, message))) { this.#rejectAgentFeature(deviceId, message as { requestId?: unknown; commandId?: unknown }); return; }
     if (message.type === "device.version.report") {
       const device = findActiveDeviceRecord(this.#store, deviceId);
       if (device !== undefined && (device.appVersion !== message.version || device.appVersionCode !== message.versionCode)) {

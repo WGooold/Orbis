@@ -19,6 +19,7 @@ const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const commands = new DesktopCommandLanes();
 let closing = false;
 let installCancellation = 0;
+let agyLoginCancellation = 0;
 input.on("line", line => {
   if (line.length > 65_536) return;
   try {
@@ -26,7 +27,13 @@ input.on("line", line => {
     const method = Number.isSafeInteger(parsed.id) ? parsed.method : undefined;
     if (method === "shutdown") runtime.cancelAgySetup();
     if (method === "shutdown" || method === "cancelInstall") { installCancellation += 1; runtime.cancelInstall(); }
-    // Cancellation must bypass the serialized command queue: npm may still be running.
+    // Cancellation must bypass the serialized queue; a native browser sign-in may be waiting on the user.
+    if (method === "agy.setup.login.cancel") {
+      agyLoginCancellation += 1;
+      const { id } = parsed;
+      void runtime.cancelAgyLogin().then(() => output({ id, result: {} }), () => output({ id, error: "Antigravity CLI 设置失败" }));
+      return;
+    }
     if (method === "cancelInstall") {
       const request = JSON.parse(line) as { id: number };
       output({ id: request.id, result: {} });
@@ -34,6 +41,7 @@ input.on("line", line => {
     }
   } catch { /* Normal request handling reports malformed JSON below. */ }
   const cancellationAtEnqueue = installCancellation;
+  const agyCancellationAtEnqueue = agyLoginCancellation;
   let lane = "";
   try { const parsed = JSON.parse(line) as { method?: unknown }; if (typeof parsed.method === "string") lane = parsed.method; }
   catch { /* Malformed JSON is reported in order with the other exclusive commands. */ }
@@ -43,6 +51,7 @@ input.on("line", line => {
       request = JSON.parse(line) as typeof request;
       if (!request || !Number.isSafeInteger(request.id) || typeof request.method !== "string") throw new Error("Invalid request");
       if (["installAll", "activateInstallation", "updateAgent"].includes(request.method) && cancellationAtEnqueue !== installCancellation) throw new Error("安装已取消");
+      if (request.method.startsWith("agy.setup.login.") && agyCancellationAtEnqueue !== agyLoginCancellation) throw new Error("登录已取消");
       const p = request.params ?? {};
       let result: unknown = {};
       switch (request.method) {
@@ -51,6 +60,7 @@ input.on("line", line => {
           dshEnabled: p.dshEnabled === true, codexEnabled: p.codexEnabled === true,
           piIntegrationEnabled: p.piIntegrationEnabled === true, legacyClaudeEnabled: p.legacyClaudeEnabled === true,
           ...(typeof p.legacyKimiEnabled === "boolean" ? { kimiCodeEnabled: p.legacyKimiEnabled } : {}),
+          ...(p.agyAuth && typeof p.agyAuth === "object" ? { agyAuth: p.agyAuth } : {}),
           ...(p.agentEntryOverrides && typeof p.agentEntryOverrides === "object"
             ? { agentEntryOverrides: p.agentEntryOverrides as NonNullable<DesktopSettings["agentEntryOverrides"]> } : {}),
         }); break;
@@ -70,8 +80,11 @@ input.on("line", line => {
           result = await runtime.setAgentEnablement(choice, scoped === true); break;
         }
         case "agent.enablement.writeBatch": result = await runtime.setAgentEnablementBatch(p); break;
-        case "agy.setup.verify": result = await runtime.checkAgyCredential(p.key); break;
-        case "agy.setup.apply": result = await runtime.applyAgyCredential(p.key); break;
+        case "agy.setup.verify": result = await runtime.checkAgyCredential(Object.hasOwn(p, "auth") ? p.auth : p.key); break;
+        case "agy.setup.apply": result = await runtime.applyAgyCredential(Object.hasOwn(p, "auth") ? p.auth : p.key); break;
+        case "agy.setup.login.start": result = await runtime.startAgyLogin(p.auth); break;
+        case "agy.setup.login.complete": result = await runtime.completeAgyLogin(p.code); break;
+        case "agy.setup.logout": result = await runtime.logoutAgyGoogle(); break;
         case "agy.setup.retry": result = await runtime.retryAgyCredential(); break;
         case "openclaw.save": result = await runtime.saveOpenClaw(p.url, p.token, p.access, p.clearToken, p.auth); break;
         case "openclaw.config.read": result = await runtime.readOpenClawNativeSettings(); break;

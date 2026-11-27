@@ -2335,76 +2335,177 @@ ApplicationWindow {
                                         readonly property string source: host.agySetup.source || ""
                                         readonly property string verification: host.agySetup.verification || ""
                                         readonly property bool checking: host.agySetup.busy === true
+                                        readonly property bool signingIn: host.agySetup.loginInProgress === true
+                                        readonly property string appliedMethod: host.agySetup.authMethod || "oauth-personal"
+                                        readonly property bool appliedGoogle: appliedMethod === "oauth-personal" || appliedMethod === "oauth-business"
                                         readonly property bool editable: source === "saved" || source === "none" || source === "vaultError"
                                         readonly property var backend: window.backendFor("agy")
+                                        property string selectedAuthMethod: appliedMethod
+                                        onAppliedMethodChanged: selectedAuthMethod = appliedMethod
+                                        onSelectedAuthMethodChanged: if (agyCandidate) agyCandidate.clear()
+                                        readonly property bool googleLogin: selectedAuthMethod === "oauth-personal" || selectedAuthMethod === "oauth-business"
+                                        readonly property bool businessLogin: selectedAuthMethod === "oauth-business"
+                                        readonly property bool projectAuth: businessLogin || selectedAuthMethod === "agent-platform"
                                         readonly property string credentialMessage: {
                                             switch (verification) {
-                                            case "invalid": return "请输入有效的 Gemini API Key。"
-                                            case "candidateRejected": return "Google 未接受这个密钥；原配置未更改。"
-                                            case "rejected": return "Google 未接受已配置的密钥，请检查权限或更换。"
-                                            case "unavailable": return "暂时无法验证密钥，请检查网络后重试。"
+                                            case "invalid": return "认证设置无效，请检查输入。"
+                                            case "candidateRejected": return "Google 未接受这组凭据；原配置未更改。"
+                                            case "rejected": return "Google 未接受已配置的凭据，请检查权限或更换。"
+                                            case "unavailable": return "暂时无法验证，请检查网络后重试。"
                                             case "vaultError": return "无法访问系统凭据存储，请授权后重试。"
-                                            case "applyError": return "无法应用密钥，请重试。"
+                                            case "applyError": return "无法应用认证设置，请重试。"
+                                            case "loginFailed": return "Antigravity CLI 未确认登录，请重试。"
+                                            case "loginRequired": return "登录后粘贴 Antigravity 页面显示的代码。"
                                             default: return ""
                                             }
                                         }
-                                        onVisibleChanged: if (!visible && agyCandidate) agyCandidate.clear()
-                                        Heading { text: "接入" }
+                                        onVisibleChanged: if (!visible) {
+                                            if (agyCandidate) agyCandidate.clear()
+                                            if (agyLoginCode) agyLoginCode.clear()
+                                            if (signingIn) host.cancelAgyLogin()
+                                        }
                                         RowLayout {
-                                            Layout.fillWidth: true; spacing: 8
-                                            Label { text: "Gemini API Key"; color: Theme.inkMuted; Layout.fillWidth: true }
-                                            Label {
-                                                objectName: "agyCredentialStatus"
-                                                text: agyCard.checking ? "处理中" : agyCard.source === "environment" ? "由环境变量配置"
-                                                    : agyCard.source === "vaultError" ? "无法读取" : agyCard.source !== "saved" ? "未配置"
-                                                    : agyCard.verification === "rejected" ? "需更换" : agyCard.verification === "verified" ? "已验证" : "已保存"
-                                                color: agyCard.verification === "verified" ? Theme.success : Theme.inkMuted
-                                            }
-                                            InfoHintButton { id: agyHelp; Accessible.name: "Antigravity CLI 接入帮助" }
+                                            Heading { text: "接入" }
+                                            Item { Layout.fillWidth: true }
+                                            InfoHintButton { id: agyHelp; Accessible.name: "Antigravity 认证说明" }
                                         }
                                         Hint {
-                                            visible: agyHelp.expanded; Layout.fillWidth: true
-                                            text: "使用 Google AI Studio 的 Gemini API Key，不使用个人 Google AI 订阅。密钥只保存在这台电脑。需要 Antigravity CLI " + (host.agySetup.requiredVersion || "") + "。"
+                                            visible: agyHelp.expanded
+                                            text: "Google 账号使用订阅；可在官方 CLI 输入 /usage 查看用量。API Key 和 Agent Platform 按用量计费。"
+                                            Layout.fillWidth: true
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true; spacing: 8
+                                            Label { text: "登录方式"; color: Theme.inkMuted; Layout.fillWidth: true }
+                                            Label {
+                                                objectName: "agyCredentialStatus"
+                                                text: agyCard.signingIn && host.agySetup.loginMode === "oauth-business" ? "请在浏览器中登录" : agyCard.checking ? "处理中" : agyCard.source === "environment" ? "由环境变量配置"
+                                                    : agyCard.source === "saved" ? (agyCard.appliedGoogle ? "已登录 Google" : "已保存") : agyCard.source === "vaultError" ? "凭据不可用" : "未配置"
+                                                color: agyCard.checking ? Theme.accent : agyCard.source === "saved" ? Theme.success : Theme.inkMuted
+                                            }
+                                        }
+                                        SoftComboBox {
+                                            id: agyAuthMethod
+                                            objectName: "agyAuthMethod"
+                                            Layout.fillWidth: true
+                                            enabled: agyCard.editable && !agyCard.checking && !agyCard.signingIn
+                                            textRole: "label"; valueRole: "value"
+                                            model: [
+                                                { value: "oauth-personal", label: "Google 账号" },
+                                                { value: "oauth-business", label: "Gemini Enterprise" },
+                                                { value: "gemini-api-key", label: "Gemini API Key" },
+                                                { value: "agent-platform", label: "Agent Platform / Vertex AI" }
+                                            ]
+                                            currentIndex: Math.max(0, indexOfValue(agyCard.selectedAuthMethod))
+                                            onActivated: agyCard.selectedAuthMethod = currentValue
                                         }
                                         Field {
                                             id: agyCandidate; objectName: "agyApiKey"
-                                            visible: agyCard.editable; enabled: !agyCard.checking && host.bridgeReady
-                                            Layout.fillWidth: true; marksProviderDirty: false
+                                            visible: !agyCard.googleLogin && (agyCard.selectedAuthMethod === "gemini-api-key" || agyCard.selectedAuthMethod === "agent-platform")
+                                            enabled: agyCard.editable && !agyCard.checking && !agyCard.signingIn && host.bridgeReady
+                                            Layout.fillWidth: true
                                             maximumLength: 512; echoMode: TextInput.Password
                                             inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                                            placeholderText: agyCard.source === "saved" ? "输入新密钥" : "输入密钥"
-                                            Accessible.name: "Gemini API Key"
+                                            placeholderText: agyCard.selectedAuthMethod === "agent-platform" ? "API Key（使用 ADC 时留空）" : "Gemini API Key"
+                                            Accessible.name: placeholderText
+                                            marksProviderDirty: false
+                                        }
+                                        Field {
+                                            id: agyProject; objectName: "agyGcpProject"
+                                            visible: agyCard.projectAuth
+                                            enabled: agyCard.editable && !agyCard.checking && !agyCard.signingIn && host.bridgeReady
+                                            Layout.fillWidth: true; maximumLength: 256
+                                            text: host.agySetup.gcpProject || ""
+                                            marksProviderDirty: false
+                                            placeholderText: "GCP project"
+                                            Accessible.name: "GCP project"
+                                        }
+                                        Field {
+                                            id: agyLocation; objectName: "agyGcpLocation"
+                                            visible: agyCard.projectAuth
+                                            enabled: agyCard.editable && !agyCard.checking && !agyCard.signingIn && host.bridgeReady
+                                            Layout.fillWidth: true; maximumLength: 128
+                                            text: host.agySetup.gcpLocation || ""
+                                            marksProviderDirty: false
+                                            placeholderText: "GCP location"
+                                            Accessible.name: "GCP location"
+                                        }
+                                        Hint {
+                                            visible: !agyCard.signingIn && agyCard.googleLogin && window.agentEnabled("agy")
+                                            text: "停用 Antigravity CLI 后可重新登录。"
+                                            Layout.fillWidth: true
                                         }
                                         Flow {
                                             Layout.fillWidth: true; spacing: 8
                                             ActionButton {
+                                                objectName: "agyGoogleLogin"
+                                                visible: agyCard.googleLogin && !agyCard.signingIn
+                                                text: "使用 Google 登录"
+                                                enabled: agyCard.editable && host.bridgeReady && host.agySetup.installed === true && !agyCard.checking && !window.agentEnabled("agy")
+                                                    && (!agyCard.businessLogin || (agyProject.text.trim() && agyLocation.text.trim()))
+                                                onClicked: host.startAgyLogin(agyCard.selectedAuthMethod, agyProject.text, agyLocation.text)
+                                            }
+                                            ActionButton {
                                                 objectName: "agySaveCredential"
-                                                visible: agyCard.editable
-                                                text: agyCard.source === "saved" ? "验证并更换" : "验证并保存"
-                                                enabled: host.bridgeReady && !agyCard.checking && agyCandidate.text.trim().length > 0
+                                                visible: !agyCard.googleLogin && !agyCard.signingIn
+                                                text: "验证并保存"
+                                                enabled: agyCard.editable && host.bridgeReady && !agyCard.checking
+                                                    && (agyCandidate.text.trim().length > 0 || (agyCard.projectAuth && agyProject.text.trim() && agyLocation.text.trim()))
                                                 onClicked: {
                                                     if (agyCard.source === "saved" || agyCard.source === "vaultError") {
                                                         agyCredentialDialog.removing = false
                                                         agyCredentialDialog.open()
-                                                    } else { host.saveAgyCredential(agyCandidate.text); agyCandidate.clear() }
+                                                    } else {
+                                                        host.saveAgyCredential(agyCandidate.text, agyCard.selectedAuthMethod, agyProject.text, agyLocation.text)
+                                                        agyCandidate.clear()
+                                                    }
                                                 }
                                             }
                                             ActionButton {
                                                 objectName: "agyRetryCredential"; text: "重新检测"
+                                                visible: !agyCard.signingIn && (agyCard.source !== "none" || agyCard.verification !== "")
                                                 enabled: host.bridgeReady && !agyCard.checking
                                                 onClicked: host.retryAgySetup()
                                             }
                                             ActionButton {
-                                                objectName: "agyRemoveCredential"; text: "移除密钥"
-                                                visible: agyCard.source === "saved" || agyCard.source === "vaultError"
-                                                enabled: host.bridgeReady && !agyCard.checking
+                                                objectName: "agyRemoveCredential"; text: agyCard.appliedGoogle && agyCard.source === "saved" ? "退出 Google 账号" : "移除凭据"
+                                                visible: !agyCard.signingIn && (agyCard.source === "saved" || agyCard.source === "vaultError")
+                                                enabled: host.bridgeReady && !agyCard.checking && (!agyCard.appliedGoogle || !window.agentEnabled("agy"))
                                                 onClicked: { agyCredentialDialog.removing = true; agyCredentialDialog.open() }
                                             }
                                             ActionButton {
                                                 objectName: "agyGetKey"; text: "获取密钥"
-                                                visible: agyCard.editable && (agyCard.source !== "saved" || agyHelp.expanded)
+                                                visible: agyCard.selectedAuthMethod === "gemini-api-key" && agyCard.editable && (agyCard.source !== "saved" || agyHelp.expanded)
                                                 onClicked: Qt.openUrlExternally("https://aistudio.google.com/apikey")
                                             }
+                                            ActionButton {
+                                                objectName: "agyOpenLoginUrl"; text: "打开 Google 登录"
+                                                visible: agyCard.verification === "loginRequired" && !!host.agySetup.authorizationUrl
+                                                onClicked: Qt.openUrlExternally(host.agySetup.authorizationUrl)
+                                            }
+                                            ActionButton {
+                                                objectName: "agyCompleteLogin"
+                                                visible: agyCard.verification === "loginRequired" && agyCard.selectedAuthMethod === "oauth-personal"
+                                                text: "完成登录"
+                                                enabled: host.bridgeReady && !agyCard.checking && agyLoginCode.text.trim().length > 0
+                                                onClicked: { host.completeAgyLogin(agyLoginCode.text); agyLoginCode.clear() }
+                                            }
+                                            ActionButton {
+                                                objectName: "agyCancelLogin"; text: "取消登录"
+                                                visible: agyCard.signingIn
+                                                enabled: host.bridgeReady && !host.agySetup.loginCancelling
+                                                onClicked: { agyLoginCode.clear(); host.cancelAgyLogin() }
+                                            }
+                                        }
+                                        Field {
+                                            id: agyLoginCode; objectName: "agyLoginCode"
+                                            visible: agyCard.verification === "loginRequired" && agyCard.selectedAuthMethod === "oauth-personal"
+                                            enabled: host.bridgeReady && !agyCard.checking
+                                            Layout.fillWidth: true; maximumLength: 2048; echoMode: TextInput.Password
+                                            inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                                            marksProviderDirty: false
+                                            placeholderText: "登录代码"
+                                            Accessible.name: "Google 登录代码"
                                         }
                                         Hint { visible: agyCard.credentialMessage.length > 0; Layout.fillWidth: true; color: Theme.warning; text: agyCard.credentialMessage }
                                         RowLayout {
@@ -2423,23 +2524,19 @@ ApplicationWindow {
                                                 onClicked: Qt.openUrlExternally("https://antigravity.google/docs/getting-started/#antigravity-cli")
                                             }
                                         }
-                                        Hint {
-                                            visible: text.length > 0 && text !== "starting" && !agyCard.credentialMessage.length
-                                            text: agyCard.backend?.reason || ""
-                                            Layout.fillWidth: true
-                                        }
                                         SoftDialog {
                                             id: agyCredentialDialog
                                             property bool removing: false
                                             parent: Overlay.overlay
                                             anchors.centerIn: parent
                                             modal: true; width: 410
-                                            title: removing ? "移除密钥？" : "更换密钥？"
-                                            Hint { width: parent.width; text: "Antigravity CLI 会断开，已保存的会话会保留。" }
+                                            title: removing ? (agyCard.appliedGoogle ? "退出 Google 账号？" : "移除凭据？") : "更换认证？"
+                                            Hint { width: parent.width; text: agyCredentialDialog.removing && agyCard.appliedMethod === "oauth-business"
+                                                ? "本机 CLI 共用此登录；已保存的会话会保留。" : "Antigravity CLI 会断开，已保存的会话会保留。" }
                                             footer: SoftDialogButtons {
                                                 ActionButton { text: "取消"; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
                                                 ActionButton {
-                                                    text: agyCredentialDialog.removing ? "移除" : "验证并更换"
+                                                    text: agyCredentialDialog.removing ? "移除" : "验证并保存"
                                                     danger: agyCredentialDialog.removing
                                                     DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
                                                 }
@@ -2448,7 +2545,7 @@ ApplicationWindow {
                                             }
                                             onAccepted: {
                                                 if (removing) host.removeAgyCredential()
-                                                else host.saveAgyCredential(agyCandidate.text)
+                                                else host.saveAgyCredential(agyCandidate.text, agyCard.selectedAuthMethod, agyProject.text, agyLocation.text)
                                                 agyCandidate.clear()
                                             }
                                         }

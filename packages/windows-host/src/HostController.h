@@ -241,7 +241,10 @@ public:
     Q_INVOKABLE void confirmAgentReviews();
     Q_INVOKABLE void dismissAgentReviews();
     Q_INVOKABLE void refreshAgentChoices();
-    Q_INVOKABLE void saveAgyCredential(const QString &key);
+    Q_INVOKABLE void saveAgyCredential(const QString &key, const QString &authMethod = QString(), const QString &project = QString(), const QString &location = QString());
+    Q_INVOKABLE void startAgyLogin(const QString &authMethod, const QString &project = QString(), const QString &location = QString());
+    Q_INVOKABLE void completeAgyLogin(const QString &code);
+    Q_INVOKABLE void cancelAgyLogin();
     Q_INVOKABLE void retryAgySetup();
     Q_INVOKABLE void removeAgyCredential();
     Q_INVOKABLE void saveOpenClaw(const QString &url, const QString &token, const QString &access = {}, bool clearToken = false, const QString &auth = {});
@@ -374,7 +377,10 @@ private:
     using AgyVault = std::function<std::optional<QString>(AgyVaultAction, const QString &, const QString &)>;
     void runAgyVault(AgyVaultAction action, const QString &key, std::function<void(std::optional<QString>)> done);
     void loadAgyCredential();
-    void applyAgyCredential(const QString &key, const QString &verification = QString());
+    void applyAgyCredential(const QJsonValue &auth, const QString &verification = QString());
+    QJsonObject agyAuthSettings(const QString &authMethod, const QString &project, const QString &location, const QString &key = {}) const;
+    void persistAgyAuth(const QJsonObject &config);
+    void finishAgyLogin(const QJsonValue &result);
     void finishAgySetup(const QJsonObject &info, const QString &verification = QString());
     void beginAgySetup();
     bool canEditAgySetup() const;
