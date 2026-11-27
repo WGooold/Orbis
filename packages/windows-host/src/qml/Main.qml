@@ -500,7 +500,15 @@ ApplicationWindow {
         return ({codex: "codexDesktop", codexDesktop: "codex", dsh: "dshDesktop", dshDesktop: "dsh"})[kind] || ""
     }
     function variantSymbol(kind) {
-        return ["codex", "dsh"].includes(kind) ? "terminal" : ["codexDesktop", "dshDesktop"].includes(kind) ? "computer" : ""
+        switch (kind) {
+        case "codex":
+        case "dsh": return "terminal"
+        case "codexDesktop":
+        case "dshDesktop":
+        case "kimiCodeDesktop": return "computer"
+        case "kimiCode": return "web"
+        default: return ""
+        }
     }
     function runningSessionsFor(kind) {
         return window.hostOnline && window.agentEnabled(kind) && host.activeAgentSessions[kind]?.total > 0
@@ -912,11 +920,14 @@ ApplicationWindow {
         property int iconSize: 9
         readonly property string variant: window.variantSymbol(kind)
         readonly property color strokeColor: active ? Theme.agent(kind) : Theme.inkFaint
-        readonly property string svgBody: variant === "terminal"
-            ? '<path d="M5 7l5 5-5 5M12 18h7"/>'
-            : variant === "computer"
-                ? '<rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/>'
-                : ""
+        readonly property string svgBody: {
+            switch (variant) {
+            case "terminal": return '<path d="M5 7l5 5-5 5M12 18h7"/>'
+            case "computer": return '<rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/>'
+            case "web": return '<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>'
+            default: return ""
+            }
+        }
         visible: svgBody.length > 0
         implicitWidth: 15
         implicitHeight: 15
