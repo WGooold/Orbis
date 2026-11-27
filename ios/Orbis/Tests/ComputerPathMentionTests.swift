@@ -24,4 +24,12 @@ struct ComputerPathMentionTests {
         #expect(ComputerPathMention.insertion(path: "/repo/file", into: "@", replacing: NSRange(location: 0, length: 1))?.text == "@/repo/file ")
         #expect(ComputerPathMention.insertion(path: "/repo/file", into: "x", replacing: NSRange(location: 0, length: 1)) == nil)
     }
+
+    // CHAT-PATH-02: a selected directory is inserted as the same literal path reference as a file.
+    @Test func insertsComputerDirectoryPathAtTrigger() {
+        let folder = ComputerPathMention.insertion(path: "/repo/packages/shared", into: "检查 @ 后续",
+                                                   replacing: NSRange(location: 3, length: 1))
+        #expect(folder?.text == "检查 @/repo/packages/shared 后续")
+        #expect(folder?.caretUTF16 == 25)
+    }
 }

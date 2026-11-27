@@ -1999,6 +1999,8 @@ internal object LocalizationCatalog {
         "选择此 Codex 会话的模型" to "Select the model for this Codex session",
         "选择电脑" to "Select computer",
         "选择电脑上的文件" to "Select a file on the computer",
+        "选择电脑上的文件或目录" to "Select a file or folder on the computer",
+        "引用目录 {0}" to "Reference folder {0}",
         "选择这个目录" to "Choose this directory",
         "通知状态待核对" to "Notification status needs checking",
     )

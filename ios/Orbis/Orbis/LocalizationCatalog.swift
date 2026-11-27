@@ -1957,6 +1957,8 @@ enum LocalizationCatalog {
         "选择此 Codex 会话的模型": "Select the model for this Codex session",
         "选择电脑": "Select computer",
         "选择电脑上的文件": "Select a file on the computer",
+        "选择电脑上的文件或目录": "Select a file or folder on the computer",
+        "引用目录 {0}": "Reference folder {0}",
         "选择这个目录": "Choose this directory",
         "通知状态待核对": "Notification status needs checking",
         "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。": "Some sessions cannot be closed remotely, or commands are not ready. Try again shortly.",

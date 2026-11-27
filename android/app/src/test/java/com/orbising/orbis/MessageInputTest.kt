@@ -28,6 +28,14 @@ class MessageInputTest {
         assertNull(insertComputerPathMention("x", triggerIndex = 0, path = "/repo/file"))
     }
 
+    // CHAT-PATH-02: a selected directory uses the same literal @path draft format as a file.
+    @Test fun computerDirectoryMentionPreservesTheSelectedFolderPath() {
+        assertEquals(
+            ComputerPathMentionInsertion("检查 @/repo/packages/shared 后续", 25),
+            insertComputerPathMention("检查 @ 后续", triggerIndex = 3, path = "/repo/packages/shared"),
+        )
+    }
+
     @Test fun slashAndProtocolLengthAreRejectedBeforeAnyFirstSessionCreation() {
         assertEquals("斜杠命令只能从当前会话提供的菜单中选择",userMessageInputError("  /help"))
         assertNotNull(userMessageInputError("x".repeat(100_001)))

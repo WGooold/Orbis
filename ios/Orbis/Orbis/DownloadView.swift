@@ -159,6 +159,10 @@ struct DownloadBrowserView: View {
     private var selectedFiles: [BrowseEntry] {
         (directory?.entries ?? []).filter { !$0.isDir && selected.contains($0.id) }
     }
+    private var selectedReference: BrowseEntry? {
+        guard onSelectPath != nil else { return selectedFiles.first }
+        return directory?.entries.first { selected.contains($0.id) }
+    }
     private var trimmedPath: String { pathInput.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var sortedEntries: [BrowseEntry] {
         (directory?.entries ?? []).sorted {
@@ -173,12 +177,14 @@ struct DownloadBrowserView: View {
     }
 
     private func downloadSelected() {
-        guard owner.connection == .secured, directory?.loading == false, directory?.error == nil, !selectedFiles.isEmpty else { return }
-        if let onSelectPath, let entry = selectedFiles.first {
+        guard owner.connection == .secured, directory?.loading == false, directory?.error == nil else { return }
+        if let onSelectPath {
+            guard let entry = selectedReference else { return }
             onSelectPath(remoteBrowsePath(parent: directory?.path, name: entry.name))
             onDismiss()
             return
         }
+        guard !selectedFiles.isEmpty else { return }
         for entry in selectedFiles {
             owner.transfers.download(path: remoteBrowsePath(parent: directory?.path, name: entry.name))
         }
@@ -187,33 +193,50 @@ struct DownloadBrowserView: View {
 
     @ViewBuilder
     private func browserEntry(_ entry: BrowseEntry) -> some View {
-        let isSelected = !entry.isDir && selected.contains(entry.id)
-        OrbisMotionButton {
-            if entry.isDir {
-                selected.removeAll()
-                owner.browseDownloadDirectory(remoteBrowsePath(parent: directory?.path, name: entry.name), rememberPath: remembersPath)
-            } else if onSelectPath != nil {
-                selected = selected.contains(entry.id) ? [] : [entry.id]
-            } else if !selected.insert(entry.id).inserted {
-                selected.remove(entry.id)
-            }
-        } label: {
-            HStack(spacing: 10) {
-                OrbisActionSymbol(systemName: entry.isDir ? "folder" : "doc")
-                    .foregroundStyle(OrbisPalette(scheme).accent)
-                Group {
-                    if entry.isDir { Text(entry.name).lineLimit(1) }
-                    else { FileNameText(name: entry.name) }
+        let isSelected = selected.contains(entry.id)
+        HStack(spacing: 8) {
+            OrbisMotionButton {
+                if entry.isDir {
+                    selected.removeAll()
+                    owner.browseDownloadDirectory(remoteBrowsePath(parent: directory?.path, name: entry.name), rememberPath: remembersPath)
+                } else if onSelectPath != nil {
+                    selected = selected.contains(entry.id) ? [] : [entry.id]
+                } else if !selected.insert(entry.id).inserted {
+                    selected.remove(entry.id)
                 }
-                .font(.orbisBody())
-                .frame(maxWidth: .infinity, alignment: .leading)
-                if entry.isDir { OrbisActionSymbol(systemName: "chevron.right").imageScale(.small) }
-                else { OrbisActionSymbol(systemName: "checkmark.circle.fill").opacity(isSelected ? 1 : 0) }
+            } label: {
+                HStack(spacing: 10) {
+                    OrbisActionSymbol(systemName: entry.isDir ? "folder" : "doc")
+                        .foregroundStyle(OrbisPalette(scheme).accent)
+                    Group {
+                        if entry.isDir { Text(entry.name).lineLimit(1) }
+                        else { FileNameText(name: entry.name) }
+                    }
+                    .font(.orbisBody())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if entry.isDir { OrbisActionSymbol(systemName: "chevron.right").imageScale(.small) }
+                    else { OrbisActionSymbol(systemName: "checkmark.circle.fill").opacity(isSelected ? 1 : 0) }
+                }
+                .padding(14)
+                .frame(minHeight: 52)
             }
-            .padding(14)
-            .frame(minHeight: 52)
+            .buttonStyle(NeuButtonStyle(selected: isSelected))
+
+            if entry.isDir, onSelectPath != nil {
+                // CHAT-PATH-02: the trailing action references this folder; the main row still navigates into it.
+                OrbisMotionButton {
+                    selected = isSelected ? [] : [entry.id]
+                } label: {
+                    OrbisActionSymbol(systemName: isSelected ? "checkmark.circle.fill" : "plus.circle")
+                        .frame(width: 44, height: 52)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(NeuButtonStyle(selected: isSelected))
+                .accessibilityIdentifier("reference-directory-\(entry.name)")
+                .accessibilityLabel(L10n.tr("引用目录 {0}", entry.name))
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
         }
-        .buttonStyle(NeuButtonStyle(selected: isSelected))
     }
 
     private var pathEntry: some View {
@@ -262,14 +285,15 @@ struct DownloadBrowserView: View {
             symbol: onSelectPath != nil ? "checkmark" : "arrow.down.to.line",
             action: downloadSelected
         )
-        .disabled(selectedFiles.isEmpty || directory?.loading != false || directory?.error != nil || owner.connection != .secured)
+        .disabled((onSelectPath != nil ? selectedReference == nil : selectedFiles.isEmpty) || directory?.loading != false || directory?.error != nil || owner.connection != .secured)
         .padding(.horizontal, 24)
         .padding(.bottom, 24)
     }
 
     var body: some View {
         VStack(spacing: 16) {
-            OrbisPageHeader(title: L10n.tr("浏览电脑文件"), closes: true, back: onDismiss) { EmptyView() }
+            OrbisPageHeader(title: L10n.tr(onSelectPath != nil ? "选择电脑上的文件或目录" : "浏览电脑文件"),
+                            closes: true, back: onDismiss) { EmptyView() }
             pathEntry
             browserContents
             downloadFooter

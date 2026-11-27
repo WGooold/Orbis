@@ -27,6 +27,48 @@ import org.junit.Test
 class DownloadFileBrowserInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
+    // CHAT-PATH-02: a directory has a separate reference action, while tapping its row still navigates.
+    @Test fun computerPathPickerCanReferenceDirectoryWithoutNavigatingIntoIt() {
+        val state = RemoteState(
+            connection = RelayConnection.ONLINE,
+            e2eReady = true,
+            hostId = "host",
+            sessionBrowse = SessionBrowseState(
+                requestId = "root",
+                path = "D:\\",
+                entries = listOf(SessionBrowseEntry("Projects", isDir = true, hasSessions = false)),
+                isLoading = false,
+                forDownload = true,
+            ),
+        )
+        val navigated = mutableListOf<String>()
+        val referenced = mutableListOf<String>()
+        compose.setContent {
+            OrbisTheme {
+                DownloadFileSheet(
+                    state = state,
+                    onDismiss = {},
+                    onBrowse = {},
+                    onBrowseInto = { navigated += it },
+                    onBrowseUp = {},
+                    onDownload = {},
+                    onOpen = {},
+                    onSelectPath = referenced::add,
+                )
+            }
+        }
+
+        val referenceDirectory = compose.onNodeWithTag("remote-directory-reference-Projects")
+        referenceDirectory.assertExists()
+        referenceDirectory.performClick()
+        referenceDirectory.assertIsSelected()
+        compose.onNodeWithText("引用到输入框").assertIsEnabled().performClick()
+        compose.runOnIdle {
+            assertTrue(navigated.isEmpty())
+            assertEquals(listOf("D:\\Projects"), referenced)
+        }
+    }
+
     @Test fun downloadPickerJumpsToEnteredPathAndDownloadsMultipleSelectedFiles() {
         val state = mutableStateOf(RemoteState(connection = RelayConnection.ONLINE, e2eReady = true))
         val downloads = mutableListOf<String>()

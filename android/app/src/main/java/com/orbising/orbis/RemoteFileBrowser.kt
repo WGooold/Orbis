@@ -68,7 +68,9 @@ internal fun RemoteDirectoryBrowser(
     modifier: Modifier = Modifier,
     showFiles: Boolean = false,
     selectedFiles: Set<String> = emptySet(),
+    selectedDirectories: Set<String> = emptySet(),
     onSelectFile: (String) -> Unit = {},
+    onSelectDirectory: ((String) -> Unit)? = null,
 ) {
     val loading = browse?.isLoading == true
     val enabled = connected && !loading
@@ -133,7 +135,7 @@ internal fun RemoteDirectoryBrowser(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(entries, key = SessionBrowseEntry::name) { entry ->
-                val selected = !entry.isDir && entry.name in selectedFiles
+                val selected = if (entry.isDir) entry.name in selectedDirectories else entry.name in selectedFiles
                 NeumorphSurface(
                     onClick = { if (entry.isDir) onBrowseInto(entry.name) else onSelectFile(entry.name) },
                     enabled = enabled && browse?.error == null,
@@ -155,6 +157,17 @@ internal fun RemoteDirectoryBrowser(
                         else FileNameText(entry.name, Modifier.weight(1f))
                         if (entry.isDir && entry.hasSessions) {
                             Text(L10n.tr("有历史"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                        if (entry.isDir && onSelectDirectory != null) {
+                            // CHAT-PATH-02: reference a folder without changing the row's tap-to-enter behavior.
+                            NeumorphIconButton(
+                                onClick = { onSelectDirectory?.invoke(entry.name) },
+                                icon = if (selected) OrbisSymbols.CheckCircle else OrbisSymbols.Add,
+                                contentDescription = L10n.tr("引用目录 {0}", entry.name),
+                                modifier = Modifier.testTag("remote-directory-reference-${entry.name}")
+                                    .semantics { this.selected = selected },
+                                compact = true,
+                            )
                         }
                         if (entry.isDir || showFiles) {
                             Icon(
@@ -186,7 +199,11 @@ internal fun DownloadFileSheet(
     val browse = state.sessionBrowse?.takeIf { it.forDownload }
     val connected = state.connection == RelayConnection.ONLINE && state.e2eReady
     var selectedFiles by remember(browse?.path) { mutableStateOf(emptySet<String>()) }
+    var selectedDirectory by remember(browse?.path) { mutableStateOf<String?>(null) }
     val selected = browse?.entries.orEmpty().filter { !it.isDir && it.name in selectedFiles }
+    val selectedFolder = browse?.entries?.firstOrNull { it.isDir && it.name == selectedDirectory }
+    val selectedName = selectedFolder?.name ?: selected.singleOrNull()?.name
+    val selectedPath = selectedName?.let { remoteBrowsePath(browse?.path, it) }
     // FILE-BROWSER-02: the opening (or reconnection), not a changed saved path, triggers a read.
     LaunchedEffect(connected, state.hostId) {
         if (connected) onOpen()
@@ -202,22 +219,27 @@ internal fun DownloadFileSheet(
         },
     ) {
         val confirmDownload = sheetCloseAction {
-            if (selected.isNotEmpty()) {
-                if (onSelectPath != null) {
-                    selected.singleOrNull()?.let { onSelectPath(remoteBrowsePath(browse?.path, it.name)) }
-                } else {
-                    selected.forEach { onDownload(remoteBrowsePath(browse?.path, it.name)) }
-                }
+            if (onSelectPath != null) {
+                selectedPath?.let(onSelectPath)
+                if (selectedPath != null) onDismiss()
+            } else if (selected.isNotEmpty()) {
+                selected.forEach { onDownload(remoteBrowsePath(browse?.path, it.name)) }
                 onDismiss()
             }
         }
         val toggleFile = { name: String ->
+            selectedDirectory = null
             selectedFiles = when {
                 name in selectedFiles -> selectedFiles - name
                 onSelectPath != null -> setOf(name)
                 else -> selectedFiles + name
             }
         }
+        val toggleDirectory = { name: String ->
+            selectedFiles = emptySet()
+            selectedDirectory = if (selectedDirectory == name) null else name
+        }
+        val canCommitSelection = if (onSelectPath != null) selectedPath != null else selected.isNotEmpty()
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f, fill = false)) {
             // A compact window cannot fit browser chrome plus a fixed footer. Keep them in one
             // scroll range and retain the browser's bounded lazy list within it.
@@ -225,18 +247,20 @@ internal fun DownloadFileSheet(
             Column(Modifier.fillMaxWidth().then(if (scrollAll) Modifier.verticalScroll(rememberScrollState()) else Modifier)
                 .padding(horizontal = RemoteUi.PagePadding).padding(bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(L10n.tr("选择电脑上的文件"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(L10n.tr(if (onSelectPath != null) "选择电脑上的文件或目录" else "选择电脑上的文件"),
+                    style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 RemoteDirectoryBrowser(
                     browse, connected, onBrowse, onBrowseInto, onBrowseUp,
                     modifier = Modifier.fillMaxWidth().then(if (scrollAll) Modifier.heightIn(max = 320.dp) else Modifier.weight(1f, fill = false)),
-                    showFiles = true, selectedFiles = selectedFiles, onSelectFile = toggleFile,
+                    showFiles = true, selectedFiles = selectedFiles, selectedDirectories = setOfNotNull(selectedFolder?.name),
+                    onSelectFile = toggleFile, onSelectDirectory = toggleDirectory.takeIf { onSelectPath != null },
                 )
-                FileNameText(selected.singleOrNull()?.name.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
+                FileNameText(selectedName.orEmpty(), Modifier.fillMaxWidth().height(24.dp),
                     style = MaterialTheme.typography.labelSmall)
                 NeumorphActionButton(
                     text = if (onSelectPath != null) L10n.tr("引用到输入框") else if (selected.size <= 1) L10n.tr("下载到手机") else L10n.tr("下载所选 {0} 个文件", selected.size),
                     icon = if (onSelectPath != null) OrbisSymbols.Check else OrbisSymbols.Download, modifier = Modifier.fillMaxWidth(),
-                    enabled = connected && browse?.isLoading == false && browse.error == null && selected.isNotEmpty(),
+                    enabled = connected && browse?.isLoading == false && browse.error == null && canCommitSelection,
                     onClick = confirmDownload,
                 )
             }

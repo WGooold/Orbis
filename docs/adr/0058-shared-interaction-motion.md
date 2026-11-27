@@ -20,6 +20,8 @@
 
 FILE-BROWSER-02 自动验证：Android 定向单测 6 项、模拟器 6 项通过；Swift 定向测试 3 项、iOS 模拟器 UI 1 项通过。测试见 [Android 单测](../../android/app/src/test/java/com/orbising/orbis/RemoteFileBrowserTest.kt)、[Android 模拟器](../../android/app/src/androidTest/java/com/orbising/orbis/DownloadFileBrowserInstrumentedTest.kt)、[Swift 状态测试](../../ios/Orbis/Tests/StoreTests.swift) 与 [iOS UI 测试](../../ios/Orbis/UITests/OrbisUITests.swift)。构建、首次失败和复验保存在 [.artifacts/file-browser-resume-20261121](../../.artifacts/file-browser-resume-20261121/)；未部署，未发布共享 QA 候选，真机待用户验证。
 
+目录引用（CHAT-PATH-02）：聊天输入框的 `@` 浏览器用目录行右侧的按钮选择并引用电脑目录；点击目录行仍进入该目录。文件下载页继续只选择文件并保留独立的最近下载目录。引用复用现有文字路径，不改变浏览或下载协议。回归见 [Swift 路径用例](../../ios/Orbis/Tests/ComputerPathMentionTests.swift)、[Android 路径用例](../../android/app/src/test/java/com/orbising/orbis/MessageInputTest.kt) 和 [Android 浏览器用例](../../android/app/src/androidTest/java/com/orbising/orbis/DownloadFileBrowserInstrumentedTest.kt)。
+
 | 场景 | 作用 |
 | --- | --- |
 | SC01 | 首页单卡关闭 |
