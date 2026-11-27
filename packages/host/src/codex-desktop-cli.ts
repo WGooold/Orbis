@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import { promisify } from "node:util";
 
 import { macDesktopCliCandidates, type MacDesktopCliOptions } from "./codex-desktop-macos.js";
@@ -11,7 +11,7 @@ export type DesktopCli = { command: string; prefixArgs: string[] };
 export type DesktopCliCandidate = DesktopCli & { source: string };
 export type WindowsDesktopDiscovery = {
   ancestorExecutable?: string;
-  packages: readonly { installLocation: string; packageFullName: string }[];
+  packages: readonly { installLocation: string; packageFullName: string; signatureKind?: string }[];
 };
 export type WindowsDesktopCliOptions = {
   requireCodeModeHost?: boolean;
@@ -25,6 +25,7 @@ export type WindowsDesktopCliOptions = {
 
 const run = promisify(execFile);
 const PACKAGE_NAME = /^OpenAI\.Codex_(\d+(?:\.\d+)*)_(x64|arm64)__/iu;
+const STORE_PACKAGE = /^OpenAI\.Codex_\d+(?:\.\d+){3}_(?:x64|arm64)__2p2nqsd0c76g0$/iu;
 const COMPANIONS = ["codex-code-mode-host.exe", "codex-command-runner.exe", "codex-windows-sandbox-setup.exe"];
 
 /** Read the launching GUI first; never choose another user's newer AppX package. */
@@ -32,6 +33,7 @@ export async function discoverWindowsDesktop(parentPid = process.ppid): Promise<
   if (process.platform !== "win32") return { packages: [] };
   const script = [
     "$ErrorActionPreference = 'Stop'",
+    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new()",
     "$ancestor = $null",
     "$next = " + Math.max(0, Math.trunc(parentPid)),
     "$seen = @{}",
@@ -43,7 +45,7 @@ export async function discoverWindowsDesktop(parentPid = process.ppid): Promise<
     "  $next = [int]$p.ParentProcessId",
     "}",
     "$packages = @()",
-    "if ($null -eq $ancestor) { $packages = @(Get-AppxPackage -Name OpenAI.Codex | ForEach-Object { @{ installLocation = [string]$_.InstallLocation; packageFullName = [string]$_.PackageFullName } }) }",
+    "if ($null -eq $ancestor) { $packages = @(Get-AppxPackage -Name OpenAI.Codex | ForEach-Object { @{ installLocation = [string]$_.InstallLocation; packageFullName = [string]$_.PackageFullName; signatureKind = [string]$_.SignatureKind } }) }",
     "@{ ancestorExecutable = $ancestor; packages = $packages } | ConvertTo-Json -Compress",
   ].join("\n");
   const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
@@ -53,7 +55,8 @@ export async function discoverWindowsDesktop(parentPid = process.ppid): Promise<
     if (item === null || typeof item !== "object") return [];
     const entry = item as Record<string, unknown>;
     return typeof entry.installLocation === "string" && typeof entry.packageFullName === "string"
-      ? [{ installLocation: entry.installLocation, packageFullName: entry.packageFullName }] : [];
+      ? [{ installLocation: entry.installLocation, packageFullName: entry.packageFullName,
+        ...(typeof entry.signatureKind === "string" ? { signatureKind: entry.signatureKind } : {}) }] : [];
   }) : [];
   return { packages, ...(typeof value.ancestorExecutable === "string" ? { ancestorExecutable: value.ancestorExecutable } : {}) };
 }
@@ -75,6 +78,19 @@ export function desktopInstallationCli(discovery: WindowsDesktopDiscovery, versi
   // The current-user registration is authoritative only if it identifies one installation.
   const unique = [...new Map(installed.map(entry => [resolve(entry.installLocation).toLowerCase(), entry])).values()];
   return unique.length === 1 ? join(unique[0]!.installLocation, "app", "resources", "codex.exe") : undefined;
+}
+
+/** A path that merely looks like WindowsApps is not proof that it belongs to the registered app. */
+export async function isRegisteredWindowsDesktopCli(value: string): Promise<boolean> {
+  const path = value.trim().replaceAll("/", "\\");
+  if (!/^[a-z]:\\/iu.test(path) || !/\\app\\resources\\codex\.exe$/iu.test(path)) return false;
+  try {
+    const { packages } = await discoverWindowsDesktop(0);
+    const [installed] = packages;
+    return packages.length === 1 && installed?.signatureKind === "Store" && STORE_PACKAGE.test(installed.packageFullName)
+      && /^[a-z]:[\\/]/iu.test(installed.installLocation)
+      && path.toLowerCase() === win32.join(installed.installLocation, "app", "resources", "codex.exe").toLowerCase();
+  } catch { return false; }
 }
 
 function isFile(path: string): boolean {
@@ -153,8 +169,9 @@ export async function windowsDesktopCliCandidates(env: NodeJS.ProcessEnv, option
     const key = resolve(command).toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
+    // During Host's next-launch preflight there is no wrapper to recurse into via the inherited override.
     if (/^codex-launcher(?:\.exe)?$/iu.test(basename(command))
-      || env.CODEX_CLI_PATH && key === resolve(env.CODEX_CLI_PATH).toLowerCase()) {
+      || options.parentPid !== 0 && env.CODEX_CLI_PATH && key === resolve(env.CODEX_CLI_PATH).toLowerCase()) {
       log("忽略指回包装器的 CLI：" + command);
       return;
     }

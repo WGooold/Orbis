@@ -4,12 +4,28 @@
  */
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { testDirectory } from "../../../scripts/test-fixtures/temp-directory.js";
 import { diagnoseNoEndpoint } from "./codex-desktop-integration.js";
 
+vi.mock("./codex-desktop-cli.js", async original => ({ ...await original<typeof import("./codex-desktop-cli.js")>(),
+  isRegisteredWindowsDesktopCli: vi.fn(),
+}));
+import { isRegisteredWindowsDesktopCli } from "./codex-desktop-cli.js";
+
 describe("why a running Codex Desktop is not attached", () => {
+  // CODEX-DESKTOP-WIN-ENTRY-01: a verified Store CLI is adoptable without user registry edits.
+  it("asks to reopen through Orbis rather than remove the official Windows override", async () => {
+    const cli = "C:\\Program Files\\WindowsApps\\Codex\\app\\resources\\codex.exe";
+    vi.mocked(isRegisteredWindowsDesktopCli).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const diagnose = () => diagnoseNoEndpoint("endpoint.json", { platform: "win32", starting: () => false, readEntry: async () => cli });
+    const first = await diagnose();
+    expect(first?.status).toMatchObject({ state: "closed", reason: expect.stringContaining("从托盘完全退出 Codex，再从 Orbis 打开") });
+    expect(first?.status.reason).not.toContain("移除");
+    expect((await diagnose())?.status).toMatchObject({ state: "error", reason: expect.stringContaining("移除该设置") });
+  });
+
   it("names a starting wrapper, a foreign entry, a missing entry and a Desktop opened before the entry", async () => {
     const endpoint = join(await testDirectory(join(tmpdir(), "orbis-desktop-diagnosis-")), "codex-desktop-endpoint.json");
     const ours = "/Users/x/Library/Application Support/Orbis/wrapper/bin/codex-launcher";

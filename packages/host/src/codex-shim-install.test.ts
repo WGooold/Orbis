@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const registry = vi.hoisted(() => ({ exec: vi.fn() }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFile: registry.exec }));
 import { codexDesktopEntryAgentPath, renderCodexDesktopEntryAgent } from "./codex-desktop-macos.js";
-import { installCodexShim, codexShimStatus, ensureCodexShimWinsPath, codexDesktopEntryDecision, looksLikeOrbisWrapperEntry, suspendCodexDesktopEntry, ensureCodexDesktopEntry } from "./codex-shim-install.js";
+import { installCodexShim, codexShimStatus, ensureCodexShimWinsPath, codexDesktopEntryDecision, looksLikeOrbisWrapperEntry, suspendCodexDesktopEntry, ensureCodexDesktopEntry, removeCodexDesktopEntry } from "./codex-shim-install.js";
 
 let root: string | undefined;
 afterEach(async () => {
@@ -44,35 +44,166 @@ it.runIf(process.platform === "darwin")("suspends only the matching macOS overri
   await expect(readFile(agent)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-describe("Codex user PATH registration", () => {
-  it.runIf(process.platform === "win32")("never treats an unreadable user entry as permission to replace it", async () => {
-    registry.exec.mockImplementation((_program, _args, _options, callback: (error: Error) => void) => callback(new Error("access denied")));
-    expect(await ensureCodexDesktopEntry("C:\\Local\\Orbis\\wrapper\\bin\\codex-launcher.exe")).toMatchObject({ state: "foreign", detail: expect.stringContaining("无法读取") });
-    expect(registry.exec).toHaveBeenCalledOnce();
-  });
+const windowsLauncher = "C:\\Users\\x\\AppData\\Local\\Orbis\\wrapper\\bin\\codex-launcher.exe";
+const packageFullName = "OpenAI.Codex_26.1111.2228.0_x64__2p2nqsd0c76g0";
+const installLocation = `C:\\Program Files\\WindowsApps\\${packageFullName}`;
+const bundledCli = `${installLocation}\\app\\resources\\codex.exe`;
 
-  it.runIf(process.platform === "win32")("removes only an owned Desktop entry and verifies the registry result", async () => {
-    let current: string | null = "C:\\Local\\Orbis\\wrapper\\bin\\codex-launcher.exe";
-    registry.exec.mockImplementation((_program, args: string[], _options, callback: (error: Error | null, result: { stdout: string; stderr: string }) => void) => {
-      if (args[0] === "delete") current = null;
-      callback(null, { stdout: JSON.stringify({ value: current }), stderr: "" });
-    });
+async function onWindows<T>(run: () => Promise<T>): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try { return await run(); }
+  finally { Object.defineProperty(process, "platform", descriptor); }
+}
+
+type RegistryEntry = { raw: string; value: string; kind: "String" | "ExpandString" };
+type RegistryChange = { action: "register"; expected: RegistryEntry | null; launcher: string; preserveOriginal: boolean }
+  | { action: "suspend"; expected: RegistryEntry };
+const stringEntry = (value: string): RegistryEntry => ({ raw: value, value, kind: "String" });
+const installedPackage = { installLocation, packageFullName, signatureKind: "Store" };
+
+// The PowerShell boundary is mocked: keep the current entry and backup separate, with a compare-before-write check.
+function mockWindowsEntry(initial: RegistryEntry | null, packages: readonly typeof installedPackage[] | Error = [installedPackage]) {
+  const writes: RegistryChange[] = [];
+  const state = { entry: initial, backup: null as RegistryEntry | null, onDiscovery: undefined as (() => void) | undefined,
+    readError: undefined as Error | undefined, writeError: undefined as Error | undefined };
+  registry.exec.mockImplementation((program: string, args: string[], _options, callback: (error: Error | null, result?: { stdout: string; stderr: string }) => void) => {
+    expect(program).toBe("powershell.exe");
+    const script = args.includes("-EncodedCommand") ? Buffer.from(args.at(-1)!, "base64").toString("utf16le") : args.at(-1)!;
+    const reply = (data?: object) => callback(null, { stdout: data === undefined ? "" : JSON.stringify(data), stderr: "" });
+    if (script.includes("Get-AppxPackage")) {
+      state.onDiscovery?.();
+      if (packages instanceof Error) return callback(packages);
+      return reply({ packages });
+    }
+    if (script.includes("SendMessageTimeout")) return reply();
+    // Allow the reproduction to run against the v0.1.25 user-entry reader as well.
+    if (script.includes("GetEnvironmentVariable('CODEX_CLI_PATH', 'User')")) return reply({ value: state.entry?.value ?? null });
+    const encoded = /\$requestJson = '([A-Za-z0-9+/=]+)'/u.exec(script)?.[1];
+    if (encoded === undefined) throw new Error("Unexpected PowerShell request");
+    const request = JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) as { action: "read" } | RegistryChange;
+    if (request.action === "read") return state.readError === undefined ? reply({ entry: state.entry }) : callback(state.readError);
+    if (state.entry?.raw !== request.expected?.raw || state.entry?.kind !== request.expected?.kind) return callback(new Error("CODEX_CLI_PATH changed"));
+    if (state.writeError !== undefined) return callback(state.writeError);
+    writes.push(request);
+    if (request.action === "register") {
+      if (request.preserveOriginal) state.backup = state.entry;
+      else if (!state.entry?.value.trim()) state.backup = null;
+      state.entry = stringEntry(request.launcher);
+    } else {
+      state.entry = state.backup;
+      state.backup = null;
+    }
+    return reply();
+  });
+  return { state, writes };
+}
+
+// CODEX-DESKTOP-WIN-ENTRY-01: the installed MSIX's own CLI is not a third-party override.
+describe("Windows Codex Desktop user entry", () => {
+  it("registers the wrapper when CODEX_CLI_PATH names the installed Codex Store CLI", () => onWindows(async () => {
+    const native = stringEntry(bundledCli);
+    const { state, writes } = mockWindowsEntry(native);
+    await expect(ensureCodexDesktopEntry(windowsLauncher)).resolves.toMatchObject({ state: "enabled" });
+    expect(state.entry).toEqual(stringEntry(windowsLauncher));
+    expect(writes).toEqual([{ action: "register", expected: native, launcher: windowsLauncher, preserveOriginal: true }]);
+    // Reopening Codex must not overwrite the saved value with the wrapper itself.
+    await expect(ensureCodexDesktopEntry(windowsLauncher)).resolves.toMatchObject({ state: "enabled" });
+    expect(writes).toHaveLength(1);
+    await suspendCodexDesktopEntry(windowsLauncher);
+    expect(state.entry).toEqual(native);
+    expect(state.backup).toBeNull();
     await suspendCodexDesktopEntry();
-    expect(current).toBeNull();
-    expect(registry.exec.mock.calls.filter(call => call[1][0] === "delete")).toHaveLength(1);
-    registry.exec.mockClear();
-    current = "C:\\custom\\codex.exe";
+    expect(writes.map(write => write.action)).toEqual(["register", "suspend"]);
+  }));
+
+  it("restores the unexpanded Store path and its type when uninstalling after a launcher move", () => onWindows(async () => {
+    const native = { raw: bundledCli.replace("C:\\Program Files", "%ProgramFiles%"), value: bundledCli.toLowerCase(), kind: "ExpandString" } as const;
+    const { state, writes } = mockWindowsEntry(native);
+    const moved = windowsLauncher.replace("Users\\x", "Users\\y");
+    await expect(ensureCodexDesktopEntry(windowsLauncher)).resolves.toMatchObject({ state: "enabled" });
+    await expect(ensureCodexDesktopEntry(moved)).resolves.toMatchObject({ state: "enabled" });
+    expect(state.entry?.value).toBe(moved);
+    expect(writes[1]).toMatchObject({ preserveOriginal: false });
+    await removeCodexDesktopEntry();
+    expect(state.entry).toEqual(native);
+  }));
+
+  it.each([
+    ["a custom executable", "C:\\custom\\codex.exe", [installedPackage]],
+    ["an unregistered package path", bundledCli.replace("26.1111.2228.0", "26.1023.1.0"), [installedPackage]],
+    ["a same-name package from a different publisher", bundledCli, [{ ...installedPackage, packageFullName: packageFullName.replace("2p2nqsd0c76g0", "anotherpublisher") }]],
+    ["a development-signed registration", bundledCli, [{ ...installedPackage, signatureKind: "Developer" }]],
+    ["ambiguous registered packages", bundledCli, [installedPackage, { ...installedPackage, installLocation: installLocation.replace("C:", "D:") }]],
+    ["unavailable package discovery", bundledCli, new Error("AppX unavailable")],
+  ] as const)("leaves %s untouched", (_name, path, packages) => onWindows(async () => {
+    const native = stringEntry(path);
+    const { state, writes } = mockWindowsEntry(native, packages);
+    await expect(ensureCodexDesktopEntry(windowsLauncher)).resolves.toMatchObject({ state: "foreign" });
+    expect(writes).toEqual([]);
+    expect(state.entry).toEqual(native);
+  }));
+
+  it("leaves the native value in place when its original registry value cannot be preserved", () => onWindows(async () => {
+    const native = stringEntry(bundledCli);
+    const { state, writes } = mockWindowsEntry(native);
+    state.writeError = new Error("cannot save original value");
+    await expect(ensureCodexDesktopEntry(windowsLauncher)).resolves.toMatchObject({ state: "foreign" });
+    expect(writes).toEqual([]);
+    expect(state.entry).toEqual(native);
+  }));
+
+  it("does not replace a newly edited override after checking the Store registration", () => onWindows(async () => {
+    const { state, writes } = mockWindowsEntry(stringEntry(bundledCli));
+    const custom = stringEntry("C:\\custom\\codex.exe");
+    state.onDiscovery = () => { state.entry = custom; };
+    await expect(ensureCodexDesktopEntry(windowsLauncher)).resolves.toMatchObject({ state: "foreign" });
+    expect(writes).toEqual([]);
+    expect(state.entry).toEqual(custom);
+  }));
+
+  it("never treats an unreadable user entry as permission to replace it", () => onWindows(async () => {
+    const { state } = mockWindowsEntry(stringEntry(bundledCli));
+    state.readError = new Error("access denied");
+    await expect(ensureCodexDesktopEntry(windowsLauncher)).resolves.toMatchObject({ state: "foreign", detail: expect.stringContaining("无法读取") });
+    expect(registry.exec).toHaveBeenCalledOnce();
+  }));
+
+  it("still registers and removes the wrapper normally when the user value was absent", () => onWindows(async () => {
+    const { state, writes } = mockWindowsEntry(null);
+    await expect(ensureCodexDesktopEntry(windowsLauncher)).resolves.toMatchObject({ state: "enabled" });
+    expect(writes[0]).toMatchObject({ expected: null, preserveOriginal: false });
+    expect(state.entry?.value).toBe(windowsLauncher);
+    await removeCodexDesktopEntry();
+    expect(state.entry).toBeNull();
+  }));
+
+  it("removes only an owned Desktop entry and verifies the registry result", () => onWindows(async () => {
+    const { state, writes } = mockWindowsEntry(stringEntry(windowsLauncher));
+    state.writeError = new Error("CODEX_CLI_PATH write did not take effect");
+    await expect(suspendCodexDesktopEntry()).rejects.toThrow("did not take effect");
+    expect(state.entry?.value).toBe(windowsLauncher);
+    state.writeError = undefined;
+    await suspendCodexDesktopEntry();
+    expect(state.entry).toBeNull();
+    expect(writes.map(write => write.action)).toEqual(["suspend"]);
+
+    state.entry = stringEntry("C:\\custom\\codex.exe");
     await expect(suspendCodexDesktopEntry()).rejects.toThrow("不是 Orbis");
-    expect(current).toBe("C:\\custom\\codex.exe");
-    expect(registry.exec.mock.calls.filter(call => call[1][0] === "delete")).toHaveLength(0);
+    expect(state.entry.value).toBe("C:\\custom\\codex.exe");
     // CODEX-DESKTOP-BOOTSTRAP-01: an installer may suspend only the entry it tried to repair.
-    current = "C:\\Local\\Orbis\\other-wrapper\\bin\\codex-launcher.exe";
-    await expect(suspendCodexDesktopEntry("C:\\Local\\Orbis\\wrapper\\bin\\codex-launcher.exe")).rejects.toThrow("已改变");
-    expect(registry.exec.mock.calls.filter(call => call[1][0] === "delete")).toHaveLength(0);
-    registry.exec.mockReset().mockImplementation((_program, _args, _options, callback: (error: Error) => void) => callback(new Error("access denied")));
+    state.entry = stringEntry(windowsLauncher.replace("wrapper", "other-wrapper"));
+    await expect(suspendCodexDesktopEntry(windowsLauncher)).rejects.toThrow("已改变");
+    expect(writes).toHaveLength(1);
+
+    registry.exec.mockClear();
+    state.readError = new Error("access denied");
     await expect(suspendCodexDesktopEntry()).rejects.toThrow("access denied");
     expect(registry.exec).toHaveBeenCalledOnce();
-  });
+  }));
+});
+
+describe("Codex user PATH registration", () => {
   it("never writes the inherited system PATH into HKCU or mutates it after a failed registry read", async () => {
     root = await mkdtemp(join(tmpdir(), "orbis-shim-path-"));
     vi.stubEnv("LOCALAPPDATA", join(root, "user"));

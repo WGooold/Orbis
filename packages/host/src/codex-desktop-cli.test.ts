@@ -24,6 +24,14 @@ async function fixture() {
 }
 
 describe("matching the launching Desktop's existing CLI", () => {
+  // CODEX-DESKTOP-WIN-ENTRY-01: Host preflight may inherit the original native CLI after recovery.
+  it("does not treat the inherited native CLI as the wrapper during Host preflight", async () => {
+    const f = await fixture();
+    const env = { LOCALAPPDATA: f.local, CODEX_CLI_PATH: f.packaged };
+    expect(await windowsDesktopCliCandidates(env, f.options)).toEqual([]);
+    expect((await windowsDesktopCliCandidates(env, { ...f.options, parentPid: 0 })).map(cli => cli.command)).toEqual([f.packaged]);
+  });
+
   it("uses the actual GUI installation even when a newer package is registered", () => {
     const ancestor = join("C:/WindowsApps/OpenAI.Codex_26.1103.1.0_x64__test/app", "ChatGPT.exe");
     const newer = { installLocation: "C:/WindowsApps/new", packageFullName: "OpenAI.Codex_26.1106.1.0_x64__test" };
