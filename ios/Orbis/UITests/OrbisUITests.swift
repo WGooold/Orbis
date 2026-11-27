@@ -2172,8 +2172,8 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(card.waitForExistence(timeout: 3), "The history file download must be queued")
     }
 
-    // TELEMETRY-01: device-level sharing stays opt-in until a Relay is paired, with remaining collection disclosed.
-    func testDeviceUsageSharingNeedsPairedRelayAndDisclosesRemainingMetrics() {
+    // TELEMETRY-01: settings show the sharing toggle without inline explanatory copy.
+    func testDeviceUsageSharingOmitsInlineExplanation() {
         let app = launch("status")
         let settings = app.descendants(matching: .any)["settings-page"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 8))
@@ -2181,10 +2181,8 @@ final class OrbisUITests: XCTestCase {
         for _ in 0..<10 where !toggle.isHittable { settings.swipeUp() }
         XCTAssertTrue(toggle.waitForExistence(timeout: 4))
         XCTAssertFalse(toggle.isEnabled)
-        let disclosure = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "消息流量与连接时长")).firstMatch
-        for _ in 0..<10 where !disclosure.isHittable { settings.swipeUp() }
-        XCTAssertTrue(disclosure.waitForExistence(timeout: 4))
-        XCTAssertTrue(disclosure.isHittable)
+        let explanation = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "消息流量与连接时长")).firstMatch
+        XCTAssertFalse(explanation.exists)
     }
 
     // ADR-0070 / S37: the header keeps downloads and local draft creation; settings is a root,
