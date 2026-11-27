@@ -25,7 +25,7 @@ private slots:
     }
     void agentMarksLoadWithBothAppearances() {
         // AGENT-MARK-01: test the bundled images through the shared QML mark,
-        // including the two desktop aliases and live light/dark asset changes.
+        // including desktop aliases and live light/dark asset changes.
         QTemporaryDir settings; QVERIFY(settings.isValid());
         QQmlEngine engine;
         engine.rootContext()->setContextProperty("orbisAppearanceSettings", QUrl::fromLocalFile(settings.filePath("appearance.ini")));
@@ -38,7 +38,7 @@ private slots:
         for (const auto &mode : {QString("light"), QString("dark")}) {
             QVERIFY(preferences->setProperty("mode", mode));
             QMap<QString, QUrl> sources;
-            for (const QString kind : {"pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", "hermes", "kimiCode", "opencode"}) {
+            for (const QString kind : {"pi", "codex", "codexDesktop", "dsh", "dshDesktop", "claude", "openclaw", "hermes", "kimiCode", "kimiCodeDesktop", "opencode"}) {
                 QVERIFY(mark->setProperty("kind", kind));
                 QVERIFY2(mark->property("hasMark").toBool(), qPrintable(kind));
                 QTRY_COMPARE(image->property("status").toInt(), 1);  // Image.Ready
@@ -51,6 +51,7 @@ private slots:
             QCOMPARE(sources["codexDesktop"], sources["codex"]);
             QCOMPARE(sources["dshDesktop"], sources["dsh"]);
             QCOMPARE(sources["kimiCode"], QUrl("qrc:/agent-marks/kimi-code.svg"));
+            QCOMPARE(sources["kimiCodeDesktop"], sources["kimiCode"]);
             QCOMPARE(sources["opencode"], QUrl("qrc:/agent-marks/opencode-" + mode + ".svg"));
             QCOMPARE(sources["hermes"], QUrl("qrc:/agent-marks/hermes-" + mode + ".svg"));
         }

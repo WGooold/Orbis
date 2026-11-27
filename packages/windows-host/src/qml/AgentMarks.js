@@ -43,6 +43,7 @@ function source(kind, tint, dark) {
     switch (kind) {
     case "codexDesktop": kind = "codex"; break
     case "dshDesktop": kind = "dsh"; break
+    case "kimiCodeDesktop":
     case "kimiCode": return "qrc:/agent-marks/kimi-code.svg"
     case "opencode": return "qrc:/agent-marks/opencode-" + (dark ? "dark" : "light") + ".svg"
     case "hermes": return "qrc:/agent-marks/hermes-" + (dark ? "dark" : "light") + ".svg"
