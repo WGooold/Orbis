@@ -318,9 +318,8 @@ describe("Relay web console", () => {
       ["phone3d.js", "javascript"], ["phone3d.css", "text/css"],
       ["promo/agents/lobe-claudecode-color.svg", "image/svg+xml"],
       // AGENT-MARK-01: the picker and film must load their product marks under the existing CSP.
-      ["promo/agents/kimi-code.svg", "image/svg+xml"],
+      ["promo/agents/kimi-code.svg", "image/svg+xml"], ["promo/agents/antigravity.svg", "image/svg+xml"],
       ["promo/agents/opencode-light.svg", "image/svg+xml"], ["promo/agents/opencode-dark.svg", "image/svg+xml"],
-      ["promo/agents/zcode.png", "image/png"],
       ["promo/agents/NOTICES.txt", "text/plain"],
       ["promo/orbis-symbol-2048.png", "image/png"],
     ]) {
