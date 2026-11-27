@@ -236,7 +236,7 @@ private val FilePreviewFormat.icon: ImageVector get() = when (this) {
     FilePreviewFormat.HTML -> Icons.Outlined.Language
     FilePreviewFormat.SVG, FilePreviewFormat.JPEG, FilePreviewFormat.PNG -> Icons.Outlined.Image
     FilePreviewFormat.PDF -> Icons.Outlined.PictureAsPdf
-    FilePreviewFormat.TEXT -> Icons.Outlined.Description
+    FilePreviewFormat.TEXT, FilePreviewFormat.MARKDOWN -> Icons.Outlined.Description
     FilePreviewFormat.MP4 -> Icons.Outlined.Movie
 }
 

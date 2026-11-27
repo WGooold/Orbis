@@ -69,6 +69,16 @@ struct ChatFilePreviewTests {
         return bytes.prefix(count)
     }
 
+    @Test func markdownPreviewUsesTheExistingTextWireFormat() throws {
+        let format = try #require(ChatFilePreview.Format(fileName: "Release-Notes.MD"))
+        #expect(format == .markdown)
+        #expect(format.wireValue == "text")
+        #expect(ChatFilePreview.Source.reference("orbis-message-file:test").command(format: format)["previewFormat"] as? String == "text")
+        #expect(format.budget == 256 * 1024)
+        #expect(format.matchesBytes(Data("# Release notes\n".utf8)))
+        #expect(!format.matchesBytes(Data([0x23, 0x00])))
+    }
+
     // SC124 / SC126: the range sent with the reply may arrive first; the rest is pulled through a window
     // that narrows while the chat is busy, and the original page becomes the card's entry once verified.
     @Test func entryUsesThePushedRangeAndABoundedWindow() async throws {

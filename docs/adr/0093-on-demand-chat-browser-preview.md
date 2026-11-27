@@ -2,7 +2,7 @@
 
 日期：2026-11-20
 
-状态：FILE-PREVIEW-01、02、03 已在 Host、iOS 和 Android 实现；FILE-PREVIEW-03 以原页离线渲染取代 01 的静态子集。尚未部署，待用户验收。
+状态：FILE-PREVIEW-01、02、03 已在 Host、iOS 和 Android 实现；FILE-PREVIEW-03 以原页离线渲染取代 01 的静态子集。FILE-PREVIEW-07 已实现，自动验证进行中。尚未部署，待用户验收。
 
 关联：[文件范围下载](0005-receiver-driven-range-download.md)、[有界入站投递](0040-bounded-inbound-delivery.md)、[移动端性能](0060-mobile-relay-history-performance.md)、[协议兼容](0064-protocol-compatibility.md)、[消息内容投影](0084-host-normalized-message-content-rendering.md)。
 
@@ -99,12 +99,18 @@ Web 阅读器是 App 按需创建的系统组件实例：iOS `WKWebView`、Andro
 
 - HTML/HTM、SVG 按 FILE-PREVIEW-03 离线渲染原页。下载页里已保存的 HTML/SVG（4 MiB 内、摘要相符）在同一离线阅读器打开，只提供该文件本身，引用的其他文件缺失而不回源；分享或交给其他 App 仍可用。
 - JPEG、PNG（8 MiB，最多 1600 万像素）：气泡内缩略图，全屏可缩放；iOS ImageIO、Android BitmapFactory 采样解码。
-- PDF（12 MiB，最多 100 页）：气泡内首屏，全屏逐页翻阅和缩放；iOS Core Graphics、Android PdfRenderer 只绘制当前页，不激活链接或表单。文本 `.txt/.md/.log/.json/.csv`（256 KiB、UTF-8）：原生只读文本，不执行 Markdown/HTML、不解析为表格，长内容限量展示。
+- PDF（12 MiB，最多 100 页）：气泡内首屏，全屏逐页翻阅和缩放；iOS Core Graphics、Android PdfRenderer 只绘制当前页，不激活链接或表单。文本 `.txt/.log/.json/.csv`（256 KiB、UTF-8）保持只读等宽显示；`.md` 以相同上限交给原生 Markdown 阅读器渲染，不启动 WebView 或执行文档中的 HTML／代码，长内容限量展示（见 FILE-PREVIEW-07）。
 - MP4（16 MiB，最长 3 分钟）：由用户在原卡点「预览」，校验后进入全屏；文件暂存到 App 私有目录，使用 iOS AVKit (`AVPlayerViewController`) / Android `MediaPlayer`，不自动播放、不边下边播、不请求外部媒体资源。不能播放、超限或中断时保留独立下载。
 - Office (`.doc/.docx/.xls/.xlsx/.ppt/.pptx`) 聊天中先按「下载」。下载页在 iOS 用 Quick Look（最多 32 MiB 的已校验私有副本、禁用编辑），Android 可显式「用其他 App 打开」，只授予所选文件的读取权限；没有阅读器时原件仍可保存或分享。大文件不因进入下载页绕开 App 内置阅读器的限额。
 - 原生格式需 Host 在加密握手声明 `file.preview-v2`，App 才发送标明格式的限额请求；网页需 `file.preview-web-v1`。Host 缺少某类能力时，该类文件卡保持原有下载卡，不显示预览入口、不发取件请求。不支持远程预览的文件仍可显式下载，支持的本机类型可离线读取。新格式只回应显式的限额请求，不主动推送。图片解码、PDF 绘制、文件读写和摘要校验移出 UI 线程；未校验或超限的文件不会交给阅读器。
 
 实现：[工作区链接识别](../../packages/host/src/workspace-output-references.ts)、[消息投影](../../packages/host/src/device-message-rendering.ts)、[格式协议](../../packages/protocol/src/file-preview.ts)、[iOS 阅读器](../../ios/Orbis/Orbis/NativeFileReader.swift)、[Android 阅读器](../../android/app/src/main/java/com/orbising/orbis/NativeFileReader.kt)。
+
+## FILE-PREVIEW-07：Markdown 文件阅读
+
+- `.md` 仍通过已发布的原生文本预览协议传输（`previewFormat: text`，256 KiB，UTF-8 校验及摘要校验不变），仅在阅读器按 Markdown 内容展示；`.txt/.log/.json/.csv` 的纯文本行为不变。
+- 聊天卡片内预览和全屏阅读都复用各平台现有的 Markdown 组件：iOS `MarkdownMessage`、Android `MarkdownText`。Markdown 语法的视觉呈现与聊天消息一致；文件内容继续受原预览截断上限约束。Markdown 中的 HTML 和代码按既有 Markdown 渲染器处理，不通过文件 WebView 执行。
+- 实现：[格式识别与协议映射](../../ios/Orbis/Orbis/ChatFilePreview.swift)、[iOS 阅读器](../../ios/Orbis/Orbis/NativeFileReader.swift)、[Android 格式识别](../../android/app/src/main/java/com/orbising/orbis/ChatFilePreview.kt)、[Android 阅读器](../../android/app/src/main/java/com/orbising/orbis/NativeFileReader.kt)。自动验证：iOS `ChatFilePreviewTests` 与 `ChatFilePreviewRendererTests`、Android `ChatFilePreviewTest` 与 `NativeFileReaderInstrumentedTest`（SC133）。
 
 ## FILE-PREVIEW-05：阅读页与图片查看
 
@@ -148,6 +154,7 @@ Web 阅读器是 App 按需创建的系统组件实例：iOS `WKWebView`、Andro
 | SC129 | Agent 重写已预览过的文件后，新旧卡片都打开当前内容；读取进行中被替换的文件不展示。 |
 | SC130 | 下载页里摘要相符的 HTML／SVG 在离线阅读器中打开并运行脚本；摘要不符时不渲染。 |
 | SC131 | 打开内嵌预览和全屏阅读页时不透出下层页面、不先出现白底；全屏顶栏不压状态栏；图片双击放大与复原，1 倍时横滑返回。 |
+| SC133 | `.md` 在卡片与全屏阅读器中将标题、强调和列表渲染为 Markdown；保持 `text` 协议、限额和 UTF-8 校验，不把内容交给 WebView；普通文本仍按原样显示。 |
 | SC132 | 全屏网页阅读区内起手的右滑不关闭页面、不带动外层页面；从左边缘起手仍返回聊天并保留阅读位置。 |
 
 **FILE-PREVIEW-01 初次验证（主工作树证据）：** [Host／协议及隔离 LAN、Relay 联动](../../.artifacts/file-preview-01/host-final-verification.log)覆盖超限拒绝、指定范围与摘要、普通下载及序号不受影响；[iOS 单测](../../.artifacts/file-preview-01/swift-final/run.log)和 [Android 单测](../../.artifacts/file-preview-01/android-visual-state/test-results/testDebugUnitTest/)覆盖按需拉取、选择代次、迟到回包、摘要错误与无能力回退。两端使用合成文档验证了实际渲染像素：[iOS WebKit](../../.artifacts/file-preview-01/ios-paint-device/tests.xcresult)、[Android WebView](../../.artifacts/file-preview-01/android-visual-device/device-files/SC119-static-preview.png)。Android 设备用冻结源码构建；iOS 定向设备测试未运行已有编译错误的 `ChatNativeSnapshotTests`。

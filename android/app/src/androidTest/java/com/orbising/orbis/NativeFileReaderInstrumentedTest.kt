@@ -21,7 +21,7 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 
-/** SC122 / SC123: native decode and offline reading of a published local download. */
+/** SC122 / SC123 / SC133: native decode, Markdown rendering, and offline reading of a published local download. */
 class NativeFileReaderInstrumentedTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
@@ -66,6 +66,22 @@ class NativeFileReaderInstrumentedTest {
         compose.runOnIdle { assertFalse(hasWebView(compose.activity.window.decorView)) }
         button.performClick()
         compose.waitUntil(5_000) { compose.onAllNodes(hasText(L10n.tr("暂停"))).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test fun markdownFilesRenderBlocksInBothReaderSizes() {
+        val source = "# Release notes\n\n**Stable**\n\n- Ready".encodeToByteArray()
+        for (fullScreen in listOf(false, true)) {
+            compose.setContent { OrbisTheme {
+                NativeFileReader(NativeReaderSource.Snapshot(source), FilePreviewFormat.MARKDOWN, fullScreen, Modifier.fillMaxSize())
+            } }
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithText("Release notes").fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText("Release notes").assertExists()
+            compose.onNodeWithText("# Release notes").assertDoesNotExist()
+            compose.onNodeWithText("Stable").assertExists()
+            compose.onNodeWithText("Ready").assertExists()
+        }
     }
 
     @Test fun downloadCardOpensLocalCopyEvenWithoutAConnection() {

@@ -72,7 +72,7 @@ actor FileReaderWorker {
         case .pdf:
             let doc = try pdfDocument(bytes)
             return .pdf(bytes, pageCount: doc.numberOfPages, first: try drawPDF(doc, page: 1, edge: edge))
-        case .text:
+        case .text, .markdown:
             guard let text = String(data: bytes, encoding: .utf8) else { throw unsupported }
             let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
             let prefix = String(normalized.unicodeScalars.prefix(fullScreen ? 16_384 : 4_096))
@@ -187,8 +187,8 @@ struct NativeFileReader: View {
                 if fullScreen { PDFPreviewPages(bytes: bytes, pageCount: pageCount, first: first) }
                 else { thumbnail(first) }
             case .text(let text, let truncated):
-                if fullScreen { ScrollView { textView(text, truncated: truncated).textSelection(.enabled) } }
-                else { textView(text, truncated: false).clipped() }
+                if fullScreen { ScrollView { documentView(text, truncated: truncated).textSelection(.enabled) } }
+                else { documentView(text, truncated: false).clipped() }
             case .video(let file): LocalVideoPreview(file: file, failed: fail)
             case nil:
                 if failed { Text(L10n.tr("此文件无法预览")).font(.orbisLabel()) }
@@ -214,6 +214,17 @@ struct NativeFileReader: View {
             Text(verbatim: text).font(.system(.footnote, design: .monospaced)).lineLimit(fullScreen ? nil : 14)
             if truncated { Text(L10n.tr("内容已截断")).font(.orbisCaption()) }
         }.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder private func documentView(_ text: String, truncated: Bool) -> some View {
+        if format == .markdown {
+            VStack(alignment: .leading, spacing: 8) {
+                MarkdownMessage(text: text)
+                if truncated { Text(L10n.tr("内容已截断")).font(.orbisCaption()) }
+            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            textView(text, truncated: truncated)
+        }
     }
 }
 

@@ -27,7 +27,7 @@ final class ChatFilePreview {
     nonisolated static let webResourceBytes = 8 * 1024 * 1024
 
     enum Format: String, Equatable, Sendable {
-        case html, svg, jpeg, png, pdf, text, mp4
+        case html, svg, jpeg, png, pdf, text, markdown, mp4
         init?(fileName: String) {
             switch (fileName as NSString).pathExtension.lowercased() {
             case "html", "htm": self = .html
@@ -35,25 +35,28 @@ final class ChatFilePreview {
             case "jpg", "jpeg": self = .jpeg
             case "png": self = .png
             case "pdf": self = .pdf
-            case "txt", "md", "log", "json", "csv": self = .text
+            case "md": self = .markdown
+            case "txt", "log", "json", "csv": self = .text
             case "mp4": self = .mp4
             default: return nil
             }
         }
         var isWeb: Bool { self == .html || self == .svg }
+        /// Markdown uses the existing text-preview wire format; it only changes local presentation.
+        var wireValue: String { self == .markdown ? "text" : rawValue }
         var budget: Int {
             switch self {
             case .html, .svg: ChatFilePreview.webEntryBytes
             case .jpeg, .png: 8 * 1024 * 1024
             case .pdf: 12 * 1024 * 1024
-            case .text: 256 * 1024
+            case .text, .markdown: 256 * 1024
             case .mp4: 16 * 1024 * 1024
             }
         }
         func matchesBytes(_ bytes: Data) -> Bool {
             switch self {
             case .html, .svg: !bytes.isEmpty
-            case .text: !bytes.contains(0) && String(data: bytes, encoding: .utf8) != nil
+            case .text, .markdown: !bytes.contains(0) && String(data: bytes, encoding: .utf8) != nil
             case .jpeg: bytes.starts(with: [0xff, 0xd8, 0xff])
             case .png: bytes.starts(with: [137, 80, 78, 71, 13, 10, 26, 10])
             case .pdf: bytes.starts(with: "%PDF-".utf8)
@@ -72,7 +75,7 @@ final class ChatFilePreview {
             case .reference(let path): body["type"] = "file.download"; body["path"] = path
             case .artifact(let id): body["type"] = "artifact.download"; body["artifactId"] = id
             }
-            if !format.isWeb { body["maxBytes"] = format.budget; body["previewFormat"] = format.rawValue }
+            if !format.isWeb { body["maxBytes"] = format.budget; body["previewFormat"] = format.wireValue }
             return body
         }
         func matches(_ reply: [String: Any]) -> Bool {
@@ -415,7 +418,7 @@ final class ChatFilePreview {
         guard !fetch.accepted else { return }
         let web = opened.format.isWeb
         let limit = !web ? opened.format.budget : fetch.resource == nil ? Self.webEntryBytes : Self.webResourceBytes
-        guard opened.key.source.matches(reply), reply["format"] as? String == (web ? "web" : opened.format.rawValue),
+        guard opened.key.source.matches(reply), reply["format"] as? String == (web ? "web" : opened.format.wireValue),
               let size = sessionInteger(reply["size"]), (1...Int64(limit)).contains(size),
               let hash = reply["sha256"] as? String, hash.utf8.count == 64,
               hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {

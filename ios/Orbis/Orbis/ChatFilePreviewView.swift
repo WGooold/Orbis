@@ -158,6 +158,7 @@ private extension ChatFilePreview.Format {
         case .svg, .jpeg, .png: "photo"
         case .pdf: "doc.richtext"
         case .text: "doc.plaintext"
+        case .markdown: "doc.richtext"
         case .mp4: "play.rectangle"
         }
     }

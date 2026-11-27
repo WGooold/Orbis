@@ -266,6 +266,45 @@ import XCTest
         }
     }
 
+    // SC133: Markdown files use the existing native Markdown parser and never become executable web content.
+    func testMarkdownFileReaderUsesTheNativeMarkdownRenderer() async throws {
+        let source = "# Release notes\n\n**Stable**\n\n- Ready"
+        let format = try XCTUnwrap(ChatFilePreview.Format(fileName: "release-notes.md"))
+        XCTAssertEqual(format, .markdown)
+        XCTAssertEqual(format.wireValue, "text")
+        guard case .text(let decoded, false) = try await FileReaderWorker.shared.read(
+            .snapshot(Data(source.utf8)), format: format, fullScreen: true
+        ) else { return XCTFail("Expected the bounded Markdown text") }
+        XCTAssertEqual(decoded, source)
+
+        let host = UIHostingController(rootView: NativeFileReader(source: .snapshot(Data(source.utf8)), format: format,
+            fullScreen: true) { XCTFail("Valid Markdown failed to render") })
+        try await withWindow(host) {
+            try await until("prepared Markdown document") { MarkdownDocuments.cached(source) != nil }
+            let rows = try XCTUnwrap(MarkdownDocuments.cached(source)?.rows)
+            XCTAssertTrue(rows.contains { row in
+                if case .heading(_, let value) = row.kind { return String(value.characters) == "Release notes" }
+                return false
+            }, "The leading # syntax must be parsed into a heading row")
+            XCTAssertTrue(rows.contains { row in
+                if case .text(let value) = row.kind { return String(value.characters) == "Stable" }
+                return false
+            }, "The emphasized paragraph must be parsed into inline Markdown")
+            XCTAssertTrue(rows.contains { row in
+                if case .bullet(_, let value) = row.kind { return String(value.characters) == "Ready" }
+                return false
+            }, "The list marker must be parsed into a list row")
+            XCTAssertNil(browser(host.view), "Markdown remains in the native renderer rather than a web view")
+            let image = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in
+                host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "SC133-native-markdown-reader"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
+
     // SC123: a read-only page uses the locally saved copy (and refuses a changed copy).
     func testCompletedDownloadReaderIsLocalAndRechecksTheDigest() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".txt")

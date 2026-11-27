@@ -153,7 +153,7 @@ internal object NativeFileReaderWorker {
                                 ReaderContent.Pdf(file, renderer.pageCount, render(renderer, 0, edge))
                             }
                         }
-                        FilePreviewFormat.TEXT -> {
+                        FilePreviewFormat.TEXT, FilePreviewFormat.MARKDOWN -> {
                             val raw = bytes.toString(Charsets.UTF_8).replace("\r\n", "\n").replace('\r', '\n')
                             val limit = if (fullScreen) 16_384 else 4096
                             val end = raw.offsetByCodePoints(0, minOf(limit, raw.codePointCount(0, raw.length)))
@@ -289,13 +289,21 @@ internal fun NativeFileReader(source: NativeReaderSource, format: FilePreviewFor
             is ReaderContent.Text -> {
                 val body: @Composable () -> Unit = {
                     Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(current.text, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
-                            maxLines = if (fullScreen) Int.MAX_VALUE else 14)
+                        if (format == FilePreviewFormat.MARKDOWN) {
+                            MarkdownText(current.text) {}
+                        } else {
+                            Text(current.text, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
+                                maxLines = if (fullScreen) Int.MAX_VALUE else 14)
+                        }
                         if (fullScreen && current.truncated) Text(L10n.tr("内容已截断"), style = MaterialTheme.typography.labelSmall)
                     }
                 }
-                if (fullScreen) SelectionContainer { Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) { body() } }
-                else body()
+                if (fullScreen) {
+                    Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                        if (format == FilePreviewFormat.MARKDOWN) body()
+                        else SelectionContainer { body() }
+                    }
+                } else body()
             }
             is ReaderContent.Video -> LocalVideoReader(current, fail)
             null -> if (failed) Text(L10n.tr("此文件无法预览")) else CircularProgressIndicator()

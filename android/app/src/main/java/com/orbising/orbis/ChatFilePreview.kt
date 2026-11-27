@@ -573,12 +573,12 @@ internal fun webFilePreviewCommand(payload: JsonObject) = (payload["command"] as
 
 internal enum class FilePreviewFormat(val wire: String, val budget: Int) {
     HTML("html", ChatFilePreview.WEB_ENTRY_BYTES), SVG("svg", ChatFilePreview.WEB_ENTRY_BYTES), JPEG("jpeg", 8 * 1024 * 1024),
-    PNG("png", 8 * 1024 * 1024), PDF("pdf", 12 * 1024 * 1024), TEXT("text", 256 * 1024), MP4("mp4", 16 * 1024 * 1024);
+    PNG("png", 8 * 1024 * 1024), PDF("pdf", 12 * 1024 * 1024), TEXT("text", 256 * 1024), MARKDOWN("text", 256 * 1024), MP4("mp4", 16 * 1024 * 1024);
 
     val web get() = this == HTML || this == SVG
     fun matches(bytes: ByteArray): Boolean = when (this) {
         HTML, SVG -> bytes.isNotEmpty()
-        TEXT -> validPreviewText(bytes)
+        TEXT, MARKDOWN -> validPreviewText(bytes)
         JPEG -> bytes.hasPrefix(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte()))
         PNG -> bytes.hasPrefix(byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10))
         PDF -> bytes.hasPrefix("%PDF-".encodeToByteArray())
@@ -592,7 +592,8 @@ internal enum class FilePreviewFormat(val wire: String, val budget: Int) {
             "jpeg", "jpg" -> JPEG
             "png" -> PNG
             "pdf" -> PDF
-            "md", "txt", "log", "json", "csv" -> TEXT
+            "md" -> MARKDOWN
+            "txt", "log", "json", "csv" -> TEXT
             "mp4" -> MP4
             else -> null
         }

@@ -18,6 +18,16 @@ import org.junit.Test
 
 /** FILE-PREVIEW-03 receiver: the same cases as the iOS `ChatFilePreviewTests`. */
 class ChatFilePreviewTest {
+    @Test fun markdownFilesKeepTheBoundedTextPreviewContract() {
+        val format = checkNotNull(FilePreviewFormat.fromName("Release-Notes.MD"))
+        assertEquals(FilePreviewFormat.MARKDOWN, format)
+        assertEquals("text", format.wire)
+        assertEquals("text", ChatFilePreview.format("Release-Notes.MD"))
+        assertEquals(256 * 1024, format.budget)
+        assertTrue(format.matches("# Release notes\n".encodeToByteArray()))
+        assertFalse(format.matches(byteArrayOf(0x23, 0x00)))
+    }
+
     private class Peer(scope: kotlinx.coroutines.CoroutineScope) {
         val sent = CopyOnWriteArrayList<JsonObject>()
         var clock = 0L
