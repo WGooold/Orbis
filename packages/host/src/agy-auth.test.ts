@@ -66,7 +66,12 @@ describe("AGY-16 Antigravity auth settings", () => {
 
 // AGY-16: ACP's standard browser flow must report only the URL through the private helper.
 describe("AGY-16 Antigravity browser helper", () => {
-  it("shell-quotes a local runtime path and returns the URL as one marker line", async () => {
+  it("rejects a Windows runtime path containing a browser-list separator", () => {
+    expect(() => agyBrowserCommand("C:\\host;runtime\\node.exe", "win32")).toThrow("path is not supported");
+  });
+
+  // Execute the POSIX-shell helper only on runners that provide /bin/sh.
+  it.skipIf(process.platform === "win32")("shell-quotes a local runtime path and returns the URL as one marker line", async () => {
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
     const run = promisify(execFile);
@@ -75,6 +80,5 @@ describe("AGY-16 Antigravity browser helper", () => {
     const invocation = browser.replace("'%s'", `'${url}'`);
     const { stderr } = await run("/bin/sh", ["-c", invocation], { timeout: 5_000, maxBuffer: 16_384 });
     expect(stderr.trim()).toBe(`__ORBIS_ANTIGRAVITY_AUTH_URL__${JSON.stringify(url)}`);
-    expect(() => agyBrowserCommand("/tmp/node;evil", "win32")).toThrow("path is not supported");
   });
 });

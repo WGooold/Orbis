@@ -112,6 +112,8 @@ const assets = {
   [bundledWechatGroupQrPath]: ["promo/weixinqrcode.png", "image/png"],
 } as const;
 export const downloadNames = [
+  "OrbisHost-0.1.26-windows-x64-setup.exe", "OrbisHost-0.1.26-windows-x64.zip",
+  "OrbisHost-0.1.26-macos-arm64.dmg", "OrbisHost-0.1.26-macos-x64.dmg",
   "OrbisHost-0.1.25-windows-x64-setup.exe", "OrbisHost-0.1.25-windows-x64.zip",
   "OrbisHost-0.1.25-macos-arm64.dmg", "OrbisHost-0.1.25-macos-x64.dmg",
   "OrbisHost-0.1.24-windows-x64-setup.exe", "OrbisHost-0.1.24-windows-x64.zip",
