@@ -2883,8 +2883,7 @@ class RelayReducer(
                 val branchChanged = !versioned && !sessionChanged && metadata.sessionGraphSync && state.isKnownBranchChange(
                     metadata.sessionId, previousLeaf, metadata.sessionLeafId, runtimeId,
                 )
-                nextRuntimes = state.runtimes + (runtimeId to metadata.carryingComposerStatus(previousRuntime)
-                    )
+                nextRuntimes = state.runtimes + (runtimeId to metadata.withDirectoryRoute(previousRuntime))
                 if (sessionChanged || branchChanged) {
                     nextBranchGenerations = nextBranchGenerations + (runtimeId to ((nextBranchGenerations[runtimeId] ?: 0) + 1))
                     nextSessionSyncFailures = nextSessionSyncFailures - runtimeId
@@ -3697,7 +3696,14 @@ class RelayReducer(
             }
         }
 
-        return state.copy(
+        val previousMetadataRuntime = state.runtimes[runtimeId]
+        val updatedMetadataRuntime = nextRuntimes[runtimeId]
+        val metadataRouteChanged = eventType == "runtime.metadata" && updatedMetadataRuntime != null &&
+            (previousMetadataRuntime == null ||
+                previousMetadataRuntime.sessionId != updatedMetadataRuntime.sessionId ||
+                previousMetadataRuntime.codexCatalogId != updatedMetadataRuntime.codexCatalogId)
+
+        val nextState = state.copy(
             runtimes = nextRuntimes,
             capabilities = nextCapabilities,
             downloads = nextDownloads,
@@ -3723,6 +3729,7 @@ class RelayReducer(
             pendingSends = nextPendingSends,
             feedback = state.feedback,
         )
+        return if (metadataRouteChanged) nextState.ledgerRuntimeList(read = null, complete = false) else nextState
     }
 
     internal fun reduceArtifactChunk(

@@ -67,3 +67,11 @@ Host 的原生恢复路由不变。Android [侧栏状态](../../android/app/src/
 - Android：[状态回归](../../android/app/src/test/java/com/orbising/orbis/HomeUiSnapshotTest.kt)所在的定向单测 48 项通过；[侧栏点击回归](../../android/app/src/androidTest/java/com/orbising/orbis/DrawerCatalogBackgroundInstrumentedTest.kt)已编译，模拟器在 ADB 启动检查阶段中止，未执行 UI 用例。证据：`.artifacts/codex-resume-ui-fix-20261124.bKtL5r/{android-reviewed,android-ui-build,emulator,emulator-retry}/`。
 - iOS：[缓存页恢复回归](../../ios/Orbis/Tests/LaunchLedgerTests.swift)所在的定向单测 59 项通过，模拟器 App 构建通过。证据：`.artifacts/codex-resume-ui-fix-20261124.bKtL5r/{swift-reviewed,ios-app-build}/`。
 - 未部署；设备安装与用户验收待完成。
+
+### CODEX-DESKTOP-LAUNCH-01｜桌面配置启动身份落地与首条消息移交（2026-11-27）
+
+线上 `runtime.online` 与 `runtime.metadata` 不携带 `agentKind`，而桌面无头启动在手机收到 `agent.state.snapshot(identity)` 前已完成 `runtime.online` 与 `session.launch.result(ready)`。iOS 在 [AgentState.swift](../../ios/Orbis/Orbis/AgentState.swift) 提交就绪 `identity` 领域后触发 [OrbisStore.swift](../../ios/Orbis/Orbis/OrbisStore.swift) 的启动对账、首条待发消息重绑与会话首屏同步，并在 `runtime.metadata` 更新会话或目录身份时同步重对账；Android 在 [AgentModelProjection.kt](../../android/app/src/main/java/com/orbising/orbis/AgentModelProjection.kt) 接收就绪 `identity` 后执行 `ledgerRuntimeList` 对账，在 [OperationKinds.kt](../../android/app/src/main/java/com/orbising/orbis/OperationKinds.kt) 启动落地切入真实 Runtime 时登记 `sessionSyncRequests`，并在 [RemoteState.kt](../../android/app/src/main/java/com/orbising/orbis/RemoteState.kt) 处理 `runtime.metadata` 时沿用 `withDirectoryRoute` 保留已核对的 `agentKind` 与目录路由。线上协议不变，兼容新旧 Host。
+
+- iOS：[真实无 agentKind 时序回归](../../ios/Orbis/Tests/LaunchLedgerTests.swift)所在的 `LaunchLedgerTests`、`PendingSendTests`、`PresentationTests` 定向单测 110 项通过（覆盖停留在启动页与退回首页两种路径）。证据：`.artifacts/codex-desktop-launch-01/swift/`。
+- Android：[真实无 agentKind 时序与 metadata 路由保留回归](../../android/app/src/test/java/com/orbising/orbis/LaunchLedgerTest.kt)所在的 `LaunchLedgerTest`、`PendingSendsTest`、`AgentModelStateTest` 定向单测 63 项通过。证据：`.artifacts/codex-desktop-launch-01/{android-reviewed,android-tests}/`。
+- 未部署；安装包构建、设备安装与用户验收待完成。

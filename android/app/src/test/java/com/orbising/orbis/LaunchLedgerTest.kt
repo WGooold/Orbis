@@ -133,6 +133,70 @@ class LaunchLedgerTest {
         assertEquals("desktop", (state.readySends().single().payload as LedgerPayload.Send).runtimeId)
     }
 
+    // CODEX-DESKTOP-LAUNCH-01: real `runtime.online` and `runtime.metadata` frames omit `agentKind`;
+    // unified Codex Desktop configured launches must settle on `agent.state.snapshot(identity)` and
+    // preserve `agentKind` across subsequent `runtime.metadata` frames, whether foreground or parked.
+    @Test fun unifiedConfiguredDesktopLaunchSettlesOnIdentityProjectionAndPreservesMetadataRoute() {
+        val catalogId = "codex-history:${"d".repeat(64)}"
+        val runtimeId = "codex-desktop:desktop-1"
+        val sessionId = "codex-desktop:desktop-1"
+        for (stayOnLaunchPage in listOf(true, false)) {
+            var state = setup().copy(unifiedCodexHistory = true)
+            val requestId = "configured-desktop-$stayOnLaunchPage"
+            val target = mapOf("type" to "new", "agentKind" to "codexDesktop", "cwd" to "/repo/app")
+            state = state.copy(sessionActivateRequests = state.sessionActivateRequests + requestId)
+                .createLaunch(requestId, target, "app", 1_000, codexLaunchMode = "desktop", configured = true).first
+                .ledgerWritten(requestId, 1_000)
+            val placeholder = state.launching!!.placeholder
+            state = state.createWaitingSend("first-command", "first-message", placeholder, placeholder,
+                "first desktop message", null, emptyList(), emptyList(), 1_000, listOf(state.ledger.operation(requestId)!!)).first
+
+            state = reduce(state, """{"type":"runtime.online","runtime":{"runtimeId":"$runtimeId","sessionId":"$sessionId",
+                "codexCatalogId":"$catalogId","name":"Codex","cwd":"/repo/app","status":"idle","sessionGraphSync":true}}""")
+            state = reduce(state, """{"type":"session.launch.result","requestId":"$requestId","launchId":"$requestId",
+                "phase":"ready","sessionId":"$sessionId","spawnMode":"headless"}""")
+            assertTrue("unverified runtime without agentKind must not release a mode-scoped send", state.readySends().isEmpty())
+
+            if (!stayOnLaunchPage) {
+                state = state.stopFollowingLaunch().copy(selectedRuntimeId = null)
+                assertTrue(state.trackedLaunches.any { it.configured && !it.following && (it.failure == null || it.unconfirmed) })
+            }
+
+            val read = AgentStateRead("agent||$sessionId", "agent", setOf("identity"), runtimeId, sessionId, null, stateFormat = "compact-v2")
+            state = state.copy(agentStateReads = mapOf("identity-read" to read))
+            state = reduce(state, """{"type":"agent.state.snapshot","protocolVersion":19,"requestId":"identity-read","scope":"agent",
+                "runtimeId":"$runtimeId","sessionId":"$sessionId","modelEpoch":"epoch","stateFormat":"compact-v2",
+                "domains":[{"domain":"identity","modelEpoch":"epoch","revision":1,"checkedAt":1,"availability":"ready",
+                "completeness":"complete","projectionComplete":true,"value":{"runtimeId":"$runtimeId","sessionId":"$sessionId",
+                "codexCatalogId":"$catalogId","agentKind":"codexDesktop","name":"Codex","cwd":"/repo/app","hostId":"host-1"}}],
+                "missing":[],"truncated":false}""")
+            if (stayOnLaunchPage) {
+                assertEquals(runtimeId, state.selectedRuntimeId)
+                assertTrue(runtimeId in state.sessionSyncRequests)
+            } else {
+                assertNull(state.selectedRuntimeId)
+            }
+
+            state = reduce(state, """{"type":"runtime.event","runtimeId":"$runtimeId","sequence":1,"event":{"type":"runtime.metadata",
+                "metadata":{"runtimeId":"$runtimeId","sessionId":"$sessionId","codexCatalogId":"$catalogId",
+                "name":"Codex","cwd":"/repo/app","status":"idle","sessionGraphSync":true}}}""")
+
+            assertEquals("codexDesktop", state.runtimes.getValue(runtimeId).agentKind)
+            assertNull(state.launching)
+            assertTrue(state.backgroundLaunches.isEmpty())
+            assertFalse(state.trackedLaunches.any { it.configured && !it.following && (it.failure == null || it.unconfirmed) })
+            assertEquals(1, state.readySends().size)
+            assertEquals(LedgerPayload.Send(runtimeId, sessionId, "first-message"), state.readySends().single().payload)
+            assertEquals(runtimeId, state.pendingSends.getValue("first-message").runtimeId)
+            if (stayOnLaunchPage) {
+                assertEquals(runtimeId, state.selectedRuntimeId)
+                assertTrue(state.conversations.getValue(runtimeId).hasLiveSnapshot)
+            } else {
+                assertNull(state.selectedRuntimeId)
+            }
+        }
+    }
+
     // LAUNCH-FIRST-01: new starts own disjoint ledgers and only the foreground may select a runtime.
     @Test fun secondDesktopLaunchCanSettleWhileThePriorLaunchIsUnconfirmed() {
         val target = mapOf("type" to "new", "agentKind" to "codexDesktop", "cwd" to "/repo/app")

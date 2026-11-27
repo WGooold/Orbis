@@ -208,6 +208,7 @@ final class AgentState: ObservableObject {
     @Published private(set) var snapshots: [String: AgentSnapshot] = [:]
     var send: (([String: Any]) -> Bool)?
     var didProject: ((String, String, [String: HostDomain]) -> Bool)?
+    var didCommitIdentity: ((String) -> Void)?
     private var hostKey: String?
     private var connected = false
     private var epoch: String?
@@ -409,6 +410,7 @@ final class AgentState: ObservableObject {
         // Establish the connection epoch only after a complete envelope and atomic projection validate.
         epoch = newEpoch; snapshots[read.runtimeId] = snapshot
         if snapshot.pending.isEmpty { timeouts.removeValue(forKey: id)?.cancel() }
+        if accepted["identity"]?.availability == "ready" { didCommitIdentity?(read.runtimeId) }
         return true
     }
 
