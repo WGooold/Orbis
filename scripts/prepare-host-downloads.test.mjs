@@ -62,3 +62,32 @@ it("rejects a corrupt retained package and removes only its new staging director
   expect(readdirSync(f.parent)).toEqual([]);
   expect(readFileSync(join(f.previous, name("0.1.17", "macos")), "utf8")).toBe("corrupted");
 });
+
+// CI-PERF-04: uncompressed checksum-only archives reuse already-uploaded bytes from previous
+// while still enforcing full SHA-256 verification before switching the serving symlink.
+it("reuses verified previous binaries for checksum-only uncompressed tar entries and rejects tampering", () => {
+  const root = mkdtempSync(join(tmpdir(), "orbis-host-downloads-")); roots.push(root);
+  const previous = join(root, "previous"); mkdirSync(previous);
+  const winFile = name("0.1.25", "windows"); const winBody = "existing verified windows payload";
+  writeFileSync(join(previous, winFile), winBody);
+  writeFileSync(join(previous, `${winFile}.sha256`), checksum(winFile, winBody));
+  const archive = join(root, "incoming.tar");
+  execFileSync(python, ["-c", `
+import io, json, sys, tarfile
+with tarfile.open(sys.argv[1], "w:") as target:
+    for name, text in json.load(sys.stdin).items():
+        body = text.encode()
+        entry = tarfile.TarInfo(name)
+        entry.size = len(body)
+        target.addfile(entry, io.BytesIO(body))
+`, archive], { input: JSON.stringify({ [`${winFile}.sha256`]: checksum(winFile, winBody) }) });
+  const parent = join(root, "releases");
+  const ok = run({ archive, previous, parent });
+  expect(ok.status).toBe(0);
+  expect(readFileSync(join(ok.stdout.trim(), winFile), "utf8")).toBe(winBody);
+
+  writeFileSync(join(previous, winFile), "tampered payload");
+  const bad = run({ archive, previous, parent: join(root, "releases-bad") });
+  expect(bad.status).not.toBe(0);
+  expect(bad.stderr).toContain("Host SHA-256 mismatch");
+});

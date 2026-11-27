@@ -11,9 +11,33 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_checks: ${{ steps.gate.outputs.run_checks }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check existing verified CI run for HEAD
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verdict=$(node scripts/ci-verified-checks.mjs --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --mode core)
+          echo "$verdict"
+          if printf '%s' "$verdict" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("verified") else 1)'; then
+            echo "run_checks=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_checks=true" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
+    needs: preflight
+    if: needs.preflight.outputs.run_checks == 'true'
     uses: ./.github/workflows/core-checks.yml
     with:
       native_compatibility: false
@@ -78,12 +102,28 @@ jobs:
           node-version: '22.23.2'
           architecture: ${{ matrix.node_architecture }}
           cache: npm
+      - name: Restore cached Qt toolchain
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.workspace }}/Qt
+          key: qt-direct-macOS-${{ matrix.architecture }}-6.8.3-v1
       - uses: jurplel/install-qt-action@v4
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         with:
           version: '6.8.3'
           arch: clang_64
           archives: 'qtbase qtdeclarative qttools qtsvg qttranslations'
-          cache: true
+          cache: false
+      - name: Configure cached Qt environment
+        if: steps.qt-cache.outputs.cache-hit == 'true'
+        run: |
+          set -euo pipefail
+          qt_root="${{ runner.workspace }}/Qt/6.8.3/clang_64"
+          test -x "$qt_root/bin/macdeployqt"
+          echo "QT_ROOT_DIR=$qt_root" >> "$GITHUB_ENV"
+          echo "$qt_root/bin" >> "$GITHUB_PATH"
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build
       - name: Verify native runner and portable behavior
@@ -92,6 +132,8 @@ jobs:
           npx vitest run packages/protocol/src packages/relay/src/admin.test.ts packages/host/src/macos-terminal.test.ts packages/host/src/codex-terminal-macos.test.ts packages/host/src/spawner.test.ts packages/host/src/device-protocol.test.ts packages/host/src/host-protocol-compatibility.test.ts packages/host/src/host-service.test.ts packages/host/src/loopback-server.test.ts --maxWorkers=1 --testTimeout=30000
       - name: Build and package macOS app
         shell: bash
+        env:
+          SCCACHE_GHA_ENABLED: 'true'
         run: |
           set -euo pipefail
           build="$RUNNER_TEMP/orbis-macos-build"
@@ -128,9 +170,13 @@ jobs:
           trap cleanup EXIT
           python3 -m unittest discover -s scripts -p test_macos_dmg.py
           rm -rf .artifacts/host "$build" "$dmg_root"
-          cmake -S packages/windows-host -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_OSX_ARCHITECTURES="${{ matrix.architecture }}" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
-          cmake --build "$build" --parallel 2
-          ctest --test-dir "$build" --output-on-failure
+          launcher_args=()
+          if command -v sccache >/dev/null 2>&1; then
+            launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
+          fi
+          cmake -S packages/windows-host -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_OSX_ARCHITECTURES="${{ matrix.architecture }}" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 "${launcher_args[@]}"
+          cmake --build "$build" --parallel
+          ctest --test-dir "$build" --parallel 4 --output-on-failure
           mkdir -p .artifacts/host
           cp -R "$build/Orbis Host.app" ".artifacts/host/OrbisHost.app"
           "$QT_ROOT_DIR/bin/macdeployqt" .artifacts/host/OrbisHost.app -qmldir="$GITHUB_WORKSPACE/packages/windows-host/src/qml" -verbose=1
@@ -186,7 +232,8 @@ jobs:
           mkdir -p "$mountpoint" "$dmg_root"
           cp -R .artifacts/host/OrbisHost.app "$dmg_root/"
           ln -s /Applications "$dmg_root/Applications"
-          hdiutil create -size 3g -fs HFS+ -volname "Orbis Host" -ov "$rw_image"
+          dmg_mb=$(( $(du -sm "$dmg_root" | awk '{print $1}') + 128 ))
+          hdiutil create -size "${dmg_mb}m" -fs HFS+ -volname "Orbis Host" -ov "$rw_image"
           hdiutil attach "$rw_image" -nobrowse -readwrite -mountpoint "$mountpoint"
           ditto "$dmg_root" "$mountpoint"
           sync

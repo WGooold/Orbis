@@ -20,16 +20,28 @@ def prepare(archive, previous, parent, release):
     staged = Path(tempfile.mkdtemp(prefix=release + ".", dir=parent))
     try:
         selected = set()
-        with tarfile.open(archive, "r:gz") as source:
+        expected_binaries = set()
+        with tarfile.open(archive, "r:*") as source:
             for member in source.getmembers():
                 match = NAME.fullmatch(member.name)
                 if not match or not member.isfile() or (staged / member.name).exists():
                     raise ValueError("Unexpected Host archive entry")
                 selected.add(match["platform"])
+                if member.name.endswith(".sha256"):
+                    expected_binaries.add(member.name[:-len(".sha256")])
                 with source.extractfile(member) as incoming, (staged / member.name).open("wb") as target:
                     shutil.copyfileobj(incoming, target)
         if not selected:
             raise ValueError("Empty Host archive")
+        # CI-PERF-04: checksum-only archive entries reuse an already uploaded binary from
+        # previous while still running the full SHA-256 verification below before cutover.
+        for binary_name in sorted(expected_binaries):
+            if (staged / binary_name).exists():
+                continue
+            cached = previous / binary_name
+            if not previous.is_dir() or not cached.is_file() or cached.is_symlink():
+                raise ValueError("Host checksum has no binary")
+            shutil.copyfile(cached, staged / binary_name)
         if previous.is_dir():
             for old in previous.iterdir():
                 match = NAME.fullmatch(old.name)

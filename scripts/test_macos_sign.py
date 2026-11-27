@@ -18,7 +18,7 @@ class SigningTests(unittest.TestCase):
     def test_nested_code_and_extensionless_binaries_precede_containers(self):
         # Qt symlinks must not cause duplicate signatures or escape the app tree.
         with tempfile.TemporaryDirectory() as temporary:
-            app = Path(temporary) / "Host.app"
+            app = Path(temporary).resolve() / "Host.app"
             framework = app / "Contents/Frameworks/QtCore.framework"
             binary = framework / "Versions/A/QtCore"
             addon = app / "Contents/Resources/runtime/native.node"
@@ -36,6 +36,64 @@ class SigningTests(unittest.TestCase):
             self.assertEqual(targets[-1], app)
             self.assertNotIn(app / "outside", targets)
             self.assertNotIn(framework / "QtCore", targets)
+
+    def test_sign_app_completes_nested_layers_before_outer_bundles(self):
+        # CI-PERF-08: parallel timestamp signing must still finish every nested Mach-O
+        # before sealing its enclosing .framework, and seal all frameworks before .app.
+        with tempfile.TemporaryDirectory() as temporary:
+            app = Path(temporary).resolve() / "Host.app"
+            (app / "Contents").mkdir(parents=True)
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "Host"}))
+            host_bin = app / "Contents/MacOS/Host"
+            framework = app / "Contents/Frameworks/QtCore.framework"
+            qt_bin = framework / "Versions/A/QtCore"
+            node_bin = app / "Contents/Resources/runtime/node/node"
+            quic_bin = app / "Contents/Resources/runtime/quic"
+            for path in (host_bin, qt_bin, node_bin, quic_bin):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(bytes.fromhex("cffaedfe") + bytes(64))
+
+            layers = SIGN.signing_layers(SIGN.signing_targets(app))
+            self.assertEqual(len(layers), 3)
+            self.assertEqual(set(layers[0]), {host_bin, qt_bin, node_bin, quic_bin})
+            self.assertEqual(layers[1], [framework])
+            self.assertEqual(layers[2], [app])
+
+            signed_order = []
+            entitlement_map = {}
+
+            def fake_codesign(command):
+                target = Path(command[-1])
+                signed_order.append(target)
+                if "--entitlements" in command:
+                    idx = command.index("--entitlements")
+                    entitlement_map[target] = Path(command[idx + 1]).name
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            def fake_run(command, check=True):
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            report = Path(temporary) / "signing.json"
+            args = argparse.Namespace(
+                app=app,
+                team_id="TEAM123456",
+                identity="A" * 40,
+                keychain=None,
+                report=report,
+            )
+            with patch.object(SIGN, "run_codesign", side_effect=fake_codesign), \
+                 patch.object(SIGN, "run", side_effect=fake_run), \
+                 patch.object(SIGN, "verify_identity"):
+                SIGN.sign_app(args, max_workers=4)
+
+            self.assertLess(signed_order.index(qt_bin), signed_order.index(framework))
+            self.assertLess(signed_order.index(framework), signed_order.index(app))
+            self.assertLess(signed_order.index(node_bin), signed_order.index(app))
+            self.assertEqual(entitlement_map, {
+                node_bin: "node.entitlements",
+                app: "host.entitlements",
+            })
+            self.assertEqual(json.loads(report.read_text())["status"], "signed-and-verified")
 
     def test_identity_rejects_development_and_wrong_team(self):
         result = subprocess.CompletedProcess([], 0, stdout=(

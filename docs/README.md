@@ -6,6 +6,7 @@ This directory is organized by authority and maintenance horizon. The root `READ
 
 ## Current references
 
+- [ADR-0100](adr/0100-ci-release-pipeline-acceleration.md)：CI 与发版流水线加速（CI-PERF-04–10）；Host 下载增量分片并发上传、同提交检查复用、CMake 共用库与 sccache、PR 原生门禁、macOS 分层并发签名及移动端缓存改造已在独立工作树实现并通过本地验证，未部署，待线上运行与用户验收。
 - [ADR-0099](adr/0099-antigravity-cli-acp-integration.md)：Antigravity CLI 通过本机 ACP 接入 App；复用可恢复启动、交互与历史，不共享个人订阅或桌面会话。
 - [ADR-0097](adr/0097-shared-backend-session-close-alignment.md)：按 Codex Desktop 的真实附着路径定义四个共享 Agent 的退出视图和重新上线；区分手机重连、原生传输恢复、显式重开与电脑开始新工作。
 - [ADR-0095](adr/0095-codex-unified-catalog-and-launch-modes.md)：App 使用一个 Codex 会话目录，桌面／终端只作为启动方式；Host 与 iOS／Android 实现及定向自动验证已完成，真实旧版本互通、部署与用户验收待完成。
