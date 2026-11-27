@@ -10,7 +10,7 @@ import { KimiConversation, kimiObject, type KimiFrame } from "./kimi-conversatio
 import type { AgentBackend, AgentActivateTarget, AgentActivateContext, BackendActivation, CommandDispatch, NativeRunningSession } from "./agent-backend.js";
 import { KimiBusinessError, KimiWebConnector, KimiWebError, assertKimiMayStart, defaultKimiHome, type KimiWebClient, type KimiWebClientOptions } from "./kimi-web-client.js";
 import { createKimiLauncher, type KimiLauncher } from "./kimi-launch.js";
-import { KIMI_DESKTOP_KIND, KIMI_KIND, KimiLaunchBlocked, KimiSessions, kimiLocalDirectory, kimiNativeSessionId, kimiSourceKey, type KimiSession } from "./kimi-sessions.js";
+import { KIMI_DESKTOP_KIND, KIMI_KIND, KimiLaunchBlocked, KimiSessions, kimiDesktopSessionEvent, kimiLocalDirectory, kimiNativeSessionId, kimiSourceKey, type KimiSession } from "./kimi-sessions.js";
 import { ActivationError } from "./spawner.js";
 import { localHostname } from "./sessions.js";
 import { exitViewCapability, matchesViewExit } from "./shared-session-view.js";
@@ -231,7 +231,7 @@ export class KimiRuntime implements AgentBackend {
     const key = await this.#sourceKey();
     await this.#journal.load();
     if (this.#connector.client !== client || socket.readyState !== WebSocket.OPEN) return;
-    const connection = { sessions: new KimiSessions(client, key, this.kind), socket, generation };
+    const connection = { sessions: new KimiSessions(client, key, this.kind, client.sessionContract), socket, generation };
     this.#connection = connection;
     this.#startFailure = undefined;
     this.onReadyChange?.();
@@ -348,7 +348,11 @@ export class KimiRuntime implements AgentBackend {
     if (!item) {
       if (this.#active.size >= MAX_SUBSCRIPTIONS) throw new ActivationError("spawn_limit_reached", "Kimi Code 会话接入已达上限");
       item = { native, cwd, id, subscribed: false, viewGeneration: randomUUID() }; this.#active.set(id, item);
-    } else { item.native = native; item.cwd = cwd; }
+    } else {
+      item.native = connection.sessions.contract === "desktop-2.8.1" && item.subscribed
+        ? { ...native, agent_config: item.native.agent_config } : native;
+      item.cwd = cwd;
+    }
     if (!item.subscribed) {
       const active = item;
       const pending = active.subscribing ??= this.#subscribe(connection, active);
@@ -459,18 +463,32 @@ export class KimiRuntime implements AgentBackend {
     if (frame.type === "response" && typeof frame.request_id === "string" && typeof frame.code === "number") {
       this.#requests.get(frame.request_id)?.(frame.code); return;
     }
+    if (connection.sessions.contract === "desktop-2.8.1" && frame.type === "session") {
+      const event = kimiDesktopSessionEvent.safeParse(frame);
+      if (!event.success) return;
+      const { change, session } = event.data;
+      if (session.host_id || (session.environment_id !== undefined && session.environment_id !== "local")) return;
+      const id = connection.sessions.publicId(session.id);
+      if (change === "archived" || change === "restored" || change === "deleted") {
+        this.#sessionLifecycle(id, change);
+      } else if (session.environment_id === "local") {
+        const running = session.activity === "turn";
+        const hidden = this.#hidden.get(id);
+        if (hidden && !running) hidden.idle = true;
+        if (running) this.#discoverWork(connection, session.id);
+        const item = this.#active.get(id);
+        if (item) {
+          item.native = { ...item.native, title: session.title, main_turn_active: running };
+          if (item.subscribed) this.onMetadataChange?.(this.#metadata(item));
+        }
+      }
+      this.onCatalogChange?.(); return;
+    }
     if (frame.type === "event.session.archived" || frame.type === "event.session.deleted" || frame.type === "event.session.restored") {
       const native = kimiObject(frame.payload).sessionId;
       if (typeof native === "string") {
-        const id = connection.sessions.publicId(native);
-        if (frame.type === "event.session.deleted" || frame.type === "event.session.archived") this.#hidden.delete(id);
-        const item = this.#active.get(id);
-        if (item && frame.type !== "event.session.restored") {
-          this.#clearConversation(item);
-          this.#active.delete(id);
-          if (item.subscribed) this.onOffline?.(this.#metadata(item), "Kimi Code 会话已关闭");
-        }
-        if (frame.type !== "event.session.deleted") this.onArchiveChange?.(id, frame.type === "event.session.archived");
+        this.#sessionLifecycle(connection.sessions.publicId(native), frame.type === "event.session.archived" ? "archived"
+          : frame.type === "event.session.restored" ? "restored" : "deleted");
       }
       this.onCatalogChange?.(); return;
     }
@@ -505,6 +523,19 @@ export class KimiRuntime implements AgentBackend {
       if (frame.type === "turns") item.input?.requestPoll();
       if (ready && !item.conversation?.ready && frame.type !== "turns.failed") connection.socket.terminate();
     }
+  }
+
+  #sessionLifecycle(id: string, change: "archived" | "restored" | "deleted"): void {
+    if (change !== "restored") {
+      this.#hidden.delete(id);
+      const item = this.#active.get(id);
+      if (item) {
+        this.#clearConversation(item);
+        this.#active.delete(id);
+        if (item.subscribed) this.onOffline?.(this.#metadata(item), "Kimi Code 会话已关闭");
+      }
+    }
+    if (change !== "deleted") this.onArchiveChange?.(id, change === "archived");
   }
 
   #clearConversation(item: Active): void {

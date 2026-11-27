@@ -17,12 +17,23 @@ export const KIMI_API_CONTRACT_SHA256 = Object.freeze({
 });
 
 export type KimiSource = "web" | "desktop";
+export type KimiSessionContract = "legacy" | "desktop-2.8.1";
 export const KIMI_WEB_VERSION = "2.6.3";
-export const KIMI_DESKTOP_SERVER_VERSION = "2.6.2";
+const MAC_DESKTOP_SERVER_VERSION = "2.6.2";
+const WINDOWS_DESKTOP_SERVER_VERSION = "2.8.1";
 const DESKTOP_CONTRACTS = Object.freeze({
-  openapi: "9920b34adcf9458d7dcf00d42c8d4ce794f27f4a6a8f21b570e9e6b100ea985f",
-  asyncapi: "6f415309b2946045b0df41f0a529a6699821359fcf0237215ad69baab53ffd59",
+  [MAC_DESKTOP_SERVER_VERSION]: {
+    openapi: "9920b34adcf9458d7dcf00d42c8d4ce794f27f4a6a8f21b570e9e6b100ea985f",
+    asyncapi: "6f415309b2946045b0df41f0a529a6699821359fcf0237215ad69baab53ffd59",
+  },
+  [WINDOWS_DESKTOP_SERVER_VERSION]: {
+    openapi: "409a2bf32e2b0443ea02e5818f71a7487be8821cc5c645c0caa4ee177cdff002",
+    asyncapi: "1e46c8d6d3956baf682ac586dcbd42299e4cf9e7af3baa43b5df16fa0973000f",
+  },
 });
+const desktopContract = (version: string): ContractHashes | undefined =>
+  version === MAC_DESKTOP_SERVER_VERSION || version === WINDOWS_DESKTOP_SERVER_VERSION ? DESKTOP_CONTRACTS[version] : undefined;
+export const KIMI_DESKTOP_SERVER_VERSION = process.platform === "win32" ? WINDOWS_DESKTOP_SERVER_VERSION : MAC_DESKTOP_SERVER_VERSION;
 
 const MAX_REGISTRATIONS = 64;
 const MAX_REGISTRATION_BYTES = 8 * 1024;
@@ -46,7 +57,7 @@ export type KimiServerMeta = {
   server_version: string;
   server_id: string;
   started_at: string;
-  backend: string;
+  backend?: string;
   dangerous_bypass_auth: boolean;
   capabilities: Record<string, unknown>;
   [key: string]: unknown;
@@ -156,7 +167,7 @@ export async function assertKimiMayStart(options: KimiWebClientOptions): Promise
   for (const item of instances) {
     if (!isLoopbackLiteral(item.host)) throw new KimiWebError("unsafe", "Kimi Code 实例未使用本机回环地址");
     if (options.source === "desktop" && item.version === KIMI_WEB_VERSION) continue;
-    if (options.source !== "desktop" && item.version === KIMI_DESKTOP_SERVER_VERSION &&
+    if (options.source !== "desktop" && desktopContract(item.version) &&
         await (options.verifyDesktopOwner ?? kimiDesktopOwner)(item.pid, item.host, item.port)) continue;
     // A newly registered listener or an older standalone CLI is not evidence that it is safe to start another one.
     throw new KimiWebError("unavailable", "检测到 Kimi Code 实例，等待当前实例完成接入");
@@ -216,13 +227,16 @@ async function boundedBody(response: Response, limit: number): Promise<Uint8Arra
   return output;
 }
 
-function validMeta(value: unknown): value is KimiServerMeta {
+function validMeta(value: unknown, windowsDesktop: boolean): value is KimiServerMeta {
   if (typeof value !== "object" || value === null) return false;
   const meta = value as Partial<KimiServerMeta>;
   return typeof meta.server_id === "string" && /^[A-Za-z0-9_-]{8,80}$/u.test(meta.server_id)
     && typeof meta.server_version === "string" && meta.server_version.length > 0 && meta.server_version.length <= 128
     && typeof meta.started_at === "string" && Number.isFinite(Date.parse(meta.started_at))
-    && meta.backend === "v2" && meta.dangerous_bypass_auth === false
+    && (windowsDesktop
+      ? meta.product === "kimi-code-desktop" && meta.kimi_agent_protocol_version === "1.0.0"
+      : meta.backend === "v2")
+    && meta.dangerous_bypass_auth === false
     && typeof meta.capabilities === "object" && meta.capabilities !== null && meta.capabilities.websocket === true;
 }
 
@@ -231,16 +245,18 @@ export class KimiWebClient {
   readonly endpoint: URL;
   readonly instance: KimiInstance;
   readonly meta: KimiServerMeta;
+  readonly sessionContract: KimiSessionContract;
   readonly #token: string;
   readonly #fetch: typeof globalThis.fetch;
   readonly #timeoutMs: number;
   #socket: WebSocket | undefined;
   readonly #lifetime = new AbortController();
 
-  private constructor(options: { endpoint: URL; instance: KimiInstance; meta: KimiServerMeta; token: string; fetch: typeof globalThis.fetch; timeoutMs: number }) {
+  private constructor(options: { endpoint: URL; instance: KimiInstance; meta: KimiServerMeta; sessionContract: KimiSessionContract; token: string; fetch: typeof globalThis.fetch; timeoutMs: number }) {
     this.endpoint = options.endpoint;
     this.instance = options.instance;
     this.meta = options.meta;
+    this.sessionContract = options.sessionContract;
     this.#token = options.token;
     this.#fetch = options.fetch;
     this.#timeoutMs = options.timeoutMs;
@@ -253,8 +269,10 @@ export class KimiWebClient {
     if (desktop && !supportsKimiDesktop && !options.verifyDesktopOwner) throw new KimiWebError("unsupported", "当前平台不支持 Kimi Code Desktop 接入");
     const requested = options.endpoint === undefined ? undefined : parseEndpoint(options.endpoint);
     const registered = await readRegistrations(homeDir, now);
-    const registrations = registered.filter(item => item.version === (desktop ? KIMI_DESKTOP_SERVER_VERSION : KIMI_WEB_VERSION));
-    if (registered.length && !registrations.length && !desktop && !registered.every(item => item.version === KIMI_DESKTOP_SERVER_VERSION)) {
+    const registrations = registered.filter(item => desktop
+      ? item.version === KIMI_DESKTOP_SERVER_VERSION || (options.verifyDesktopOwner !== undefined && desktopContract(item.version) !== undefined)
+      : item.version === KIMI_WEB_VERSION);
+    if (registered.length && !registrations.length && !desktop && !registered.every(item => desktopContract(item.version) !== undefined)) {
       throw new KimiWebError("unsupported", "Kimi Code Web 服务版本不受支持");
     }
     if (registrations.length === 0) throw new KimiWebError("not_running", desktop ? "未发现支持的 Kimi Code Desktop 内嵌服务" : "未发现正在运行的 Kimi Code Web 服务");
@@ -304,7 +322,7 @@ export class KimiWebClient {
       if (error instanceof KimiWebError) throw error;
       throw new KimiWebError("unsupported", "Kimi Code 元数据格式无效");
     }
-    if (!validMeta(meta)) throw new KimiWebError("unsupported", "Kimi Code 服务未满足受支持的认证 API 契约");
+    if (!validMeta(meta, desktop && instance.version === WINDOWS_DESKTOP_SERVER_VERSION)) throw new KimiWebError("unsupported", "Kimi Code 服务未满足受支持的认证 API 契约");
     // In Kimi Code 2.6.3 the registry ULID and /meta server_id have different identity
     // scopes. Bind the listener to the registration by the exact product version and
     // near-identical boot timestamps; keep both opaque IDs, but never equate them.
@@ -312,7 +330,8 @@ export class KimiWebClient {
       throw new KimiWebError("unsafe", "Kimi Code 实例登记与认证服务启动身份不匹配");
     }
 
-    const expected = options.expectedContracts ?? (desktop ? DESKTOP_CONTRACTS : KIMI_API_CONTRACT_SHA256);
+    const expected = options.expectedContracts ?? (desktop ? desktopContract(instance.version) : KIMI_API_CONTRACT_SHA256);
+    if (!expected) throw new KimiWebError("unsupported", "Kimi Code Desktop API 契约不受支持");
     for (const [name, path] of [["openapi", "/openapi.json"], ["asyncapi", "/asyncapi.json"]] as const) {
       let bytes: Uint8Array;
       try { bytes = await request(path, MAX_SCHEMA_BYTES); }
@@ -323,7 +342,7 @@ export class KimiWebClient {
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (digest !== expected[name]) throw new KimiWebError("unsupported", `Kimi Code ${name} 契约版本不受支持`);
     }
-    return new KimiWebClient({ endpoint, instance, meta, token, fetch: fetcher, timeoutMs });
+    return new KimiWebClient({ endpoint, instance, meta, token, sessionContract: desktop && instance.version === WINDOWS_DESKTOP_SERVER_VERSION ? "desktop-2.8.1" : "legacy", fetch: fetcher, timeoutMs });
   }
 
   /** Authenticated JSON request. Redirects, credentials in output, and unbounded bodies are excluded. */

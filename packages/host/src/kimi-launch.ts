@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { agentCommandForEntry, cliSearchDirs, findExternalAgentEntries, stopAgentProcess } from "./agent-command.js";
@@ -26,7 +26,7 @@ export function createKimiLauncher(options: { source?: KimiSource; homeDir: stri
   if (options.endpoint !== undefined || !isAbsolute(options.homeDir)) return undefined;
   const home = homedir();
   if (options.source === "desktop") {
-    // LaunchServices uses the Mac user's Desktop profile. Non-default homes remain attach-only.
+    // The app opens the OS user’s Desktop profile. Non-default homes remain attach-only.
     if (!supportsKimiDesktop || options.homeDir !== join(home, ".kimi-code")) return undefined;
     return {
       available: async () => await findKimiDesktopBundle() !== undefined,
@@ -37,8 +37,14 @@ export function createKimiLauncher(options: { source?: KimiSource; homeDir: stri
         if (!await shouldStart()) return;
         signal.throwIfAborted();
         // Background open, with no new-instance flag. An already-open app is neither duplicated nor quit.
-        try { await run("/usr/bin/open", ["-g", "-a", bundle], { signal, timeout: 5000, maxBuffer: 8192 }); }
-        catch { throw new KimiWebError("unavailable", "无法打开 Kimi Code 桌面版"); }
+        try {
+          if (process.platform === "win32") {
+            const env = Object.fromEntries(Object.entries(options.env ?? process.env).filter(([key]) => !/^(?:ORBIS_|ELECTRON_|NODE_OPTIONS$|NODE_PATH$|KIMI_CODE_HOME$)/iu.test(key)));
+            const child = spawn(bundle, [], { cwd: dirname(bundle), env, detached: true, windowsHide: true, stdio: "ignore" });
+            await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.on("error", reject); });
+            child.unref();
+          } else await run("/usr/bin/open", ["-g", "-a", bundle], { signal, timeout: 5000, maxBuffer: 8192 });
+        } catch { throw new KimiWebError("unavailable", "无法打开 Kimi Code 桌面版"); }
         await waitForConnection();
       },
     };
