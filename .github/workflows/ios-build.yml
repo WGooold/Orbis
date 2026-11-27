@@ -20,14 +20,16 @@ jobs:
       - name: Identify Swift toolchain
         id: swift
         run: echo "version=$(swift --version | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      - name: Restore exact Swift test bundle
+      - name: Restore Swift test bundle cache
         id: tests-cache
         uses: actions/cache@v4
         with:
           path: ios/Orbis/.build
-          # No fallback key: only identical source/resources and compiler may
-          # bypass compilation. Tests still execute on every selected commit.
+          # CI-PERF-09: exact hit skips compilation; prefix restore-key enables incremental
+          # Swift compilation while cache-hit remains false so prepare-tests still runs.
           key: swift-tests-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-${{ hashFiles('ios/Orbis/Package.swift', 'ios/Orbis/Orbis/**', 'ios/Orbis/Tests/**', 'shared/**', 'scripts/check-ios.sh') }}
+          restore-keys: |
+            swift-tests-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-
       - name: Compile Swift test bundle
         if: steps.tests-cache.outputs.cache-hit != 'true'
         run: bash scripts/check-ios.sh prepare-tests

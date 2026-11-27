@@ -30,16 +30,19 @@ jobs:
       - name: Install pinned native toolchain
         run: sdkmanager 'ndk;27.2.12479018'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Restore pinned mobile tool binaries
+      - name: Restore pinned mobile QUIC tools and AAR
         uses: actions/cache@v4
         with:
-          path: android/app/build/generated/relayquic/tools
-          key: gomobile-${{ runner.os }}-${{ runner.arch }}-go1.27.3-${{ hashFiles('scripts/build-relay-quic.py') }}
+          path: android/app/build/generated/relayquic
+          key: relayquic-${{ runner.os }}-${{ runner.arch }}-go1.27.3-ndk27.2.12479018-${{ hashFiles('native/relayquic/**', 'scripts/build-relay-quic.py') }}
+          restore-keys: |
+            relayquic-${{ runner.os }}-${{ runner.arch }}-go1.27.3-ndk27.2.12479018-
+            gomobile-${{ runner.os }}-${{ runner.arch }}-go1.27.3-
       - name: Verify mobile tool cache invalidation
         run: python3 -m unittest discover -s scripts -p 'test_mobile_toolchain.py'
       - name: Unit tests
         working-directory: android
-        run: sh ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process --max-workers=2 :app:testDebugUnitTest
+        run: sh ./gradlew --parallel --max-workers=4 :app:testDebugUnitTest
       - name: Build signed release APK
         working-directory: android
         env:
@@ -54,7 +57,7 @@ jobs:
           keystore="$RUNNER_TEMP/orbis-release.jks"
           trap 'rm -f "$keystore"' EXIT
           printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$keystore"
-          ORG_GRADLE_PROJECT_ORBIS_RELEASE_STORE_FILE="$keystore" sh ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process --max-workers=2 :app:assembleRelease
+          ORG_GRADLE_PROJECT_ORBIS_RELEASE_STORE_FILE="$keystore" sh ./gradlew --parallel --max-workers=4 :app:assembleRelease
       - name: Verify signature and stage artifact
         run: |
           set -euo pipefail

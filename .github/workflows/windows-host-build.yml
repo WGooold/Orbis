@@ -10,9 +10,33 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_checks: ${{ steps.gate.outputs.run_checks }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check existing verified CI run for HEAD
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verdict=$(node scripts/ci-verified-checks.mjs --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --mode core)
+          echo "$verdict"
+          if printf '%s' "$verdict" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("verified") else 1)'; then
+            echo "run_checks=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_checks=true" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
+    needs: preflight
+    if: needs.preflight.outputs.run_checks == 'true'
     uses: ./.github/workflows/core-checks.yml
     with:
       native_compatibility: false
@@ -30,16 +54,42 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - name: Restore cached Qt and MinGW toolchain
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.workspace }}/Qt
+          key: qt-direct-Windows-x64-6.8.3-mingw1310-v1
       - uses: jurplel/install-qt-action@v4
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         with:
           version: '6.8.3'
           arch: win64_mingw
           tools: 'tools_mingw1310,qt.tools.win64_mingw1310'
           archives: 'qtbase qtdeclarative qttools qtsvg qttranslations'
-          cache: true
+          cache: false
+      - name: Configure cached Qt environment
+        if: steps.qt-cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $qtRoot = Join-Path '${{ runner.workspace }}' 'Qt\6.8.3\mingw_64'
+          $compiler = Join-Path '${{ runner.workspace }}' 'Qt\Tools\mingw1310_64'
+          if (!(Test-Path -LiteralPath "$qtRoot\bin\windeployqt.exe") -or !(Test-Path -LiteralPath "$compiler\bin\g++.exe")) {
+            throw 'Cached Qt or MinGW installation is incomplete'
+          }
+          "QT_ROOT_DIR=$qtRoot" >> $env:GITHUB_ENV
+          "$qtRoot\bin" >> $env:GITHUB_PATH
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Locate sccache binary
+        shell: pwsh
+        run: |
+          $sccache = (Get-Command sccache.exe -ErrorAction SilentlyContinue)?.Source
+          if ($sccache) { "SCCACHE_PATH=$sccache" >> $env:GITHUB_ENV }
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build, package, and smoke-test native client
         shell: pwsh
+        env:
+          SCCACHE_GHA_ENABLED: 'true'
         run: |
           $qtBase = Split-Path (Split-Path $env:QT_ROOT_DIR)
           $compiler = Join-Path $qtBase 'Tools\mingw1310_64'

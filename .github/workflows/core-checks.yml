@@ -29,6 +29,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts -p 'test_mobile_toolchain.py'
           python3 -m unittest discover -s scripts -p 'test_macos_sign.py'
+          python3 -m unittest discover -s scripts -p 'test_upload_host_downloads.py'
       # Tests load compiled extension fixtures; share these bytes across runners.
       - name: Archive compiled workspace
         run: tar -czf "$RUNNER_TEMP/ci-compiled-js.tar.gz" packages/*/dist

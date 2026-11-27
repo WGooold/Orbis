@@ -22,6 +22,7 @@ jobs:
     outputs:
       core: ${{ steps.paths.outputs.core }}
       ios: ${{ steps.paths.outputs.ios }}
+      host_native: ${{ steps.paths.outputs.hostNative }}
       relay: ${{ steps.paths.outputs.relay }}
     steps:
       - uses: actions/checkout@v5
@@ -30,9 +31,9 @@ jobs:
         with:
           script: |
             const { classifyChanges } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-changes.mjs`);
-            let selected = { core: true, ios: true, relay: true };
+            let selected = { core: true, ios: true, hostNative: true, relay: true };
             if (context.eventName === 'workflow_dispatch' && context.payload.inputs?.benchmark === 'true') {
-              selected = { core: false, ios: false, relay: false };
+              selected = { core: false, ios: false, hostNative: false, relay: false };
             } else if (context.eventName === 'pull_request') {
               const files = await github.paginate(github.rest.pulls.listFiles, {
                 ...context.repo, pull_number: context.payload.pull_request.number, per_page: 100,
@@ -59,10 +60,63 @@ jobs:
     if: needs.changes.outputs.ios == 'true'
     uses: ./.github/workflows/ios-build.yml
 
+  host-native:
+    name: Host native CMake and CTest (Windows)
+    needs: changes
+    if: needs.changes.outputs.host_native == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - name: Restore cached Qt and MinGW toolchain
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.workspace }}/Qt
+          key: qt-direct-Windows-x64-6.8.3-mingw1310-v1
+      - uses: jurplel/install-qt-action@v4
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        with:
+          version: '6.8.3'
+          arch: win64_mingw
+          tools: 'tools_mingw1310,qt.tools.win64_mingw1310'
+          archives: 'qtbase qtdeclarative qttools qtsvg qttranslations'
+          cache: false
+      - name: Configure cached Qt environment
+        if: steps.qt-cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $qtRoot = Join-Path '${{ runner.workspace }}' 'Qt\6.8.3\mingw_64'
+          $compiler = Join-Path '${{ runner.workspace }}' 'Qt\Tools\mingw1310_64'
+          if (!(Test-Path -LiteralPath "$qtRoot\bin\windeployqt.exe") -or !(Test-Path -LiteralPath "$compiler\bin\g++.exe")) {
+            throw 'Cached Qt or MinGW installation is incomplete'
+          }
+          "QT_ROOT_DIR=$qtRoot" >> $env:GITHUB_ENV
+          "$qtRoot\bin" >> $env:GITHUB_PATH
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Locate sccache binary
+        shell: pwsh
+        run: |
+          $sccache = (Get-Command sccache.exe -ErrorAction SilentlyContinue)?.Source
+          if ($sccache) { "SCCACHE_PATH=$sccache" >> $env:GITHUB_ENV }
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build and run native Qt tests
+        shell: pwsh
+        env:
+          SCCACHE_GHA_ENABLED: 'true'
+        run: |
+          $qtBase = Split-Path (Split-Path $env:QT_ROOT_DIR)
+          $compiler = Join-Path $qtBase 'Tools\mingw1310_64'
+          scripts/windows/windows-host-build.ps1 -QtRoot $env:QT_ROOT_DIR -CompilerRoot $compiler
+
   gate:
     name: Platform checks
     if: always()
-    needs: [changes, checks, ios]
+    needs: [changes, checks, ios, host-native]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -73,7 +127,7 @@ jobs:
           node <<'JS'
           const needs = JSON.parse(process.env.NEEDS);
           if (needs.changes.result !== 'success') throw new Error('Change selection failed');
-          for (const [job, flag] of [['checks', 'core'], ['ios', 'ios']]) {
+          for (const [job, flag] of [['checks', 'core'], ['ios', 'ios'], ['host-native', 'host_native']]) {
             const expected = needs.changes.outputs[flag] === 'true' ? 'success' : 'skipped';
             if (needs[job].result !== expected) throw new Error(`${job}: ${needs[job].result}, expected ${expected}`);
           }

@@ -31,12 +31,8 @@ concurrency:
 jobs:
   main:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    # Hold the entire main pipeline through deployment. All pending commits are
-    # retained, and a slower earlier check cannot deploy after a newer commit.
-    concurrency:
-      group: ci-main-pipeline
-      queue: max
-      cancel-in-progress: false
+    # CI-PERF-05: checks run concurrently across main commits; relay-deploy owns
+    # deployment serialization and refuses to roll back a newer deployed ancestor.
     uses: ./.github/workflows/ci-pipeline.yml
     secrets: inherit
 

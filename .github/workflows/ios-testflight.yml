@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: orbis-ios-testflight-external
@@ -88,8 +89,34 @@ jobs:
           set -euo pipefail
           python3 scripts/check-ios-export-compliance.py ios/Orbis/Orbis/Info.plist
           node scripts/ios-testflight-external.mjs preflight --upload-only --version "$IOS_VERSION" --build "$BUILD_NUMBER"
-      - name: Verify core protocol and build iOS Simulator app
+      - name: Check existing verified iOS CI run for HEAD
+        id: ios-verified
         if: inputs.operation == 'release' || inputs.operation == 'upload'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          verdict=$(node scripts/ci-verified-checks.mjs --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --mode ios)
+          echo "$verdict"
+          if printf '%s' "$verdict" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("verified") else 1)'; then
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Identify Swift toolchain
+        id: swift
+        if: (inputs.operation == 'release' || inputs.operation == 'upload') && steps.ios-verified.outputs.verified != 'true'
+        run: echo "version=$(swift --version | shasum -a 256 | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Restore Swift test bundle cache
+        if: (inputs.operation == 'release' || inputs.operation == 'upload') && steps.ios-verified.outputs.verified != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ios/Orbis/.build
+          key: swift-tests-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-${{ hashFiles('ios/Orbis/Package.swift', 'ios/Orbis/Orbis/**', 'ios/Orbis/Tests/**', 'shared/**', 'scripts/check-ios.sh') }}
+          restore-keys: |
+            swift-tests-${{ runner.os }}-${{ runner.arch }}-${{ steps.swift.outputs.version }}-
+      - name: Verify core protocol and build iOS Simulator app
+        if: (inputs.operation == 'release' || inputs.operation == 'upload') && steps.ios-verified.outputs.verified != 'true'
         run: bash scripts/check-ios.sh
       - name: Archive, verify the signed bundle, and upload to TestFlight
         if: inputs.operation == 'release' || inputs.operation == 'upload'

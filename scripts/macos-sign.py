@@ -6,6 +6,7 @@ Credentials stay in a Keychain profile. Sign nested code from the inside out;
 out instead of uploading the same DMG again. Reports contain no credentials.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
 import os
@@ -132,7 +133,25 @@ def run_codesign(command):
         time.sleep(delay)
 
 
-def sign_app(args):
+def signing_layers(targets):
+    # CI-PERF-08: targets that do not contain one another can request Apple RFC 3161
+    # timestamps concurrently, while outer bundles wait for every nested target inside them.
+    remaining = set(targets)
+    layers = []
+    while remaining:
+        innermost = sorted(
+            (candidate for candidate in remaining
+             if not any(other != candidate and candidate in other.parents for other in remaining)),
+            key=str,
+        )
+        if not innermost:
+            raise RuntimeError("Cyclic bundle hierarchy in signing targets")
+        layers.append(innermost)
+        remaining.difference_update(innermost)
+    return layers
+
+
+def sign_app(args, max_workers=8):
     app = args.app.resolve()
     if app.suffix != ".app" or not (app / "Contents/Info.plist").is_file():
         raise RuntimeError("--app must be a deployed macOS .app bundle")
@@ -146,8 +165,10 @@ def sign_app(args):
     if node not in targets:
         raise RuntimeError("Bundled Node executable is missing")
     entitlements = ROOT / "packages/windows-host/macos"
-    print(f"Signing {len(targets)} code objects for {args.team_id}", flush=True)
-    for index, target in enumerate(targets, 1):
+    layers = signing_layers(targets)
+    print(f"Signing {len(targets)} code objects across {len(layers)} layer(s) for {args.team_id}", flush=True)
+
+    def sign_one(target):
         command = ["codesign", "--force", "--sign", signer, "--timestamp", "--options", "runtime"]
         if args.keychain:
             command += ["--keychain", args.keychain]
@@ -159,14 +180,34 @@ def sign_app(args):
             run_codesign([*command, target])
         except RuntimeError as error:
             raise RuntimeError(f"Failed to sign {target}: {error}") from error
-        if index % 20 == 0 or index == len(targets):
-            print(f"Signed {index}/{len(targets)}", flush=True)
+
+    signed_count = 0
+    for layer in layers:
+        workers = max(1, min(max_workers, len(layer)))
+        if workers == 1:
+            sign_one(layer[0])
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(sign_one, target) for target in layer]
+                for future in as_completed(futures):
+                    future.result()
+        signed_count += len(layer)
+        print(f"Signed {signed_count}/{len(targets)}", flush=True)
+
     run(["codesign", "--verify", "--deep", "--strict", app])
-    for target in targets:
+
+    def verify_one(target):
         verify_identity(target, args.team_id, runtime=True)
         ent = run(["codesign", "--display", "--entitlements", "-", "--xml", target]).stdout
         if ent.strip() and plistlib.loads(ent.encode()).get("com.apple.security.get-task-allow"):
             raise RuntimeError(f"Debugging entitlement is present: {target}")
+
+    workers = max(1, min(max_workers, len(targets)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(verify_one, target) for target in targets]
+        for future in as_completed(futures):
+            future.result()
+
     save(args.report, dict(status="signed-and-verified", teamId=args.team_id,
                            identity=signer, app=str(app),
                            targets=[str(path.relative_to(app)) for path in targets]))

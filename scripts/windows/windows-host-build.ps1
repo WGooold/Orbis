@@ -3,6 +3,8 @@
     [string]$CompilerRoot = 'D:\Qt\Tools\mingw1310_64',
     [string]$DefaultRelay = 'wss://orbising.com/relay',
     [switch]$Package,
+    [switch]$SkipJsBuild,
+    [int]$Parallel = 0,
     [string]$InnoCompiler
 )
 $ErrorActionPreference = 'Stop'
@@ -34,15 +36,23 @@ try {
     Push-Location $repoRoot
     try {
         node -p 'process.execPath'
-        npm run build
-        if ($LASTEXITCODE -ne 0) { throw 'Host build failed' }
-        cmake -S packages/windows-host -B $buildDir -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$QtRoot" "-DCMAKE_CXX_COMPILER=$CompilerRoot/bin/g++.exe" "-DCMAKE_MAKE_PROGRAM=$ninja" "-DORBIS_DEFAULT_RELAY=$DefaultRelay"
+        if (!$SkipJsBuild) {
+            npm run build
+            if ($LASTEXITCODE -ne 0) { throw 'Host build failed' }
+        }
+        $buildJobs = if ($Parallel -gt 0) { $Parallel } elseif ($env:GITHUB_ACTIONS -eq 'true') { [Math]::Max(2, [Environment]::ProcessorCount) } else { 2 }
+        $cmakeLauncherArgs = @()
+        if ($env:SCCACHE_PATH -and (Test-Path -LiteralPath $env:SCCACHE_PATH)) {
+            $cmakeLauncherArgs += @("-DCMAKE_C_COMPILER_LAUNCHER=$env:SCCACHE_PATH", "-DCMAKE_CXX_COMPILER_LAUNCHER=$env:SCCACHE_PATH")
+        }
+        cmake -S packages/windows-host -B $buildDir -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$QtRoot" "-DCMAKE_CXX_COMPILER=$CompilerRoot/bin/g++.exe" "-DCMAKE_MAKE_PROGRAM=$ninja" "-DORBIS_DEFAULT_RELAY=$DefaultRelay" @cmakeLauncherArgs
         if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed' }
-        cmake --build $buildDir --parallel 2
+        cmake --build $buildDir --parallel $buildJobs
         if ($LASTEXITCODE -ne 0) { throw 'Qt build failed' }
         # Keep the failing test's own output: the default 1024-byte cap truncated the report to
         # nothing for installer-update, which hid the Windows-only failure twice.
-        ctest --test-dir $buildDir --output-on-failure --test-output-size-failed 200000
+        $ctestJobs = [Math]::Min(4, $buildJobs)
+        ctest --test-dir $buildDir --parallel $ctestJobs --output-on-failure --test-output-size-failed 200000
         $nativeTestExit = $LASTEXITCODE
         $diagnosticLog = Join-Path $buildDir 'diagnostic-log.txt'
         if (Test-Path -LiteralPath $diagnosticLog) { Get-Content -LiteralPath $diagnosticLog }
@@ -161,7 +171,16 @@ try {
             # must not send an unknown option to an older Qt app (which may show an error dialog).
             [IO.File]::WriteAllText((Join-Path $stage 'installer-update-v1.sha256'), (Get-FileHash -LiteralPath "$stage\OrbisHost.exe" -Algorithm SHA256).Hash.ToLowerInvariant() + "`n", [Text.Encoding]::ASCII)
             $archive = Join-Path $releaseRoot 'OrbisHost-0.1.25-windows-x64.zip'
-            Compress-Archive -LiteralPath $stage -DestinationPath $archive
+            $sevenZip = (Get-Command '7z.exe' -ErrorAction SilentlyContinue)?.Source
+            if (!$sevenZip -and (Test-Path -LiteralPath 'C:\Program Files\7-Zip\7z.exe')) {
+                $sevenZip = 'C:\Program Files\7-Zip\7z.exe'
+            }
+            if ($sevenZip) {
+                & $sevenZip a -tzip -mx=5 -mmt=on $archive $stage | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'Portable ZIP compression failed' }
+            } else {
+                Compress-Archive -LiteralPath $stage -DestinationPath $archive
+            }
             [IO.File]::WriteAllText("$archive.sha256", (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + (Split-Path -Leaf $archive) + "`n", [Text.Encoding]::ASCII)
             if ($InnoCompiler) {
                 # Inno's file reader still encounters MAX_PATH with nested npm packages.

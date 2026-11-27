@@ -8,6 +8,11 @@ on:
         default: false
   workflow_dispatch:
     inputs:
+      skip_checks:
+        description: 'Skip Core checks when this exact commit already passed CI'
+        required: false
+        type: boolean
+        default: false
       windows_build_run_id:
         description: 'Optional successful Windows Host build run ID to publish on the website'
         required: false
@@ -36,14 +41,44 @@ permissions:
   actions: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run_checks: ${{ steps.gate.outputs.run_checks }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Check existing verified CI run for HEAD
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SKIP_INPUT: ${{ inputs.skip_checks }}
+        run: |
+          set -euo pipefail
+          if [[ "$SKIP_INPUT" == "true" ]]; then
+            echo "run_checks=false" >> "$GITHUB_OUTPUT"
+            echo "Core checks skipped via workflow input."
+            exit 0
+          fi
+          verdict=$(node scripts/ci-verified-checks.mjs --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --mode core-full)
+          echo "$verdict"
+          if printf '%s' "$verdict" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("verified") else 1)'; then
+            echo "run_checks=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_checks=true" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
-    if: ${{ !inputs.skip_checks }}
+    needs: preflight
+    if: needs.preflight.outputs.run_checks == 'true'
     uses: ./.github/workflows/core-checks.yml
 
   deploy:
     name: 部署到服务器
-    needs: check
-    if: ${{ always() && !cancelled() && (needs.check.result == 'success' || (inputs.skip_checks && needs.check.result == 'skipped')) }}
+    needs: [preflight, check]
+    if: ${{ always() && !cancelled() && needs.preflight.result == 'success' && (needs.check.result == 'success' || (needs.preflight.outputs.run_checks == 'false' && needs.check.result == 'skipped')) }}
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -60,6 +95,8 @@ jobs:
       ANDROID_APK_SHA256: ${{ inputs.android_apk_sha256 }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: 打包 HEAD
         run: |
@@ -139,13 +176,13 @@ jobs:
         if: inputs.android_release_tag != ''
         run: sdkmanager "build-tools;35.0.0"
 
-      - name: Verify and archive Host downloads
+      - name: Verify Host download checksums
         if: env.PUBLISH_HOST_DOWNLOADS == 'true'
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import hashlib, os, re, tarfile
+          import hashlib, os, re
           cmake = Path('packages/windows-host/CMakeLists.txt').read_text()
           version = re.search(r'project\(OrbisHost VERSION ([0-9]+\.[0-9]+\.[0-9]+)', cmake).group(1)
           wanted = []
@@ -154,16 +191,13 @@ jobs:
           if os.environ['MACOS_BUILD_RUN']:
               wanted += [f'OrbisHost-{version}-macos-arm64.dmg', f'OrbisHost-{version}-macos-x64.dmg']
           roots = [Path(path) for path in ('/tmp/orbis-windows-artifact', '/tmp/orbis-macos-artifact') if Path(path).is_dir()]
-          with tarfile.open('/tmp/orbis-downloads-' + os.environ['RELEASE'] + '.tar.gz', 'w:gz') as archive:
-              for name in wanted:
-                  matches = [match for root in roots for match in root.rglob(name)]
-                  assert len(matches) == 1, name
-                  file = matches[0]
-                  checksum = file.with_name(name + '.sha256')
-                  assert hashlib.sha256(file.read_bytes()).hexdigest() == checksum.read_text().split()[0], name
-                  archive.add(file, arcname=name)
-                  archive.add(checksum, arcname=name + '.sha256')
-                  print(f'Archived verified {name}')
+          for name in wanted:
+              matches = [match for root in roots for match in root.rglob(name)]
+              assert len(matches) == 1, name
+              file = matches[0]
+              checksum = file.with_name(name + '.sha256')
+              assert hashlib.sha256(file.read_bytes()).hexdigest() == checksum.read_text().split()[0], name
+              print(f'Verified {name}')
           PY
 
       - name: Download and verify requested Android release
@@ -228,9 +262,17 @@ jobs:
             "$TARGET" "cat $APP_DIR/shared/deployed-commit 2>/dev/null || true" | tr -d '\r\n')"
           if [[ "$deployed" == "$RELEASE" && -z "$WINDOWS_BUILD_RUN" && -z "$MACOS_BUILD_RUN" && -z "$ANDROID_RELEASE_TAG" ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "expected_commit=$RELEASE" >> "$GITHUB_OUTPUT"
             echo "服务器已经是 $RELEASE，跳过构建与切换。"
+          elif [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" && -n "$deployed" && -z "$WINDOWS_BUILD_RUN" && -z "$MACOS_BUILD_RUN" && -z "$ANDROID_RELEASE_TAG" ]] &&
+            git cat-file -e "${deployed}^{commit}" 2>/dev/null &&
+            git merge-base --is-ancestor "$RELEASE" "$deployed"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "expected_commit=$deployed" >> "$GITHUB_OUTPUT"
+            echo "服务器已运行更新的 main 提交 $deployed（包含 $RELEASE），跳过旧提交覆盖。"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "expected_commit=$RELEASE" >> "$GITHUB_OUTPUT"
             echo "服务器当前 ${deployed:-<无标记>} → 将部署 $RELEASE"
           fi
 
@@ -243,8 +285,20 @@ jobs:
           scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             deploy/remote-deploy.sh "$TARGET:/tmp/orbis-remote-deploy-$RELEASE.sh"
           if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then
-            scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
-              "/tmp/orbis-downloads-$RELEASE.tar.gz" "$TARGET:/tmp/orbis-downloads-$RELEASE.tar.gz"
+            upload_args=(
+              --archive "/tmp/orbis-downloads-$RELEASE.tar"
+              --remote-archive "/tmp/orbis-downloads-$RELEASE.tar"
+              --target "$TARGET"
+              --port "$PORT"
+              --key-file "$SSH_KEY_FILE"
+              --app-dir "$APP_DIR"
+              --root /tmp/orbis-windows-artifact
+              --root /tmp/orbis-macos-artifact
+              --workers 8
+            )
+            if [[ -n "$WINDOWS_BUILD_RUN" ]]; then upload_args+=(--windows-selected); fi
+            if [[ -n "$MACOS_BUILD_RUN" ]]; then upload_args+=(--macos-selected); fi
+            python3 deploy/upload-host-downloads.py "${upload_args[@]}"
           fi
 
       - name: 在服务器上构建、健康检查并切换
@@ -252,7 +306,7 @@ jobs:
         run: |
           set -euo pipefail
           downloads=""
-          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then downloads="/tmp/orbis-downloads-$RELEASE.tar.gz"; fi
+          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then downloads="/tmp/orbis-downloads-$RELEASE.tar"; fi
           ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             "$TARGET" "bash /tmp/orbis-remote-deploy-$RELEASE.sh '$RELEASE' \
@@ -262,15 +316,22 @@ jobs:
             "$TARGET" "rm -f /tmp/orbis-remote-deploy-$RELEASE.sh" || true
 
       - name: 核对公网版本与服务器部署标记
+        env:
+          EXPECTED_COMMIT: ${{ steps.skip.outputs.expected_commit }}
+          WAS_SKIPPED: ${{ steps.skip.outputs.skip }}
         run: |
           set -euo pipefail
           deployed="$(ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
-            "$TARGET" "cat $APP_DIR/shared/deployed-commit")"
-          test "$deployed" = "$RELEASE"
+            "$TARGET" "cat $APP_DIR/shared/deployed-commit" | tr -d '\r\n')"
+          if [[ "$WAS_SKIPPED" == "true" && "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]] && git cat-file -e "${deployed}^{commit}" 2>/dev/null; then
+            git merge-base --is-ancestor "$RELEASE" "$deployed"
+          else
+            test "$deployed" = "$EXPECTED_COMMIT"
+          fi
           health="$(curl -fsS --max-time 20 "$HEALTH_URL")"
-          printf '%s' "$health" | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["status"] == "ok" and value["commit"] == sys.argv[1]' "$RELEASE"
-          echo "Verified deployed-commit and public health: $RELEASE"
+          printf '%s' "$health" | python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["status"] == "ok" and value["commit"] == sys.argv[1]' "$deployed"
+          echo "Verified deployed-commit and public health: $deployed"
           site_url="${HEALTH_URL%/healthz}/"
           site_body="$(curl -fsS --max-time 20 "$site_url")"
           admin_body="$(curl -fsS --max-time 20 "${site_url}admin/")"
