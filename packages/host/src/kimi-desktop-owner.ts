@@ -59,9 +59,9 @@ export async function kimiDesktopOwner(pid: number, host: string, port: number):
   } catch { return false; }
 }
 
-const windowsDesktopVersion = "1.5.1.0";
+const windowsDesktopMinimum = "1.5.1.0";
 const windowsCertificate = "2473FB09CF3076630B7249051CB9246B7563249D";
-// The Electron application code lives in app.asar, outside the signed exe.
+// The published baseline has an unsigned app.asar, outside the signed exe.
 const windowsAppHash = "668271B8E42D6642A39C2BE71C32DE7C059313F6F7B00250A45064750FC34500";
 const windowsUninstallKey = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\8e1a5331-d39b-57b9-8da5-3dc7219b2990";
 
@@ -102,11 +102,19 @@ async function verifyWindowsDesktop(file: string, owner?: { pid: number; host: s
   ` : "";
   const result = await windowsProbe(`$file=${psLiteral(file)};
     ${identity}
-    if ((Get-Item -LiteralPath $file).VersionInfo.ProductVersion -ne '${windowsDesktopVersion}') { exit 1 };
+    $version = (Get-Item -LiteralPath $file).VersionInfo.ProductVersion;
+    if ($version -notmatch '^\\d{1,8}\\.\\d{1,8}\\.\\d{1,8}(?:\\.\\d{1,8})?$') { exit 1 };
+    if ($version.Split('.').Count -eq 3) { $version += '.0' };
+    if ([Version]$version -lt [Version]'${windowsDesktopMinimum}') { exit 1 };
     $sig = Get-AuthenticodeSignature -LiteralPath $file;
     if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Thumbprint -ne '${windowsCertificate}') { exit 1 };
     $asar = Join-Path (Split-Path -LiteralPath $file) 'resources\\app.asar';
-    if ((Get-FileHash -LiteralPath $asar -Algorithm SHA256).Hash -ne '${windowsAppHash}') { exit 1 };
+    if ((Get-FileHash -LiteralPath $asar -Algorithm SHA256).Hash -ne '${windowsAppHash}') {
+      # Authenticode on the EXE does not authenticate the external ASAR. Accept a different
+      # archive only if Windows can independently verify it (e.g. via a signed catalog).
+      $appSig = Get-AuthenticodeSignature -LiteralPath $asar;
+      if ($appSig.Status -ne 'Valid' -or $appSig.SignerCertificate.Thumbprint -ne '${windowsCertificate}') { exit 1 };
+    };
     ${listener}
     'verified';`, signal);
   return result === "verified";

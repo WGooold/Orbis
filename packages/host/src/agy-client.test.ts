@@ -82,6 +82,11 @@ describe("Antigravity ACP process", () => {
     await client.stop();
   });
 
+  it("accepts a newer CLI with the required ACP capabilities", async () => {
+    const client = await connectAgy({ cli: fixture(true, "1.6.0") });
+    await client.stop();
+  });
+
   // AGY-15: not even the profile lock is taken if proof of the developer key
   // is missing, rejected, or revoked while the independent HTTP check is in flight.
   it.skipIf(process.platform === "win32")("fails closed before launching with missing, rejected or revoked credentials", async () => {

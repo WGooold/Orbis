@@ -127,6 +127,8 @@ describe("Kimi Code local Web client", () => {
       expect(client.meta).toMatchObject({ product: "kimi-code-desktop", server_version: version });
       expect(client.sessionContract).toBe("desktop-2.8.1");
       client.close();
+      // A verified Desktop registration must not be accepted in Web mode.
+      await expect(KimiWebClient.connect({ ...desktop, expectedContracts: contracts, verifyDesktopOwner: options.verifyDesktopOwner })).rejects.toMatchObject({ reason: "not_running" });
       await expect(KimiWebClient.connect({ ...desktop, expectedContracts: contracts, verifyDesktopOwner: async () => false })).rejects.toMatchObject({ reason: "unsupported" });
     }
     const older = await fixture({ version: "2.8.0", windowsDesktop: true });
