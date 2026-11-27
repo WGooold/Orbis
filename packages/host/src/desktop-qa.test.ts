@@ -68,7 +68,7 @@ describe("QA-ACT-02 isolated desktop bridge", () => {
         dsh: { kind: "baseline", version: "0.2.2-rc.2" },
         dshDesktop: { kind: "baseline", version: "0.2.2-rc.2" },
         kimiCode: { kind: "exact", version: "2.6.3" },
-        kimiCodeDesktop: { kind: "embeddedService", version: "2.6.2" },
+        kimiCodeDesktop: { kind: "embeddedService", version: process.platform === "win32" ? "2.8.1" : "2.6.2" },
         opencode: { kind: "exact", version: "2.3.2" },
         openclaw: { kind: "localLaunch", version: "2026.11.5" },
       });
