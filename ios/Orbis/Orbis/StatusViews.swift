@@ -86,8 +86,6 @@ struct ConnectionStatusView: View {
                             .font(.orbisBody(.semibold))
                             .disabled(!relayTelemetryAvailable || relayTelemetryBusy || store.selectedHost == nil)
                             .accessibilityIdentifier("settings-device-telemetry")
-                            Text(L10n.tr("允许当前 Relay 统计本设备消息流量与连接时长。关闭后会删除本 Relay 上本设备的详细记录；网站访问、下载总量及 Relay 运行指标仍会统计。"))
-                                .font(.orbisLabel()).foregroundStyle(palette.secondary)
                             if relayTelemetryBusy || !relayTelemetryStatus.isEmpty {
                                 Text(relayTelemetryBusy ? L10n.tr("正在保存设置…") : relayTelemetryStatus)
                                     .font(.orbisLabel()).foregroundStyle(palette.secondary)

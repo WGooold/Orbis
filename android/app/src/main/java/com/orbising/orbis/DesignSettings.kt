@@ -134,8 +134,6 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
                             modifier = Modifier.testTag("settings-device-telemetry"),
                         )
                     }
-                    Text(L10n.tr("允许当前 Relay 统计本设备消息流量与连接时长。关闭后会删除本 Relay 上本设备的详细记录；网站访问、下载总量及 Relay 运行指标仍会统计。"),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (telemetryBusy || telemetryStatus.isNotEmpty()) {
                         Text(if (telemetryBusy) L10n.tr("正在保存设置…") else telemetryStatus,
                             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

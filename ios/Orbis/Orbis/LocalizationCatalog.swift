@@ -1042,7 +1042,6 @@ enum LocalizationCatalog {
         "手机无法安全渲染此交互，请在电脑端处理。": "This interaction cannot be displayed safely on the phone. Use the computer.",
         "手机本地规则": "On-device rules",
         "手机系统“下载”目录，{0}": "Phone's Downloads folder, {0}",
-        "允许当前 Relay 统计本设备消息流量与连接时长。关闭后会删除本 Relay 上本设备的详细记录；网站访问、下载总量及 Relay 运行指标仍会统计。": "Allow this Relay to measure this device's message traffic and connection duration. Turning this off deletes this device's detailed records on this Relay; website visits, download totals, and Relay service metrics are still collected.",
         "配对 Relay 后可设置": "Pair with a Relay to configure this.",
         "此 Relay 不支持遥测设置": "This Relay does not support telemetry settings.",
         "无法读取遥测设置": "Couldn't read telemetry settings.",
