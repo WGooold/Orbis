@@ -514,7 +514,15 @@ private slots:
         auto *field = findVisualItem(window->contentItem(), "agyApiKey");
         auto *save = findVisualItem(window->contentItem(), "agySaveCredential");
         auto *install = findVisualItem(window->contentItem(), "agyInstallGuide");
-        QTRY_VERIFY(field && field->isVisible() && save && install && install->isVisible());
+        auto *method = findVisualItem(window->contentItem(), "agyAuthMethod");
+        auto *google = findVisualItem(window->contentItem(), "agyGoogleLogin");
+        QTRY_VERIFY(google && google->isVisible() && method && method->isVisible() && install && install->isVisible());
+        QCOMPARE(method->property("currentValue").toString(), QString("oauth-personal"));
+        QVERIFY(!google->isEnabled()); // There is no CLI in this fixture.
+        QVERIFY(field && !field->isVisible() && save && !save->isVisible());
+        QVERIFY(method->setProperty("currentIndex", 2));
+        QVERIFY(QMetaObject::invokeMethod(method, "activated", Q_ARG(int, 2)));
+        QTRY_VERIFY(field->isVisible() && save->isVisible());
         QVERIFY(!controller.agentEnabled("agy"));
         QVERIFY(!save->isEnabled());
         auto *enable = findVisualItem(window->contentItem(), "agentDetailEnable");

@@ -45,9 +45,21 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
     }
     return out({ id, result: { status: "applied", snapshot } });
   }
-  if (method === "agy.setup.verify") return out({ id, result: { verification: !params.key || /^fixture-valid-/.test(params.key) ? "verified" : "rejected" } });
-  if (method === "agy.setup.apply") return out({ id, result: { source: params.key ? "saved" : "none", installed: true, requiredVersion: "1.5.17" } });
+  if (method === "agy.setup.verify") { const auth = params.auth || {}; return out({ id, result: { verification: /^fixture-valid-/.test(auth.apiKey || "") ? "verified" : "rejected" } }); }
+  if (method === "agy.setup.apply") { const auth = params.auth || {}; return out({ id, result: { source: params.auth ? "saved" : "none", authMethod: auth.authMethod || "oauth-personal", installed: true, requiredVersion: "1.5.17" } }); }
   if (method === "agy.setup.retry") return out({ id, result: { source: "saved", verification: "rejected" } });
+  if (method === "agy.setup.login.start") {
+    if (params.auth?.authMethod === "oauth-business") {
+      const authorizationUrl = "https:\/\/accounts.google.com/o/oauth2/v2/auth?state=fixture&response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A49152%2F";
+      out({ event: "agyLoginUrl", authMethod: "oauth-business", authorizationUrl });
+      return setTimeout(() => out({ id, result: { source: "saved", authMethod: "oauth-business", gcpProject: params.auth.gcpProject,
+        gcpLocation: params.auth.gcpLocation, installed: true, requiredVersion: "1.5.17", verification: "verified" } }), 200);
+    }
+    return out({ id, result: { authorizationUrl: "https:\/\/accounts.google.com/o/oauth2/auth?state=fixture" } });
+  }
+  if (method === "agy.setup.login.complete") return out({ id, result: params.code === "fixture-login-code"
+    ? { source: "saved", authMethod: "oauth-personal", verification: "verified" } : {} });
+  if (method === "agy.setup.logout") return out({ id, result: { source: "none", authMethod: "oauth-personal" } });
   if (method === "openclaw.save") return out({ id, result: { source: "file", url: params.url, hasToken: !!params.token, access: params.access ?? "auto" } });
   if (method === "openclaw.config.read") return out({ id, result: { ticket: "fixture", fields: [{ key: "workspace", editable: true, value: "/fixture" }] } });
   if (method === "openclaw.config.apply") {
@@ -153,6 +165,52 @@ private slots:
         QCOMPARE(methods(root()).count("agy.setup.apply"), 4);
         QVERIFY(!methods(root()).contains("stop"));
         QCOMPARE(host.state(), QString("connected"));
+    }
+
+    // AGY-16: a pending link is local and transient, and only native success stores the non-secret mode.
+    void managesAgyGoogleLoginOutsideTheKeyVault() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        host.finishAgySetup({{"source", "none"}, {"installed", true}, {"authMethod", "oauth-personal"}});
+        host.m_agyVaultForTest = [](auto, const auto &, const auto &) -> std::optional<QString> { return std::nullopt; };
+        const auto verification = [&host] { return host.agySetup().value("verification").toString(); };
+        host.startAgyLogin("oauth-personal");
+        QTRY_COMPARE(verification(), QString("loginRequired"));
+        QVERIFY(host.agySetup().value("authorizationUrl").toString().startsWith("https://accounts.google.com/"));
+        host.cancelAgyLogin();
+        QTRY_COMPARE(verification(), QString("cancelled"));
+        QVERIFY(!host.agySetup().contains("authorizationUrl"));
+        QVERIFY(!host.m_settings.contains("agyAuthMethod"));
+        host.startAgyLogin("oauth-personal");
+        QTRY_COMPARE(verification(), QString("loginRequired"));
+        host.completeAgyLogin("fixture-login-code");
+        QTRY_COMPARE(verification(), QString("verified"));
+        QCOMPARE(host.m_settings.value("agyAuthMethod").toString(), QString("oauth-personal"));
+        QVERIFY(!QJsonDocument(QJsonObject::fromVariantMap(host.agySetup())).toJson().contains("fixture-login-code"));
+        QVERIFY(!host.agySetup().contains("authorizationUrl"));
+        host.removeAgyCredential();
+        QTRY_COMPARE(verification(), QString("removed"));
+        QVERIFY(methods(root()).contains("agy.setup.logout"));
+    }
+
+    // AGY-16: the Enterprise browser helper relays only a validated URL; CLI success persists no credential.
+    void managesAgyEnterpriseBrowserLogin() {
+        auto &host = *m_host;
+        connectHost(host, root());
+        host.finishAgySetup({{"source", "none"}, {"installed", true}, {"authMethod", "oauth-personal"}});
+        host.startAgyLogin("oauth-business", "fixture-project", "global");
+        const auto verification = [&host] { return host.agySetup().value("verification").toString(); };
+        QTRY_COMPARE(verification(), QString("loginRequired"));
+        const auto url = host.agySetup().value("authorizationUrl").toString();
+        QVERIFY(url.startsWith("https://accounts.google.com/o/oauth2/v2/auth?"));
+        QVERIFY(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A49152%2F"));
+        QTRY_COMPARE(verification(), QString("verified"));
+        QCOMPARE(host.m_settings.value("agyAuthMethod").toString(), QString("oauth-business"));
+        QCOMPARE(host.m_settings.value("agyGcpProject").toString(), QString("fixture-project"));
+        QVERIFY(!host.agySetup().contains("authorizationUrl"));
+        const auto setupJson = QJsonDocument(QJsonObject::fromVariantMap(host.agySetup())).toJson();
+        QVERIFY(!setupJson.contains("authorizationUrl"));
+        QVERIFY(!setupJson.contains("fixture-code"));
     }
 
     // HOST-CLI-DISCOVERY-01: a rejected path keeps the previous choice; a

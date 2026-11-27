@@ -15,7 +15,8 @@ class AgentDialStateTest {
     )
 
     @Test fun legacyRosterUsesOnlyHostAnnouncedProviderGroupsInStableDialOrder() {
-        assertEquals(listOf("codex", "pi"), legacyAgentDialKinds(setOf("pi", "codexDesktop"), setOf("codex", "hermes")))
+        assertEquals(listOf("codex", "pi", "agy"), legacyAgentDialKinds(setOf("pi", "codexDesktop", "agy"), setOf("codex", "hermes")))
+        assertEquals("agy", agentDialProviderGroup("agy"))
         assertEquals(emptyList<String>(), legacyAgentDialKinds(emptySet(), emptySet()))
         assertNull(legacyAgentDialKinds(null, null))
     }

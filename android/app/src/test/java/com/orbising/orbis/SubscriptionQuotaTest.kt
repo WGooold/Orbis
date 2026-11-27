@@ -37,6 +37,13 @@ class SubscriptionQuotaTest {
         assertNull(failed.agentProviders.error)
     }
 
+    @Test fun parsesBoundedAntigravityPoolWindows() {
+        val pooled = Json.parseToJsonElement("""{"checkedAt":123,"windows":[{"name":"five_hour","remainingPercent":50,"resetsAt":456},{"name":"seven_day","remainingPercent":null,"resetsAt":null}],"pools":[{"id":"gemini-pro","label":"Gemini","windows":[{"name":"five_hour","remainingPercent":50,"resetsAt":456},{"name":"seven_day","remainingPercent":null,"resetsAt":null}]}]}""").jsonObject
+        val parsed = parseSubscriptionQuota(pooled)
+        assertEquals("Gemini", parsed?.pools?.singleOrNull()?.label)
+        assertEquals(50.0, parsed?.pools?.singleOrNull()?.windows?.firstOrNull()?.remainingPercent)
+    }
+
     @Test fun officialCapabilityComesFromHostFacts() {
         val projected = waiting.withModelFixture("providers", """{"providers":[{"agentKind":"claude","profiles":[{"id":"official","name":"Claude","enabled":true,"mode":"exclusive","globalDefault":false,"subscriptionSupported":true}]}]}""", scope = "host")
         assertTrue(projected.agentProviders.providers.single().subscriptionSupported)

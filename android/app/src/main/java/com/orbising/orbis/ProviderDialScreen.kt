@@ -203,7 +203,7 @@ internal fun ProviderDialScreen(state: RemoteState, hosts: List<HostSnapshot>, o
                         else -> L10n.tr("切换到 {0}", preview.name)
                     }
                     NeumorphActionButton(text = title, modifier = Modifier.fillMaxWidth().testTag("provider-apply"),
-                        enabled = if (managed && !on) canEdit && write == null && row != null && !moving else canUse && preview != null && (!preview.enabled || preview.additive),
+                        enabled = if (managed && !on) canEdit && write == null && row != null && !moving else canUse && preview != null && preview.kind != "agy" && (!preview.enabled || preview.additive),
                         icon = if (managed && !on) Icons.Rounded.PowerSettingsNew else if (preview?.enabled == true || managed && group == null) OrbisSymbols.Check else OrbisSymbols.SwapHoriz,
                         onClick = {
                             if (managed && !on) { toggle(true); return@NeumorphActionButton }
@@ -851,7 +851,8 @@ private fun ProviderQuotaPair(state: RemoteState, kind: String, provider: AgentP
     Box(Modifier.fillMaxWidth().heightIn(min = 112.dp).testTag("provider-quota-pair"), contentAlignment = Alignment.CenterStart) {
         if (!available) StatusWithInfo(L10n.tr("配额不可用"),
             if (provider?.subscriptionSupported == true) L10n.tr("启用后可查询配额") else L10n.tr("这个配置不提供配额查询"))
-        else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        else Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
             listOf("five_hour", "seven_day").forEach { name ->
                 val window = snapshot?.quota?.windows?.firstOrNull { it.name == name }
                 val resetCountdown = subscriptionQuotaResetCountdownLabel(window?.resetsAt)
@@ -883,6 +884,14 @@ private fun ProviderQuotaPair(state: RemoteState, kind: String, provider: AgentP
             // Always present: every tap after the automatic first query is a fresh subscription read.
             NeumorphIconButton({ provider?.let(onQuery) }, OrbisSymbols.Refresh,
                 L10n.tr("刷新配额"), enabled = canQuery && !loading, modifier = Modifier.testTag("provider-query"))
+            }
+            snapshot?.quota?.pools?.take(8)?.forEach { pool ->
+                val fiveHour = pool.windows.firstOrNull { it.name == "five_hour" }?.remainingPercent?.let { "${it.toInt()}%" } ?: "—"
+                val weekly = pool.windows.firstOrNull { it.name == "seven_day" }?.remainingPercent?.let { "${it.toInt()}%" } ?: "—"
+                Text(L10n.tr("{0} · 5 小时 {1} · 周 {2}", pool.label, fiveHour, weekly),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }

@@ -3,7 +3,7 @@ package com.orbising.orbis
 import kotlinx.serialization.json.*
 
 internal const val AGENT_DIAL_REVIEW_FEATURE = "agent.enablement.review.v1"
-internal val DIAL_PROVIDER_GROUPS = listOf("codex", "claude", "dsh", "pi")
+internal val DIAL_PROVIDER_GROUPS = listOf("codex", "claude", "dsh", "pi", "agy")
 
 /** Legacy Hosts have no enablement directory; only show provider groups they actually announce. */
 internal fun legacyAgentDialKinds(supported: Set<String>?, launchable: Set<String>?): List<String>? {

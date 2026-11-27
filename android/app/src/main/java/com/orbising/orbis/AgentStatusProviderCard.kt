@@ -49,7 +49,9 @@ internal fun AgentStatusProvidersCard(
 ) {
     NeumorphSurface(modifier = Modifier.fillMaxWidth(), contentInset = 16.dp) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            listOf("pi", "codex", "claude", "dsh").forEach { kind ->
+            val kinds = listOf("pi", "codex", "claude", "dsh") +
+                if ((state.launchableAgents ?: state.supportedAgents)?.contains("agy") == true || state.agentEnablementRows.any { it.kind == "agy" }) listOf("agy") else emptyList()
+            kinds.forEach { kind ->
                 AgentStatusProviderCard(state, kind, onSwitch, onQuery)
             }
         }
@@ -139,6 +141,13 @@ internal fun AgentStatusProviderCard(
             }
             if (hasQuota) {
                 snapshot?.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                quota?.pools?.take(8)?.forEach { pool ->
+                    val fiveHour = pool.windows.firstOrNull { it.name == "five_hour" }?.remainingPercent?.let { "${it.toInt()}%" } ?: "—"
+                    val weekly = pool.windows.firstOrNull { it.name == "seven_day" }?.remainingPercent?.let { "${it.toInt()}%" } ?: "—"
+                    Text(L10n.tr("{0} · 5 小时 {1} · 周 {2}", pool.label, fiveHour, weekly),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
             if (state.agentProviders.kind == kind) {
                 state.agentProviders.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }

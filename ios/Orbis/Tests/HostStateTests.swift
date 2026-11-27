@@ -112,7 +112,10 @@ struct HostStateTests {
         #expect(state.queryingQuota)
         let payload: [String: Any] = ["checkedAt": 1000, "windows": [
             ["name": "five_hour", "remainingPercent": 82.5, "resetsAt": 2000] as [String: Any],
-            ["name": "seven_day", "remainingPercent": NSNull(), "resetsAt": NSNull()] as [String: Any]]]
+            ["name": "seven_day", "remainingPercent": NSNull(), "resetsAt": NSNull()] as [String: Any]],
+            "pools": [["id": "gemini-pro", "label": "Gemini", "windows": [
+                ["name": "five_hour", "remainingPercent": 82.5, "resetsAt": 2000] as [String: Any],
+                ["name": "seven_day", "remainingPercent": NSNull(), "resetsAt": NSNull()] as [String: Any]]]]]
         var reply: [String: Any] = ["type": "provider.subscription.result", "requestId": "stale", "kind": "claude", "id": provider.id, "quota": payload]
         await state.consume(reply)
         #expect(state.quota == nil && state.queryingQuota)
@@ -120,6 +123,7 @@ struct HostStateTests {
         await state.consume(reply)
         #expect(state.quota?.windows.first?.remainingPercent == 82.5)
         #expect(state.quota?.windows.last?.remainingPercent == nil)
+        #expect(state.quota?.pools?.first?.label == "Gemini")
         #expect(!state.queryingQuota)
         state.querySubscription(provider, expectedHostKey: state.hostKey!)
         reply["requestId"] = sent.last["requestId"]

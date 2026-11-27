@@ -14,7 +14,10 @@ import { HostService } from "./host-service.js";
 import { readOpenClawDesktopSettings, saveOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { createOpenClawLocalLauncher } from "./openclaw-local-launch.js";
 import { AGY_VERSION, findAgy, openAgyProfile, verifyAgyConnection } from "./agy-client.js";
-import { agyEnvironmentKey, agyKey } from "./agy-credential.js";
+import { agyAuthIssue, agyUsesGoogle, DEFAULT_AGY_AUTH, parseAgyAuthConfig, type AgyAuthConfig } from "./agy-auth.js";
+import { signInAgyEnterprise, signOutAgyGoogle, startAgyPersonalLogin, type AgyCodeLogin } from "./agy-login.js";
+import { agyEnvironmentKey } from "./agy-credential.js";
+import { queryAgySubscriptionQuota } from "./agy-usage.js";
 import { AgyRuntime } from "./agy-runtime.js";
 import { agySubmissionFence } from "./agy-submission-fence.js";
 import { OpenClawNativeSettings } from "./openclaw-native-settings.js";
@@ -149,6 +152,8 @@ async function terminalWorkspace(cwd: string | undefined): Promise<string> {
   return cwd;
 }
 
+type AgyLoginAttempt = { auth: AgyAuthConfig; abort: AbortController; code?: AgyCodeLogin; completing?: boolean };
+
 /** Owns only the Host process started by the desktop app. No TCP management endpoint is exposed. */
 export class DesktopRuntime {
   readonly #stateDir: string;
@@ -171,8 +176,11 @@ export class DesktopRuntime {
   #claudeStatus: DesktopEvent = { event: "claudeStatus", installed: false, compatible: false, minimumVersion: CLAUDE_MIN_VERSION };
   readonly #emit: (event: DesktopEvent) => void;
   #service: HostService | undefined;
-  #agySavedKey: string | undefined;
+  #agyAuth: AgyAuthConfig = { ...DEFAULT_AGY_AUTH };
+  #agyVerified = false;
+  #agyLogin: AgyLoginAttempt | undefined;
   readonly #agySetupAbort = new AbortController();
+  #agySetupCleanup: Promise<void> | undefined;
   readonly #openClawNative = new OpenClawNativeSettings(() => this.#qa ? undefined : this.#service?.openClawSettingsConnection);
   #disposing: Promise<void> | undefined;
   #codex: CodexAppServer | undefined;
@@ -260,12 +268,14 @@ export class DesktopRuntime {
     }, undefined, undefined, profile => this.#providerCurrent(profile.kind));
   }
 
-  async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled" | "dshEnabled" | "codexEnabled" | "piIntegrationEnabled" | "kimiCodeEnabled" | "agentEntryOverrides"> & { legacyClaudeEnabled?: boolean } = {}): Promise<unknown> {
+  async initialize(settings: Pick<DesktopSettings, "claudeIntegrationEnabled" | "dshEnabled" | "codexEnabled" | "piIntegrationEnabled" | "kimiCodeEnabled" | "agentEntryOverrides"> & { legacyClaudeEnabled?: boolean; agyAuth?: unknown } = {}): Promise<unknown> {
     this.#legacyDshEnabled ||= settings.dshEnabled === true;
     this.#legacyCodexEnabled ||= settings.codexEnabled === true;
     this.#legacyPiEnabled ||= settings.piIntegrationEnabled === true;
     this.#legacyClaudeEnabled ||= settings.legacyClaudeEnabled === true;
     this.#legacyKimiEnabled = settings.kimiCodeEnabled;
+    const savedAgy = parseAgyAuthConfig(settings.agyAuth);
+    if (savedAgy && !this.#qa) this.#agyAuth = { ...savedAgy, apiKey: "" };
     this.#claudeIntegrationPreference = settings;
     // 先于一切 Agent 检测：从程序坞打开的 Host 只有 launchd 的最小 PATH。
     // 登录环境是例外：之后的每一次 Agent 检测和启动都依赖它，必须先就位。
@@ -306,41 +316,150 @@ export class DesktopRuntime {
   }
 
   #agyEnvironmentKey(): string | undefined { return this.#qa ? undefined : agyEnvironmentKey(); }
-  #agyKey(): string | undefined { return this.#agyEnvironmentKey() ?? this.#agySavedKey; }
-
-  async agySetupInfo() {
-    const source = this.#qa ? "unsupported" : this.#agyEnvironmentKey() ? "environment" : this.#agySavedKey ? "saved" : "none";
-    return { source, requiredVersion: AGY_VERSION, installed: !this.#qa && await findAgy() };
+  #agyAuthConfig(): AgyAuthConfig {
+    const key = this.#agyEnvironmentKey();
+    return key ? { ...DEFAULT_AGY_AUTH, authMethod: "gemini-api-key", apiKey: key } : this.#agyAuth;
+  }
+  #agyHasCredential(): boolean {
+    return !this.#qa && (!!this.#agyEnvironmentKey() || this.#agyVerified);
+  }
+  #agySubscriptionSupported(): boolean {
+    const auth = this.#agyAuthConfig();
+    return !this.#qa && agyUsesGoogle(auth.authMethod) && this.#agyVerified;
+  }
+  #agyAuthenticationMethod(): "native_oauth" | "api_key" | "none" | "unknown" {
+    if (!this.#agyHasCredential()) return "none";
+    const auth = this.#agyAuthConfig();
+    if (agyUsesGoogle(auth.authMethod)) return "native_oauth";
+    if (auth.apiKey) return "api_key";
+    return "unknown"; // ADC is not an API key and its source is not inspected.
   }
 
-  // These methods are reachable from the private GUI stdio bridge only. The Qt
-  // parent owns the OS credential store; a candidate is never applied before it commits.
+  async agySetupInfo() {
+    const { authMethod, gcpProject, gcpLocation } = this.#agyAuthConfig();
+    const source = this.#qa ? "unsupported" : this.#agyEnvironmentKey() ? "environment" : this.#agyVerified ? "saved" : "none";
+    return { source, authMethod, gcpProject, gcpLocation, requiredVersion: AGY_VERSION, installed: !this.#qa && await findAgy() };
+  }
+
+  #assertAgySetupEditable(): void {
+    this.#agySetupAbort.signal.throwIfAborted();
+    if (this.#qa || this.#agyEnvironmentKey()) throw new Error("当前无法更改 Antigravity CLI 认证");
+  }
+
+  // Qt commits the API key to its OS vault only after this probe, then applies it over private stdio.
   async checkAgyCredential(candidate: unknown) {
-    if (this.#qa || this.#agyEnvironmentKey()) throw new Error("当前无法更改 Antigravity CLI 密钥");
-    return { verification: await this.agyCredentialVerifier(candidate, { signal: this.#agySetupAbort.signal }) };
+    this.#assertAgySetupEditable();
+    const auth = parseAgyAuthConfig(candidate);
+    if (!auth || agyUsesGoogle(auth.authMethod) || agyAuthIssue(auth)) return { verification: "invalid" };
+    return { verification: await this.agyCredentialVerifier(auth, { signal: this.#agySetupAbort.signal }) };
   }
 
   async applyAgyCredential(value: unknown) {
-    if (this.#qa || this.#agyEnvironmentKey()) throw new Error("当前无法更改 Antigravity CLI 密钥");
-    this.#agySetupAbort.signal.throwIfAborted();
-    const key = value === null ? undefined : agyKey(value);
-    if (value !== null && !key) throw new Error("Antigravity CLI 密钥格式无效");
-    if (key !== this.#agySavedKey) {
-      this.#agySavedKey = key;
-      await this.#service?.refreshAgyConnection();
+    this.#assertAgySetupEditable();
+    const auth = value === null ? { ...DEFAULT_AGY_AUTH } : parseAgyAuthConfig(value);
+    if (!auth || (value !== null && (agyUsesGoogle(auth.authMethod) || agyAuthIssue(auth)))) throw new Error("Antigravity CLI 认证设置无效");
+    await this.cancelAgyLogin();
+    const previous = this.#agyAuth;
+    this.#agyAuth = auth;
+    this.#agyVerified = value !== null;
+    if (previous.authMethod !== auth.authMethod || previous.apiKey !== auth.apiKey ||
+        previous.gcpProject !== auth.gcpProject || previous.gcpLocation !== auth.gcpLocation) await this.#service?.refreshAgyConnection();
+    await this.#service?.refreshProviderFacts();
+    return this.agySetupInfo();
+  }
+
+  async #requireAgyDisabled(): Promise<void> {
+    if ((await this.readAgentEnablement()).agents.some(row => row.kind === "agy" && row.enabled)) {
+      throw new Error("请先在 Host 本机停用 Antigravity CLI");
     }
+  }
+
+  async startAgyLogin(value?: unknown) {
+    this.#assertAgySetupEditable();
+    if (this.#agyLogin) throw new Error("Antigravity 登录流程已在进行");
+    const auth = value === undefined ? this.#agyAuth : parseAgyAuthConfig(value);
+    if (!auth || !agyUsesGoogle(auth.authMethod) || agyAuthIssue(auth)) throw new Error("Google 登录设置无效");
+    const login: AgyLoginAttempt = { auth, abort: new AbortController() };
+    this.#agyLogin = login;
+    const signal = AbortSignal.any([login.abort.signal, this.#agySetupAbort.signal]);
+    try {
+      await this.#requireAgyDisabled();
+      signal.throwIfAborted();
+      if (auth.authMethod === "oauth-business") {
+        await signInAgyEnterprise(this.#stateDir, auth, { signal, onAuthorizationUrl: authorizationUrl => {
+          signal.throwIfAborted();
+          if (this.#agyLogin === login) this.#emit({ event: "agyLoginUrl", authorizationUrl, authMethod: auth.authMethod });
+        } });
+        return this.#finishAgyLogin(auth, signal);
+      }
+      login.code = await startAgyPersonalLogin(this.#stateDir, auth, { signal });
+      signal.throwIfAborted();
+      return { authorizationUrl: login.code.authorizationUrl };
+    } finally {
+      if (this.#agyLogin === login && (!login.code || signal.aborted)) this.#agyLogin = undefined;
+    }
+  }
+
+  async #finishAgyLogin(auth: AgyAuthConfig, signal: AbortSignal) {
+    signal.throwIfAborted();
+    this.#agyAuth = auth;
+    this.#agyVerified = true;
+    await this.#service?.refreshProviderFacts();
+    return { ...(await this.agySetupInfo()), verification: "verified" };
+  }
+
+  async completeAgyLogin(code: unknown) {
+    const login = this.#agyLogin;
+    if (!login?.code || login.completing) throw new Error("没有待完成的 Antigravity 登录");
+    login.completing = true;
+    const signal = AbortSignal.any([login.abort.signal, this.#agySetupAbort.signal]);
+    try {
+      await login.code.complete(code);
+      if (await this.agyCredentialVerifier(login.auth, { signal, stateDir: this.#stateDir }) !== "verified") {
+        throw new Error("Antigravity CLI 未确认已登录，请重新检测");
+      }
+      return await this.#finishAgyLogin(login.auth, signal);
+    } finally { if (this.#agyLogin === login) this.#agyLogin = undefined; }
+  }
+
+  async cancelAgyLogin() {
+    const login = this.#agyLogin;
+    if (!login) return;
+    login.abort.abort();
+    try { await login.code?.cancel(); }
+    finally { if (this.#agyLogin === login) this.#agyLogin = undefined; }
+  }
+
+  async logoutAgyGoogle() {
+    this.#assertAgySetupEditable();
+    if (this.#agyLogin) throw new Error("请先取消进行中的登录");
+    await this.#requireAgyDisabled();
+    const auth = this.#agyAuth;
+    await signOutAgyGoogle(this.#stateDir, auth, { signal: this.#agySetupAbort.signal });
+    this.#agyVerified = false;
+    await this.#service?.refreshProviderFacts();
     return this.agySetupInfo();
   }
 
   async retryAgyCredential() {
-    if (this.#qa) throw new Error("Antigravity CLI 设置不可用");
-    const verification = await this.agyCredentialVerifier(this.#agyKey(), { signal: this.#agySetupAbort.signal });
-    if (verification === "verified") this.#service?.retryAgyConnection();
+    if (this.#qa || this.#agyLogin) throw new Error("Antigravity CLI 设置不可用");
+    const auth = this.#agyAuthConfig();
+    const live = agyUsesGoogle(auth.authMethod) ? await this.#service?.retryAgyConnection() : undefined;
+    const verification = live === undefined
+      ? await this.agyCredentialVerifier(auth, { signal: this.#agySetupAbort.signal, stateDir: this.#stateDir })
+      : live ? "verified" : "unavailable";
+    this.#agySetupAbort.signal.throwIfAborted();
+    if (agyUsesGoogle(auth.authMethod)) this.#agyVerified = verification === "verified";
+    if (verification === "verified" && !agyUsesGoogle(auth.authMethod)) void this.#service?.retryAgyConnection();
     else if (verification === "rejected") await this.#service?.refreshAgyConnection();
+    await this.#service?.refreshProviderFacts();
     return { ...(await this.agySetupInfo()), verification };
   }
 
-  cancelAgySetup(): void { this.#agySetupAbort.abort(); }
+  cancelAgySetup(): void {
+    this.#agySetupAbort.abort();
+    this.#agySetupCleanup ??= this.cancelAgyLogin().catch(() => this.log("Antigravity 登录清理失败"));
+  }
 
   async readAgentEnablement(): Promise<AgentEnablementSnapshot> {
     if (!this.#qa) {
@@ -360,12 +479,12 @@ export class DesktopRuntime {
     if (!choice.success) throw new Error("此 Agent 暂不支持启用设置");
     try {
       if (choice.data.review !== undefined && !scoped) throw new Error("Unnegotiated Agent review");
-      const credentialAvailable = () => choice.data.kind !== "agy" || !choice.data.enabled || this.#agyKey() !== undefined;
-      if (!credentialAvailable()) throw new Error("请先在 Host 本机验证并保存 Antigravity CLI 密钥");
+      const credentialAvailable = () => choice.data.kind !== "agy" || !choice.data.enabled || this.#agyHasCredential();
+      if (!credentialAvailable()) throw new Error("请先在 Host 本机完成 Antigravity CLI 设置");
       return await this.#agentEnablement.set(choice.data, credentialAvailable,
         (kind, revision, review) => this.#service?.verifyAgentDisable(kind, revision, review), scoped);
     } catch (error) {
-      if (error instanceof Error && error.message === "请先在 Host 本机验证并保存 Antigravity CLI 密钥") throw error;
+      if (error instanceof Error && error.message === "请先在 Host 本机完成 Antigravity CLI 设置") throw error;
       if (error instanceof AgentDisableConfirmationRequired) {
         if (scoped) return { status: "review", review: error.review };
         throw error;
@@ -378,12 +497,12 @@ export class DesktopRuntime {
     try {
       const batch = input && typeof input === "object" ? input as { kinds?: unknown; enabled?: unknown } : {};
       const includesAgy = Array.isArray(batch.kinds) && batch.kinds.includes("agy");
-      const credentialAvailable = () => !includesAgy || batch.enabled !== true || this.#agyKey() !== undefined;
-      if (!credentialAvailable()) throw new Error("请先在 Host 本机验证并保存 Antigravity CLI 密钥");
+      const credentialAvailable = () => !includesAgy || batch.enabled !== true || this.#agyHasCredential();
+      if (!credentialAvailable()) throw new Error("请先在 Host 本机完成 Antigravity CLI 设置");
       return await this.#agentEnablement.setBatch(input,
         (kind, revision, scope) => this.#service?.reviewAgentDisable(kind, revision, scope), credentialAvailable);
     } catch (error) {
-      if (error instanceof Error && error.message === "请先在 Host 本机验证并保存 Antigravity CLI 密钥") throw error;
+      if (error instanceof Error && error.message === "请先在 Host 本机完成 Antigravity CLI 设置") throw error;
       if (error instanceof AgentBatchConfirmationRequired) return { status: "review", reviews: error.reviews };
       throw new Error("无法保存 Agent 设置，请检查 Host 状态目录权限");
     }
@@ -972,8 +1091,12 @@ export class DesktopRuntime {
       let relayAuthenticated = false;
       const service = await HostService.create({
         ...(!this.#qa ? {
-          agyCredentialConfigured: () => this.#agyKey() !== undefined,
-          createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(this.#stateDir, signal, { key: this.#agyKey() }), hostId, agySubmissionFence(this.#stateDir)),
+          agyCredentialConfigured: () => this.#agyHasCredential(),
+          agyCredentialVerified: () => this.#agyVerified,
+          agyAuthenticationMethod: () => this.#agyAuthenticationMethod(),
+          agySubscriptionSupported: () => this.#agySubscriptionSupported(),
+          queryAgySubscription: () => queryAgySubscriptionQuota(this.#stateDir, this.#agyAuthConfig()),
+          createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(this.#stateDir, signal, { auth: this.#agyAuthConfig() }), hostId, agySubmissionFence(this.#stateDir)),
         } : {}),
         ...(this.#qa ? {} : { createKimiCodeRuntime, kimiCodeDesktopSupported: supportsKimiDesktop, openClawLauncher: createOpenClawLocalLauncher(),
           createOpenCodeConnection: () => new OpenCodeServiceConnection({ launcher: createOpenCodeLocalLauncher() }) }),
@@ -1959,7 +2082,9 @@ export class DesktopRuntime {
 
   async close(): Promise<void> {
     this.cancelAgySetup();
-    this.#agySavedKey = undefined;
+    await this.#agySetupCleanup;
+    this.#agyAuth = { ...DEFAULT_AGY_AUTH };
+    this.#agyVerified = false;
     this.#dshDesktopOpenAbort?.abort();
     this.#claudeIntegrationAbort?.abort();
     this.cancelInstall();

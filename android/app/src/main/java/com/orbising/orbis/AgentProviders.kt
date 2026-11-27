@@ -1,6 +1,7 @@
 package com.orbising.orbis
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonArray
@@ -51,23 +52,38 @@ internal fun RemoteState.canUseProviders(kind: String): Boolean = e2eReady && co
 data class ProviderQuotaSnapshot(val providerId: String, val quota: SubscriptionQuota?, val error: String? = null)
 
 data class SubscriptionWindow(val name: String, val remainingPercent: Double?, val resetsAt: Long?)
-data class SubscriptionQuota(val checkedAt: Long, val windows: List<SubscriptionWindow>)
+data class SubscriptionQuotaPool(val id: String, val label: String, val windows: List<SubscriptionWindow>)
+data class SubscriptionQuota(val checkedAt: Long, val windows: List<SubscriptionWindow>, val pools: List<SubscriptionQuotaPool> = emptyList())
 
 internal fun parseSubscriptionQuota(value: JsonObject): SubscriptionQuota? {
     val checkedAt = (value["checkedAt"] as? JsonPrimitive)?.longOrNull?.takeIf { it >= 0 } ?: return null
-    val rows = value["windows"] as? JsonArray ?: return null
-    if (rows.size != 2) return null
-    val windows = rows.map { item ->
-        val row = item as? JsonObject ?: return null
-        val name = (row["name"] as? JsonPrimitive)?.contentOrNull ?: return null
-        val remaining = if (row["remainingPercent"] == JsonNull) null else
-            (row["remainingPercent"] as? JsonPrimitive)?.doubleOrNull?.takeIf { it.isFinite() && it in 0.0..100.0 } ?: return null
-        val resetsAt = if (row["resetsAt"] == JsonNull) null else
-            (row["resetsAt"] as? JsonPrimitive)?.longOrNull?.takeIf { it >= 0 } ?: return null
-        SubscriptionWindow(name, remaining, resetsAt)
+    fun parseWindows(value: JsonElement): List<SubscriptionWindow>? {
+        val rows = value as? JsonArray ?: return null
+        if (rows.size != 2) return null
+        val windows = rows.map { item ->
+            val row = item as? JsonObject ?: return null
+            val name = (row["name"] as? JsonPrimitive)?.contentOrNull ?: return null
+            val remaining = if (row["remainingPercent"] == JsonNull) null else
+                (row["remainingPercent"] as? JsonPrimitive)?.doubleOrNull?.takeIf { it.isFinite() && it in 0.0..100.0 } ?: return null
+            val resetsAt = if (row["resetsAt"] == JsonNull) null else
+                (row["resetsAt"] as? JsonPrimitive)?.longOrNull?.takeIf { it >= 0 } ?: return null
+            SubscriptionWindow(name, remaining, resetsAt)
+        }
+        return windows.takeIf { it.map(SubscriptionWindow::name).toSet() == setOf("five_hour", "seven_day") }
     }
-    if (windows.map { it.name }.toSet() != setOf("five_hour", "seven_day")) return null
-    return SubscriptionQuota(checkedAt, windows)
+    val windows = parseWindows(value["windows"] ?: return null) ?: return null
+    val pools = if (value["pools"] == null) emptyList() else {
+        val rows = value["pools"] as? JsonArray ?: return null
+        if (rows.size > 32) return null
+        rows.map { item ->
+            val pool = item as? JsonObject ?: return null
+            val id = (pool["id"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotEmpty() && it.length <= 256 } ?: return null
+            val label = (pool["label"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotEmpty() && it.length <= 128 } ?: return null
+            val poolWindows = parseWindows(pool["windows"] ?: return null) ?: return null
+            SubscriptionQuotaPool(id, label, poolWindows)
+        }.also { if (it.map(SubscriptionQuotaPool::id).toSet().size != it.size) return null }
+    }
+    return SubscriptionQuota(checkedAt, windows, pools)
 }
 
 internal fun RemoteState.beginSubscriptionQuery(provider: AgentProvider, request: String): RemoteState {

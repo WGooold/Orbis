@@ -10,13 +10,17 @@ export function parseProviderRequest(value: unknown): ProviderRequest | undefine
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const data = value as Record<string, unknown>;
   if (data.type !== "provider.list" && data.type !== "provider.switch" && data.type !== "provider.subscription") return undefined;
-  if (data.protocolVersion !== PROTOCOL_VERSION || !["pi", "codex", "dsh", "claude"].includes(String(data.kind))) return undefined;
+  const kind = String(data.kind);
+  if (data.protocolVersion !== PROTOCOL_VERSION ||
+      !(data.type === "provider.list" ? ["pi", "codex", "dsh", "claude", "agy"].includes(kind)
+        : data.type === "provider.subscription" ? ["claude", "codex", "agy"].includes(kind)
+        : ["pi", "codex", "dsh", "claude"].includes(kind))) return undefined;
   const valid = (id: unknown): id is string => typeof id === "string" && id.trim().length > 0 && id.length <= 128;
   if (!valid(data.requestId)) return undefined;
   const keys = data.type === "provider.list" ? ["type", "protocolVersion", "requestId", "kind"] : data.type === "provider.subscription" ? ["type", "protocolVersion", "requestId", "kind", "id"] : ["type", "protocolVersion", "requestId", "kind", "id", "enabled"];
   if (Object.keys(data).some(key => !keys.includes(key))) return undefined;
   if (data.type === "provider.switch" && (!valid(data.id) || typeof data.enabled !== "boolean" || (data.kind !== "pi" && !data.enabled))) return undefined;
-  if (data.type === "provider.subscription" && (!valid(data.id) || !["claude", "codex"].includes(String(data.kind)))) return undefined;
+  if (data.type === "provider.subscription" && !valid(data.id)) return undefined;
   return data as ProviderRequest;
 }
 export function providerResult(request: ProviderRequest, providers: ProviderSummary[], hotSwitch = false): object {

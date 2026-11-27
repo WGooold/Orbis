@@ -74,7 +74,7 @@ describe("Antigravity ACP process", () => {
   it("rejects a process without the pinned version, native load support or developer authentication", async () => {
     await expect(connectAgy({ cli: fixture(false) })).rejects.toThrow("ACP v1");
     await expect(connectAgy({ cli: fixture(true, "1.5.16") })).rejects.toThrow(AGY_VERSION);
-    await expect(connectAgy({ cli: fixture(true, AGY_VERSION, "oauth-personal") })).rejects.toThrow("Gemini API Key");
+    await expect(connectAgy({ cli: fixture(true, AGY_VERSION, "oauth-personal") })).rejects.toThrow("所选认证方式");
   });
 
   // AGY-15: not even the profile lock is taken if proof of the developer key

@@ -387,7 +387,7 @@ struct AgentProvidersView: View {
     let onBack: () -> Void
     private var owner: HostConnection { store.activeConnection }
     private var online: Bool { owner.connection == .secured }
-    private let groups = ["codex", "claude", "dsh", "pi"]
+    private let groups = ["codex", "claude", "dsh", "pi", "agy"]
     private var rows: [HostConnection.AgentEnablementRow] { owner.agentDialCached ?? owner.agentEnablementRows }
     private var managed: Bool { owner.agentEnablementAvailable || owner.agentDialCached != nil }
     private var legacyKinds: [String]? { legacyAgentDialKinds(supported: owner.supportedAgents, launchable: owner.launchableAgents) }
@@ -581,8 +581,10 @@ struct AgentProvidersView: View {
                     .disabled(!editable || moving).accessibilityIdentifier("agent-enable-action")
             } else if let provider {
                 let active = provider.enabled && !provider.additive
-                OrbisActionButton(title: actionTitle(provider), symbol: active ? "checkmark" : provider.additive ? (provider.enabled ? "xmark" : "plus") : "arrow.left.arrow.right", tint: palette.agent(provider.kind)) { apply(provider) }
-                    .disabled(active || moving || !online || !host.canChangeProvider(for: provider.kind))
+                OrbisActionButton(title: provider.kind == "agy" && !provider.enabled ? L10n.tr("请在电脑上登录") : actionTitle(provider),
+                    symbol: active ? "checkmark" : provider.kind == "agy" ? "lock" : provider.additive ? (provider.enabled ? "xmark" : "plus") : "arrow.left.arrow.right",
+                    tint: palette.agent(provider.kind)) { if provider.kind != "agy" { apply(provider) } }
+                    .disabled(provider.kind == "agy" || active || moving || !online || !host.canChangeProvider(for: provider.kind))
                     .accessibilityIdentifier("provider-action-" + provider.id)
             } else {
                 OrbisActionButton(title: L10n.tr(managed && group == nil ? "已启用" : host.providersLoading ? "正在读取供应商" : "当前没有可用供应商"), symbol: managed && group == nil ? "checkmark" : nil) {}.disabled(true)
@@ -651,6 +653,17 @@ struct AgentProvidersView: View {
                         if let key = host.hostKey { host.querySubscription(provider, expectedHostKey: key) }
                     // Same precondition as querySubscription: an enabled refresh always sends a fresh read.
                     }.disabled(!host.canChangeProvider(for: provider.kind)).accessibilityIdentifier("provider-quota-refresh")
+                }
+                if let pools = snapshot?.quota?.pools {
+                    ForEach(Array(pools.prefix(8))) { pool in
+                        let fiveHour = pool.windows.first { $0.name == "five_hour" }?.remainingPercent.map { L10n.tr("{0}%", Int($0.rounded())) } ?? "—"
+                        let weekly = pool.windows.first { $0.name == "seven_day" }?.remainingPercent.map { L10n.tr("{0}%", Int($0.rounded())) } ?? "—"
+                        HStack(spacing: 8) {
+                            Text(pool.label).lineLimit(1)
+                            Spacer(minLength: 0)
+                            Text(L10n.tr("5 小时 {0} · 周 {1}", fiveHour, weekly)).lineLimit(1)
+                        }.font(.orbisCaption()).foregroundStyle(palette.secondary)
+                    }
                 }
             } else {
                 OrbisStatusWithInfo(title: L10n.tr("配额不可用"), message: L10n.tr("这个配置不提供配额查询"))

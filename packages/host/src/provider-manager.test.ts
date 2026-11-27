@@ -283,6 +283,9 @@ describe("bounded remote provider and installation inputs", () => {
     expect(parseProviderRequest(request)).toEqual(request);
     for (const bad of [{ ...request, config: {} }, { ...request, command: "npm" }, { ...request, enabled: false }, { ...request, kind: "shell" }, { ...request, protocolVersion: -1 }]) expect(parseProviderRequest(bad)).toBeUndefined();
     expect(providerResult(parseProviderRequest(request)!, [])).toMatchObject({ type: "provider.result", requestId: "r", providers: [] });
+    expect(parseProviderRequest({ type: "provider.list", protocolVersion: PROTOCOL_VERSION, requestId: "agy-list", kind: "agy" })).toBeDefined();
+    expect(parseProviderRequest({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "agy-quota", kind: "agy", id: "antigravity" })).toBeDefined();
+    expect(parseProviderRequest({ type: "provider.switch", protocolVersion: PROTOCOL_VERSION, requestId: "agy-switch", kind: "agy", id: "antigravity", enabled: true })).toBeUndefined();
   });
 
 });
