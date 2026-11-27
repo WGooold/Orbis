@@ -2,7 +2,7 @@
 
 The website uses `../video/claude`, revision `5672fd8`, directly. It runs independently of that source directory.
 
-- `compositions/s3-agents.html`: original 393 × 669 cards, radius 950, eleven slots, sampled continuous acceleration curve and camera sequence. `cinema.js` adds dragging, keyboard selection and a stable interactive camera. Six planned Agents are labelled “即将接入” and have no fabricated working conversations.
+- `compositions/s3-agents.html`: original 393 × 669 cards, radius 950, eleven slots, sampled continuous acceleration curve and camera sequence. `cinema.js` adds dragging, keyboard selection and a stable interactive camera. The carousel follows the current Host catalog; only Oh My Pi is labelled “即将接入”. The conversations are illustrative and do not launch Host agents.
 - `compositions/s4-features.html`: original 393 × 852 phone UI, send/ink, permissions/reminders, full-page navigation, quadratic file flight, selection spread, toolbar morph, card rise and copper quota coin. `film.js` adds local controls, per-file downloads, all five creation choices and the third review file.
 - `compositions/s2-pair.html`: original raised/recessed pairing page, scanner, recognition and connection receipt. The displayed QR is demonstration artwork; it does not pair a computer.
 - `assets/orbis-ui.css`, `assets/phone3d.js`: original tokens, icons and current phone mesh. Mesh styles are in `../phone3d.css`.

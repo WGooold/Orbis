@@ -33,12 +33,12 @@ const agents = [
   { name: "Pi", image: "pi.svg" },
   { name: "Codex Desktop", image: "lobe-codex-color.svg" },
   { name: "DeepSeek", image: "deepseek.svg" },
-  { name: "ZCode", image: "zcode.png", preview: true },
-  { name: "OpenCode", image: "opencode-light.svg", darkImage: "opencode-dark.svg", preview: true },
-  { name: "Kimi Code", image: "kimi-code.svg", preview: true },
+  { name: "Antigravity", image: "antigravity.svg" },
+  { name: "OpenCode", image: "opencode-light.svg", darkImage: "opencode-dark.svg" },
+  { name: "Kimi Code", image: "kimi-code.svg" },
   { name: "Oh My Pi", image: "omp-icon.svg", preview: true },
-  { name: "Hermes", image: "lobe-hermesagent.svg", preview: true },
-  { name: "OpenClaw", image: "lobe-openclaw-color.svg", preview: true },
+  { name: "Hermes", image: "lobe-hermesagent.svg" },
+  { name: "OpenClaw", image: "lobe-openclaw-color.svg" },
 ];
 
 function setupOrbit() {

@@ -46,15 +46,15 @@ this app connects to, and is not covered by the MIT License above. Orbis is
 independently maintained and claims no endorsement, partnership or
 authorization from DeepSeek.
 
+Antigravity mark
+Source: https://antigravity.google/assets/image/brand/antigravity-icon__full-color.svg
+Google Antigravity brand mark; used only to identify the Antigravity integration.
+The mark is not covered by the MIT License below and does not imply endorsement.
+
 OpenCode mark
 Source: https://opencode.ai/brand (transparent light/dark logo files)
 OpenCode and its mark are trademarks of Anomaly. They identify the OpenCode integration only,
 are not covered by the MIT license above, and do not imply endorsement.
-
-ZCode mark
-Source: https://zcode.z.ai/favicon-192x192.png?v=20260707-transparent
-The ZCode product mark identifies the site preview only. It is not covered by
-the MIT license above, and its use does not imply endorsement.
 
 ----
 Added for the promo film (2026-11-02):
