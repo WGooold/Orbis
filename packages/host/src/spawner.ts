@@ -9,7 +9,7 @@
  * Pi 都会经 loopback 自己注册回来（`runtime.online`），Host 只跟踪 pid 用于上限，
  * 外加一条「同一会话不重复拉起」的去重（手机可能重复点同一个会话）。
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -268,6 +268,10 @@ export type SessionSpawnerOptions = {
   now?: () => number;
 };
 
+const PI_EOF_GRACE_MS = 2_000;
+const PI_TERM_GRACE_MS = 1_000;
+const PI_KILL_GRACE_MS = 500;
+
 export class SessionSpawner {
   readonly #maxRunning: number;
   readonly #log: (line: string) => void;
@@ -277,6 +281,8 @@ export class SessionSpawner {
   readonly #now: () => number;
   readonly #running = new Map<number, SpawnedAgent>();
   readonly #terminalPids = new Set<number>();
+  readonly #headlessChildren = new Map<ChildProcess, Promise<void>>();
+  #stopping: Promise<void> | undefined;
 
   constructor(options: SessionSpawnerOptions = {}) {
     this.#maxRunning = options.maxRunning ?? 8;
@@ -301,6 +307,36 @@ export class SessionSpawner {
     return [...this.#running.values()];
   }
 
+  /** End RPC input for Pi processes started by this spawner, not attached or terminal sessions. */
+  stopHeadless(): Promise<void> {
+    return this.#stopping ??= Promise.all([...this.#headlessChildren].map(([child, closed]) =>
+      this.#stopHeadlessChild(child, closed))).then(() => undefined);
+  }
+
+  async #stopHeadlessChild(child: ChildProcess, closed: Promise<void>): Promise<void> {
+    const timeout = new AbortController();
+    const wait = (ms: number) => Promise.race([closed.then(() => true), delay(ms, false, { signal: timeout.signal })]);
+    const logError = (error: Error): void => this.#log(`[agent pid=${child.pid ?? 0}] 停止无头 Pi 失败：${error.message}`);
+    child.on("error", logError);
+    try {
+      child.stdin?.end();
+      if (await wait(PI_EOF_GRACE_MS)) return;
+      child.kill("SIGTERM");
+      if (await wait(PI_TERM_GRACE_MS)) return;
+      child.kill("SIGKILL");
+      if (!await wait(PI_KILL_GRACE_MS)) this.#log(`[agent pid=${child.pid ?? 0}] 无头 Pi 尚未完成退出，Host 将关闭管道`);
+    } finally {
+      child.off("error", logError);
+      timeout.abort();
+      child.stdin?.destroy();
+      child.stderr?.destroy();
+    }
+  }
+
+  #requireRunning(): void {
+    if (this.#stopping) throw new ActivationError("spawn_failed", "Host 正在退出，不能启动 Pi");
+  }
+
   /**
    * 拉起一个 Pi。cwd 不存在时报 `cwd_missing`（§8.2：不静默换目录）；
    * 上限到了报 `spawn_limit_reached`；spawn 本身失败报 `spawn_failed`。
@@ -308,6 +344,7 @@ export class SessionSpawner {
   async activate(input: ActivateInput): Promise<SpawnedAgent> {
     const cwd = input.target.cwd;
     await this.#requireDir(cwd);
+    this.#requireRunning();
     input.requireCurrent?.();
     const running = this.running;
 
@@ -361,6 +398,7 @@ export class SessionSpawner {
           ? { type: "resume", sessionId: input.target.sessionId, sessionFile: input.target.sessionFile }
           : { type: "new", sessionId: newSessionId ?? "" },
     };
+    this.#requireRunning();
     input.requireCurrent?.();
     if (platform() === "darwin" && (mode === "tui" || mode === "auto" && desktop && terminal)) {
       return this.#activateMac(input, planInput);
@@ -383,11 +421,17 @@ export class SessionSpawner {
       // 窗口，APP 上也永远等不到这个会话（`runtime.online` 不会来）。这就是「点了
       // 激活却什么都没发生」的成因。
       // stderr 同时收进 Host 日志：原先是 `"ignore"`，这种秒退连一行痕迹都不留。
-      // 代价是 Host 退出时管道关闭，被它拉起的 headless Pi 会跟着结束——TUI 走独立
+      // CLI 停止时先关闭这些管道的输入端，给无头 Pi 正常退出的机会；TUI 走独立
       // 窗口不受影响，而用户自己终端里的 Pi 更与本管道无关。
       stdio: ["pipe", "ignore", "pipe"],
       windowsHide: false,
     });
+    if (plan.kind === "headless") {
+      this.#headlessChildren.set(child, new Promise(resolve => child.once("close", () => {
+        this.#headlessChildren.delete(child);
+        resolve();
+      })));
+    }
     child.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8").trim();
       if (text.length > 0) this.#log(`[agent pid=${child.pid ?? 0}] ${text.slice(0, 500)}`);

@@ -364,6 +364,37 @@ describe("SessionSpawner", () => {
     expect(fake.options[0]?.env).toMatchObject({ ORBIS_STATE_DIR: stateDir, APPDATA: cliRoot });
   });
 
+  it("closes stdin and waits for an owned headless Pi to exit before completing shutdown", async () => {
+    const cwd = await tempDir();
+    const entry = join(cwd, "pi.cjs");
+    const marker = join(cwd, "received-eof");
+    await writeFile(entry, `
+      process.stdin.resume();
+      process.stdin.once("end", () => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "eof"));
+    `);
+    const spawner = new SessionSpawner({ env: { ...process.env, ORBIS_PI_ENTRY: entry } });
+    cleanups.push(() => spawner.stopHeadless());
+    const activate = () => spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd }, spawnMode: "headless" });
+    expect((await activate()).spawnMode).toBe("headless");
+    const stopped = spawner.stopHeadless();
+    expect(spawner.stopHeadless()).toBe(stopped);
+    await expect(activate()).rejects.toMatchObject({ code: "spawn_failed" });
+    await stopped;
+    expect(await readFile(marker, "utf8")).toBe("eof");
+    expect(spawner.running).toHaveLength(0);
+  });
+
+  it("terminates an owned headless Pi that does not exit at EOF", async () => {
+    const cwd = await tempDir();
+    const entry = join(cwd, "pi.cjs");
+    await writeFile(entry, 'process.stdin.resume(); setInterval(() => {}, 1_000);');
+    const spawner = new SessionSpawner({ env: { ...process.env, ORBIS_PI_ENTRY: entry } });
+    cleanups.push(() => spawner.stopHeadless());
+    await spawner.activate({ deviceId: "d1", target: { type: "new", agentKind: "pi", cwd }, spawnMode: "headless" });
+    await spawner.stopHeadless();
+    expect(spawner.running).toHaveLength(0);
+  });
+
   // A source revoked during async preflight must never reach the native process opener.
   it("checks the launch generation at the spawn boundary", async () => {
     const cwd = await tempDir();

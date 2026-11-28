@@ -12,7 +12,6 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 import {
-  encodePairingQrText,
   loadDeviceStore,
   resolveStateDir,
   revokeDeviceRecord,
@@ -45,6 +44,8 @@ import { AgentEnablementController, AgentEnablementStore } from "./agent-enablem
 import { readOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { loadHermesRemoteGatewayConfig } from "./hermes-remote-gateway.js";
 import { hostCliProfile } from "./cli-profile.js";
+import { runPairingWindow } from "./cli-pair.js";
+import { SessionSpawner } from "./spawner.js";
 
 const USAGE = `orbis —— 电脑侧的 Host 进程
 
@@ -150,6 +151,7 @@ async function runHostUntilShutdown(
   let codexGeneration = 0;
   let codexDesktop: CodexDesktopLifecycle | undefined, dshDesktop: DshDesktopLifecycle | undefined;
   const log = (line: string) => console.error(`[host] ${line}`);
+  const spawner = new SessionSpawner({ stateDir, log });
   const ensureCodex = (): Promise<CodexRuntime | undefined> => {
     const lease = enablement.lease("codex");
     if (!lease) return Promise.resolve(undefined);
@@ -173,6 +175,7 @@ async function runHostUntilShutdown(
 
   try {
     service = await HostService.create({
+      spawner,
       agentEnablement: enablement,
       ...(agyLocallyAllowed() && sessionsRoot === undefined ? { agyCredentialConfigured: () => agyEnvironmentKey() !== undefined, createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(stateDir, signal, { key: agyEnvironmentKey() }), hostId, agySubmissionFence(stateDir)) } : {}),
       createKimiCodeRuntime: async (kind: KimiKind) => {
@@ -282,8 +285,11 @@ async function runHostUntilShutdown(
 
     await shutdown;
   } finally {
-    try { await service?.stop(); }
-    finally { await providers.closeRouting(); }
+    try { await spawner.stopHeadless(); }
+    finally {
+      try { await service?.stop(); }
+      finally { await providers.closeRouting(); }
+    }
   }
   console.error("[host] 已退出");
 }
@@ -334,38 +340,7 @@ async function runPair(stateDirOption: string | undefined, printPayload = false)
     onStateChange: (state) => console.error(`[pair] relay ${state}`),
   });
 
-  await service.start();
-  const opened = await service.openPairingWindow();
-  const remainingSeconds = Math.round((opened.expiresAtMs - Date.now()) / 1_000);
-  const pairingText = encodePairingQrText(opened.payload);
-  if (printPayload) {
-    // 只有这一行写到 stdout：脚本可以直接拿去当载荷用，诊断信息全部留在 stderr。
-    console.log(pairingText);
-  } else {
-    process.stdout.write(await renderTerminalQr(pairingText));
-    console.log(`请用 Orbis APP 扫码。窗口 ${remainingSeconds} 秒后关闭。`);
-  }
-  const lan = opened.payload.lan;
-  if (lan !== undefined && lan.length > 0) {
-    console.log(`同一局域网内会直连：${lan.map((entry) => `${entry.host}:${entry.port}`).join("、")}`);
-  }
-
-  // 这个定时器**不能 unref**：配对进程里没有别的常驻句柄（LAN/loopback 都关着），
-  // Relay 掉线时剩下的只有它。unref 掉事件循环就空了，Node 会在扫码前直接退出
-  // （表现为 "Detected unsettled top-level await"）——配对窗口正是要活满的这段时间。
-  const expiry = new Promise<undefined>((resolve) => {
-    setTimeout(() => resolve(undefined), Math.max(0, opened.expiresAtMs - Date.now()));
-  });
-  const device = await Promise.race([paired, expiry]);
-  await service.stop();
-
-  if (device === undefined) {
-    console.error("配对窗口已过期，没有设备完成配对。");
-    process.exitCode = 1;
-    return;
-  }
-  console.log(`配对成功：${device.deviceId}`);
-  console.log("接着运行 `orbis host` 常驻即可。");
+  if (!await runPairingWindow(service, paired, printPayload)) process.exitCode = 1;
 }
 
 /**
@@ -430,11 +405,6 @@ async function runDevices(
 
   console.log(USAGE);
   process.exitCode = 2;
-}
-
-async function renderTerminalQr(text: string): Promise<string> {
-  const QRCode = (await import("qrcode")).default;
-  return await QRCode.toString(text, { type: "terminal", small: true });
 }
 
 function waitForSignal(): { promise: Promise<void>; dispose: () => void } {
