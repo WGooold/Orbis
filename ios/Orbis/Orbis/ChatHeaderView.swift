@@ -28,12 +28,7 @@ struct ChatHistoryProgress: View {
                 glyph(phase, progress: progress, palette: palette)
                     .id(phase).transition(.opacity)
             }.frame(width: 18, height: 18).accessibilityHidden(true)
-            ChatHistoryLabelLayout(pull: phase == .pull ? 1 : 0, armed: phase == .armed ? 1 : 0) {
-                ForEach(Phase.allCases, id: \.self) { label in
-                    Text(label.title).font(.orbisLabel()).foregroundStyle(label.color(palette))
-                        .opacity(phase == label ? 1 : 0)
-                }
-            }
+            Titles(pull: phase == .pull ? 1 : 0, armed: phase == .armed ? 1 : 0, palette: palette)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .neuSurface(radius: OrbisRadius.control, intensity: 0.6, concentric: false)
@@ -62,24 +57,46 @@ struct ChatHistoryProgress: View {
             }.padding(1).frame(width: 18, height: 18)
         }
     }
+
+    // CHAT-PAGING-09: drive width and the title handoff from the same animation.
+    // Only the leading phase can draw text, even when a quick reversal retargets it.
+    private struct Titles: View, Animatable {
+        var pull: CGFloat
+        var armed: CGFloat
+        let palette: OrbisPalette
+
+        var animatableData: AnimatablePair<CGFloat, CGFloat> {
+            get { .init(pull, armed) }
+            set { (pull, armed) = (newValue.first, newValue.second) }
+        }
+
+        var body: some View {
+            let weights = [pull, armed, 1 - pull - armed]
+            let ranked = weights.sorted(by: >)
+            let leadingOpacity = Double(min(1, 2 * (ranked[0] - ranked[1])))
+            ChatHistoryLabelLayout(weights: weights) {
+                ForEach(Array(Phase.allCases.enumerated()), id: \.element) { index, label in
+                    Text(label.title).font(.orbisLabel()).foregroundStyle(label.color(palette))
+                        .lineLimit(1)
+                        .opacity(weights[index] == ranked[0] ? leadingOpacity : 0)
+                }
+            }
+            // The slot can mask a changing width; it must not reflow the title.
+            .clipped()
+            .transaction { $0.animation = nil }
+        }
+    }
 }
 
-// CHAT-PAGING-08: keep both titles at their natural size while only the pill's
-// bounds interpolate, like Android's crossfade with an unclipped SizeTransform.
 private struct ChatHistoryLabelLayout: Layout {
-    var pull: CGFloat
-    var armed: CGFloat
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { .init(pull, armed) }
-        set { (pull, armed) = (newValue.first, newValue.second) }
-    }
+    let weights: [CGFloat]
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let titleProposal = ProposedViewSize(width: proposal.width, height: nil)
-        return zip(subviews, [pull, armed, 1 - pull - armed]).reduce(into: .zero) { size, entry in
+        return zip(subviews, weights).reduce(into: .zero) { size, entry in
             let label = entry.0.sizeThatFits(titleProposal)
             size.width += label.width * entry.1
-            size.height += label.height * entry.1
+            size.height = max(size.height, label.height)
         }
     }
 

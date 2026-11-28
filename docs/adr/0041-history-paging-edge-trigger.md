@@ -100,3 +100,9 @@ Status: accepted（2026-10-23 实现 §1–§4；在线会话与离线历史页�
 iOS 对齐 Android：跨越或回退阈值、松手开始加载时，文案和图标交叉淡化，胶囊宽度在同一表面内连续变化。持续下拉不触发离散动画；加载与重试在原位交接，退场不再可点。减少动态效果时直接切换。分页、触感和阅读锚点仍沿用 CHAT-PAGING-07。
 
 实现见 [ChatHeaderView.swift](../../ios/Orbis/Orbis/ChatHeaderView.swift)，逐帧回归见 `testHistoryStatusMorphsOnlyAtPhaseChanges`（[测试源码](../../ios/Orbis/UITests/OrbisUITests.swift)）。本地模拟器的[常规与减少动态效果帧记录](../../.artifacts/ios-history-status-motion/simulator-frame-probe/command.log)及[实际分页锚点回归](../../.artifacts/ios-history-status-motion/simulator/command.log)独立保留；未部署，真机观感待用户验证。
+
+## CHAT-PAGING-09：iOS 下拉提示单行交接
+
+下拉、达到阈值和松手加载共用一行；文案先退后入，胶囊只过渡宽度。空间不足时截断显示，读屏保留完整文案。减少动态效果时直接切换；分页准入和阅读锚点不变。
+
+实现见 [ChatHeaderView.swift](../../ios/Orbis/Orbis/ChatHeaderView.swift)，逐帧回归见 `testNarrowHistoryStatusStaysOnOneLineWhileMorphing`（[测试源码](../../ios/Orbis/UITests/OrbisUITests.swift)）。[修复前复现](../../.artifacts/ios-history-pull-transition/baseline-simulator/command.log)及[修复后四项模拟器回归](../../.artifacts/ios-history-pull-transition/fix-simulator/command.log)已记录；未部署，真机观感待验收。
