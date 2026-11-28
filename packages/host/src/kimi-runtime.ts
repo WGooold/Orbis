@@ -349,7 +349,7 @@ export class KimiRuntime implements AgentBackend {
       if (this.#active.size >= MAX_SUBSCRIPTIONS) throw new ActivationError("spawn_limit_reached", "Kimi Code 会话接入已达上限");
       item = { native, cwd, id, subscribed: false, viewGeneration: randomUUID() }; this.#active.set(id, item);
     } else {
-      item.native = connection.sessions.contract === "desktop-2.8.1" && item.subscribed
+      item.native = connection.sessions.contract === "desktop-v1" && item.subscribed
         ? { ...native, agent_config: item.native.agent_config } : native;
       item.cwd = cwd;
     }
@@ -463,7 +463,7 @@ export class KimiRuntime implements AgentBackend {
     if (frame.type === "response" && typeof frame.request_id === "string" && typeof frame.code === "number") {
       this.#requests.get(frame.request_id)?.(frame.code); return;
     }
-    if (connection.sessions.contract === "desktop-2.8.1" && frame.type === "session") {
+    if (connection.sessions.contract === "desktop-v1" && frame.type === "session") {
       const event = kimiDesktopSessionEvent.safeParse(frame);
       if (!event.success) return;
       const { change, session } = event.data;

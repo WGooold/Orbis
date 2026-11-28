@@ -25,7 +25,7 @@ async function tempHome(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), "orbis-kimi-client-")); roots.push(path); return path;
 }
 
-async function fixture(options: { homeDir?: string; id?: string; auth?: boolean; bypass?: boolean; redirect?: boolean; delay?: boolean; version?: string; windowsDesktop?: boolean; product?: string; protocol?: string } = {}) {
+async function fixture(options: { homeDir?: string; id?: string; auth?: boolean; bypass?: boolean; redirect?: boolean; delay?: boolean; version?: string; windowsDesktop?: boolean; product?: string; protocol?: string; catalog?: unknown } = {}) {
   const homeDir = options.homeDir ?? await tempHome();
   const id = options.id ?? serverId;
   await mkdir(join(homeDir, "server", "instances"), { recursive: true });
@@ -44,6 +44,9 @@ async function fixture(options: { homeDir?: string; id?: string; auth?: boolean;
       dangerous_bypass_auth: options.bypass ?? false,
       capabilities: { websocket: true },
     } }));
+    else if (req.url === (options.windowsDesktop ? "/api/v1/sessions?page_size=1&archived=false" : "/api/v2/sessions?page_size=1&meta.archived=false")) {
+      res.end(JSON.stringify({ code: 0, data: options.catalog ?? { items: [], has_more: false, ...(!options.windowsDesktop ? { next_page_token: null } : {}) } }));
+    }
     else if (req.url === "/openapi.json") res.end(openapi);
     else if (req.url === "/asyncapi.json") res.end(asyncapi);
     else if (req.url === "/api/v1/sessions/demo") res.end('{"code":0,"data":{"id":"demo"}}');
@@ -125,7 +128,7 @@ describe("Kimi Code local Web client", () => {
       const desktop = await fixture({ version, windowsDesktop: true });
       const client = await KimiWebClient.connect({ ...desktop, ...options });
       expect(client.meta).toMatchObject({ product: "kimi-code-desktop", server_version: version });
-      expect(client.sessionContract).toBe("desktop-2.8.1");
+      expect(client.sessionContract).toBe("desktop-v1");
       client.close();
       // A verified Desktop registration must not be accepted in Web mode.
       await expect(KimiWebClient.connect({ ...desktop, expectedContracts: contracts, verifyDesktopOwner: options.verifyDesktopOwner })).rejects.toMatchObject({ reason: "not_running" });
@@ -141,6 +144,32 @@ describe("Kimi Code local Web client", () => {
     }
     const drifted = await fixture({ version: "2.9.0", windowsDesktop: true });
     await expect(KimiWebClient.connect({ ...drifted, ...options, expectedContracts: { ...contracts, asyncapi: "0".repeat(64) } })).rejects.toMatchObject({ reason: "unsupported" });
+  });
+
+  // KIMI-13: cover the production Desktop path without overriding API document hashes.
+  it.each([
+    { desktopPlatform: "darwin", floor: "2.6.2", older: "2.6.1", windowsDesktop: false },
+    { desktopPlatform: "win32", floor: "2.8.1", older: "2.8.0", windowsDesktop: true },
+  ] as const)("checks the live catalog at and above the $desktopPlatform minimum", async ({ desktopPlatform, floor, older, windowsDesktop }) => {
+    const options = { source: "desktop" as const, desktopPlatform, verifyDesktopOwner: async () => true };
+    for (const version of [floor, "2.10.0"]) {
+      const value = await fixture({ version, windowsDesktop });
+      const fetcher = vi.fn<typeof fetch>(fetch);
+      const client = await KimiWebClient.connect({ ...value, ...options, fetch: fetcher });
+      expect(client.instance.version).toBe(version);
+      expect(fetcher.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([
+        "/api/v1/healthz", "/api/v1/meta", windowsDesktop ? "/api/v1/sessions" : "/api/v2/sessions",
+      ]);
+      client.close();
+    }
+    const old = await fixture({ version: older, windowsDesktop });
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(KimiWebClient.connect({ ...old, ...options, fetch: fetcher })).rejects.toMatchObject({ reason: "unsupported" });
+    expect(fetcher).not.toHaveBeenCalled();
+    for (const catalog of [{ sessions: [] }, { items: [], has_more: true, next_page_token: null }]) {
+      const value = await fixture({ version: "2.10.0", windowsDesktop, catalog });
+      await expect(KimiWebClient.connect({ ...value, ...options })).rejects.toMatchObject({ reason: "unsupported" });
+    }
   });
 
   // A version overlap doesn't prove an existing listener is the alternate source.

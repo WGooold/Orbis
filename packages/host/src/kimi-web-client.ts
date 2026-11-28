@@ -10,6 +10,7 @@ import { isIP } from "node:net";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { meetsMinimumAgentVersion } from "./agent-installation.js";
+import { catalogPage, desktopPage } from "./kimi-session-schema.js";
 import { kimiDesktopOwner, supportsKimiDesktop } from "./kimi-desktop-owner.js";
 
 export const KIMI_API_CONTRACT_SHA256 = Object.freeze({
@@ -18,24 +19,16 @@ export const KIMI_API_CONTRACT_SHA256 = Object.freeze({
 });
 
 export type KimiSource = "web" | "desktop";
-export type KimiSessionContract = "legacy" | "desktop-2.8.1";
+export type KimiSessionContract = "legacy" | "desktop-v1";
 export const KIMI_WEB_MIN_VERSION = "2.6.3";
 const desktopProfiles = {
   darwin: {
     minimumVersion: "2.6.2",
     session: "legacy",
-    hashes: {
-      openapi: "9920b34adcf9458d7dcf00d42c8d4ce794f27f4a6a8f21b570e9e6b100ea985f",
-      asyncapi: "6f415309b2946045b0df41f0a529a6699821359fcf0237215ad69baab53ffd59",
-    },
   },
   win32: {
     minimumVersion: "2.8.1",
-    session: "desktop-2.8.1",
-    hashes: {
-      openapi: "409a2bf32e2b0443ea02e5818f71a7487be8821cc5c645c0caa4ee177cdff002",
-      asyncapi: "1e46c8d6d3956baf682ac586dcbd42299e4cf9e7af3baa43b5df16fa0973000f",
-    },
+    session: "desktop-v1",
   },
 } as const;
 type DesktopPlatform = keyof typeof desktopProfiles;
@@ -337,7 +330,7 @@ export class KimiWebClient {
       if (error instanceof KimiWebError) throw error;
       throw new KimiWebError("unsupported", "Kimi Code 元数据格式无效");
     }
-    if (!validMeta(meta, desktop && profile.session === "desktop-2.8.1")) throw new KimiWebError("unsupported", "Kimi Code 服务未满足受支持的认证 API 契约");
+    if (!validMeta(meta, desktop && profile.session === "desktop-v1")) throw new KimiWebError("unsupported", "Kimi Code 服务未满足受支持的认证 API 契约");
     // In Kimi Code 2.6.3 the registry ULID and /meta server_id have different identity
     // scopes. Bind the listener to the registration by the exact product version and
     // near-identical boot timestamps; keep both opaque IDs, but never equate them.
@@ -345,7 +338,24 @@ export class KimiWebClient {
       throw new KimiWebError("unsafe", "Kimi Code 实例登记与认证服务启动身份不匹配");
     }
 
-    const expected = options.expectedContracts ?? (desktop ? profile.hashes : KIMI_API_CONTRACT_SHA256);
+    const client = new KimiWebClient({ endpoint, instance, meta, sessionContract: desktop ? profile.session : "legacy", token, fetch: fetcher, timeoutMs });
+    if (desktop && !options.expectedContracts) {
+      // Check the authenticated read API we actually consume, not the bytes of generated docs.
+      const windows = profile.session === "desktop-v1";
+      try {
+        const page = await client.requestJson(windows ? "/api/v1/sessions?page_size=1&archived=false" : "/api/v2/sessions?page_size=1&meta.archived=false");
+        const parsed = (windows ? desktopPage : catalogPage).safeParse(page);
+        if (!parsed.success || (parsed.data.has_more && !parsed.data.next_page_token)) {
+          throw new KimiWebError("unsupported", "Kimi Code 桌面版会话目录格式不受支持");
+        }
+      } catch (error) {
+        client.close();
+        throw error;
+      }
+      return client;
+    }
+
+    const expected = options.expectedContracts ?? KIMI_API_CONTRACT_SHA256;
     for (const [name, path] of [["openapi", "/openapi.json"], ["asyncapi", "/asyncapi.json"]] as const) {
       let bytes: Uint8Array;
       try { bytes = await request(path, MAX_SCHEMA_BYTES); }
@@ -356,7 +366,7 @@ export class KimiWebClient {
       const digest = createHash("sha256").update(bytes).digest("hex");
       if (digest !== expected[name]) throw new KimiWebError("unsupported", `Kimi Code ${name} 契约版本不受支持`);
     }
-    return new KimiWebClient({ endpoint, instance, meta, token, sessionContract: desktop ? profile.session : "legacy", fetch: fetcher, timeoutMs });
+    return client;
   }
 
   /** Authenticated JSON request. Redirects, credentials in output, and unbounded bodies are excluded. */

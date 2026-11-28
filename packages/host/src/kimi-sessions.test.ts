@@ -16,7 +16,7 @@ const row = (session: string, marker?: string, archived = false) => ({ id: sessi
 const item = (id: string) => ({ id, workspace: { cwd: root }, meta: { title: "Same name", created_at: 1, updated_at: 2, archived: false } });
 function fixture(handler: (path: string, init?: { method?: string; body?: unknown }) => unknown, desktop = false) {
   const request = vi.fn(async (path: string, init?: { method?: string; body?: unknown }) => handler(path, init));
-  return { request, sessions: new KimiSessions({ requestJson: <T>(path: string, init?: { method?: string; body?: unknown }) => request(path, init) as Promise<T> }, "test-root", desktop ? KIMI_DESKTOP_KIND : KIMI_KIND, desktop ? "desktop-2.8.1" : "legacy") };
+  return { request, sessions: new KimiSessions({ requestJson: <T>(path: string, init?: { method?: string; body?: unknown }) => request(path, init) as Promise<T> }, "test-root", desktop ? KIMI_DESKTOP_KIND : KIMI_KIND, desktop ? "desktop-v1" : "legacy") };
 }
 
 describe("KIMI-02 native session identity", () => {

@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute } from "node:path";
 import { z } from "zod";
 import type { AgentSessionSummary } from "@orbis/protocol";
 import type { NativeRunningSession } from "./agent-backend.js";
 import { localHostname } from "./sessions.js";
 import { ActivationError } from "./spawner.js";
 import type { KimiSessionContract, KimiWebClient } from "./kimi-web-client.js";
+import { catalogPage, cwd, desktopPage, desktopSession, KimiSessionSchema, markerKey, nativeId, PAGE_SIZE, type KimiSession } from "./kimi-session-schema.js";
+export { KimiSessionSchema, kimiDesktopSessionEvent, type KimiSession } from "./kimi-session-schema.js";
 
 export const KIMI_KIND = "kimiCode";
 export const KIMI_DESKTOP_KIND = "kimiCodeDesktop";
@@ -14,42 +15,9 @@ export type KimiKind = typeof KIMI_KIND | typeof KIMI_DESKTOP_KIND;
 export const KIMI_PREFIX = "kimi-code:";
 export const KIMI_DESKTOP_PREFIX = "kimi-code-desktop:";
 const KIMI_LEGACY_DESKTOP_PREFIX = "kimi-code:desktop-";
-const nativeId = z.string().regex(/^session_[A-Za-z0-9_-]{1,70}$/u);
-const date = z.iso.datetime({ offset: true }).transform(value => Date.parse(value));
-const cwd = z.string().min(1).max(4096).refine(value => isAbsolute(value) && !value.includes("\0"));
-const markerKey = "orbis_launch_marker";
-const PAGE_SIZE = 100;
 const MAX_PAGES = 12;
-
-export const KimiSessionSchema = z.object({
-  id: nativeId, workspace_id: z.string(), title: z.string(), created_at: date, updated_at: date,
-  archived: z.boolean(), busy: z.boolean(), main_turn_active: z.boolean(),
-  agent_config: z.object({ model: z.string() }),
-  metadata: z.object({ cwd, [markerKey]: z.string().optional() }),
-});
-export type KimiSession = z.infer<typeof KimiSessionSchema>;
-const desktopSessionRow = z.object({
-  id: nativeId, workspace_id: z.string(), title: z.string(), created_at: date, updated_at: date,
-  archived: z.boolean().default(false), activity: z.enum(["idle", "turn", "background"]), cwd,
-  environment_id: z.string().optional(), host_id: z.string().optional(),
-  metadata: z.object({ [markerKey]: z.string().optional() }).optional(),
-});
-const desktopSession = desktopSessionRow.transform((row): KimiSession => ({
-  id: row.id, workspace_id: row.workspace_id, title: row.title, created_at: row.created_at, updated_at: row.updated_at,
-  archived: row.archived, busy: row.activity !== "idle", main_turn_active: row.activity === "turn",
-  agent_config: { model: "" }, // Only the authenticated main-agent frame reports the model in 2.8.1.
-  metadata: { ...row.metadata, cwd: row.cwd },
-}));
-const desktopPage = z.object({ items: z.array(desktopSessionRow).max(PAGE_SIZE), has_more: z.boolean(),
-  next_page_token: z.string().min(1).max(4096).optional(), unavailable_hosts: z.array(z.string()).optional() });
-export const kimiDesktopSessionEvent = z.object({ change: z.enum(["created", "updated", "archived", "restored", "deleted"]),
-  session: desktopSessionRow.pick({ id: true, title: true, activity: true, environment_id: true, host_id: true }) });
 const environment = z.object({ environment_id: z.string(), workspace_id: z.string(), cwd: cwd.optional() });
 const desktopEnvironment = environment.extend({ environment_cwd: cwd.optional() });
-const catalogPage = z.object({ items: z.array(z.object({
-  id: nativeId, workspace: z.object({ cwd }),
-  meta: z.object({ title: z.string().nullable(), created_at: z.number().int().nonnegative(), updated_at: z.number().int().nonnegative(), archived: z.boolean() }),
-})).max(PAGE_SIZE), has_more: z.boolean(), next_page_token: z.string().min(1).max(4096).nullable() });
 const runningSession = KimiSessionSchema.pick({ id: true, archived: true, main_turn_active: true }).extend({ title: z.string().optional() });
 const runningPage = z.object({ items: z.array(z.unknown()).max(PAGE_SIZE), has_more: z.boolean() });
 const recoveryPage = z.object({ items: z.array(KimiSessionSchema).max(PAGE_SIZE), has_more: z.boolean() });
@@ -106,7 +74,7 @@ export class KimiSessions {
     return this.#parseSession(await this.client.requestJson(kimiSessionPath(id)));
   }
   #parseSession(value: unknown): KimiSession {
-    return (this.contract === "desktop-2.8.1" ? desktopSession : KimiSessionSchema).parse(value);
+    return (this.contract === "desktop-v1" ? desktopSession : KimiSessionSchema).parse(value);
   }
   async #desktopPage(archived: boolean | "all", signal: AbortSignal, token?: string, turnsOnly = false) {
     const query = new URLSearchParams({ page_size: String(PAGE_SIZE), archived: String(archived) });
@@ -115,7 +83,7 @@ export class KimiSessions {
     return desktopPage.parse(await this.client.requestJson(`/api/v1/sessions?${query}`, { signal }));
   }
   async requireLocal(session: KimiSession): Promise<string> {
-    const binding = (this.contract === "desktop-2.8.1" ? desktopEnvironment : environment).safeParse(await this.client.requestJson(`${kimiSessionPath(session.id)}/environment`));
+    const binding = (this.contract === "desktop-v1" ? desktopEnvironment : environment).safeParse(await this.client.requestJson(`${kimiSessionPath(session.id)}/environment`));
     if (!binding.success || binding.data.environment_id !== "local" || binding.data.workspace_id !== session.workspace_id) {
       throw new ActivationError("agent_unsupported", "未确认 Kimi Code 会话在本机执行");
     }
@@ -127,7 +95,7 @@ export class KimiSessions {
     if (!auth.models_ready) throw new KimiLaunchBlocked("agent_unsupported", "请先在 Kimi Code 配置默认模型");
     requireCurrent?.();
     const result = this.#parseSession(await this.client.requestJson("/api/v1/sessions", {
-      method: "POST", body: this.contract === "desktop-2.8.1"
+      method: "POST", body: this.contract === "desktop-v1"
         ? { workspace_root: directory, environment_id: "local", metadata: { [markerKey]: marker } }
         : { metadata: { cwd: directory, [markerKey]: marker }, environment_id: "local" },
     }));
@@ -142,7 +110,7 @@ export class KimiSessions {
     if (current.id !== id) throw new Error("Kimi Code 会话身份不一致");
     if (current.archived === archived) return;
     await this.requireLocal(current);
-    if (this.contract === "desktop-2.8.1" && !archived) {
+    if (this.contract === "desktop-v1" && !archived) {
       await this.client.requestJson("/api/v1/sessions:restore", { method: "POST", body: { ids: [id] } });
     } else {
       await this.client.requestJson(`${kimiSessionPath(id)}:${archived ? "archive" : "restore"}`, { method: "POST", body: {} });
@@ -160,7 +128,7 @@ export class KimiSessions {
       for (let count = 0; count < MAX_PAGES; count++) {
         const params = new URLSearchParams({ page_size: String(PAGE_SIZE), "meta.archived": String(archived) });
         if (token !== null) params.set("page_token", token);
-        const page: z.infer<typeof catalogPage> = this.contract === "desktop-2.8.1"
+        const page: z.infer<typeof catalogPage> = this.contract === "desktop-v1"
           ? await this.#desktopPage(archived, signal, token ?? undefined).then(page => ({
             items: page.items.filter(row => row.environment_id === "local" && !row.host_id).map(row => ({
               id: row.id, workspace: { cwd: row.cwd },
@@ -188,7 +156,7 @@ export class KimiSessions {
     const signal = AbortSignal.timeout(4_000);
     const sessions = new Map<string, NativeRunningSession>();
     let before: string | undefined;
-    if (this.contract === "desktop-2.8.1") {
+    if (this.contract === "desktop-v1") {
       const seen = new Set<string>();
       for (let i = 0; i < 3; i++) {
         const page = await this.#desktopPage(false, signal, before, true);
@@ -233,7 +201,7 @@ export class KimiSessions {
     for (let i = 0; i < MAX_PAGES; i++) {
       const params = new URLSearchParams({ page_size: String(PAGE_SIZE), include_archive: "true" });
       if (cursor !== undefined) params.set("before_id", cursor);
-      const page = this.contract === "desktop-2.8.1"
+      const page = this.contract === "desktop-v1"
         ? await this.#desktopPage("all", signal, cursor).then(page => ({ ...page,
           items: page.items.map(row => ({ id: row.id, archived: row.archived,
             metadata: { ...row.metadata, cwd: row.cwd } })),
