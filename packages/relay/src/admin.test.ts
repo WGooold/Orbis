@@ -292,7 +292,7 @@ describe("Relay web console", () => {
     expect(site.headers.get("content-security-policy")).not.toContain("unsafe-inline");
     await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({
       version: "0.1.14",
-      linux: [{ name: linuxName, url: `downloads/${linuxName}`, checksumUrl: `downloads/${linuxName}.sha256` }],
+      linux: [{ name: linuxName, url: `./downloads/${linuxName}`, checksumUrl: `./downloads/${linuxName}.sha256` }],
       windows: [{ name, url: `downloads/${name}`, checksumUrl: `downloads/${name}.sha256` }],
       macos: [
         { name: macName, url: `downloads/${macName}`, checksumUrl: `downloads/${macName}.sha256` },

@@ -146,7 +146,8 @@ function renderHost(platform) {
   }
   const link = document.createElement("a");
   link.className = "button primary";
-  link.href = latest.url;
+  // Linux CLI archives are served by the site, not the desktop download mirror.
+  link.href = platform.startsWith("linux-") ? `./downloads/${latest.name}` : latest.url;
   const size = Number.isFinite(latest.bytes) && latest.bytes > 0 ? `（${(latest.bytes / 1048576).toFixed(0)} MB）` : "";
   link.textContent = `下载 ${spec.label}${size}`;
   container.append(link);

@@ -47,8 +47,8 @@ const sampleSiteData = {
     { name: "OrbisHost-0.1.25-macos-x64.dmg", url: "downloads/OrbisHost-0.1.25-macos-x64.dmg", checksumUrl: "downloads/OrbisHost-0.1.25-macos-x64.dmg.sha256", bytes: 19922944 },
   ],
   linux: [
-    { name: "OrbisHost-0.1.27-linux-x64-cli.tar.gz", url: "downloads/x64.tar.gz", bytes: 20971520 },
-    { name: "OrbisHost-0.1.27-linux-arm64-cli.tar.gz", url: "downloads/arm64.tar.gz", bytes: 20971520 },
+    { name: "OrbisHost-0.1.27-linux-x64-cli.tar.gz", url: "https://downloads.example/downloads/OrbisHost-0.1.27-linux-x64-cli.tar.gz", bytes: 20971520 },
+    { name: "OrbisHost-0.1.27-linux-arm64-cli.tar.gz", url: "https://downloads.example/downloads/OrbisHost-0.1.27-linux-arm64-cli.tar.gz", bytes: 20971520 },
   ],
   android: "https://orbising.com/downloads/orbis.apk",
   androidVersion: "0.1.49",
@@ -97,7 +97,8 @@ describe("public site download cards and device recommendation", () => {
   it.each([["x86_64", "x64"], ["aarch64", "arm64"]])("selects the published Linux CLI for %s", async (machine, target) => {
     const el = await runDownloads({ userAgent: `Mozilla/5.0 (X11; Linux ${machine})`, platform: `Linux ${machine}` });
     expect(el["host-platform"]!.value).toBe(`linux-${target}`);
-    expect((el["host-downloads"]!.children[0] as MockElement).href).toBe(`downloads/${target}.tar.gz`);
+    // LINUX-HOST-DOWNLOAD-07: CDN rewriting must not strand the CLI at an unsupported mirror.
+    expect((el["host-downloads"]!.children[0] as MockElement).href).toBe(`./downloads/OrbisHost-0.1.27-linux-${target}-cli.tar.gz`);
   });
 
   it("shows Linux as pending rather than offering Windows when there is no Linux archive", async () => {
