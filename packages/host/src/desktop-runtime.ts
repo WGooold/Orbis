@@ -17,7 +17,6 @@ import { AGY_VERSION, findAgy, openAgyProfile, verifyAgyConnection } from "./agy
 import { agyAuthIssue, agyUsesGoogle, DEFAULT_AGY_AUTH, parseAgyAuthConfig, type AgyAuthConfig } from "./agy-auth.js";
 import { signInAgyEnterprise, signOutAgyGoogle, startAgyPersonalLogin, type AgyCodeLogin } from "./agy-login.js";
 import { agyEnvironmentKey } from "./agy-credential.js";
-import { queryAgySubscriptionQuota } from "./agy-usage.js";
 import { AgyRuntime } from "./agy-runtime.js";
 import { agySubmissionFence } from "./agy-submission-fence.js";
 import { OpenClawNativeSettings } from "./openclaw-native-settings.js";
@@ -322,10 +321,6 @@ export class DesktopRuntime {
   }
   #agyHasCredential(): boolean {
     return !this.#qa && (!!this.#agyEnvironmentKey() || this.#agyVerified);
-  }
-  #agySubscriptionSupported(): boolean {
-    const auth = this.#agyAuthConfig();
-    return !this.#qa && agyUsesGoogle(auth.authMethod) && this.#agyVerified;
   }
   #agyAuthenticationMethod(): "native_oauth" | "api_key" | "none" | "unknown" {
     if (!this.#agyHasCredential()) return "none";
@@ -1094,8 +1089,6 @@ export class DesktopRuntime {
           agyCredentialConfigured: () => this.#agyHasCredential(),
           agyCredentialVerified: () => this.#agyVerified,
           agyAuthenticationMethod: () => this.#agyAuthenticationMethod(),
-          agySubscriptionSupported: () => this.#agySubscriptionSupported(),
-          queryAgySubscription: () => queryAgySubscriptionQuota(this.#stateDir, this.#agyAuthConfig()),
           createAgyRuntime: (hostId: string) => new AgyRuntime(signal => openAgyProfile(this.#stateDir, signal, { auth: this.#agyAuthConfig() }), hostId, agySubmissionFence(this.#stateDir)),
         } : {}),
         ...(this.#qa ? {} : { createKimiCodeRuntime, kimiCodeDesktopSupported: supportsKimiDesktop, openClawLauncher: createOpenClawLocalLauncher(),

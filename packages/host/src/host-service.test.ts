@@ -792,20 +792,15 @@ describe("host end-to-end over relay", () => {
 
   it("lists and switches local provider profiles over an authenticated encrypted channel without exposing secrets", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-provider-e2e-"));
-    relay = await startRelay(stateDir);
+    const releasedRelay = process.env.ORBIS_AGY_QUOTA_COMPAT_RELEASE_ROOT;
+    relay = releasedRelay ? await startAgentCompatRelay(stateDir, releasedRelay) : await startRelay(stateDir);
     const paths = { pi: join(stateDir, "pi"), codex: join(stateDir, "codex"), dsh: join(stateDir, "dsh") };
     const providers = new ProviderManager(stateDir, paths);
     await providers.save("pi", "custom", "Custom", { apiKey: "never-send-this", baseUrl: "https://example.com/v1", api: "openai-completions", models: [{ id: "model" }] }, true, false, { notes: "private-notes-never-send", usageScript: { enabled: false, language: "javascript", timeout: 10, code: "private-script-never-send" } });
-    const agyQuota = { checkedAt: 101, windows: [{ name: "five_hour" as const, remainingPercent: 40, resetsAt: 200 },
-      { name: "seven_day" as const, remainingPercent: 70, resetsAt: 300 }], pools: [{ id: "gemini-pro", label: "Gemini", windows: [
-        { name: "five_hour" as const, remainingPercent: 40, resetsAt: 200 }, { name: "seven_day" as const, remainingPercent: 70, resetsAt: 300 },
-      ] }] };
-    const queryAgySubscription = vi.fn(async () => agyQuota);
     host = await HostService.create({ relayUrl: relay.url, ...relayBusinessHostOptions(relay.url), credential: "runtime-secret", adminToken: "owner-secret", stateDir, reconnect: false, lan: false, providers,
       createAgyRuntime: () => new AgyRuntime(async () => { throw new Error("fixture AGY process is not started"); }),
       agyCredentialConfigured: () => true, agyCredentialVerified: () => true,
-      agyAuthenticationMethod: () => "native_oauth", agySubscriptionSupported: () => true,
-      queryAgySubscription });
+      agyAuthenticationMethod: () => "native_oauth" });
     await host.start();
     const opened = await host!.openPairingWindow();
     const connected = await TestDevice.connect({ relayUrl: relay!.url, relayHttpBase: relay!.url.replace(/^ws/u, "http"),
@@ -823,12 +818,21 @@ describe("host end-to-end over relay", () => {
     expect(JSON.stringify(list)).not.toContain("never-send-this");
     expect(JSON.stringify(list)).not.toContain("private-notes-never-send");
     expect(JSON.stringify(list)).not.toContain("private-script-never-send");
+    // AGY-18: even a verified OAuth login advertises no quota; stale clients get a terminal reply.
     device.sendData(JSON.stringify({ type: "provider.list", protocolVersion: PROTOCOL_VERSION, requestId: "agy-list", kind: "agy" }));
     expect(await device.receiveReply("agy-list")).toMatchObject({ type: "provider.result", kind: "agy",
-      providers: [{ id: "antigravity", enabled: true, subscriptionSupported: true }] });
+      providers: [{ id: "antigravity", enabled: true, subscriptionSupported: false }] });
+    device.sendData(JSON.stringify({ type: "agent.state.request", protocolVersion: PROTOCOL_VERSION, requestId: "agy-provider-state", scope: "host", domains: ["providers"] }));
+    expect(await device.receiveReply("agy-provider-state")).toMatchObject({ type: "agent.state.snapshot", domains: [
+      { domain: "providers", value: { providers: expect.arrayContaining([expect.objectContaining({
+        agentKind: "agy", authenticated: true, profiles: [expect.objectContaining({ id: "antigravity", subscriptionSupported: false })],
+      })]) } },
+    ] });
     device.sendData(JSON.stringify({ type: "provider.subscription", protocolVersion: PROTOCOL_VERSION, requestId: "agy-quota", kind: "agy", id: "antigravity" }));
-    expect(await device.receiveReply("agy-quota")).toMatchObject({ type: "provider.subscription.result", kind: "agy", id: "antigravity", quota: agyQuota });
-    expect(queryAgySubscription).toHaveBeenCalledOnce();
+    const agyQuotaReply = await device.receiveReply("agy-quota");
+    expect(agyQuotaReply).toMatchObject({ type: "provider.subscription.result", requestId: "agy-quota", kind: "agy", id: "antigravity",
+      error: "Antigravity 不支持查询订阅配额" });
+    expect(agyQuotaReply).not.toHaveProperty("quota");
     // FT-VOICE-PROVIDER-01: authenticated discovery returns only saved profile identity, not credentials.
     device.sendData(JSON.stringify({ type: "voice.cleanup.provider.request", protocolVersion: PROTOCOL_VERSION, requestId: "voice-providers", action: "providers" }));
     expect(await device.receiveReply("voice-providers")).toMatchObject({ type: "voice.cleanup.provider.result", providers: [{ id: "custom", kind: "pi", name: "Custom" }] });
