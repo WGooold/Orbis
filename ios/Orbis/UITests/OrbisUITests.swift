@@ -3794,46 +3794,60 @@ final class OrbisUITests: XCTestCase {
     // frames; movement within the same pull phase must not resize the pill.
     func testHistoryStatusMorphsOnlyAtPhaseChanges() throws {
         for reduced in [false, true] {
-            let app = launch("history-status-motion", arguments: reduced ? ["--preview-reduce-motion"] : [])
-            defer { app.terminate() }
-            let advance = app.buttons["history-motion-advance"]
-            let report = app.staticTexts["history-motion-frames"]
-            let pull = app.descendants(matching: .any)["chat-history-pull"].firstMatch
-            let loading = app.descendants(matching: .any)["chat-history-loading"].firstMatch
-            XCTAssertTrue(pull.waitForExistence(timeout: 5))
-            XCTAssertEqual(pull.label, "下拉加载历史")
-            for (index, label) in ["下拉加载历史", "松手加载", "下拉加载历史", "松手加载", "正在加载更早的历史…"].enumerated() {
-                advance.tap()
-                let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH '['"), object: report)
-                XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 3), .completed)
-                let samples = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(report.label.utf8)) as? [[Double]])
-                let first = try XCTUnwrap(samples.first), last = try XCTUnwrap(samples.last)
-                print("HISTORY_STATUS_FRAMES reduced=\(reduced) step=\(index) \(report.label)")
-                XCTAssertGreaterThan(samples.count, 3)
-                if index == 4 {
-                    XCTAssertFalse(pull.exists)
-                    XCTAssertEqual(loading.label, label)
-                    XCTAssertEqual(last[0], first[0], accuracy: 1, "Release moved the pill")
-                } else {
-                    XCTAssertEqual(pull.label, label)
-                }
-                if index == 0 {
-                    XCTAssertTrue(samples.allSatisfy { abs($0[1] - first[1]) <= 1 }, "Finger movement resized the pill")
-                    continue
-                }
-                let direction: Double = index == 1 || index == 3 ? -1 : 1
-                XCTAssertGreaterThan((last[1] - first[1]) * direction, 5)
-                for (before, after) in zip(samples, samples.dropFirst()) {
-                    XCTAssertGreaterThanOrEqual((after[1] - before[1]) * direction, -1, "Pill width reversed")
-                }
-                let low = min(first[1], last[1]), high = max(first[1], last[1])
-                let inBetween = samples.filter { $0[1] > low + 1 && $0[1] < high - 1 }
-                if reduced {
-                    XCTAssertTrue(inBetween.isEmpty, "Reduce Motion still interpolated width")
-                } else {
-                    XCTAssertGreaterThan(Set(inBetween.map { Int($0[1].rounded()) }).count, 2,
-                                         "Pill width jumped instead of morphing")
-                }
+            try checkHistoryStatusMorph(reduced: reduced, narrow: false)
+        }
+    }
+
+    // CHAT-PAGING-09: a width-constrained loading title must not add a second row
+    // at release (including intermediate frames), or move the pill vertically.
+    func testNarrowHistoryStatusStaysOnOneLineWhileMorphing() throws {
+        try checkHistoryStatusMorph(reduced: false, narrow: true)
+    }
+
+    private func checkHistoryStatusMorph(reduced: Bool, narrow: Bool) throws {
+        let arguments = (reduced ? ["--preview-reduce-motion"] : []) + (narrow ? ["--preview-narrow-history-status"] : [])
+        let app = launch("history-status-motion", arguments: arguments)
+        defer { app.terminate() }
+        let advance = app.buttons["history-motion-advance"]
+        let report = app.staticTexts["history-motion-frames"]
+        let pull = app.descendants(matching: .any)["chat-history-pull"].firstMatch
+        let loading = app.descendants(matching: .any)["chat-history-loading"].firstMatch
+        XCTAssertTrue(pull.waitForExistence(timeout: 5))
+        XCTAssertEqual(pull.label, "下拉加载历史")
+        for (index, label) in ["下拉加载历史", "松手加载", "下拉加载历史", "松手加载", "正在加载更早的历史…"].enumerated() {
+            advance.tap()
+            let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH '['"), object: report)
+            XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 3), .completed)
+            let samples = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(report.label.utf8)) as? [[Double]])
+            let first = try XCTUnwrap(samples.first), last = try XCTUnwrap(samples.last)
+            print("HISTORY_STATUS_FRAMES reduced=\(reduced) narrow=\(narrow) step=\(index) \(report.label)")
+            XCTAssertGreaterThan(samples.count, 3)
+            XCTAssertTrue(samples.allSatisfy { abs($0[2] - first[2]) <= 1 }, "Status changed height between frames")
+            // At the default font size, one line fits beside the 18 pt glyph with 16 pt padding.
+            XCTAssertLessThanOrEqual(last[2], 35, "Status exceeded the height of a single row")
+            if index == 4 {
+                XCTAssertFalse(pull.exists)
+                XCTAssertEqual(loading.label, label)
+                XCTAssertTrue(samples.allSatisfy { abs($0[0] - first[0]) <= 1 }, "Release moved the pill")
+            } else {
+                XCTAssertEqual(pull.label, label)
+            }
+            if index == 0 {
+                XCTAssertTrue(samples.allSatisfy { abs($0[1] - first[1]) <= 1 }, "Finger movement resized the pill")
+                continue
+            }
+            let direction: Double = index == 1 || index == 3 ? -1 : 1
+            XCTAssertGreaterThan((last[1] - first[1]) * direction, 5)
+            for (before, after) in zip(samples, samples.dropFirst()) {
+                XCTAssertGreaterThanOrEqual((after[1] - before[1]) * direction, -1, "Pill width reversed")
+            }
+            let low = min(first[1], last[1]), high = max(first[1], last[1])
+            let inBetween = samples.filter { $0[1] > low + 1 && $0[1] < high - 1 }
+            if reduced {
+                XCTAssertTrue(inBetween.isEmpty, "Reduce Motion still interpolated width")
+            } else {
+                XCTAssertGreaterThan(Set(inBetween.map { Int($0[1].rounded()) }).count, 2,
+                                     "Pill width jumped instead of morphing")
             }
         }
     }

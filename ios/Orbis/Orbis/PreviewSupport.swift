@@ -160,6 +160,7 @@ struct HistoryStatusMotionPreview: View {
     @State private var stage = 0
     @StateObject private var frames = PreviewLayoutFrameProbe()
     private let progress: [CGFloat] = [0.25, 0.7, 1, 0.7, 1, 1]
+    private let narrow = ProcessInfo.processInfo.arguments.contains("--preview-narrow-history-status")
 
     var body: some View {
         VStack(spacing: 20) {
@@ -172,6 +173,7 @@ struct HistoryStatusMotionPreview: View {
                 .accessibilityIdentifier("history-motion-frames")
             ChatHistoryProgress(loading: stage == progress.count - 1, pullProgress: { progress[stage] })
                 .background { PreviewLayoutFrameView(probe: frames) }
+                .frame(width: narrow ? 150 : nil)
             Spacer()
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(OrbisPalette(scheme).base)
