@@ -23,8 +23,8 @@ on:
         description: Send Apple notification to all testers assigned to this build after Beta Review approval
         type: boolean
         default: false
-      review_ready:
-        description: Confirm review Host, reviewer instructions and exact candidate validation are ready for external distribution
+      simulator_verified:
+        description: Confirm the candidate source passed iOS simulator verification
         type: boolean
         default: false
 
@@ -50,11 +50,11 @@ jobs:
       - name: Check external release inputs
         if: inputs.operation == 'release' || inputs.operation == 'resume'
         env:
-          REVIEW_READY: ${{ inputs.review_ready }}
+          SIMULATOR_VERIFIED: ${{ inputs.simulator_verified }}
         run: |
           set -euo pipefail
-          if [[ "$REVIEW_READY" != true ]]; then
-            echo 'Verify the review environment and instructions before external distribution.' >&2
+          if [[ "$SIMULATOR_VERIFIED" != true ]]; then
+            echo 'Verify the candidate source on an iOS simulator before external distribution.' >&2
             exit 1
           fi
           : "${ASC_TESTFLIGHT_NOTES:?Add tester-facing What to Test notes.}"
