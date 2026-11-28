@@ -119,7 +119,8 @@ jobs:
         if: steps.qt-cache.outputs.cache-hit == 'true'
         run: |
           set -euo pipefail
-          qt_root="${{ runner.workspace }}/Qt/6.8.3/clang_64"
+          # aqt installs Qt 6.8.3 under macos even when requested as clang_64.
+          qt_root="${{ runner.workspace }}/Qt/6.8.3/macos"
           test -x "$qt_root/bin/macdeployqt"
           echo "QT_ROOT_DIR=$qt_root" >> "$GITHUB_ENV"
           echo "$qt_root/bin" >> "$GITHUB_PATH"
