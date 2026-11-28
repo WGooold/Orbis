@@ -1340,7 +1340,7 @@ window.createOrbisPrivacyDemo = function ({ screen, reduced, onPlayback, onPage 
         </section>
         <button type="button" class="demo-primary privacy-rescan-btn" data-privacy-action="start-scan">${icon("qrscan")}<span>重新扫码交换密钥</span></button>
       </div>
-      ${telemetryInfo ? `<div class="demo-info-scrim" data-privacy-action="telemetry-info-close"></div><section class="demo-dialog demo-info-dialog" role="dialog" aria-modal="true" aria-labelledby="privacy-stat-title"><h2 id="privacy-stat-title">设备使用统计</h2><p>默认关闭，关闭时不记录设备使用明细。会话内容与密钥始终留在本地设备。</p><div><button type="button" class="demo-text-button primary" data-privacy-action="telemetry-info-close">知道了</button></div></section>` : ""}`;
+      ${telemetryInfo ? `<div class="demo-info-scrim" data-privacy-action="telemetry-info-close"></div><section class="demo-dialog demo-info-dialog" role="dialog" aria-modal="true" aria-labelledby="privacy-stat-title"><h2 id="privacy-stat-title">设备使用统计</h2><p>Relay 会汇总活跃设备数量，以了解有多少人在使用并规划服务器开支。开启后，Relay 还会统计此设备的收发流量、连接次数和时长。遥测不会收集聊天内容、文件内容或密码。</p><div><button type="button" class="demo-text-button primary" data-privacy-action="telemetry-info-close">知道了</button></div></section>` : ""}`;
   }
   function render() {
     if (disposed) return;

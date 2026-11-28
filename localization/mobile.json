@@ -2,6 +2,7 @@
   "正在读取设置…": "Loading settings…",
   "隐私": "Privacy",
   "设备使用统计": "Device usage sharing",
+  "Relay 会汇总活跃设备数量，以了解有多少人在使用并规划服务器开支。开启后，Relay 还会统计此设备的收发流量、连接次数和时长。遥测不会收集聊天内容、文件内容或密码。": "Relay counts active devices to estimate how many people use the service and plan server costs. Turning this on also lets Relay count bytes sent and received, the number of connections, and connection duration for this device. Telemetry does not collect chat content, file contents, or passwords.",
   "正在保存设置…": "Saving settings…",
   "配对 Relay 后可设置": "Pair with a Relay to configure this.",
   "此 Relay 不支持遥测设置": "This Relay does not support telemetry settings.",

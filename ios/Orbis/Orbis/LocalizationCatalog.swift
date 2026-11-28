@@ -95,6 +95,7 @@ enum LocalizationCatalog {
         "PAIR_ACCEPT 缺少 hostId": "PAIR_ACCEPT is missing hostId",
         "Pi 可以同时启用多个配置": "Pi can use several profiles at once",
         "QUIC": "QUIC",
+        "Relay 会汇总活跃设备数量，以了解有多少人在使用并规划服务器开支。开启后，Relay 还会统计此设备的收发流量、连接次数和时长。遥测不会收集聊天内容、文件内容或密码。": "Relay counts active devices to estimate how many people use the service and plan server costs. Turning this on also lets Relay count bytes sent and received, the number of connections, and connection duration for this device. Telemetry does not collect chat content, file contents, or passwords.",
         "Relay 拒绝了协议消息，请确认手机端与电脑端都是最新版（protocol v{0}）": "Relay rejected the protocol message. Update the app and Host (protocol v{0}).",
         "Relay 拒绝了设备凭据，请重新扫码配对": "Relay rejected the device credentials. Scan a new QR code to pair again.",
         "Relay 拒绝了运行实例身份，请重启电脑端 Orbis Host": "Relay rejected the runtime identity. Restart Orbis Host on the computer.",

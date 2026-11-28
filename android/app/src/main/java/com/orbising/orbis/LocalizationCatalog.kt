@@ -113,6 +113,7 @@ internal object LocalizationCatalog {
         "PAIR_ACCEPT 缺少 hostId" to "PAIR_ACCEPT is missing hostId",
         "Pi 可以同时启用多个配置" to "Pi can use several profiles at once",
         "QUIC" to "QUIC",
+        "Relay 会汇总活跃设备数量，以了解有多少人在使用并规划服务器开支。开启后，Relay 还会统计此设备的收发流量、连接次数和时长。遥测不会收集聊天内容、文件内容或密码。" to "Relay counts active devices to estimate how many people use the service and plan server costs. Turning this on also lets Relay count bytes sent and received, the number of connections, and connection duration for this device. Telemetry does not collect chat content, file contents, or passwords.",
         "Relay 拒绝了协议消息，请确认手机端与电脑端都是最新版（protocol v{0}）" to "Relay rejected the protocol message. Update the app and Host (protocol v{0}).",
         "Relay 拒绝了设备凭据，请重新扫码配对" to "Relay rejected the device credentials. Scan a new QR code to pair again.",
         "Relay 拒绝了运行实例身份，请重启电脑端 Orbis Host" to "Relay rejected the runtime identity. Restart Orbis Host on the computer.",
@@ -168,9 +169,9 @@ internal object LocalizationCatalog {
         "{0} 个配置" to "{0} profiles",
         "{0} 台" to "{0} computers",
         "{0} 已在其他设备停用" to "{0} was disabled on another device",
-        "{0} 已在其他设备启用" to "{0} was enabled on another device",
     )
     private fun part1(): Map<String, String> = mapOf(
+        "{0} 已在其他设备启用" to "{0} was enabled on another device",
         "{0} 已完成" to "{0} completed",
         "{0} 帧不加密，请用 PlaintextEnvelope" to "{0} frames are unencrypted; use PlaintextEnvelope",
         "{0} 帧不属于明文帧" to "{0} is not a plaintext frame",
@@ -320,9 +321,9 @@ internal object LocalizationCatalog {
         "不认识的帧种类：{0}" to "Unknown frame type: {0}",
         "不询问" to "Do not ask",
         "中继" to "Relay",
-        "中继地址 {0}" to "Relay address {0}",
     )
     private fun part2(): Map<String, String> = mapOf(
+        "中继地址 {0}" to "Relay address {0}",
         "中继地址无效，请重新配对。" to "Invalid relay address. Pair again.",
         "中继服务器地址必须使用 wss://，或使用本地/局域网 ws:// 地址" to "Use a wss:// relay address, or a local/LAN ws:// address",
         "中继认证失败，请重新连接。" to "Relay authentication failed. Reconnect.",
@@ -472,9 +473,9 @@ internal object LocalizationCatalog {
         "允许相机权限" to "Allow camera access",
         "允许联网" to "Allow network access",
         "允许访问工作区外文件，仍受电脑账户权限限制。" to "Allows access to files outside the workspace, subject to computer account permissions.",
-        "允许读取文件；写入需要额外授权。" to "Allows reading files. Writes require additional authorization.",
     )
     private fun part3(): Map<String, String> = mapOf(
+        "允许读取文件；写入需要额外授权。" to "Allows reading files. Writes require additional authorization.",
         "先存入 Orbis" to "Save to Orbis for later",
         "全屏预览" to "Full-screen preview",
         "全选" to "Select all",
@@ -624,9 +625,9 @@ internal object LocalizationCatalog {
         "历史页仍在等待响应" to "History page is still awaiting a response",
         "历史页条目超限" to "History page entry limit exceeded",
         "历史页来源尚未确认" to "History page source is unconfirmed",
-        "历史页缺少显示结果，请更新并重启电脑端会话后重试" to "History page has no presentation data. Update and restart the session on the computer, then try again.",
     )
     private fun part4(): Map<String, String> = mapOf(
+        "历史页缺少显示结果，请更新并重启电脑端会话后重试" to "History page has no presentation data. Update and restart the session on the computer, then try again.",
         "历史首屏尚未就绪" to "Initial history page is not ready",
         "压缩 Codex 会话上下文" to "Compact the Codex session context",
         "压缩中" to "Compacting",
@@ -776,9 +777,9 @@ internal object LocalizationCatalog {
         "复制已读取内容" to "Copy loaded content",
         "复制消息" to "Copy message",
         "复制路径" to "Copy path",
-        "复制选中文本" to "Copy selected text",
     )
     private fun part5(): Map<String, String> = mapOf(
+        "复制选中文本" to "Copy selected text",
         "复制选区" to "Copy selection",
         "外观" to "Appearance",
         "外部沙箱" to "External sandbox",
@@ -928,9 +929,9 @@ internal object LocalizationCatalog {
         "已开始" to "Started",
         "已归档" to "Archived",
         "已拒绝" to "Rejected",
-        "已按电脑同步" to "Synced with the computer",
     )
     private fun part6(): Map<String, String> = mapOf(
+        "已按电脑同步" to "Synced with the computer",
         "已排队" to "Queued",
         "已接入" to "Connected",
         "已接收" to "Received",
@@ -1080,9 +1081,9 @@ internal object LocalizationCatalog {
         "手机本地规则" to "On-device rules",
         "手机系统“下载”目录，{0}" to "Phone's Downloads folder, {0}",
         "打开" to "Open",
-        "打开下载" to "Open downloads",
     )
     private fun part7(): Map<String, String> = mapOf(
+        "打开下载" to "Open downloads",
         "打开会话" to "Open session",
         "打开会话目录" to "Open session drawer",
         "打开图片" to "Open image",
@@ -1232,9 +1233,9 @@ internal object LocalizationCatalog {
         "无法读取遥测设置" to "Couldn't read telemetry settings.",
         "旧 {0}" to "Old {0}",
         "昨天 HH:mm" to "'Yesterday' HH:mm",
-        "显示上限" to "Display limit",
     )
     private fun part8(): Map<String, String> = mapOf(
+        "显示上限" to "Display limit",
         "显示其他分支" to "Show other branches",
         "显示工具与细节" to "Show tools and details",
         "显示投影版本不匹配（Host：{0}），请更新 App" to "Presentation version mismatch (Host: {0}). Update the app.",
@@ -1384,9 +1385,9 @@ internal object LocalizationCatalog {
         "查看全部 {0} 个工作目录" to "View all {0} working directories",
         "查看全部 {0} 条" to "View all {0} entries",
         "查看分享内容" to "View shared content",
-        "查看只读历史" to "View read-only history",
     )
     private fun part9(): Map<String, String> = mapOf(
+        "查看只读历史" to "View read-only history",
         "查看完整内容" to "View full content",
         "查看已归档会话" to "View archived sessions",
         "查看或设置 Codex 会话显示名称" to "Show or set the Codex session display name",
@@ -1536,9 +1537,9 @@ internal object LocalizationCatalog {
         "测试返回" to "Test response",
         "浏览此会话历史并回退到指定位置" to "Browse this session's history and rewind to a point",
         "浏览电脑文件" to "Browse computer files",
-        "消息不能超过 100,000 个字符。" to "Messages must be 100,000 characters or fewer.",
     )
     private fun part10(): Map<String, String> = mapOf(
+        "消息不能超过 100,000 个字符。" to "Messages must be 100,000 characters or fewer.",
         "消息图片" to "Message image",
         "消息已交给 Agent" to "Message passed to Agent",
         "消息已经送入上下文，无法取消" to "Message is already in context and cannot be cancelled",
@@ -1688,9 +1689,9 @@ internal object LocalizationCatalog {
         "窗口 {0}" to "Window {0}",
         "端到端加密" to "End-to-end encryption",
         "端到端加密已连接" to "Connected with end-to-end encryption",
-        "端到端加密连接尚未就绪。" to "Encrypted connection is not ready.",
     )
     private fun part11(): Map<String, String> = mapOf(
+        "端到端加密连接尚未就绪。" to "Encrypted connection is not ready.",
         "端到端加密连接尚未就绪，请连接成功后重试。" to "Encrypted connection is not ready. Connect and try again.",
         "第 {0} / {1} 题，{2}" to "Question {0} / {1}, {2}",
         "第 {0} 次" to "Attempt {0}",
@@ -1840,9 +1841,9 @@ internal object LocalizationCatalog {
         "请在电脑上登录" to "Sign in on your computer",
         "请在电脑端完成交互" to "Complete this interaction on the computer",
         "请在电脑端查看 Orbis Host 的诊断，再返回新建。" to "Check the Orbis Host diagnostics on your computer, then return to the new-session draft.",
-        "请在系统设置中允许相机权限，或返回粘贴配对内容。" to "Allow camera access in system settings, or go back to paste the pairing data.",
     )
     private fun part12(): Map<String, String> = mapOf(
+        "请在系统设置中允许相机权限，或返回粘贴配对内容。" to "Allow camera access in system settings, or go back to paste the pairing data.",
         "请在系统设置中允许麦克风和语音识别" to "Allow microphone and speech recognition in Settings",
         "请在系统设置中允许麦克风权限" to "Allow microphone access in Settings",
         "请查看附件。" to "Please see the attachments.",
@@ -1992,9 +1993,9 @@ internal object LocalizationCatalog {
         "退出手机视图？" to "Leave this view?",
         "退出消息操作" to "Exit message actions",
         "退出码 {0}" to "Exit code {0}",
-        "退出视图" to "Leave view",
     )
     private fun part13(): Map<String, String> = mapOf(
+        "退出视图" to "Leave view",
         "退出预览" to "Exit preview",
         "选一个会话" to "Choose a session",
         "选中 runtime {0}    传输路径 {1}" to "Selected runtime {0}    Transfer path {1}",

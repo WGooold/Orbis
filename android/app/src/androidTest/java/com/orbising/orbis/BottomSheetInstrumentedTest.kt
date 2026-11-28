@@ -96,15 +96,23 @@ class BottomSheetInstrumentedTest {
         } finally { frame.recycle() }
     }
 
-    /** RELAY-GROWTH-01: device-level reporting is unavailable without a paired Relay. */
-    @Test fun telemetryPreferenceIsDisabledWithoutRelayPairing() {
+    /** SC134: the explanation is on demand and remains available when sharing cannot be enabled. */
+    @Test fun telemetryInfoWorksWithoutRelayPairing() {
         compose.setContent { OrbisTheme {
             DesignSettingsScreen(RemoteState(), {}, true, {})
         } }
-        compose.onNodeWithText(L10n.tr("设备使用统计")).assertIsDisplayed()
-        compose.onNodeWithTag("settings-device-telemetry").assertIsDisplayed().assertIsNotEnabled().assertIsOff()
+        val info = compose.onNodeWithTag("settings-device-telemetry-info").performScrollTo()
+        val toggle = compose.onNodeWithTag("settings-device-telemetry")
+        toggle.assertIsDisplayed().assertIsNotEnabled().assertIsOff()
         compose.onNodeWithText(L10n.tr("配对 Relay 后可设置")).assertIsDisplayed()
-        compose.onNodeWithText("消息流量与连接时长", substring = true).assertDoesNotExist()
+        val explanation = compose.onNodeWithText(L10n.tr("Relay 会汇总活跃设备数量，以了解有多少人在使用并规划服务器开支。开启后，Relay 还会统计此设备的收发流量、连接次数和时长。遥测不会收集聊天内容、文件内容或密码。"))
+        explanation.assertDoesNotExist()
+        info.assertIsDisplayed().assertIsEnabled().performClick()
+        explanation.assertIsDisplayed()
+        capture("SC134-device-usage-info").recycle()
+        compose.onNodeWithText(L10n.tr("知道了")).performClick()
+        explanation.assertDoesNotExist()
+        toggle.assertIsNotEnabled().assertIsOff()
     }
 
     @Test fun languageLastChoiceFitsThePhysicalWindow() {
