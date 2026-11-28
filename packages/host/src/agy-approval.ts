@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { InteractionRequest, InteractionResponse, RuntimeCommand, RuntimeEvent } from "@orbis/protocol";
 import { agyElicitation } from "./agy-elicitation.js";
+import { canAutoApproveAgyTool, type AgyApprovalMode } from "./agy-permissions.js";
 import { record, type AcpRequest, type JsonObject } from "./acp-client.js";
 
 const extensionId = "orbis.agy.acp";
 export const cancelAgyPermission = (rpc: AcpRequest): void => rpc.respond({ outcome: { outcome: "cancelled" } });
+const selectPermission = (optionId: string) => ({ outcome: { outcome: "selected", optionId } });
 
 /** The native callback and options stay in the owned connection. App IDs cannot select an unoffered option. */
 export class AgyApprovals {
@@ -12,7 +14,7 @@ export class AgyApprovals {
   constructor(private readonly runtimeId: string, private readonly emit: (event: RuntimeEvent) => void) {}
   requests(): InteractionRequest[] { return [...this.#pending.values()].map(item => item.request); }
 
-  add(rpc: AcpRequest): void {
+  add(rpc: AcpRequest, mode: AgyApprovalMode, trackedKind?: string): void {
     if (rpc.method === "elicitation/create") {
       const form = agyElicitation(rpc.params);
       if (!form || this.#pending.size >= 16) { rpc.respond({ action: "decline" }); return; }
@@ -24,28 +26,35 @@ export class AgyApprovals {
       return;
     }
     const options = rpc.params.options;
-    if (!Array.isArray(options) || options.length > 32 || this.#pending.size >= 16) { cancelAgyPermission(rpc); return; }
-    const choices = new Map<string, string>();
+    if (!Array.isArray(options) || options.length > 32) { cancelAgyPermission(rpc); return; }
+    const selectable: { optionId: string; name: unknown; kind: "allow_once" | "reject_once"; meta: unknown }[] = [];
     const nativeIds = new Set<string>();
-    const visible = [];
     for (const item of options) {
-      const { optionId, name, kind } = record(item);
-      // No persistent permission escalation from a remote approval.
-      if (kind !== "allow_once" && kind !== "reject_once") continue;
-      if (typeof optionId !== "string" || !optionId || optionId.length > 512 || nativeIds.has(optionId)) {
+      const { optionId, name, kind, _meta } = record(item);
+      if (typeof optionId !== "string" || !optionId.trim() || optionId.length > 512 || nativeIds.has(optionId)) {
         cancelAgyPermission(rpc); return;
       }
       nativeIds.add(optionId);
+      // A session mode never writes a permanent native grant, even as a fallback.
+      if (kind === "allow_once" || kind === "reject_once") selectable.push({ optionId, name, kind, meta: _meta });
+    }
+    const [once, anotherOnce] = selectable.filter(option => option.kind === "allow_once");
+    if (once && !anotherOnce && canAutoApproveAgyTool(mode, rpc.params, once.meta, trackedKind)) {
+      rpc.respond(selectPermission(once.optionId));
+      return;
+    }
+    if (!selectable.length || this.#pending.size >= 16) { cancelAgyPermission(rpc); return; }
+    const choices = new Map<string, string>();
+    const visible = selectable.map(({ optionId, name, kind }) => {
       const value = randomUUID();
       choices.set(value, optionId);
-      visible.push({ value, label: typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : kind === "allow_once" ? "Allow once" : "Deny" });
-    }
-    if (!visible.length) { cancelAgyPermission(rpc); return; }
+      return { value, label: typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : kind === "allow_once" ? "Allow once" : "Deny" };
+    });
     const tool = record(rpc.params.toolCall);
     const title = typeof tool.title === "string" && tool.title.trim() ? tool.title.trim().slice(0, 512) : "Antigravity CLI";
     this.#add(rpc, { ...this.#identity(), kind: "select", title, toolName: title.slice(0, 256), options: visible }, response => {
       const optionId = response.kind === "select" ? choices.get(response.value) : undefined;
-      return optionId ? { outcome: { outcome: "selected", optionId } } : undefined;
+      return optionId ? selectPermission(optionId) : undefined;
     });
   }
 

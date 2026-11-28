@@ -36,6 +36,7 @@ internal object LocalizationCatalog {
         "/{0} 已完成" to "/{0} completed",
         "/{0} 已完成：{1}" to "/{0} completed: {1}",
         "5 小时" to "5 hours",
+        "5 小时 {0} · 周 {1}" to "5 hours {0} · Week {1}",
         "5 小时配额" to "5-hour quota",
         "7 天" to "7 days",
         "<未知>" to "<unknown>",
@@ -46,6 +47,7 @@ internal object LocalizationCatalog {
         "AEAD 密钥必须是 {0} 字节" to "AEAD key must be {0} bytes",
         "AEAD 认证失败" to "AEAD authentication failed",
         "AEAD 认证失败：密文、AAD 或密钥不匹配" to "AEAD authentication failed: ciphertext, AAD or key mismatch",
+        "AGY 请求工具审批时，由你确认。" to "Confirm tool approvals requested by AGY.",
         "API Key（可选）" to "API key (optional)",
         "API 请求地址" to "API endpoint",
         "Agent 供应商" to "Agent providers",
@@ -140,6 +142,7 @@ internal object LocalizationCatalog {
         "socket.open_no_e2e（没有 E2E 会话，不会发 PAIR/HS1）" to "socket.open_no_e2e (no E2E session; PAIR/HS1 will not be sent)",
         "yyyy年M月d日" to "MMM d, yyyy",
         "{0} / {1} 已启用" to "{0} of {1} enabled",
+        "{0} · 5 小时 {1} · 周 {2}" to "{0} · 5 hours {1} · Week {2}",
         "{0} · {1}" to "{0} · {1}",
         "{0} · 未确认" to "{0} · Unconfirmed",
         "{0} · 清单不完整" to "{0} · Incomplete list",
@@ -166,11 +169,11 @@ internal object LocalizationCatalog {
         "{0} 台" to "{0} computers",
         "{0} 已在其他设备停用" to "{0} was disabled on another device",
         "{0} 已在其他设备启用" to "{0} was enabled on another device",
+    )
+    private fun part1(): Map<String, String> = mapOf(
         "{0} 已完成" to "{0} completed",
         "{0} 帧不加密，请用 PlaintextEnvelope" to "{0} frames are unencrypted; use PlaintextEnvelope",
         "{0} 帧不属于明文帧" to "{0} is not a plaintext frame",
-    )
-    private fun part1(): Map<String, String> = mapOf(
         "{0} 帧不是密文，请用 PlaintextEnvelope" to "{0} is not an encrypted frame; use PlaintextEnvelope",
         "{0} 必须是 {1} 字节" to "{0} must be {1} bytes",
         "{0} 必须是 {1} 字节，实际 {2}" to "{0} must be {1} bytes; got {2}",
@@ -188,6 +191,7 @@ internal object LocalizationCatalog {
         "{0} 项" to "{0} items",
         "{0} 项交互待确认" to "{0} interactions awaiting confirmation",
         "{0} 项工具与设置" to "{0} tools and settings",
+        "{0}%" to "{0}%",
         "{0}{1}，{2}" to "{0}{1}, {2}",
         "{0}供应商" to "{0} provider",
         "{0}分钟" to "{0}m",
@@ -317,12 +321,12 @@ internal object LocalizationCatalog {
         "不询问" to "Do not ask",
         "中继" to "Relay",
         "中继地址 {0}" to "Relay address {0}",
+    )
+    private fun part2(): Map<String, String> = mapOf(
         "中继地址无效，请重新配对。" to "Invalid relay address. Pair again.",
         "中继服务器地址必须使用 wss://，或使用本地/局域网 ws:// 地址" to "Use a wss:// relay address, or a local/LAN ws:// address",
         "中继认证失败，请重新连接。" to "Relay authentication failed. Reconnect.",
         "中继返回缺少设备凭据" to "Relay response is missing device credentials",
-    )
-    private fun part2(): Map<String, String> = mapOf(
         "中继配对失败，请在电脑端重新生成二维码。" to "Relay pairing failed. Generate a new QR code on the computer.",
         "书签" to "Bookmark",
         "书签：{0}" to "Bookmark: {0}",
@@ -351,6 +355,7 @@ internal object LocalizationCatalog {
         "交互请求已取消" to "Interaction cancelled",
         "交互请求已失效或不可用" to "Interaction expired or unavailable",
         "交互请求已超时" to "Interaction timed out",
+        "仅作用于当前打开的会话，不更改 CLI 沙盒设置。" to "Applies only to the open session and does not change CLI sandbox settings.",
         "仅保存到此设备" to "Save on this device only",
         "仅将本次识别文字发送到自定义 API" to "Only this transcript is sent to your custom API",
         "仅用户" to "User only",
@@ -468,13 +473,13 @@ internal object LocalizationCatalog {
         "允许联网" to "Allow network access",
         "允许访问工作区外文件，仍受电脑账户权限限制。" to "Allows access to files outside the workspace, subject to computer account permissions.",
         "允许读取文件；写入需要额外授权。" to "Allows reading files. Writes require additional authorization.",
+    )
+    private fun part3(): Map<String, String> = mapOf(
         "先存入 Orbis" to "Save to Orbis for later",
         "全屏预览" to "Full-screen preview",
         "全选" to "Select all",
         "全部" to "All",
         "全部 provider" to "All providers",
-    )
-    private fun part3(): Map<String, String> = mapOf(
         "全部 {0} 个" to "All {0}",
         "关" to "Off",
         "关闭" to "Close",
@@ -620,13 +625,13 @@ internal object LocalizationCatalog {
         "历史页条目超限" to "History page entry limit exceeded",
         "历史页来源尚未确认" to "History page source is unconfirmed",
         "历史页缺少显示结果，请更新并重启电脑端会话后重试" to "History page has no presentation data. Update and restart the session on the computer, then try again.",
+    )
+    private fun part4(): Map<String, String> = mapOf(
         "历史首屏尚未就绪" to "Initial history page is not ready",
         "压缩 Codex 会话上下文" to "Compact the Codex session context",
         "压缩中" to "Compacting",
         "压缩中 {0}" to "Compacting {0}",
         "压缩中 · {0}" to "Compacting · {0}",
-    )
-    private fun part4(): Map<String, String> = mapOf(
         "压缩中，{0}" to "Compacting, {0}",
         "原生报告的可读目录：{0}。" to "Native readable directories: {0}.",
         "原生报告的可读目录：没有额外目录。" to "Native readable directories: no additional directories.",
@@ -772,13 +777,13 @@ internal object LocalizationCatalog {
         "复制消息" to "Copy message",
         "复制路径" to "Copy path",
         "复制选中文本" to "Copy selected text",
+    )
+    private fun part5(): Map<String, String> = mapOf(
         "复制选区" to "Copy selection",
         "外观" to "Appearance",
         "外部沙箱" to "External sandbox",
         "失败" to "Failed",
         "子代理" to "Subagents",
-    )
-    private fun part5(): Map<String, String> = mapOf(
         "子代理 {0}" to "{0} subagents",
         "子代理 {0} 项" to "{0} subagents",
         "子代理 · {0} 项" to "Subagents · {0}",
@@ -858,6 +863,7 @@ internal object LocalizationCatalog {
         "工作区可写" to "Workspace write",
         "工作目录" to "Working directory",
         "工具" to "Tools",
+        "工具审批" to "Tool approvals",
         "工具执行失败" to "Tool failed",
         "工具清单代次超限" to "Tool inventory generation limit exceeded",
         "工具清单代次超限。" to "Tool inventory generation limit exceeded.",
@@ -923,14 +929,14 @@ internal object LocalizationCatalog {
         "已归档" to "Archived",
         "已拒绝" to "Rejected",
         "已按电脑同步" to "Synced with the computer",
+    )
+    private fun part6(): Map<String, String> = mapOf(
         "已排队" to "Queued",
         "已接入" to "Connected",
         "已接收" to "Received",
         "已提交" to "Submitted",
         "已提交，等待处理结果…" to "Submitted. Waiting for a result…",
         "已提交，等待电脑确认…" to "Submitted. Waiting for the computer to confirm…",
-    )
-    private fun part6(): Map<String, String> = mapOf(
         "已提交，等待电脑端确认" to "Submitted. Waiting for the computer to confirm.",
         "已撤回" to "Withdrawn",
         "已收起" to "Collapsed",
@@ -980,6 +986,7 @@ internal object LocalizationCatalog {
         "异常" to "Error",
         "引用到输入框" to "Insert into message",
         "引用来源暂不可显示" to "Source unavailable",
+        "引用目录 {0}" to "Reference folder {0}",
         "强制使用 QUIC；准备失败时保留当前连接并报告错误" to "Always use QUIC; if preparation fails, keep the current connection and report an error.",
         "强制使用 WS" to "Always use WS",
         "归属未确认" to "Attribution unconfirmed",
@@ -1072,16 +1079,10 @@ internal object LocalizationCatalog {
         "手机无法安全渲染此交互，请在电脑端处理。" to "This interaction cannot be displayed safely on the phone. Use the computer.",
         "手机本地规则" to "On-device rules",
         "手机系统“下载”目录，{0}" to "Phone's Downloads folder, {0}",
-        "配对 Relay 后可设置" to "Pair with a Relay to configure this.",
-        "此 Relay 不支持遥测设置" to "This Relay does not support telemetry settings.",
-        "无法读取遥测设置" to "Couldn't read telemetry settings.",
-        "无法保存遥测设置" to "Couldn't save telemetry settings.",
-        "正在读取设置…" to "Loading settings…",
-        "正在保存设置…" to "Saving settings…",
-        "设备使用统计" to "Device usage sharing",
-        "隐私" to "Privacy",
         "打开" to "Open",
         "打开下载" to "Open downloads",
+    )
+    private fun part7(): Map<String, String> = mapOf(
         "打开会话" to "Open session",
         "打开会话目录" to "Open session drawer",
         "打开图片" to "Open image",
@@ -1089,8 +1090,6 @@ internal object LocalizationCatalog {
         "打断当前任务" to "Interrupt current task",
         "执行" to "Run",
         "执行中" to "Running",
-    )
-    private fun part7(): Map<String, String> = mapOf(
         "执行失败" to "Execution failed",
         "执行状态" to "Execution status",
         "扩展" to "Extension",
@@ -1209,6 +1208,7 @@ internal object LocalizationCatalog {
         "无法保存安全凭据，请解锁设备后重试。" to "Could not save credentials. Unlock the device and try again.",
         "无法保存文件" to "Could not save file",
         "无法保存语音清理配置" to "Could not save voice cleanup settings",
+        "无法保存遥测设置" to "Couldn't save telemetry settings.",
         "无法写入手机下载文件" to "Could not write the download file on the phone",
         "无法创建下载临时文件" to "Could not create a temporary download file",
         "无法创建导出文件" to "Could not create the export file",
@@ -1229,9 +1229,12 @@ internal object LocalizationCatalog {
         "无法读取所选照片" to "Could not load selected photo",
         "无法读取电脑端消息，请更新手机和电脑端 Orbis" to "The message from your computer could not be read. Update Orbis on your phone and computer.",
         "无法读取语音清理配置" to "Could not read voice cleanup settings",
+        "无法读取遥测设置" to "Couldn't read telemetry settings.",
         "旧 {0}" to "Old {0}",
         "昨天 HH:mm" to "'Yesterday' HH:mm",
         "显示上限" to "Display limit",
+    )
+    private fun part8(): Map<String, String> = mapOf(
         "显示其他分支" to "Show other branches",
         "显示工具与细节" to "Show tools and details",
         "显示投影版本不匹配（Host：{0}），请更新 App" to "Presentation version mismatch (Host: {0}). Update the app.",
@@ -1241,8 +1244,6 @@ internal object LocalizationCatalog {
         "暂不可用" to "Unavailable",
         "暂停" to "Pause",
         "暂无下载" to "No downloads yet",
-    )
-    private fun part8(): Map<String, String> = mapOf(
         "暂无会话" to "No sessions yet",
         "暂无可加入的会话" to "No sessions available",
         "暂无可用电脑" to "No available computers",
@@ -1384,6 +1385,8 @@ internal object LocalizationCatalog {
         "查看全部 {0} 条" to "View all {0} entries",
         "查看分享内容" to "View shared content",
         "查看只读历史" to "View read-only history",
+    )
+    private fun part9(): Map<String, String> = mapOf(
         "查看完整内容" to "View full content",
         "查看已归档会话" to "View archived sessions",
         "查看或设置 Codex 会话显示名称" to "Show or set the Codex session display name",
@@ -1393,8 +1396,6 @@ internal object LocalizationCatalog {
         "查看详情，{0}" to "View details, {0}",
         "查看说明" to "Show information",
         "查看这个分支的缓存" to "View this branch's cache",
-    )
-    private fun part9(): Map<String, String> = mapOf(
         "查询 {0} 订阅配额" to "Check {0} subscription quota",
         "查询中" to "Querying",
         "查询中…" to "Querying…",
@@ -1426,6 +1427,7 @@ internal object LocalizationCatalog {
         "正在下载 {0}/{1}" to "Downloading {0}/{1}",
         "正在使用" to "In use",
         "正在使用 {0}" to "Using {0}",
+        "正在保存设置…" to "Saving settings…",
         "正在停用" to "Disabling",
         "正在准备附件…" to "Preparing attachments…",
         "正在切换分支…" to "Switching branches…",
@@ -1475,6 +1477,7 @@ internal object LocalizationCatalog {
         "正在读取差异…" to "Loading diff…",
         "正在读取文件清单" to "Loading file list",
         "正在读取文件清单…" to "Loading file list…",
+        "正在读取设置…" to "Loading settings…",
         "正在跳转…" to "Navigating…",
         "正在运行的会话继续使用原配置，新建会话使用这个配置。" to "Running sessions keep their current profile. New sessions use this profile.",
         "正在连接" to "Connecting",
@@ -1485,6 +1488,7 @@ internal object LocalizationCatalog {
         "此 Host 不支持这个状态领域" to "This Host does not support this state domain",
         "此 OpenClaw 会话在当前 Gateway 上不可用。请刷新会话列表，或先在 OpenClaw 恢复已归档的会话。" to "This OpenClaw session is unavailable on the current Gateway. Refresh the session list, or restore the archived session in OpenClaw first.",
         "此 OpenClaw 地址只能接入已运行的 Gateway。请在 Gateway 所在电脑启动服务，再重新连接 Host。" to "This OpenClaw address requires an already running Gateway. Start it on its computer, then reconnect Host.",
+        "此 Relay 不支持遥测设置" to "This Relay does not support telemetry settings.",
         "此交互需要在电脑端完成。" to "Complete this interaction on the computer.",
         "此会话属于 {0}，当前使用 {1}。请在设置页切换到 {2}，再打开会话。" to "This session belongs to {0}, but {1} is active. Switch to {2} in Settings, then open the session.",
         "此会话正在运行，请从会话列表进入" to "This session is running. Open it from the session list.",
@@ -1533,6 +1537,8 @@ internal object LocalizationCatalog {
         "浏览此会话历史并回退到指定位置" to "Browse this session's history and rewind to a point",
         "浏览电脑文件" to "Browse computer files",
         "消息不能超过 100,000 个字符。" to "Messages must be 100,000 characters or fewer.",
+    )
+    private fun part10(): Map<String, String> = mapOf(
         "消息图片" to "Message image",
         "消息已交给 Agent" to "Message passed to Agent",
         "消息已经送入上下文，无法取消" to "Message is already in context and cannot be cancelled",
@@ -1545,8 +1551,6 @@ internal object LocalizationCatalog {
         "消息队列" to "Message queue",
         "深度未确认" to "Reasoning unconfirmed",
         "深色" to "Dark",
-    )
-    private fun part10(): Map<String, String> = mapOf(
         "添加到 Pi 配置，可与其他供应商同时启用。" to "Add to Pi configuration. Multiple providers can be enabled together.",
         "添加电脑" to "Add computer",
         "添加说明…" to "Add a note…",
@@ -1685,6 +1689,8 @@ internal object LocalizationCatalog {
         "端到端加密" to "End-to-end encryption",
         "端到端加密已连接" to "Connected with end-to-end encryption",
         "端到端加密连接尚未就绪。" to "Encrypted connection is not ready.",
+    )
+    private fun part11(): Map<String, String> = mapOf(
         "端到端加密连接尚未就绪，请连接成功后重试。" to "Encrypted connection is not ready. Connect and try again.",
         "第 {0} / {1} 题，{2}" to "Question {0} / {1}, {2}",
         "第 {0} 次" to "Attempt {0}",
@@ -1697,8 +1703,6 @@ internal object LocalizationCatalog {
         "等待会话启动" to "Waiting for session to start",
         "等待传输" to "Waiting to transfer",
         "等待前一条发送" to "Waiting for the previous message",
-    )
-    private fun part11(): Map<String, String> = mapOf(
         "等待启动配置确认" to "Waiting for startup configuration",
         "等待接入" to "Waiting for Agent",
         "等待更多输出" to "Waiting for more output",
@@ -1752,6 +1756,10 @@ internal object LocalizationCatalog {
         "联网操作受沙箱限制，可否申请放行取决于审批策略。" to "Network operations are restricted by the sandbox. Whether access can be requested depends on the approval policy.",
         "自动" to "Auto",
         "自动审查" to "Automatic review",
+        "自动批准工具（含命令）" to "Auto-approve tools (including commands)",
+        "自动批准已识别的工具操作，包括运行命令。提问和不明确的请求仍需确认。" to "Automatically approve recognized tool actions, including commands. Questions and ambiguous requests still ask.",
+        "自动批准编辑" to "Auto-approve edits",
+        "自动批准编辑请求；命令和其他操作仍需确认。" to "Automatically approve edits. Commands and other actions still ask.",
         "自动接受编辑" to "Accept edits automatically",
         "自动模式" to "Automatic mode",
         "自动模式使用 WS" to "Automatic mode uses WS.",
@@ -1786,6 +1794,7 @@ internal object LocalizationCatalog {
         "记录读取未发送，请连接电脑后重试" to "The records request was not sent. Connect to your computer and try again.",
         "记录读取未发送，请重新连接" to "Record request was not sent. Reconnect.",
         "记录读取超时，请重试" to "Record read timed out. Try again.",
+        "设备使用统计" to "Device usage sharing",
         "设备公钥长度不对" to "Invalid device public key length",
         "设备尚未配对" to "Device is not paired",
         "设置" to "Settings",
@@ -1828,9 +1837,12 @@ internal object LocalizationCatalog {
         "请勿口述密码等敏感信息" to "Do not dictate passwords or other sensitive information",
         "请同时更新手机和电脑端 Orbis" to "Update Orbis on both your phone and computer",
         "请在电脑上启动 Orbis Host，打开后 APP 会自动重新连上" to "Start Orbis Host on the computer. The app will reconnect automatically.",
+        "请在电脑上登录" to "Sign in on your computer",
         "请在电脑端完成交互" to "Complete this interaction on the computer",
         "请在电脑端查看 Orbis Host 的诊断，再返回新建。" to "Check the Orbis Host diagnostics on your computer, then return to the new-session draft.",
         "请在系统设置中允许相机权限，或返回粘贴配对内容。" to "Allow camera access in system settings, or go back to paste the pairing data.",
+    )
+    private fun part12(): Map<String, String> = mapOf(
         "请在系统设置中允许麦克风和语音识别" to "Allow microphone and speech recognition in Settings",
         "请在系统设置中允许麦克风权限" to "Allow microphone access in Settings",
         "请查看附件。" to "Please see the attachments.",
@@ -1849,8 +1861,6 @@ internal object LocalizationCatalog {
         "请重试" to "Try again",
         "请重试。" to "Try again.",
         "读取下一段差异" to "Load next diff section",
-    )
-    private fun part12(): Map<String, String> = mapOf(
         "读取下一页" to "Load next page",
         "读取中…" to "Loading…",
         "读取位置已失效，请关闭后重新打开" to "Read position expired. Close and reopen.",
@@ -1983,6 +1993,8 @@ internal object LocalizationCatalog {
         "退出消息操作" to "Exit message actions",
         "退出码 {0}" to "Exit code {0}",
         "退出视图" to "Leave view",
+    )
+    private fun part13(): Map<String, String> = mapOf(
         "退出预览" to "Exit preview",
         "选一个会话" to "Choose a session",
         "选中 runtime {0}    传输路径 {1}" to "Selected runtime {0}    Transfer path {1}",
@@ -2000,14 +2012,13 @@ internal object LocalizationCatalog {
         "选择电脑" to "Select computer",
         "选择电脑上的文件" to "Select a file on the computer",
         "选择电脑上的文件或目录" to "Select a file or folder on the computer",
-        "引用目录 {0}" to "Reference folder {0}",
         "选择这个目录" to "Choose this directory",
+        "逐次确认" to "Ask each time",
         "通知状态待核对" to "Notification status needs checking",
-    )
-    private fun part13(): Map<String, String> = mapOf(
         "部分会话暂不支持远程关闭，或可用命令尚未就绪，请稍后重试。" to "Some sessions cannot be closed remotely, or commands are not ready. Try again shortly.",
         "部分历史未加载" to "Earlier history not loaded",
         "部分状态" to "Partial status",
+        "配对 Relay 后可设置" to "Pair with a Relay to configure this.",
         "配对不完整：请打开侧边栏，点底部的电脑取消配对，再扫电脑上的新二维码" to "Incomplete pairing. Open the drawer, tap the computer at the bottom to unpair, then scan its new QR code.",
         "配对二维码 JSON 内容" to "Pairing QR code JSON",
         "配对二维码已过期，请在电脑上重新生成（配对窗口只有几分钟）" to "Pairing QR code expired. Generate a new one on the computer (codes last only a few minutes).",
@@ -2080,6 +2091,7 @@ internal object LocalizationCatalog {
         "附近的对话" to "Nearby conversation",
         "限制联网" to "Restrict network access",
         "随手机的浅色与深色自动切换" to "Match your phone’s light and dark appearance",
+        "隐私" to "Privacy",
         "集合领域不是对象" to "Collection domain is not an object",
         "雾蓝" to "Mist blue",
         "需要切换 provider" to "Provider switch required",
@@ -2160,6 +2172,7 @@ internal object LocalizationCatalog {
         "还有 {0} 个文件" to "{0} more file",
     )
     val hostExact: Set<String> = setOf(
+        "AGY 请求工具审批时，由你确认。",
         "Claude Code 报告的权限模式",
         "Host 无法用当前 OpenClaw CLI 启动 Gateway。请在电脑手动启动 Gateway，或确认已安装 OpenClaw 2026.11.5。",
         "Host 无法确认本机 OpenClaw Gateway 端口状态。请在电脑检查 Gateway 是否已启动及端口是否正确。",
@@ -2189,6 +2202,7 @@ internal object LocalizationCatalog {
         "不可信操作先询问",
         "不申请审批",
         "不询问",
+        "仅作用于当前打开的会话，不更改 CLI 沙盒设置。",
         "会话权限预设",
         "会话正在执行任务或有待处理审批，请完成后再修改权限。",
         "何时申请审批",
@@ -2237,6 +2251,7 @@ internal object LocalizationCatalog {
         "工作区内可修改；越界操作仍需单次批准。",
         "工作区写入",
         "工作区可写",
+        "工具审批",
         "开始新的 Codex 会话",
         "当前会话的权限模式只能在电脑上按 Shift+Tab 切换；计划模式也可以用 /plan 进入",
         "当前设置",
@@ -2280,6 +2295,10 @@ internal object LocalizationCatalog {
         "网络：未知；原生后端尚未报告网络权限，不能从预设名称推断。",
         "联网操作受沙箱限制，可否申请放行取决于审批策略。",
         "自动审查",
+        "自动批准工具（含命令）",
+        "自动批准已识别的工具操作，包括运行命令。提问和不明确的请求仍需确认。",
+        "自动批准编辑",
+        "自动批准编辑请求；命令和其他操作仍需确认。",
         "自动接受编辑",
         "自动模式",
         "自定义",
@@ -2292,6 +2311,7 @@ internal object LocalizationCatalog {
         "这里修改的是当前会话的持久权限设置，不会改变其他会话或新会话默认值。允许一次（once）只批准当前操作，不会修改会话权限。",
         "退出 Codex（关闭电脑上的 TUI 窗口）",
         "选择此 Codex 会话的模型",
+        "逐次确认",
         "限制联网",
         "需要时询问",
         "默认（需要时询问）",

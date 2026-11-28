@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { RuntimeEventSchema, type RuntimeEvent } from "@orbis/protocol";
-import { AcpUnconfirmedError, type AcpConnection } from "./acp-client.js";
+import { AcpUnconfirmedError, type AcpConnection, type JsonObject } from "./acp-client.js";
+import { AGY_APPROVAL_SETTING } from "./agy-permissions.js";
 import { AgyRuntime } from "./agy-runtime.js";
 
 const configuration = (currentValue = "mdl-a") => [{ type: "select", id: "nativeModel", category: "model", currentValue,
@@ -113,6 +114,114 @@ it("routes a bounded permission and rejects a forged or stale result", async () 
     choose("valid", card.options[0]!.value); choose("repeat", card.options[0]!.value);
     expect(respond).toHaveBeenCalledExactlyOnceWith({ outcome: { outcome: "selected", optionId: "native-once" } });
     finish({ stopReason: "end_turn" });
+  } finally { await runtime.stop(); }
+});
+
+const oneTimeApproval = { optionId: "native-once", kind: "allow_once", name: "Allow once" };
+const persistentApproval = { optionId: "native-always", kind: "allow_always", name: "Allow always" };
+const acceptedOnce = { outcome: { outcome: "selected", optionId: oneTimeApproval.optionId } };
+
+// AGY-17: session policy applies live to future requests, not to an already visible approval card.
+it("switches AGY tool approval modes during a turn without restarting it", async () => {
+  const { client, runtime, events, finish } = setup();
+  const id = "agy:fresh";
+  const sessionId = "fresh";
+  const select = (value: string, settingId = AGY_APPROVAL_SETTING) => runtime.dispatchCommand(id, `policy:${value}`,
+    { type: "permissions.update", settingId, value });
+  const mode = () => runtime.directoryEntries().find(entry => entry.runtimeId === id)?.permissionManagement?.settings[0]?.currentValue;
+  function permission(toolCallId: string, kind?: string) {
+    const respond = vi.fn();
+    client.onRequest?.({ method: "session/request_permission", params: {
+      sessionId, toolCall: { toolCallId, kind }, options: [persistentApproval, oneTimeApproval],
+    }, respond, reject: vi.fn() });
+    return respond;
+  }
+  const requests = () => events.filter(event => event.type === "interaction.requested");
+  await runtime.start();
+  try {
+    await runtime.activate({ type: "new", cwd: process.cwd() });
+    expect(mode()).toBe("ask");
+    runtime.dispatchCommand(id, "prompt", { type: "user_message", text: "make a small change" });
+    const alreadyAsked = permission("shell-before", "execute");
+    expect(requests()).toHaveLength(1);
+
+    expect(select("auto-edit")).toBe("handled");
+    expect(mode()).toBe("auto-edit");
+    client.onNotification?.("session/update", { sessionId, update: {
+      sessionUpdate: "tool_call", toolCallId: "edit-now", kind: "edit", status: "pending",
+    } });
+    expect(permission("edit-now")).toHaveBeenCalledExactlyOnceWith(acceptedOnce);
+    expect(permission("shell-during-auto-edit", "execute")).not.toHaveBeenCalled();
+    expect(requests()).toHaveLength(2);
+
+    expect(select("auto-tools", "another-provider-setting")).toBe("handled");
+    expect(mode()).toBe("auto-edit");
+    expect(events).toContainEqual(expect.objectContaining({ type: "command.result", commandId: "policy:auto-tools", status: "failure" }));
+    select("auto-tools");
+    expect(mode()).toBe("auto-tools");
+    expect(permission("shell-now", "execute")).toHaveBeenCalledExactlyOnceWith(acceptedOnce);
+    expect(permission("next-shell", "execute")).toHaveBeenCalledExactlyOnceWith(acceptedOnce);
+    expect(alreadyAsked).not.toHaveBeenCalled();
+    expect(requests()).toHaveLength(2);
+
+    select("ask");
+    expect(mode()).toBe("ask");
+    expect(permission("shell-after", "execute")).not.toHaveBeenCalled();
+    expect(requests()).toHaveLength(3);
+    expect(vi.mocked(client.request).mock.calls.map(([method]) => method)).toEqual(["session/list", "session/new", "session/prompt"]);
+    expect(client.notify).not.toHaveBeenCalled();
+    finish({ stopReason: "end_turn" });
+  } finally { await runtime.stop(); }
+});
+
+// AGY-17: choosing automatic approval cannot answer native questions, mint approvals or change modes.
+it("keeps unrecognized and ambiguous native requests out of automatic approval", async () => {
+  const { client, runtime, events, finish } = setup();
+  const id = "agy:fresh";
+  const request = (toolCallId: string, kind: unknown, options: JsonObject[] = [oneTimeApproval]) => {
+    const respond = vi.fn();
+    client.onRequest?.({ method: "session/request_permission", params: {
+      sessionId: "fresh", toolCall: { toolCallId, kind, title: "Run shell command" }, options,
+    }, respond, reject: vi.fn() });
+    return respond;
+  };
+  await runtime.start();
+  try {
+    await runtime.activate({ type: "new", cwd: process.cwd() });
+    runtime.dispatchCommand(id, "mode", { type: "permissions.update", settingId: AGY_APPROVAL_SETTING, value: "auto-tools" });
+    runtime.dispatchCommand(id, "prompt", { type: "user_message", text: "choose and execute" });
+    expect(request("interaction_1", "execute")).not.toHaveBeenCalled();
+    expect(request("unknown-tool", "other")).not.toHaveBeenCalled();
+    expect(request("mode-change", "switch_mode")).not.toHaveBeenCalled();
+    expect(request("unknown-edit", undefined)).not.toHaveBeenCalled();
+    expect(request("multiple", "execute", [oneTimeApproval, { ...oneTimeApproval, optionId: "second-once" }])).not.toHaveBeenCalled();
+    expect(request("warned", "execute", [{ ...oneTimeApproval,
+      _meta: { "agy.security.warning": { severity: "high" } },
+    }])).not.toHaveBeenCalled();
+    expect(events.filter(event => event.type === "interaction.requested")).toHaveLength(6);
+    const cancelled = { outcome: { outcome: "cancelled" } };
+    expect(request("no-once", "execute", [persistentApproval])).toHaveBeenCalledExactlyOnceWith(cancelled);
+    expect(request("duplicate", "execute", [oneTimeApproval, { ...persistentApproval, optionId: oneTimeApproval.optionId }]))
+      .toHaveBeenCalledExactlyOnceWith(cancelled);
+    finish({ stopReason: "end_turn" });
+  } finally { await runtime.stop(); }
+});
+
+// AGY-17: expanded approvals are neither global nor restored by loading the same native session after CLI loss.
+it("resets AGY tool approvals when the native session is reopened", async () => {
+  const { client, runtime } = setup();
+  const mode = (id: string) => runtime.directoryEntries().find(entry => entry.runtimeId === id)?.permissions?.approvalPolicy;
+  await runtime.start();
+  try {
+    await runtime.activate({ type: "resume", sessionId: "agy:existing" });
+    runtime.dispatchCommand("agy:existing", "policy", { type: "permissions.update", settingId: AGY_APPROVAL_SETTING, value: "auto-tools" });
+    await runtime.activate({ type: "new", cwd: process.cwd() });
+    expect(mode("agy:fresh")).toBe("ask");
+    expect(mode("agy:existing")).toBe("auto-tools");
+    client.onExit?.("fixture disconnected");
+    await runtime.start();
+    await runtime.activate({ type: "resume", sessionId: "agy:existing" });
+    expect(mode("agy:existing")).toBe("ask");
   } finally { await runtime.stop(); }
 });
 
