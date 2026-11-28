@@ -2172,17 +2172,30 @@ final class OrbisUITests: XCTestCase {
         XCTAssertTrue(card.waitForExistence(timeout: 3), "The history file download must be queued")
     }
 
-    // TELEMETRY-01: settings show the sharing toggle without inline explanatory copy.
-    func testDeviceUsageSharingOmitsInlineExplanation() {
+    // SC134: the explanation is on demand and remains available when sharing cannot be enabled.
+    func testDeviceUsageSharingInfoWorksWhileSharingIsUnavailable() {
         let app = launch("status")
         let settings = app.descendants(matching: .any)["settings-page"].firstMatch
         XCTAssertTrue(settings.waitForExistence(timeout: 8))
-        let toggle = app.descendants(matching: .any)["settings-device-telemetry"].firstMatch
-        for _ in 0..<10 where !toggle.isHittable { settings.swipeUp() }
-        XCTAssertTrue(toggle.waitForExistence(timeout: 4))
+        let info = app.buttons["settings-device-telemetry-info"]
+        for _ in 0..<10 where !info.isHittable { settings.swipeUp() }
+        XCTAssertTrue(info.waitForExistence(timeout: 4))
+        let toggle = app.switches["settings-device-telemetry"]
+        XCTAssertTrue(toggle.exists)
+        XCTAssertEqual(toggle.label, "设备使用统计")
         XCTAssertFalse(toggle.isEnabled)
-        let explanation = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "消息流量与连接时长")).firstMatch
+        let originalValue = toggle.value as? String
+        let explanation = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "规划服务器开支")).firstMatch
         XCTAssertFalse(explanation.exists)
+        info.tap()
+        XCTAssertTrue(explanation.waitForExistence(timeout: 4))
+        XCTAssertTrue(explanation.label.contains("此设备的收发流量"))
+        XCTAssertTrue(explanation.label.contains("不会收集聊天内容、文件内容或密码"))
+        capture("SC134-device-usage-info", app: app)
+        app.buttons["知道了"].tap()
+        XCTAssertTrue(explanation.waitForNonExistence(timeout: 4))
+        XCTAssertEqual(toggle.value as? String, originalValue)
+        XCTAssertFalse(toggle.isEnabled)
     }
 
     // ADR-0070 / S37: the header keeps downloads and local draft creation; settings is a root,

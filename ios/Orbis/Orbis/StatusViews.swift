@@ -79,13 +79,25 @@ struct ConnectionStatusView: View {
                     }
                     StatusSection(title: L10n.tr("隐私")) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Toggle(L10n.tr("设备使用统计"), isOn: Binding(
-                                get: { relayTelemetryEnabled },
-                                set: { requested in Task { await updateRelayTelemetryConsent(requested) } }
-                            ))
-                            .font(.orbisBody(.semibold))
-                            .disabled(!relayTelemetryAvailable || relayTelemetryBusy || store.selectedHost == nil)
-                            .accessibilityIdentifier("settings-device-telemetry")
+                            let telemetryTitle = L10n.tr("设备使用统计")
+                            HStack(spacing: 12) {
+                                Text(telemetryTitle)
+                                    .font(.orbisBody(.semibold))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .accessibilityHidden(true)
+                                OrbisInfoButton(
+                                    title: telemetryTitle,
+                                    message: L10n.tr("Relay 会汇总活跃设备数量，以了解有多少人在使用并规划服务器开支。开启后，Relay 还会统计此设备的收发流量、连接次数和时长。遥测不会收集聊天内容、文件内容或密码。"),
+                                    identifier: "settings-device-telemetry-info"
+                                )
+                                Toggle(telemetryTitle, isOn: Binding(
+                                    get: { relayTelemetryEnabled },
+                                    set: { requested in Task { await updateRelayTelemetryConsent(requested) } }
+                                ))
+                                .labelsHidden()
+                                .disabled(!relayTelemetryAvailable || relayTelemetryBusy || store.selectedHost == nil)
+                                .accessibilityIdentifier("settings-device-telemetry")
+                            }
                             if relayTelemetryBusy || !relayTelemetryStatus.isEmpty {
                                 Text(relayTelemetryBusy ? L10n.tr("正在保存设置…") : relayTelemetryStatus)
                                     .font(.orbisLabel()).foregroundStyle(palette.secondary)

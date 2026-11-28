@@ -284,9 +284,15 @@ describe("public demo refined controls", () => {
     expect(app.root.innerHTML).toContain("仅路由头，不可读取");
 
     expect(app.root.innerHTML).toContain('role="switch" aria-checked="false"');
+    // SC134: explanation is opt-in to view, independent of the telemetry switch.
+    expect(app.root.innerHTML).not.toContain("规划服务器开支");
     app.privacyAction("telemetry-info");
-    expect(app.root.innerHTML).toContain("默认关闭，关闭时不记录设备使用明细");
+    expect(app.root.innerHTML).toContain("规划服务器开支");
+    expect(app.root.innerHTML).toContain("此设备的收发流量");
+    expect(app.root.innerHTML).toContain("不会收集聊天内容、文件内容或密码");
+    expect(app.root.innerHTML).toContain('role="switch" aria-checked="false"');
     app.privacyAction("telemetry-info-close");
+    expect(app.root.innerHTML).not.toContain("规划服务器开支");
     app.privacyAction("telemetry-toggle");
     expect(app.root.innerHTML).toContain('role="switch" aria-checked="true"');
   });

@@ -107,7 +107,13 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
             SettingsGroup(L10n.tr("隐私"), padding = 8.dp, tag = "settings-privacy-group") {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(L10n.tr("设备使用统计"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        val telemetryTitle = L10n.tr("设备使用统计")
+                        Text(telemetryTitle, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        InlineInfoButton(
+                            title = telemetryTitle,
+                            message = L10n.tr("Relay 会汇总活跃设备数量，以了解有多少人在使用并规划服务器开支。开启后，Relay 还会统计此设备的收发流量、连接次数和时长。遥测不会收集聊天内容、文件内容或密码。"),
+                            tag = "settings-device-telemetry-info",
+                        )
                         Switch(
                             checked = telemetryEnabled,
                             enabled = telemetryAvailable && !telemetryBusy && model != null,
@@ -131,7 +137,7 @@ internal fun DesignSettingsScreen(state: RemoteState, onBack: () -> Unit, root: 
                                     }
                                 }
                             },
-                            modifier = Modifier.testTag("settings-device-telemetry"),
+                            modifier = Modifier.testTag("settings-device-telemetry").semantics { contentDescription = telemetryTitle },
                         )
                     }
                     if (telemetryBusy || telemetryStatus.isNotEmpty()) {
