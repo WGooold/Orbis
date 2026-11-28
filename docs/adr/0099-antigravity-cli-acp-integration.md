@@ -1,6 +1,6 @@
 # ADR-0099：Antigravity CLI 的 App 客户端接入
 
-日期：2026-11-27 · 状态：AGY-16 在独立 worktree 实现桌面端官方 CLI 登录、四种认证与订阅配额投影；未部署。真实 Google 登录、真实配额读取与用户验收待验证。
+日期：2026-11-27 · 状态：AGY-18 撤回 Antigravity 订阅配额查询；保留桌面端官方 CLI 登录与四种认证。修复版未发布，用户验收待完成。
 
 历史：2026-11-19 的 ACP 草案（原编号 0090，`f13aab5`）及 AGY-01–03（末端 `028936f`）保存在本地 `archive/agy-acp-20261119`。主线的 ADR-0090 已用于 Linux Headless Host；此 ADR 取代 AGY 旧方案，不改变 Linux ADR。
 
@@ -65,11 +65,9 @@ AGY-16 覆盖 AGY-11 原 API-only 认证限制。桌面 Host 默认选择 `oauth
 - 为保留既有 API Key 用户的数据，Key 模式继续使用旧 `stateDir/agy-acp` profile、`~/.gemini` 相对布局和 `orbis-agy` app-data 名称；新认证方式使用 `stateDir/providers/antigravity/<sha256(instanceId)>`，当前单实例身份为 `orbis:agy:default`，目录作为 `GEMINI_HOME`，app-data 为 `antigravity-acp`。Orbis 当前每个 Host 只有一个 AGY 账号槽，不等同于 T3 按多个 provider instance 并存多个账号。个人登录用本地 `SSH_CONNECTION` 标记，引导官方 CLI 将该账号凭据保存在隔离 profile，而不是覆盖共享 OS keyring 项；Enterprise 凭据存储由 CLI 决定。Orbis 不持久化、刷新或跨 profile 转存 OAuth 凭据/code；配额查询会短暂读取 CLI 自有 token 文件或原生 keyring，以内存 access token 直接请求 Google，不把 token/code 放入 Orbis 凭据槽、Host 设置、Relay、日志或诊断。API Key 仍只存系统凭据槽。
 - 登录／退出与 ACP 运行共用每 profile 独占 owner lock。退出通过 CLI 公布的 `auth.logout` 能力完成；重启后由 CLI 在原 profile 中验证现有登录。Host 设置仅保存认证方式与非密钥 GCP 参数。
 - AGY 子进程仅继承必要的 PATH 和平台变量，清除宿主机 `GEMINI_API_KEY`、`GOOGLE_API_KEY`、`GOOGLE_APPLICATION_CREDENTIALS`、GCP project 等认证／计费环境。只有用户选定 Key 模式才传入对应 Key。Agent Platform 无 Key 模式允许 Google SDK 在本机默认凭据目录发现 ADC，不继承 `GOOGLE_APPLICATION_CREDENTIALS`。
-- Google 账号配额从 CLI 自己的 `antigravity-oauth-token` profile 文件读取短期 access token；Enterprise 在 CLI 使用原生 keyring 时只读 `gemini:antigravity` 项。Orbis 不刷新 token、不复制 token、不修改 keyring。Host 调用 `daily-cloudcode-pa.googleapis.com`／`cloudcode-pa.googleapis.com` 的 `v1internal:retrieveUserQuotaSummary`，personal 与 business 分别选择首选端点，合并计量池并保留 Gemini、Argon/Carbon 与 Claude/GPT shared 的 5 小时／weekly 窗口。API Key 与 Agent Platform 返回不支持订阅配额，不会把 API 用量伪装为订阅额度。
-- AGY 的 `provider.list`／`provider.subscription` 只在客户端协商 `agent.agy` 后可用；认证方式、订阅支持状态与配额池通过既有 provider/quota 投影传递。旧客户端仍不会因 `device.ready` 收到该 Agent；新版手机 Host Dial 支持查询并按池展示聚合窗口和模型池窗口。旧客户端收到新 quota 中的可选 `pools` 仍可读取原 `windows`。
-- 内部 Cloud Code quota API 属于 Google 端点的实测技术调用；本 ADR 不据此推断服务条款许可、稳定性或对外授权。
+- AGY-16 曾在 Host 实现 Google 账号订阅配额查询；该实现已由 AGY-18 移除。认证方式仍通过既有 provider 投影传递；未协商 `agent.agy` 的旧客户端仍不接收该 Agent。
 
-实现：[`agy-auth.ts`](../../packages/host/src/agy-auth.ts)、[`agy-login.ts`](../../packages/host/src/agy-login.ts)、[`agy-usage.ts`](../../packages/host/src/agy-usage.ts)、[`agy-client.ts`](../../packages/host/src/agy-client.ts)、[`acp-client.ts`](../../packages/host/src/acp-client.ts)、[`provider-messages.ts`](../../packages/host/src/provider-messages.ts)、[`host-service.ts`](../../packages/host/src/host-service.ts)、[`SubscriptionQuotaSchema`](../../packages/protocol/src/subscription-quota.ts)、[`HostController`](../../packages/windows-host/src/HostController.cpp)、[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)、[`HostState.swift`](../../ios/Orbis/Orbis/HostState.swift)、[`AgentProviders.kt`](../../android/app/src/main/java/com/orbising/orbis/AgentProviders.kt)。Fake CLI 与 mock HTTP 覆盖 token 文件／过期、池投影、端点优先级和旧协议聚合兼容；不等价于真实 Google 授权、配额服务或推理。
+实现：[`agy-auth.ts`](../../packages/host/src/agy-auth.ts)、[`agy-login.ts`](../../packages/host/src/agy-login.ts)、[`agy-client.ts`](../../packages/host/src/agy-client.ts)、[`acp-client.ts`](../../packages/host/src/acp-client.ts)、[`provider-messages.ts`](../../packages/host/src/provider-messages.ts)、[`host-service.ts`](../../packages/host/src/host-service.ts)、[`HostController`](../../packages/windows-host/src/HostController.cpp)、[`Main.qml`](../../packages/windows-host/src/qml/Main.qml)。Fake CLI 验证不等价于真实 Google 授权或推理。
 
 ### AGY-14｜验证与交付
 
@@ -84,7 +82,7 @@ AGY-16 覆盖 AGY-11 原 API-only 认证限制。桌面 Host 默认选择 `oauth
 - `npm run typecheck` 与 AGY auth/login/client/desktop-runtime 定向 Vitest 在当前工作树执行；HostService 定向套件的两条既有 Codex 目录断言本轮仍失败，未改断言。Qt 6.8.3 构建成功，`HostLiveChangeTest` 的本机 Key／Google 登录用例及 `OverviewRowHoverTest` 的 AGY 设置卡用例通过；租约完成释放。
 - `npm run typecheck`、定向 ESLint 与 24 项 AGY／provider-quota Vitest 通过；Qt `HostLiveChangeTest` 的 API Key、个人 Google code 与 Enterprise browser-helper 用例以及设置卡用例通过（[证据](../../.artifacts/antigravity-google-auth/qt-final/run.log)）。iOS `HostStateTests`／`ProviderDialGeometryTests` 36 项通过并完成无签名 Simulator build（[证据](../../.artifacts/antigravity-google-auth/ios-final/run.log)）；Android `SubscriptionQuotaTest`／`AgentDialStateTest` 通过（[证据](../../.artifacts/antigravity-google-auth/android-final/run.log)）。QA build lease 均按归属清理；Xcode 留存的 `ibtoold` 完全退出后已定向恢复残留租约（[恢复记录](../../.artifacts/antigravity-google-auth/ios-final-recovery.json)）。
 - 配额按池解析、认证模式 gating、encrypted provider 路由与双端 UI 已有源级覆盖；本轮仍未使用真实 Google 账号／OAuth token／配额服务，真实授权与真实 quota 响应待验证。
-- 待用户验证：Host 上停用 AGY 后完成默认 Google 登录，检查取消、退出、Host 重启后的 CLI profile 恢复；查看订阅窗口与池、分别核对 Gemini Enterprise project/location、Gemini API Key、Agent Platform Key/ADC。真实授权、模型响应、Windows DPAPI 和实际手机展示均待验证；不部署、不宣称已验收。
+- 待用户验证：Host 上停用 AGY 后完成默认 Google 登录，检查取消、退出、Host 重启后的 CLI profile 恢复；分别核对 Gemini Enterprise project/location、Gemini API Key、Agent Platform Key/ADC。真实授权、模型响应、Windows DPAPI 和实际手机展示均待验证。
 
 ### AGY-17｜当前会话的工具审批模式
 
@@ -92,6 +90,12 @@ AGY-16 覆盖 AGY-11 原 API-only 认证限制。桌面 Host 默认选择 `oauth
 - 自动决策只使用原生本次请求唯一的 `allow_once`，不修改 CLI 沙盒配置，也不自动回答提问或原生警告。设置限当前打开的会话：App 重连同一 Host 会话可读回；关闭后重开或 CLI 断开后恢复逐次确认。实现见 [`agy-permissions.ts`](../../packages/host/src/agy-permissions.ts)、[`agy-approval.ts`](../../packages/host/src/agy-approval.ts)、[`agy-runtime.ts`](../../packages/host/src/agy-runtime.ts)。
 - 自动验证：[`agy-runtime.test.ts`](../../packages/host/src/agy-runtime.test.ts) 覆盖运行中切换、回退和会话隔离；[`host-service.test.ts`](../../packages/host/src/host-service.test.ts) 在隔离 ACP 下验证同版及 `v0.1.26` Relay 的权限读写、App 重连和能力撤回。证据保留于 [本轮 `.artifacts`](../../.artifacts/agy-session-permissions/)。
 - 部署与用户验收：未部署、未替换正在运行的 Host 或 ACP。真实 AGY 调用和手机验收待验证。
+
+### AGY-18｜撤回内部订阅配额查询
+
+- Host 不为配额读取 CLI 的 OAuth 文件或系统凭据库，不再请求 Google 内部服务。`provider.list` 和 Host `providers` 状态均保持 AGY 认证、供应商信息，明确返回 `subscriptionSupported: false`。
+- 保留 `provider.subscription` 的请求与响应格式；缓存旧能力的已协商客户端收到带原 `requestId` 的不支持响应。登录、ACP 会话和其他 Agent 的订阅配额行为不变。
+- 自动验证：[`host-service.test.ts`](../../packages/host/src/host-service.test.ts) 的加密供应商用例覆盖同版和 `v0.1.27` Relay 对照；AGY 拒绝旧请求，Claude 配额保留成功正对照。发布与用户验收：待完成。
 
 [acp]: https://antigravity.google/docs/ide/extensions/acp/
 [release]: https://github.com/google-antigravity/antigravity-cli/releases/tag/1.5.17

@@ -80,7 +80,6 @@ import {
   type AgentDisableReview,
   type AgentKind,
   type HostProviderSummary,
-  type SubscriptionQuota,
   type AgentSessionSummary,
   type CodexDesktopAttach,
   type CodexLaunchMode,
@@ -308,8 +307,6 @@ export type HostServiceOptions = {
   agyCredentialConfigured?: () => boolean;
   agyCredentialVerified?: () => boolean;
   agyAuthenticationMethod?: () => "managed_account" | "native_oauth" | "api_key" | "none" | "unknown";
-  agySubscriptionSupported?: () => boolean;
-  queryAgySubscription?: () => Promise<SubscriptionQuota>;
   createOpenCodeConnection?: () => OpenCodeServiceConnection;
   /** 按需启动并连接 Codex 桌面版；返回的 runtime 会被动态挂载到本服务。 */
   ensureCodexDesktop?: () => Promise<CodexRuntime | undefined>;
@@ -702,7 +699,7 @@ export class HostService {
           const authenticated = this.#options.agyCredentialConfigured?.() === true;
           summary = { agentKind: "agy", availability: "ready", current: authenticated ? "antigravity" : null,
             profiles: [{ id: "antigravity", name: "Antigravity", enabled: authenticated, globalDefault: true,
-              mode: "exclusive", official: true, subscriptionSupported: this.#options.agySubscriptionSupported?.() === true }],
+              mode: "exclusive", official: true, subscriptionSupported: false }],
             profilesTruncated: false, authenticated, authentication: { availability: authenticated ? "ready" : "unknown",
               method: this.#options.agyAuthenticationMethod?.() ?? (authenticated ? "unknown" : "none"),
               credentialPresent: authenticated, bindingReady: authenticated,
@@ -2074,19 +2071,14 @@ export class HostService {
           const authenticated = this.#options.agyCredentialConfigured?.() === true;
           const providers: ProviderSummary[] = [{ id: "antigravity", kind: "agy", name: "Antigravity", enabled: authenticated,
             mode: "exclusive", globalDefault: true, official: true,
-            subscriptionSupported: this.#options.agySubscriptionSupported?.() === true }];
+            subscriptionSupported: false }];
           send(providerResult(request, providers));
           return;
         }
         if (request.type !== "provider.subscription" || request.id !== "antigravity") throw new ProviderError("Antigravity 供应商请求无效");
-        if (this.#options.agySubscriptionSupported?.() !== true || !this.#options.queryAgySubscription) {
-          throw new ProviderError("当前 Antigravity 认证不提供 Google 账号订阅配额");
-        }
-        const quota = await this.#options.queryAgySubscription();
-        requireCurrent();
-        send({ type: "provider.subscription.result", protocolVersion: PROTOCOL_VERSION, requestId: request.requestId,
-          kind: request.kind, id: request.id, quota });
-        return;
+        // AGY-18: a client with cached support still needs a correlated, local rejection.
+        // Native Google sign-in is for ACP only; never use its credentials to query quota.
+        throw new ProviderError("Antigravity 不支持查询订阅配额");
       }
       const manager = this.#options.providers;
       if (!manager) throw new ProviderError("此 Host 尚未启用供应商管理，请升级并重启 Host");
