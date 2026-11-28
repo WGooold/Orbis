@@ -13,8 +13,8 @@ import tarfile
 import time
 
 NAME = re.compile(
-    r"OrbisHost-\d+\.\d+\.\d+-(?:windows|macos)-"
-    r"(?:x64-setup\.exe|x64\.zip|arm64\.dmg|x64\.dmg)"
+    r"OrbisHost-\d+\.\d+\.\d+-(?:windows-x64(?:-setup\.exe|\.zip)|"
+    r"macos-(?:arm64|x64)\.dmg|linux-(?:x64|arm64)-cli\.tar\.gz)"
 )
 CHUNK_BYTES = 16 * 1024 * 1024
 
@@ -221,6 +221,7 @@ def main() -> None:
     parser.add_argument("--cmake", type=Path, default=Path("packages/windows-host/CMakeLists.txt"))
     parser.add_argument("--windows-selected", action="store_true")
     parser.add_argument("--macos-selected", action="store_true")
+    parser.add_argument("--linux-selected", action="store_true")
     parser.add_argument("--root", dest="roots", action="append", type=Path, default=[])
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--remote-archive", required=True)
@@ -241,6 +242,8 @@ def main() -> None:
         wanted += [f"OrbisHost-{version}-windows-x64-setup.exe", f"OrbisHost-{version}-windows-x64.zip"]
     if args.macos_selected:
         wanted += [f"OrbisHost-{version}-macos-arm64.dmg", f"OrbisHost-{version}-macos-x64.dmg"]
+    if args.linux_selected:
+        wanted += [f"OrbisHost-{version}-linux-{arch}-cli.tar.gz" for arch in ("x64", "arm64")]
     if not wanted:
         raise RuntimeError("No Host platforms selected for download upload")
 

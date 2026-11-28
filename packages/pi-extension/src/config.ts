@@ -26,6 +26,9 @@ export async function loadRemoteControlConfig(
   options: LoadRemoteControlConfigOptions = {},
 ): Promise<boolean> {
   const env = options.env ?? process.env;
+  // This is per-process consent from the Host launcher, not an installer preference or
+  // a Relay credential. resolveRuntimeTransport still only connects to the local Host.
+  if (env.ORBIS_PI_LOCAL_SESSION === "1" && orbisEnvironment(env, "STATE_DIR")?.trim()) return true;
   let config: ConfigFile = {};
   try {
     const rawConfig = await readFile(

@@ -46,6 +46,10 @@ const sampleSiteData = {
     { name: "OrbisHost-0.1.25-macos-arm64.dmg", url: "downloads/OrbisHost-0.1.25-macos-arm64.dmg", checksumUrl: "downloads/OrbisHost-0.1.25-macos-arm64.dmg.sha256", bytes: 18874368 },
     { name: "OrbisHost-0.1.25-macos-x64.dmg", url: "downloads/OrbisHost-0.1.25-macos-x64.dmg", checksumUrl: "downloads/OrbisHost-0.1.25-macos-x64.dmg.sha256", bytes: 19922944 },
   ],
+  linux: [
+    { name: "OrbisHost-0.1.27-linux-x64-cli.tar.gz", url: "downloads/x64.tar.gz", bytes: 20971520 },
+    { name: "OrbisHost-0.1.27-linux-arm64-cli.tar.gz", url: "downloads/arm64.tar.gz", bytes: 20971520 },
+  ],
   android: "https://orbising.com/downloads/orbis.apk",
   androidVersion: "0.1.49",
   ios: "https://testflight.apple.com/join/9zGP1NZX",
@@ -89,6 +93,19 @@ async function runDownloads(nav: Record<string, any>, apiData: any = sampleSiteD
 }
 
 describe("public site download cards and device recommendation", () => {
+  // LINUX-HOST-PACKAGE-05: don't route an ARM server or an Android browser to the x64 CLI.
+  it.each([["x86_64", "x64"], ["aarch64", "arm64"]])("selects the published Linux CLI for %s", async (machine, target) => {
+    const el = await runDownloads({ userAgent: `Mozilla/5.0 (X11; Linux ${machine})`, platform: `Linux ${machine}` });
+    expect(el["host-platform"]!.value).toBe(`linux-${target}`);
+    expect((el["host-downloads"]!.children[0] as MockElement).href).toBe(`downloads/${target}.tar.gz`);
+  });
+
+  it("shows Linux as pending rather than offering Windows when there is no Linux archive", async () => {
+    const el = await runDownloads({ userAgent: "Mozilla/5.0 (X11; Linux x86_64)", platform: "Linux x86_64" }, { ...sampleSiteData, linux: [] });
+    expect(el["host-platform"]!.value).toBe("linux-x64");
+    expect(el["host-downloads"]!.children).toHaveLength(0);
+    expect(el["device-recommendation"]!.hidden).toBe(true);
+  });
   it("omits SHA-256, portable ZIP, and redundant instructional copy", async () => {
     const html = readFileSync(new URL("./web/index.html", import.meta.url), "utf8");
     expect(html).not.toContain('id="host-detail"');

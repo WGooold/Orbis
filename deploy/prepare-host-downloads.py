@@ -10,8 +10,8 @@ import tempfile
 
 
 NAME = re.compile(
-    r"OrbisHost-\d+\.\d+\.\d+-(?P<platform>windows|macos)-"
-    r"(?:x64-setup\.exe|x64\.zip|arm64\.dmg|x64\.dmg)(?:\.sha256)?"
+    r"OrbisHost-\d+\.\d+\.\d+-(?:(?P<windows>windows)-x64(?:-setup\.exe|\.zip)|"
+    r"(?P<macos>macos)-(?:arm64|x64)\.dmg|(?P<linux>linux)-(?:x64|arm64)-cli\.tar\.gz)(?:\.sha256)?"
 )
 
 
@@ -26,7 +26,7 @@ def prepare(archive, previous, parent, release):
                 match = NAME.fullmatch(member.name)
                 if not match or not member.isfile() or (staged / member.name).exists():
                     raise ValueError("Unexpected Host archive entry")
-                selected.add(match["platform"])
+                selected.add(match.lastgroup)
                 if member.name.endswith(".sha256"):
                     expected_binaries.add(member.name[:-len(".sha256")])
                 with source.extractfile(member) as incoming, (staged / member.name).open("wb") as target:
@@ -45,7 +45,7 @@ def prepare(archive, previous, parent, release):
         if previous.is_dir():
             for old in previous.iterdir():
                 match = NAME.fullmatch(old.name)
-                if match and match["platform"] not in selected and old.is_file() and not old.is_symlink():
+                if match and match.lastgroup not in selected and old.is_file() and not old.is_symlink():
                     shutil.copyfile(old, staged / old.name)
 
         # Verify retained files as well as incoming ones before changing any serving pointer.

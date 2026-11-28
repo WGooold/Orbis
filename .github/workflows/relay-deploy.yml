@@ -21,6 +21,10 @@ on:
         description: 'Optional successful macOS Host build run ID to publish on the website'
         required: false
         type: string
+      linux_build_run_id:
+        description: 'Optional successful Linux CLI build run ID to publish on the website'
+        required: false
+        type: string
       android_release_tag:
         description: 'Optional GitHub release containing verified orbis.apk and orbis.apk.sha256 assets'
         required: false
@@ -91,6 +95,7 @@ jobs:
       SSH_KNOWN_HOSTS: ${{ secrets.ORBIS_SSH_KNOWN_HOSTS || secrets.PI_REMOTE_SSH_KNOWN_HOSTS }}
       WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run_id }}
       MACOS_BUILD_RUN: ${{ inputs.macos_build_run_id }}
+      LINUX_BUILD_RUN: ${{ inputs.linux_build_run_id }}
       ANDROID_RELEASE_TAG: ${{ inputs.android_release_tag }}
       ANDROID_APK_SHA256: ${{ inputs.android_apk_sha256 }}
     steps:
@@ -107,7 +112,7 @@ jobs:
           echo "待部署版本：$release"
 
       - name: Validate requested Host builds
-        if: inputs.windows_build_run_id != '' || inputs.macos_build_run_id != ''
+        if: inputs.windows_build_run_id != '' || inputs.macos_build_run_id != '' || inputs.linux_build_run_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -119,6 +124,7 @@ jobs:
           targets = [
               (os.environ['WINDOWS_BUILD_RUN'], 'windows-host-build.yml'),
               (os.environ['MACOS_BUILD_RUN'], 'macos-host-build.yml'),
+              (os.environ['LINUX_BUILD_RUN'], 'linux-host-build.yml'),
           ]
           for run_id, workflow in targets:
               if not run_id:
@@ -134,7 +140,7 @@ jobs:
               assert run['head_sha'].startswith(release), f'{workflow} run is {run["head_sha"]}, release is {release}'
               print(f'Verified {workflow} run {run_id} ({run["head_sha"][:12]})')
           PY
-          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then
+          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" || -n "$LINUX_BUILD_RUN" ]]; then
             echo 'PUBLISH_HOST_DOWNLOADS=true' >> "$GITHUB_ENV"
           fi
 
@@ -164,6 +170,22 @@ jobs:
           run-id: ${{ inputs.macos_build_run_id }}
           github-token: ${{ github.token }}
 
+      - uses: actions/download-artifact@v4
+        if: inputs.linux_build_run_id != ''
+        with:
+          name: OrbisHost-linux-x64-cli
+          path: /tmp/orbis-linux-artifact/x64
+          run-id: ${{ inputs.linux_build_run_id }}
+          github-token: ${{ github.token }}
+
+      - uses: actions/download-artifact@v4
+        if: inputs.linux_build_run_id != ''
+        with:
+          name: OrbisHost-linux-arm64-cli
+          path: /tmp/orbis-linux-artifact/arm64
+          run-id: ${{ inputs.linux_build_run_id }}
+          github-token: ${{ github.token }}
+
       - name: Set up Android SDK for APK metadata extraction
         if: inputs.android_release_tag != ''
         uses: android-actions/setup-android@v3
@@ -190,7 +212,9 @@ jobs:
               wanted += [f'OrbisHost-{version}-windows-x64-setup.exe', f'OrbisHost-{version}-windows-x64.zip']
           if os.environ['MACOS_BUILD_RUN']:
               wanted += [f'OrbisHost-{version}-macos-arm64.dmg', f'OrbisHost-{version}-macos-x64.dmg']
-          roots = [Path(path) for path in ('/tmp/orbis-windows-artifact', '/tmp/orbis-macos-artifact') if Path(path).is_dir()]
+          if os.environ['LINUX_BUILD_RUN']:
+              wanted += [f'OrbisHost-{version}-linux-{arch}-cli.tar.gz' for arch in ('x64', 'arm64')]
+          roots = [Path(path) for path in ('/tmp/orbis-windows-artifact', '/tmp/orbis-macos-artifact', '/tmp/orbis-linux-artifact') if Path(path).is_dir()]
           for name in wanted:
               matches = [match for root in roots for match in root.rglob(name)]
               assert len(matches) == 1, name
@@ -260,11 +284,11 @@ jobs:
           set -euo pipefail
           deployed="$(ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             "$TARGET" "cat $APP_DIR/shared/deployed-commit 2>/dev/null || true" | tr -d '\r\n')"
-          if [[ "$deployed" == "$RELEASE" && -z "$WINDOWS_BUILD_RUN" && -z "$MACOS_BUILD_RUN" && -z "$ANDROID_RELEASE_TAG" ]]; then
+          if [[ "$deployed" == "$RELEASE" && -z "$WINDOWS_BUILD_RUN" && -z "$MACOS_BUILD_RUN" && -z "$LINUX_BUILD_RUN" && -z "$ANDROID_RELEASE_TAG" ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "expected_commit=$RELEASE" >> "$GITHUB_OUTPUT"
             echo "服务器已经是 $RELEASE，跳过构建与切换。"
-          elif [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" && -n "$deployed" && -z "$WINDOWS_BUILD_RUN" && -z "$MACOS_BUILD_RUN" && -z "$ANDROID_RELEASE_TAG" ]] &&
+          elif [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" && -n "$deployed" && -z "$WINDOWS_BUILD_RUN" && -z "$MACOS_BUILD_RUN" && -z "$LINUX_BUILD_RUN" && -z "$ANDROID_RELEASE_TAG" ]] &&
             git cat-file -e "${deployed}^{commit}" 2>/dev/null &&
             git merge-base --is-ancestor "$RELEASE" "$deployed"; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -284,7 +308,7 @@ jobs:
             "/tmp/orbis-relay-$RELEASE.tar.gz" "$TARGET:/tmp/orbis-relay-$RELEASE.tar.gz"
           scp -P "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             deploy/remote-deploy.sh "$TARGET:/tmp/orbis-remote-deploy-$RELEASE.sh"
-          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then
+          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" || -n "$LINUX_BUILD_RUN" ]]; then
             upload_args=(
               --archive "/tmp/orbis-downloads-$RELEASE.tar"
               --remote-archive "/tmp/orbis-downloads-$RELEASE.tar"
@@ -294,10 +318,12 @@ jobs:
               --app-dir "$APP_DIR"
               --root /tmp/orbis-windows-artifact
               --root /tmp/orbis-macos-artifact
+              --root /tmp/orbis-linux-artifact
               --workers 8
             )
             if [[ -n "$WINDOWS_BUILD_RUN" ]]; then upload_args+=(--windows-selected); fi
             if [[ -n "$MACOS_BUILD_RUN" ]]; then upload_args+=(--macos-selected); fi
+            if [[ -n "$LINUX_BUILD_RUN" ]]; then upload_args+=(--linux-selected); fi
             python3 deploy/upload-host-downloads.py "${upload_args[@]}"
           fi
 
@@ -306,7 +332,7 @@ jobs:
         run: |
           set -euo pipefail
           downloads=""
-          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" ]]; then downloads="/tmp/orbis-downloads-$RELEASE.tar"; fi
+          if [[ -n "$WINDOWS_BUILD_RUN" || -n "$MACOS_BUILD_RUN" || -n "$LINUX_BUILD_RUN" ]]; then downloads="/tmp/orbis-downloads-$RELEASE.tar"; fi
           ssh -p "$PORT" -i "$SSH_KEY_FILE" -o BatchMode=yes -o ConnectTimeout=15 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
             "$TARGET" "bash /tmp/orbis-remote-deploy-$RELEASE.sh '$RELEASE' \
@@ -339,6 +365,23 @@ jobs:
           grep -q 'Relay 控制台' <<<"$admin_body"
           status="$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' "${site_url}v1/admin/overview")"
           test "$status" = 401
+
+      - name: Read back public Linux CLI archives
+        if: inputs.linux_build_run_id != ''
+        run: |
+          set -euo pipefail
+          site_url="${HEALTH_URL%/healthz}/"
+          dir=$(mktemp -d)
+          trap 'rm -rf -- "$dir"' EXIT
+          curl -fsS --max-time 20 "${site_url}v1/site" > "$dir/site.json"
+          for sum in /tmp/orbis-linux-artifact/*/*.sha256; do
+            name=$(basename "$sum" .sha256)
+            sha=$(awk '{print $1}' "$sum")
+            jq -e --arg name "$name" --arg sha "$sha" '.linux | any(.name == $name and .sha256 == $sha)' "$dir/site.json" >/dev/null
+            curl -fsS --max-time 180 "${site_url}downloads/$name" -o "$dir/$name"
+            (cd "$dir" && sha256sum -c "$sum")
+            curl -fsS --max-time 20 "${site_url}downloads/$name.sha256" | cmp - "$sum"
+          done
 
       - name: Publish verified Android download
         if: inputs.android_release_tag != ''

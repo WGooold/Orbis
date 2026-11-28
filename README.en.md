@@ -68,6 +68,8 @@ See the [website](https://orbising.com/) for upcoming integrations.
 | --- | --- | --- |
 | Computer | Windows 10 / 11 (x64) | [Get Orbis Host](https://orbising.com/#download) as an EXE installer or a portable ZIP. |
 | Computer | macOS (Apple Silicon / Intel) | [Get Orbis Host](https://orbising.com/#download) as a DMG for your chip. |
+| Server | Linux CLI (Ubuntu 24.04, x64 / ARM64) | [Check for CLI preview archives](https://orbising.com/#download). Extract the archive and run `./orbis`; no desktop or separate Node.js install is required. |
+| Computer | Linux GUI | No desktop package is available yet. |
 | Phone | Android | [Download the Orbis App APK](https://orbising.com/downloads/orbis.apk). |
 | Phone | iOS | [Join the iOS TestFlight beta](https://testflight.apple.com/join/9zGP1NZX) and install the Orbis App through TestFlight. |
 
@@ -80,7 +82,9 @@ Orbis is currently in preview. Check the website for current downloads and avail
 3. **Install Orbis App on your phone.** Start Host on your computer, choose “Add phone,” and scan the pairing code with the mobile app.
 4. **Continue your work.** Open an existing session on your phone, or choose an agent and a project folder to start a new one.
 
-Keep your computer awake and connected, with Orbis Host running. Orbis prefers a direct connection when both devices are on the same local network and can use a relay when you are away.
+The Linux CLI is for servers with a configured Relay. Set `ORBIS_RELAY_URL` and `ORBIS_RUNTIME_CREDENTIAL`, and supply `ORBIS_ADMIN_TOKEN` when pairing. Run `./orbis pair` to scan the QR code, then `./orbis host` to run the Host in the foreground. Install and configure your agents separately, then enable them in the app’s Host settings; desktop integrations and Claude Code are not available in the Linux CLI.
+
+Keep the host machine awake and connected, with Orbis Host running. Orbis prefers a direct connection when both devices are on the same local network and can use a relay when you are away.
 
 ## Connection and privacy
 

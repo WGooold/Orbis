@@ -7,16 +7,17 @@ import { pathToFileURL } from "node:url";
 const PLATFORM_WORKFLOWS = {
   windows: "windows-host-build.yml",
   macos: "macos-host-build.yml",
+  linux: "linux-host-build.yml",
   android: "android-build.yml",
 };
 
 export function buildReleasePlan(options) {
-  const { tag, sha, platforms = ["windows", "macos"], deployRelay = true, androidReleaseTag, androidApkSha256 } = options;
+  const { tag, sha, platforms = ["windows", "macos", "linux"], deployRelay = true, androidReleaseTag, androidApkSha256 } = options;
   if (!/^v\d+\.\d+\.\d+$/u.test(tag ?? "")) throw new Error("Expected --tag vX.Y.Z");
   if (!/^[a-f0-9]{40}$/iu.test(sha ?? "")) throw new Error("Expected 40-char --sha");
   const selected = [...new Set(platforms)];
   if (!selected.length || selected.some(item => !(item in PLATFORM_WORKFLOWS))) {
-    throw new Error("Select at least one valid platform: windows, macos, android");
+    throw new Error("Select at least one valid platform: windows, macos, linux, android");
   }
   if (Boolean(androidReleaseTag) !== Boolean(androidApkSha256)) {
     throw new Error("Pass both --android-release-tag and --android-apk-sha256 together");
@@ -68,7 +69,7 @@ async function main() {
       repo: { type: "string", default: "WGooold/Orbis" },
       tag: { type: "string" },
       sha: { type: "string" },
-      platforms: { type: "string", default: "windows,macos" },
+      platforms: { type: "string", default: "windows,macos,linux" },
       "no-relay-deploy": { type: "boolean", default: false },
       "android-release-tag": { type: "string" },
       "android-apk-sha256": { type: "string" },
@@ -103,6 +104,7 @@ async function main() {
   const releaseArgs = ["workflow", "run", "client-release.yml", "--repo", values.repo, "--ref", "main", "-f", `release_tag=${plan.tag}`];
   if (runIds.windows) releaseArgs.push("-f", `windows_build_run_id=${runIds.windows}`);
   if (runIds.macos) releaseArgs.push("-f", `macos_build_run_id=${runIds.macos}`);
+  if (runIds.linux) releaseArgs.push("-f", `linux_build_run_id=${runIds.linux}`);
   if (runIds.android) releaseArgs.push("-f", `android_build_run_id=${runIds.android}`);
   const publishAt = Date.now();
   gh(releaseArgs);
@@ -114,6 +116,7 @@ async function main() {
     const deployArgs = ["workflow", "run", "relay-deploy.yml", "--repo", values.repo, "--ref", "main"];
     if (runIds.windows) deployArgs.push("-f", `windows_build_run_id=${runIds.windows}`);
     if (runIds.macos) deployArgs.push("-f", `macos_build_run_id=${runIds.macos}`);
+    if (runIds.linux) deployArgs.push("-f", `linux_build_run_id=${runIds.linux}`);
     if (plan.androidReleaseTag) {
       deployArgs.push("-f", `android_release_tag=${plan.androidReleaseTag}`, "-f", `android_apk_sha256=${plan.androidApkSha256}`);
     }

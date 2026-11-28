@@ -10,7 +10,8 @@ const python = process.platform === "win32" ? "python" : "python3";
 const script = fileURLToPath(new URL("../deploy/prepare-host-downloads.py", import.meta.url));
 const roots = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-const name = (version, platform) => `OrbisHost-${version}-${platform === "windows" ? "windows-x64.zip" : "macos-arm64.dmg"}`;
+const suffix = { windows: "windows-x64.zip", macos: "macos-arm64.dmg", linux: "linux-arm64-cli.tar.gz" };
+const name = (version, platform) => `OrbisHost-${version}-${suffix[platform]}`;
 const checksum = (file, body) => `${createHash("sha256").update(body).digest("hex")}  ${file}\r\n`;
 
 function fixture(platform) {
@@ -53,6 +54,19 @@ it("publishes Windows alone without removing Mac downloads, including on retry",
 it("publishes Mac alone while preserving the existing Windows payload", () => {
   const f = fixture("macos"); const result = run(f); expect(result.status).toBe(0);
   expect(readdirSync(result.stdout.trim()).sort()).toEqual([f.file, `${f.file}.sha256`, name("0.1.17", "windows"), `${name("0.1.17", "windows")}.sha256`].sort());
+});
+
+// LINUX-HOST-PACKAGE-05: Linux-only cutover retains both old desktop platforms,
+// and a later Windows-only cutover retains the Linux archive and its checksum.
+it("stages a Linux CLI release independently and retains it on a later Windows-only release", () => {
+  const f = fixture("linux");
+  const linux = run(f); expect(linux.status).toBe(0);
+  const published = linux.stdout.trim();
+  expect(readdirSync(published).sort()).toEqual([f.file, name("0.1.17", "windows"), name("0.1.17", "macos")]
+    .flatMap(file => [file, `${file}.sha256`]).sort());
+  const later = run({ ...fixture("windows"), previous: published });
+  expect(later.status).toBe(0);
+  expect(readFileSync(join(later.stdout.trim(), f.file), "utf8")).toBe(f.body);
 });
 
 // Retention is not a checksum bypass: a corrupt unselected platform aborts before cutover.

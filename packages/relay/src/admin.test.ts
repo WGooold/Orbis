@@ -268,12 +268,17 @@ describe("Relay web console", () => {
     const name = "OrbisHost-0.1.14-windows-x64-setup.exe";
     const macName = "OrbisHost-0.1.14-macos-arm64.dmg";
     const intelName = "OrbisHost-0.1.14-macos-x64.dmg";
+    const linuxName = "OrbisHost-0.1.27-linux-arm64-cli.tar.gz";
+    const linuxWithoutChecksum = "OrbisHost-0.1.27-linux-x64-cli.tar.gz";
     await writeFile(join(directory, name), "test artifact");
     await writeFile(join(directory, `${name}.sha256`), `${"a".repeat(64)}  ${name}`);
     await writeFile(join(directory, macName), "macOS artifact");
     await writeFile(join(directory, `${macName}.sha256`), `${"d".repeat(64)}  ${macName}`);
     await writeFile(join(directory, intelName), "Intel macOS artifact");
     await writeFile(join(directory, `${intelName}.sha256`), `${"f".repeat(64)}  ${intelName}`);
+    await writeFile(join(directory, linuxName), "Linux CLI artifact");
+    await writeFile(join(directory, `${linuxName}.sha256`), `${"1".repeat(64)}  ${linuxName}\n`);
+    await writeFile(join(directory, linuxWithoutChecksum), "not published");
     const unlistedName = "OrbisHost-0.1.11-macos-universal.dmg";
     await writeFile(join(directory, unlistedName), "not released");
     await writeFile(join(directory, `${unlistedName}.sha256`), `${"e".repeat(64)}  ${unlistedName}`);
@@ -287,6 +292,7 @@ describe("Relay web console", () => {
     expect(site.headers.get("content-security-policy")).not.toContain("unsafe-inline");
     await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({
       version: "0.1.14",
+      linux: [{ name: linuxName, url: `downloads/${linuxName}`, checksumUrl: `downloads/${linuxName}.sha256` }],
       windows: [{ name, url: `downloads/${name}`, checksumUrl: `downloads/${name}.sha256` }],
       macos: [
         { name: macName, url: `downloads/${macName}`, checksumUrl: `downloads/${macName}.sha256` },
@@ -298,6 +304,8 @@ describe("Relay web console", () => {
       // SITE-IOS-01: the public invitation is published through the same site API as other platforms.
       ios: "https://testflight.apple.com/join/9zGP1NZX",
     });
+    expect(await fetch(`${base}/downloads/${linuxName}`).then(response => response.text())).toBe("Linux CLI artifact");
+    expect((await fetch(`${base}/downloads/${linuxWithoutChecksum}`)).status).toBe(404);
     await writeFile(join(androidDirectory, "orbis.apk.version.json"), JSON.stringify({ version: "0.1.49", versionCode: 50, sha256: "b".repeat(64), untrusted: true }));
     await expect(fetch(`${base}/v1/site`).then(response => response.json())).resolves.toMatchObject({
       androidVersion: null,
