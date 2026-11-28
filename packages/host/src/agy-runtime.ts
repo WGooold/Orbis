@@ -9,6 +9,7 @@ import { AcpResponseError, AcpUnconfirmedError, record, type AcpConnection, type
 import type { AgentActivateContext, AgentActivateTarget, AgentBackend, BackendActivation, CommandDispatch } from "./agent-backend.js";
 import type { AgySubmissionFence } from "./agy-submission-fence.js";
 import { AgyApprovals, cancelAgyPermission } from "./agy-approval.js";
+import { AGY_APPROVAL_SETTING, agyPermissionMetadata, isAgyApprovalMode, type AgyApprovalMode } from "./agy-permissions.js";
 import { agyOptionCommands, agyOptionMetadata, agyOptions, type AgyOptions, type AgySetting } from "./agy-session-options.js";
 import { localHostname } from "./sessions.js";
 import { ActivationError } from "./spawner.js";
@@ -21,7 +22,7 @@ const validId = (id: unknown): id is string => typeof id === "string" && /^[\w.-
 const validCwd = (cwd: unknown): cwd is string => typeof cwd === "string" && cwd.length <= 4096 && isAbsolute(cwd);
 const clippedTitle = (title: unknown) => typeof title === "string" ? title.slice(0, 256) : "";
 const epochTime = (value: unknown) => typeof value === "string" ? Math.max(0, Date.parse(value) || 0) : 0;
-/** ACP publishes no model or permission catalog before a session exists, and Apps always send the permission container. */
+/** Model selection and Host tool approvals are configured in an opened session. Apps always send the permission container. */
 const chosenConfiguration = (values: AgentActivateContext["configuration"]): boolean => values !== undefined
   && (values.model !== undefined || values.thinking !== undefined || Object.keys(values.permissions ?? {}).length > 0);
 type Prompt = Extract<RuntimeCommand, { type: "user_message" }>;
@@ -29,11 +30,11 @@ type Delivery = NonNullable<Prompt["delivery"]>;
 type Queued = { id: string; command: Prompt; delivery: Delivery };
 type QueueEvent = Extract<RuntimeEvent, { type: "message.queued" }>;
 type Receipt = { fingerprint: string; status: "pending" | "success" | "failure" | "cancelled" | "unconfirmed" };
-type Turn = { id: string; startedAt: number; user: ChatMessage; assistant: ChatMessage; stops: Set<string>; commands: Set<string>; bytes: number; sent: boolean; stopping: boolean; overflow: boolean; queued?: Queued; tools: Map<string, ToolSummary> };
+type Turn = { id: string; startedAt: number; user: ChatMessage; assistant: ChatMessage; stops: Set<string>; commands: Set<string>; bytes: number; sent: boolean; stopping: boolean; overflow: boolean; queued?: Queued; tools: Map<string, { summary: ToolSummary; kind: string | undefined }> };
 type Active = {
   nativeId: string; row: AgentSessionSummary; entries: RemoteSessionEntry[]; source: RecoverableSessionSource;
   preparer: SessionSyncPreparer; receipts: Map<string, Receipt>; turn: Turn | undefined;
-  approvals: AgyApprovals; generation: string; closing: boolean; bytes: number; hasLiveTitle: boolean;
+  approvals: AgyApprovals; approvalMode: AgyApprovalMode; generation: string; closing: boolean; bytes: number; hasLiveTitle: boolean;
   queue: Queued[]; deliveries: Map<string, QueueEvent>;
   options: AgyOptions; configuring: boolean; configRevision: number; context?: RuntimeMetadata["contextUsage"];
 };
@@ -320,7 +321,7 @@ export class AgyRuntime implements AgentBackend {
       if (inactive) this.#recentReceipts.delete(inactive);
     }
     const session: Active = { nativeId, row: { ...row, ...(replay.title === undefined ? {} : { name: replay.title }), messageCount: entries.length }, entries, source, preparer: new SessionSyncPreparer(), receipts, turn: undefined, queue: [], deliveries: new Map(),
-      approvals, generation: randomUUID(), closing: false, bytes: replay.bytes, hasLiveTitle: replay.title !== undefined, options: replay.options ?? {},
+      approvals, approvalMode: "ask", generation: randomUUID(), closing: false, bytes: replay.bytes, hasLiveTitle: replay.title !== undefined, options: replay.options ?? {},
       configuring: false, configRevision: 0, context: replay.context };
     this.#active.set(id, session);
     source.transaction(() => { source.reconcile(entries, entries.at(-1)?.entryId ?? null); source.setAvailability(true, true); });
@@ -341,7 +342,10 @@ export class AgyRuntime implements AgentBackend {
     if ((rpc.method !== "session/request_permission" && rpc.method !== "elicitation/create") || !session?.turn || session.turn.stopping || session.closing) {
       this.#cancelRequest(rpc); return;
     }
-    session.approvals.add(rpc);
+    const id = record(rpc.params.toolCall).toolCallId;
+    const tracked = typeof id === "string" ? session.turn.tools.get(id) : undefined;
+    const mode = session.turn.sent && tracked?.summary.phase !== "finished" ? session.approvalMode : "ask";
+    session.approvals.add(rpc, mode, tracked?.kind);
   }
 
   async #close(session: Active, client: AcpConnection, commandId: string): Promise<void> {
@@ -366,7 +370,8 @@ export class AgyRuntime implements AgentBackend {
     return { runtimeId: session.row.sessionId, sessionId: session.row.sessionId, name: "Antigravity CLI", cwd: session.row.cwd,
       hostname: session.row.hostname, ...(session.row.name === undefined ? {} : { sessionName: session.row.name }),
       status: session.turn ? "running" : "idle", sessionGraphSync: true, sessionLeafId: session.entries.at(-1)?.entryId ?? null,
-      ...agyOptionMetadata(session.options), ...(session.context ? { contextUsage: session.context } : {}),
+      ...agyOptionMetadata(session.options), ...agyPermissionMetadata(session.approvalMode),
+      ...(session.context ? { contextUsage: session.context } : {}),
       currentTurnConfigurationSupported: false, steerSupported: true };
   }
   #capabilities(session: Active, client: AcpConnection): void {
@@ -417,6 +422,17 @@ export class AgyRuntime implements AgentBackend {
       case "slash.execute":
         if (command.name !== "model" && command.name !== "thinking") return "unsupported";
         void this.#setOption(session, client, commandId, command.name, command.args);
+        break;
+      case "permissions.update":
+        if (command.settingId !== AGY_APPROVAL_SETTING || !isAgyApprovalMode(command.value)) {
+          this.#result(session, commandId, "failure", "configuration_unavailable"); break;
+        }
+        if (session.approvalMode !== command.value) {
+          // New requests use the new policy. Already displayed cards remain user decisions.
+          session.approvalMode = command.value;
+          this.#publish(session);
+        }
+        this.#result(session, commandId, "success");
         break;
       case "session.close":
         if (session.configuring) { this.#result(session, commandId, "failure", "configuration_pending"); break; }
@@ -578,7 +594,7 @@ export class AgyRuntime implements AgentBackend {
       persistedMessages.push({ messageId: message.messageId, entryId: append(session.entries, message) });
       this.#send(session, { type: "message.finished", message });
     }
-    for (const toolSummary of turn.tools.values()) {
+    for (const { summary: toolSummary } of turn.tools.values()) {
       session.source.discardLiveMessage(toolSummary.tool.toolCallId);
       if (confirmed && toolSummary.phase === "finished") {
         const message: ChatMessage = { messageId: toolSummary.tool.toolCallId, role: "tool", timestamp: Date.now(), content: [], toolSummary };
@@ -640,9 +656,10 @@ export class AgyRuntime implements AgentBackend {
     const turn = active?.turn;
     if (!active || !turn || turn.overflow) return;
     const previous = turn.tools.get(key);
-    if ((!previous && (turn.tools.size >= 128 || update.sessionUpdate !== "tool_call")) || previous?.phase === "finished") return;
-    const summary = this.#toolSummary(sessionId, key, update, turn.tools.size, previous, turn.id);
-    turn.tools.set(key, summary);
+    if ((!previous && (turn.tools.size >= 128 || update.sessionUpdate !== "tool_call")) || previous?.summary.phase === "finished") return;
+    const summary = this.#toolSummary(sessionId, key, update, turn.tools.size, previous?.summary, turn.id);
+    const kind = update.kind == null ? previous?.kind : typeof update.kind === "string" && update.kind.length <= 32 ? update.kind : "unknown";
+    turn.tools.set(key, { summary, kind });
     const message: ChatMessage = { messageId: summary.tool.toolCallId, role: "tool", timestamp: Date.now(), content: [], toolSummary: summary };
     active.source.upsertMessage({ message, finished: summary.phase === "finished", contentComplete: summary.phase === "finished" });
   }

@@ -1,5 +1,13 @@
 {
   "exact": {
+    "工具审批": "Tool approvals",
+    "逐次确认": "Ask each time",
+    "自动批准编辑": "Auto-approve edits",
+    "自动批准工具（含命令）": "Auto-approve tools (including commands)",
+    "AGY 请求工具审批时，由你确认。": "Confirm tool approvals requested by AGY.",
+    "自动批准编辑请求；命令和其他操作仍需确认。": "Automatically approve edits. Commands and other actions still ask.",
+    "自动批准已识别的工具操作，包括运行命令。提问和不明确的请求仍需确认。": "Automatically approve recognized tool actions, including commands. Questions and ambiguous requests still ask.",
+    "仅作用于当前打开的会话，不更改 CLI 沙盒设置。": "Applies only to the open session and does not change CLI sandbox settings.",
     "尚未配置 OpenClaw Gateway。请在电脑的 Orbis Host → OpenClaw 保存本机端口或远程地址。": "OpenClaw Gateway is not configured. On your computer, open Orbis Host → OpenClaw and save a local port or remote address.",
     "OpenClaw Host 配置无效。请在电脑的 Orbis Host → OpenClaw 核对地址；如由环境变量管理，请检查 Host 的启动配置。": "The OpenClaw Host configuration is invalid. Check the address in Orbis Host → OpenClaw, or check the Host startup configuration if it is managed by environment variables.",
     "Orbis Host 无法读取或保存 OpenClaw 设备身份。请检查电脑上 Host 状态目录的权限，再重新连接 Host。": "Orbis Host could not read or save its OpenClaw device credentials. Check permissions on the Host state directory, then reconnect Host.",

@@ -4536,7 +4536,7 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(host.runningAgentSessions()).not.toHaveProperty("kimiCode");
   });
 
-  // AGY-14: real encrypted Relay framing, with an isolated ACP fixture and reconnect downgrade.
+  // AGY-14/17: encrypted Relay framing, live permissions facts, and reconnect downgrade against an isolated ACP fixture.
   it("negotiates Antigravity before exposing or admitting native sessions", async () => {
     stateDir = await mkdtemp(join(tmpdir(), "orbis-agy-wire-"));
     const releasedRelayPath = process.env.ORBIS_TEST_AGY_RELEASED_RELAY;
@@ -4546,11 +4546,17 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
       adminToken: "owner-secret", stateFile: join(stateDir, "released-relay.json") }) : await startRelayLocal(stateDir);
     const cwd = join(stateDir, "agy-only-workspace"); await mkdir(cwd);
     const id = "agy:native";
+    const approve = vi.fn();
     const client: AcpConnection = { onExit: undefined, onRequest: undefined, onNotification: undefined,
       notify: vi.fn(), stop: vi.fn(async () => {}), request: vi.fn(async (method, params) => {
         if (method === "session/list") return { sessions: [] };
         if (method === "session/new") return { sessionId: "native" };
         if (method === "session/prompt") {
+          client.onRequest?.({ method: "session/request_permission", params: { sessionId: params.sessionId,
+            toolCall: { toolCallId: "command-1", title: "Run local check", kind: "execute" },
+            options: [{ optionId: "always", name: "Allow always", kind: "allow_always" },
+              { optionId: "once", name: "Allow once", kind: "allow_once" }],
+          }, respond: approve, reject: vi.fn() });
           client.onNotification?.("session/update", { sessionId: params.sessionId, update: {
             sessionUpdate: "agent_message_chunk", content: { type: "text", text: "native answer" },
           } });
@@ -4610,12 +4616,32 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     send("session.launch", { ...launch, requestId: "duplicate-launch" });
     expect(await wait(message => message.requestId === "duplicate-launch" && message.phase === "ready")).toMatchObject({ sessionId: id });
     expect(vi.mocked(client.request).mock.calls.filter(([method]) => method === "session/new")).toHaveLength(1);
+    const permissionSetting = "agy-tool-approval";
+    const readPermission = async (requestId: string, value: string) => {
+      send("agent.state.request", { requestId, runtimeId: id, scope: "agent", domains: ["permissions"] });
+      expect(await wait(message => message.type === "agent.state.snapshot" && message.requestId === requestId)).toMatchObject({
+        domains: [{ domain: "permissions", value: { approvalPolicy: value, management: { settings: [{ id: permissionSetting, currentValue: value }] } } }],
+      });
+    };
+    await readPermission("permission-default", "ask");
+    send("runtime.command", { commandId: "permission-set", runtimeId: id,
+      command: { type: "permissions.update", settingId: permissionSetting, value: "auto-tools" } });
+    expect(await wait(message => (message.event as { commandId?: string } | undefined)?.commandId === "permission-set"))
+      .toMatchObject({ runtimeId: id, event: { type: "command.result", ok: true, status: "success" } });
+    await readPermission("permission-applied", "auto-tools");
     send("runtime.command", { commandId: "prompt", runtimeId: id, command: { type: "user_message", text: "question", messageId: "first" } });
     expect(await wait(message => (message.event as { commandId?: string; status?: string } | undefined)?.commandId === "prompt"
       && (message.event as { status?: string }).status === "success")).toMatchObject({ runtimeId: id });
+    expect(approve).toHaveBeenCalledExactlyOnceWith({ outcome: { outcome: "selected", optionId: "once" } });
     send("runtime.command", { commandId: "history", runtimeId: id, command: { type: "session.sync", sessionId: id, syncId: "history", range: "preview" } });
     const history = await wait(message => (message.event as { type?: string } | undefined)?.type === "session.snapshot");
     expect(JSON.stringify(history)).toContain("native answer");
+    // App reconnection renegotiates capabilities; the owned AGY session stays live.
+    await handshake();
+    await wait(message => message.type === "device.ready" && !(message.agents as string[]).includes("agy"));
+    send("device.features", { features: ["agent.agy", AGENT_ENABLEMENT_FEATURE] });
+    await wait(message => message.type === "device.ready" && (message.agents as string[]).includes("agy"));
+    await readPermission("permission-reconnected", "auto-tools");
     // Replacing/removing credentials revokes the live generation, not the enabled
     // choice or a different Agent. Outstanding sessions are not auto-replayed.
     const previous = agy!;
@@ -4634,6 +4660,9 @@ describe("Codex 虚拟 runtime 接线（spec §7.4 的 M4 验收）", () => {
     expect(downgraded.agents).not.toContain("agy");
     send("session.launch.read", { requestId: "read-hidden", launchId: launch.launchId });
     expect(await wait(message => message.requestId === "read-hidden")).toMatchObject({ phase: "absent" });
+    send("runtime.command", { commandId: "permission-hidden", runtimeId: id,
+      command: { type: "permissions.update", settingId: permissionSetting, value: "auto-tools" } });
+    expect(await wait(message => message.commandId === "permission-hidden")).toMatchObject({ type: "protocol.error", code: "agent_feature_required" });
   });
 
   // KIMI-06/12: encrypted feature gate, phone-triggered cold start, and same-device downgrade.
