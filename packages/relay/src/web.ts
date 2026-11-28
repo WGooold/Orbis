@@ -195,7 +195,8 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
         if (!info.isFile() || !(await lstat(sum)).isFile()) throw new Error(`Invalid release artifact: ${name}`);
         const [sha256, checksumName, ...extra] = (await readFile(sum, "utf8")).trim().split(/\s+/);
         if (!sha256 || !/^[a-f0-9]{64}$/i.test(sha256) || checksumName !== name || extra.length) throw new Error(`Invalid release checksum: ${name}`);
-        downloads.push({ name, bytes: info.size, sha256, url: `downloads/${name}`, checksumUrl: `downloads/${name}.sha256` });
+        const url = `${linuxHostName.test(name) ? "./" : ""}downloads/${name}`;
+        downloads.push({ name, bytes: info.size, sha256, url, checksumUrl: `${url}.sha256` });
       } catch (error) {
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
       }
