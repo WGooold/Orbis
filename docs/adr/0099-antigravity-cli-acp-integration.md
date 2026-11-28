@@ -30,7 +30,7 @@ Orbis App 是交互界面。Host 启动本机官方 `agy acp` 子进程，通过
 | 目录和恢复 | `agy` 独立 kind，`agy:<原生 ID>` 是目录及控制身份。只读、限时分页 `session/list`；分页不完整保留已确认行，不把失败当空目录。显式恢复用 `session/load` 读取 ACP 回放，连接代次变化时重建历史 epoch。`session/resume` 不回放，不用它替换历史读取。只显示回放提供的内容，不补造时间或原生条目 ID。 |
 | 新建和首句 | 复用现有 `session.launch` / 启动账本，native ID 确认后才通知 App；首句只在匹配的启动已就绪时发送。没有 native ID 的模糊创建只保留未知结果，不自动重建；有原生会话 ID 则按原会话恢复。AGY 不开 TUI。 |
 | 发送、停止、排队 | 走 `session/prompt`、`session/cancel`。一个会话同一时刻只提交一个原生 prompt；忙时支持后续排队、撤回以及先停止再立即发送。同一提交 ID 不发第二次；持久 spent 标记只防重，不是送达证明。未确认的回合不继续派发挂起队列。附件沿用 Host 已落地的路径提示，不请求客户端文件能力。 |
-| 权限、问题和工具 | 通过 App 现有交互卡确认原生一次性权限选项；取消、超时、关闭或断线清理待确认。支持有界、平坦的必填字符串／枚举／布尔 ACP 表单；不代理 URL、敏感输入或未知请求。流式文本、思考、标题、上下文用量及有界工具摘要按实际 ACP 更新投影；不把任意参数、工具输出或诊断正文放进共享事件。 |
+| 权限、问题和工具 | 默认通过 App 现有交互卡确认原生一次性权限选项，会话工具审批模式见 AGY-17；取消、超时、关闭或断线清理待确认。支持有界、平坦的必填字符串／枚举／布尔 ACP 表单；不代理 URL、敏感输入或未知请求。流式文本、思考、标题、上下文用量及有界工具摘要按实际 ACP 更新投影；不把任意参数、工具输出或诊断正文放进共享事件。 |
 | 模型与深度 | 从原生会话 `configOptions` 生成会话内选择器，只发该会话实际提供的选项；`session/set_config_option` 的结果需要原生读回。新建前无安全可读的模型目录，使用原生默认，不为取目录新建占位会话；App 固定携带的空权限容器不算已选配置。没有实际执行配置事实时不宣称「本轮使用」。 |
 | 关闭、历史与不支持项 | 若协商 `session/close`，用运行代次确认并关闭确切会话，历史仍可重新打开。AGY 不提供归档、删除、原生文件差异、原始工具展开、跨会话并行子任务或其它没有验证清楚的原生功能；不把 `/quit`、关闭、回滚或归档互相替代。 |
 
@@ -85,6 +85,13 @@ AGY-16 覆盖 AGY-11 原 API-only 认证限制。桌面 Host 默认选择 `oauth
 - `npm run typecheck`、定向 ESLint 与 24 项 AGY／provider-quota Vitest 通过；Qt `HostLiveChangeTest` 的 API Key、个人 Google code 与 Enterprise browser-helper 用例以及设置卡用例通过（[证据](../../.artifacts/antigravity-google-auth/qt-final/run.log)）。iOS `HostStateTests`／`ProviderDialGeometryTests` 36 项通过并完成无签名 Simulator build（[证据](../../.artifacts/antigravity-google-auth/ios-final/run.log)）；Android `SubscriptionQuotaTest`／`AgentDialStateTest` 通过（[证据](../../.artifacts/antigravity-google-auth/android-final/run.log)）。QA build lease 均按归属清理；Xcode 留存的 `ibtoold` 完全退出后已定向恢复残留租约（[恢复记录](../../.artifacts/antigravity-google-auth/ios-final-recovery.json)）。
 - 配额按池解析、认证模式 gating、encrypted provider 路由与双端 UI 已有源级覆盖；本轮仍未使用真实 Google 账号／OAuth token／配额服务，真实授权与真实 quota 响应待验证。
 - 待用户验证：Host 上停用 AGY 后完成默认 Google 登录，检查取消、退出、Host 重启后的 CLI profile 恢复；查看订阅窗口与池、分别核对 Gemini Enterprise project/location、Gemini API Key、Agent Platform Key/ADC。真实授权、模型响应、Windows DPAPI 和实际手机展示均待验证；不部署、不宣称已验收。
+
+### AGY-17｜当前会话的工具审批模式
+
+- 实现（2026-11-28）：复用 iOS／Android「当前会话权限」和既有 `permissions.update`。默认逐次确认，可切为自动批准编辑或自动批准已识别的工具操作（含命令）。Host 发布生效值；切换影响后续审批，不要求重启 CLI，也不替用户处理已显示的卡片。
+- 自动决策只使用原生本次请求唯一的 `allow_once`，不修改 CLI 沙盒配置，也不自动回答提问或原生警告。设置限当前打开的会话：App 重连同一 Host 会话可读回；关闭后重开或 CLI 断开后恢复逐次确认。实现见 [`agy-permissions.ts`](../../packages/host/src/agy-permissions.ts)、[`agy-approval.ts`](../../packages/host/src/agy-approval.ts)、[`agy-runtime.ts`](../../packages/host/src/agy-runtime.ts)。
+- 自动验证：[`agy-runtime.test.ts`](../../packages/host/src/agy-runtime.test.ts) 覆盖运行中切换、回退和会话隔离；[`host-service.test.ts`](../../packages/host/src/host-service.test.ts) 在隔离 ACP 下验证同版及 `v0.1.26` Relay 的权限读写、App 重连和能力撤回。证据保留于 [本轮 `.artifacts`](../../.artifacts/agy-session-permissions/)。
+- 部署与用户验收：未部署、未替换正在运行的 Host 或 ACP。真实 AGY 调用和手机验收待验证。
 
 [acp]: https://antigravity.google/docs/ide/extensions/acp/
 [release]: https://github.com/google-antigravity/antigravity-cli/releases/tag/1.5.17
