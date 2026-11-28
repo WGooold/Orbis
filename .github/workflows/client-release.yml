@@ -15,6 +15,10 @@ on:
         description: 'Optional successful main macOS Host build for the exact release tag commit'
         required: false
         type: string
+      linux_build_run_id:
+        description: 'Optional successful main Linux CLI build for the exact release tag commit'
+        required: false
+        type: string
       android_build_run_id:
         description: 'Optional successful main Android build for the exact release tag commit'
         required: false
@@ -37,6 +41,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.release_tag }}
       WINDOWS_BUILD_RUN: ${{ inputs.windows_build_run_id }}
       MACOS_BUILD_RUN: ${{ inputs.macos_build_run_id }}
+      LINUX_BUILD_RUN: ${{ inputs.linux_build_run_id }}
       ANDROID_BUILD_RUN: ${{ inputs.android_build_run_id }}
     steps:
       - uses: actions/checkout@v5
@@ -47,7 +52,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid release tag' }
-          if (!$env:WINDOWS_BUILD_RUN -and !$env:MACOS_BUILD_RUN -and !$env:ANDROID_BUILD_RUN) { throw 'At least one platform build run is required' }
+          if (!$env:WINDOWS_BUILD_RUN -and !$env:MACOS_BUILD_RUN -and !$env:LINUX_BUILD_RUN -and !$env:ANDROID_BUILD_RUN) { throw 'At least one platform build run is required' }
           if ($env:WINDOWS_BUILD_RUN -and $env:WINDOWS_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid Windows build run ID' }
           if ($env:MACOS_BUILD_RUN -and $env:MACOS_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid macOS build run ID' }
           if ($env:ANDROID_BUILD_RUN -and $env:ANDROID_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid Android build run ID' }
@@ -65,6 +70,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Cannot read macOS build run' }
             if ($mac.conclusion -ne 'success' -or $mac.head_branch -ne 'main' -or $mac.path -ne '.github/workflows/macos-host-build.yml' -or $mac.head_sha -ne $commit) {
               throw 'macOS build does not match the successful main build for this release tag'
+            }
+          }
+          if ($env:LINUX_BUILD_RUN) {
+            if ($env:LINUX_BUILD_RUN -notmatch '^[0-9]+$') { throw 'Invalid Linux build run ID' }
+            $linux = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:LINUX_BUILD_RUN" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot read Linux build run' }
+            if ($linux.conclusion -ne 'success' -or $linux.head_branch -ne 'main' -or $linux.path -ne '.github/workflows/linux-host-build.yml' -or $linux.head_sha -ne $commit) {
+              throw 'Linux build does not match the successful main build for this release tag'
             }
           }
           if ($env:ANDROID_BUILD_RUN) {
@@ -106,6 +119,20 @@ jobs:
           run-id: ${{ inputs.macos_build_run_id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
+        if: inputs.linux_build_run_id != ''
+        with:
+          name: OrbisHost-linux-x64-cli
+          path: client-artifacts-linux/x64
+          run-id: ${{ inputs.linux_build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        if: inputs.linux_build_run_id != ''
+        with:
+          name: OrbisHost-linux-arm64-cli
+          path: client-artifacts-linux/arm64
+          run-id: ${{ inputs.linux_build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
         if: inputs.android_build_run_id != ''
         with:
           name: Orbis-android
@@ -133,6 +160,10 @@ jobs:
           if ($env:MACOS_BUILD_RUN) {
             $names += @("OrbisHost-$env:HOST_VERSION-macos-arm64.dmg", "OrbisHost-$env:HOST_VERSION-macos-x64.dmg")
             $roots += 'client-artifacts-macos'
+          }
+          if ($env:LINUX_BUILD_RUN) {
+            $names += @("OrbisHost-$env:HOST_VERSION-linux-x64-cli.tar.gz", "OrbisHost-$env:HOST_VERSION-linux-arm64-cli.tar.gz")
+            $roots += 'client-artifacts-linux'
           }
           foreach ($name in $names) {
             $files = @(Get-ChildItem $roots -Recurse -File -Filter $name)

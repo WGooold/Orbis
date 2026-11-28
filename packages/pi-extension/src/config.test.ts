@@ -12,6 +12,15 @@ describe("remote control configuration", () => {
       .resolves.toBe(false);
   });
 
+  // LINUX-HOST-VERIFY-06: a Host-launched Pi can use its own loopback without desktop
+  // setup or passing Relay secrets to the agent. The marker alone is insufficient.
+  it("accepts per-process local opt-in only with the Host state directory", async () => {
+    const directory = await testDirectory(join(tmpdir(), "orbis-config-"));
+    const configPath = join(directory, "missing.json");
+    await expect(loadRemoteControlConfig({ configPath, env: { ORBIS_PI_LOCAL_SESSION: "1" } })).resolves.toBe(false);
+    await expect(loadRemoteControlConfig({ configPath, env: { ORBIS_PI_LOCAL_SESSION: "1", ORBIS_STATE_DIR: directory } })).resolves.toBe(true);
+  });
+
   it("enables only an installed local integration while honoring an explicit user disable", async () => {
     const directory = await testDirectory(join(tmpdir(), "orbis-config-"));
     const configPath = join(directory, "remote-control.json");

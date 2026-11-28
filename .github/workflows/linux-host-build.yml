@@ -1,0 +1,64 @@
+name: Linux Host CLI build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/linux-host-build.yml'
+      - 'scripts/check-linux-cli-agents.mjs'
+      - 'scripts/smoke-linux-cli.mjs'
+      - 'scripts/package-linux-host.sh'
+      - 'scripts/package-host-runtime.mjs'
+      - 'packages/host/src/cli*.ts'
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: Linux CLI (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: native/relayquic/go.sum
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - name: Verify CLI agent adapters on Linux
+        run: node scripts/check-linux-cli-agents.mjs
+      - name: Package and exercise the extracted release
+        run: |
+          set -euo pipefail
+          bash scripts/package-linux-host.sh
+          src="$PWD/.artifacts/linux-host"
+          dir=$(mktemp -d)
+          trap 'rm -rf -- "$dir"' EXIT
+          (cd "$src" && sha256sum -c ./*.tar.gz.sha256)
+          tar -xzf "$src"/*.tar.gz -C "$dir"
+          node scripts/smoke-linux-cli.mjs "$dir"/OrbisHost-*/orbis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OrbisHost-linux-${{ matrix.arch }}-cli
+          if-no-files-found: error
+          path: |
+            .artifacts/linux-host/*.tar.gz
+            .artifacts/linux-host/*.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Linux-CLI-validation-${{ matrix.arch }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          path: .artifacts/linux-cli-verification/

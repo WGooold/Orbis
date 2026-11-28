@@ -37,7 +37,7 @@ it("prints only the pairing JSON to stdout and cancels the timer on success", as
   await vi.advanceTimersByTimeAsync(0);
   expect(vi.getTimerCount()).toBe(1);
   onPaired(device);
-  await expect(pairing).resolves.toBe(true);
+  await expect(pairing).resolves.toBe("paired");
   expect(service.stop).toHaveBeenCalledTimes(1);
   expect(vi.getTimerCount()).toBe(0);
   expect(console.log).toHaveBeenCalledTimes(1);
@@ -52,10 +52,24 @@ it("keeps the expiry timer until an unpaired window expires", async () => {
   await vi.advanceTimersByTimeAsync(windowMs - 1);
   expect(service.stop).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);
-  await expect(pairing).resolves.toBe(false);
+  await expect(pairing).resolves.toBe("expired");
   expect(service.stop).toHaveBeenCalledTimes(1);
   expect(console.log).toHaveBeenCalledTimes(1);
   expect(console.error).toHaveBeenCalledWith(expect.stringContaining("配对窗口已过期"));
+});
+
+// A user-initiated CLI shutdown is not an expired window or a successful pairing.
+it("clears the pairing window and stops the service on shutdown", async () => {
+  const { service, paired } = makePairing();
+  let requestShutdown!: () => void;
+  const shutdown = new Promise<void>(resolve => { requestShutdown = resolve; });
+  const pairing = runPairingWindow(service, paired, true, shutdown);
+  await vi.advanceTimersByTimeAsync(0);
+  requestShutdown();
+  await expect(pairing).resolves.toBe("cancelled");
+  expect(service.stop).toHaveBeenCalledTimes(1);
+  expect(vi.getTimerCount()).toBe(0);
+  expect(console.error).not.toHaveBeenCalledWith(expect.stringMatching(/配对窗口已过期|配对成功/u));
 });
 
 it("stops the service if opening the pairing window fails", async () => {

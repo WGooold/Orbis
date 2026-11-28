@@ -318,6 +318,8 @@ export class SessionSpawner {
     const wait = (ms: number) => Promise.race([closed.then(() => true), delay(ms, false, { signal: timeout.signal })]);
     const logError = (error: Error): void => this.#log(`[agent pid=${child.pid ?? 0}] 停止无头 Pi 失败：${error.message}`);
     child.on("error", logError);
+    // stdin can emit EPIPE separately from the child if Pi exits while we send EOF.
+    child.stdin?.on("error", logError);
     try {
       child.stdin?.end();
       if (await wait(PI_EOF_GRACE_MS)) return;
@@ -406,7 +408,11 @@ export class SessionSpawner {
     const plan = buildSpawnPlan(planInput);
     if (plan.console !== undefined) return this.#activateWindowsConsole(input, plan, plan.console, env, planInput.target.sessionId);
 
-    const invocation = agentInvocation({ command: plan.command, prefixArgs: [] }, plan.args, env, platform());
+    // A clean Linux install has no desktop installer to enable the Pi extension. Opt in only
+    // for this Host-created RPC process and its authenticated local discovery file.
+    const childEnv = platform() === "linux" && plan.kind === "headless" && this.#stateDir !== undefined
+      ? { ...env, ORBIS_PI_LOCAL_SESSION: "1" } : env;
+    const invocation = agentInvocation({ command: plan.command, prefixArgs: [] }, plan.args, childEnv, platform());
     const child = this.#spawn(invocation.command, invocation.args, {
       ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       cwd,
@@ -414,7 +420,7 @@ export class SessionSpawner {
       shell: false,
       // The agent must find *this* Host's loopback descriptor when the Host does not use the
       // default state directory (several Hosts on one machine is supported).
-      env,
+      env: childEnv,
       // stdin 必须是**保持打开**的管道，不能用 `"ignore"`：`"ignore"` 让子进程的
       // stdin 立刻读到 EOF，而 pi 的 rpc 模式把「输入结束」当成「该收工了」，会干净
       // 退出（实测 exit 0）。于是进程被记成「拉起成功」，几秒后自己消失——电脑上没

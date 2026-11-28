@@ -1,18 +1,33 @@
 const hostPlatforms = {
   windows: {
+    label: "Windows 版",
     requirement: "Windows 10 / 11 (x64)",
     pattern: /^OrbisHost-(\d+\.\d+\.\d+)-windows-x64-setup\.exe$/,
     files: data => data.windows,
   },
   "macos-arm64": {
+    label: "macOS 版",
     requirement: "macOS (Apple Silicon)",
     pattern: /^OrbisHost-(\d+\.\d+\.\d+)-macos-arm64\.dmg$/,
     files: data => data.macos,
   },
   "macos-x64": {
+    label: "macOS 版",
     requirement: "macOS (Intel)",
     pattern: /^OrbisHost-(\d+\.\d+\.\d+)-macos-x64\.dmg$/,
     files: data => data.macos,
+  },
+  "linux-x64": {
+    label: "Linux CLI（x64）",
+    requirement: "Ubuntu 24.04（x64），无需图形桌面",
+    pattern: /^OrbisHost-(\d+\.\d+\.\d+)-linux-x64-cli\.tar\.gz$/,
+    files: data => data.linux,
+  },
+  "linux-arm64": {
+    label: "Linux CLI（ARM64）",
+    requirement: "Ubuntu 24.04（ARM64），无需图形桌面",
+    pattern: /^OrbisHost-(\d+\.\d+\.\d+)-linux-arm64-cli\.tar\.gz$/,
+    files: data => data.linux,
   },
 };
 const appPlatforms = {
@@ -50,6 +65,11 @@ function detectDeviceRecommendation(nav = navigator, architecture = "") {
     }
     return { card: "host", platform: "macos-arm64", label: "Orbis Host（macOS）", hint: "按芯片选择 Apple Silicon 或 Intel", matches: value => value === "macos-arm64" || value === "macos-x64" };
   }
+  if (/Linux/i.test(`${ua} ${platform}`)) {
+    const target = /aarch64|arm64/i.test(`${ua} ${platform}`) ? "linux-arm64"
+      : /x86_64|amd64/i.test(`${ua} ${platform}`) ? "linux-x64" : undefined;
+    if (target) return { card: "host", platform: target, label: `Orbis Host（${hostPlatforms[target].label}）`, matches: value => value === target };
+  }
   return undefined;
 }
 
@@ -76,7 +96,9 @@ function renderRecommendation(hostPlatform, appPlatform) {
   const hostTag = document.getElementById("host-recommend");
   const appTag = document.getElementById("app-recommend");
   if (!banner) return;
-  if (!deviceRecommendation) {
+  const linuxNotPublished = deviceRecommendation?.platform.startsWith("linux-") &&
+    (!siteData || hostReleases(deviceRecommendation.platform).length === 0);
+  if (!deviceRecommendation || linuxNotPublished) {
     banner.hidden = true;
     hostCard?.classList.remove("is-recommended");
     appCard?.classList.remove("is-recommended");
@@ -126,7 +148,7 @@ function renderHost(platform) {
   link.className = "button primary";
   link.href = latest.url;
   const size = Number.isFinite(latest.bytes) && latest.bytes > 0 ? `（${(latest.bytes / 1048576).toFixed(0)} MB）` : "";
-  link.textContent = `下载 ${platform === "windows" ? "Windows 版" : "macOS 版"}${size}`;
+  link.textContent = `下载 ${spec.label}${size}`;
   container.append(link);
 }
 
@@ -184,7 +206,8 @@ async function loadDownloads() {
     if (deviceRecommendation.card === "app" && !appTouched) {
       appSelect.value = deviceRecommendation.platform;
     }
-    if (deviceRecommendation.card === "host" && !hostTouched && (!siteData || hostReleases(deviceRecommendation.platform).length > 0)) {
+    if (deviceRecommendation.card === "host" && !hostTouched &&
+        (deviceRecommendation.platform.startsWith("linux-") || !siteData || hostReleases(deviceRecommendation.platform).length > 0)) {
       if (siteData) hostSelect.value = deviceRecommendation.platform;
     }
   }

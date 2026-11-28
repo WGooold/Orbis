@@ -43,7 +43,7 @@ import { describePath } from "./path.js";
 import { AgentEnablementController, AgentEnablementStore } from "./agent-enablement.js";
 import { readOpenClawDesktopSettings } from "./openclaw-gateway.js";
 import { loadHermesRemoteGatewayConfig } from "./hermes-remote-gateway.js";
-import { hostCliProfile } from "./cli-profile.js";
+import { cliExposesAgent, hostCliProfile } from "./cli-profile.js";
 import { runPairingWindow } from "./cli-pair.js";
 import { SessionSpawner } from "./spawner.js";
 
@@ -259,7 +259,7 @@ async function runHostUntilShutdown(
       ensureDshDesktopRuntime: () => dshDesktop?.ensure() ?? Promise.resolve(undefined),
       recoverDshDesktopRuntime: () => dshDesktop?.connectExisting() ?? Promise.resolve(undefined),
       onDshDesktopOffline: reason => dshDesktop?.noteOffline(reason),
-      claude: {},
+      ...(cliExposesAgent(process.platform, "claude", false) ? { claude: {} } : {}),
       log: (line) => console.error(`[host] ${line}`),
       onStateChange: (state) => console.error(`[host] relay ${state}`),
       onPathChange: (deviceId, change) => {
@@ -300,7 +300,7 @@ function cliEnablement(stateDir: string, choices: Partial<Record<AgentKind, bool
   return new AgentEnablementController(new AgentEnablementStore(stateDir, async () => {
     const openClaw = await readOpenClawDesktopSettings(stateDir);
     return { ...(openClaw.url ? { openclaw: true } : {}), ...choices };
-  }, kind => kind !== "agy" || agyLocallyAllowed()), () => {});
+  }, kind => cliExposesAgent(process.platform, kind, agyLocallyAllowed())), () => {});
 }
 
 /** 配对模式：短命进程。开窗、收 PAIR_REQUEST、落盘，然后退出。 */
@@ -324,6 +324,7 @@ async function runPair(stateDirOption: string | undefined, printPayload = false)
 
   const service = await HostService.create({
     relayUrl: config.relayUrl,
+    relayTransport: config.relayTransport,
     credential: config.runtimeCredential,
     stateDir,
     ...(config.lanPort === undefined ? {} : { lanPort: config.lanPort }),
@@ -340,7 +341,12 @@ async function runPair(stateDirOption: string | undefined, printPayload = false)
     onStateChange: (state) => console.error(`[pair] relay ${state}`),
   });
 
-  if (!await runPairingWindow(service, paired, printPayload)) process.exitCode = 1;
+  const shutdown = waitForSignal();
+  try {
+    if (await runPairingWindow(service, paired, printPayload, shutdown.promise) === "expired") process.exitCode = 1;
+  } finally {
+    shutdown.dispose();
+  }
 }
 
 /**

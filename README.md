@@ -68,6 +68,8 @@
 | --- | --- | --- |
 | 电脑 | Windows 10 / 11（x64） | [下载 Orbis Host](https://orbising.com/#download)，选择安装版 EXE 或免安装 ZIP。 |
 | 电脑 | macOS（Apple Silicon / Intel） | [下载 Orbis Host](https://orbising.com/#download)，按芯片类型选择 DMG。 |
+| 服务器 | Linux CLI（Ubuntu 24.04，x64 / ARM64） | [查看 CLI 预览包](https://orbising.com/#download)；解压后使用 `./orbis`，无需桌面或另装 Node.js。 |
+| 电脑 | Linux GUI | 尚未提供桌面安装包。 |
 | 手机 | Android | [下载 Orbis App APK](https://orbising.com/downloads/orbis.apk)。 |
 | 手机 | iOS | [加入 iOS TestFlight 测试](https://testflight.apple.com/join/9zGP1NZX)，通过 TestFlight 安装 Orbis App。 |
 
@@ -80,7 +82,9 @@ Orbis 目前为预览版。最新安装包和发布状态以官网为准，历�
 3. **在手机上安装 Orbis App。** 启动电脑端 Host，点击「添加手机」，再用手机 App 扫描配对二维码。
 4. **继续工作。** 在手机上打开已有会话，或选择 Agent 和项目目录新建会话。
 
-远程使用时，请保持电脑开机、联网，并让 Orbis Host 持续运行。手机与电脑在同一局域网时优先直连；外出时可通过中继连接。
+Linux CLI 适用于已配置 Relay 的服务器：为 Host 提供 `ORBIS_RELAY_URL` 和 `ORBIS_RUNTIME_CREDENTIAL`，配对时另提供 `ORBIS_ADMIN_TOKEN`。先运行 `./orbis pair` 扫码，再运行 `./orbis host` 保持前台运行。Agent 须单独安装、配置，并在手机的 Host 设置中启用；桌面专属接入和 Claude Code 暂不适用于 Linux CLI。
+
+远程使用时，请保持主机开机、联网，并让 Orbis Host 持续运行。手机与电脑在同一局域网时优先直连；外出时可通过中继连接。
 
 ## 连接与隐私
 

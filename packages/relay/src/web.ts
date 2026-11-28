@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -162,6 +162,9 @@ const AndroidReleaseMetadataSchema = z.strictObject({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
+// Linux assets are installed by the checked release staging path. Do not expose arbitrary files.
+const linuxHostName = /^OrbisHost-\d+\.\d+\.\d+-linux-(?:x64|arm64)-cli\.tar\.gz$/u;
+
 async function readAndroidReleaseMetadata(directory?: string): Promise<z.infer<typeof AndroidReleaseMetadataSchema> | undefined> {
   if (!directory) return undefined;
   try {
@@ -178,11 +181,18 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
   const contents = new Map(await Promise.all(Object.entries(assets).map(async ([path, [file, type]]) => [path, { data: await readFile(new URL(`./web/${file}`, import.meta.url)), type }] as const)));
   const downloads: Array<{ name: string; bytes: number; sha256: string; url: string; checksumUrl: string }> = [];
   if (downloadsDir) {
-    for (const name of downloadNames) {
+    const entries = await readdir(downloadsDir).catch((error: unknown) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    });
+    const linuxNames = entries.filter(name => linuxHostName.test(name));
+    for (const name of [...downloadNames, ...linuxNames]) {
       try {
-        const info = await stat(join(downloadsDir, name));
-        const sha256 = (await readFile(join(downloadsDir, `${name}.sha256`), "utf8")).trim().split(/\s+/)[0]!;
-        if (!info.isFile() || !/^[a-f0-9]{64}$/i.test(sha256)) throw new Error(`Invalid release artifact: ${name}`);
+        const info = await lstat(join(downloadsDir, name));
+        const sum = join(downloadsDir, `${name}.sha256`);
+        if (!info.isFile() || !(await lstat(sum)).isFile()) throw new Error(`Invalid release artifact: ${name}`);
+        const [sha256, checksumName, ...extra] = (await readFile(sum, "utf8")).trim().split(/\s+/);
+        if (!sha256 || !/^[a-f0-9]{64}$/i.test(sha256) || checksumName !== name || extra.length) throw new Error(`Invalid release checksum: ${name}`);
         downloads.push({ name, bytes: info.size, sha256, url: `downloads/${name}`, checksumUrl: `downloads/${name}.sha256` });
       } catch (error) {
         if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
@@ -197,11 +207,13 @@ export async function createWebHandler(downloadsDir?: string, androidDir?: strin
       const androidRelease = await readAndroidReleaseMetadata(androidDir ?? downloadsDir);
       const windows = downloads.filter(file => /-windows-/u.test(file.name));
       const macos = downloads.filter(file => /-macos-/u.test(file.name));
+      const linux = downloads.filter(file => linuxHostName.test(file.name));
       jsonResponse(response, 200, {
         // 保留 Windows Host 更新检查使用的版本字段，Mac 发布不应覆盖它。
         version: windows[0]?.name.match(/OrbisHost-(\d+\.\d+\.\d+)/)?.[1] ?? "0.1.12",
         windows,
         macos,
+        linux,
         android: "https://orbising.com/downloads/orbis.apk",
         ios: "https://testflight.apple.com/join/9zGP1NZX",
         androidVersion: androidRelease?.version ?? null,

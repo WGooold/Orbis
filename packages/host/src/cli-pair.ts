@@ -5,10 +5,11 @@ export async function runPairingWindow(
   service: Pick<HostService, "start" | "openPairingWindow" | "stop">,
   paired: Promise<DeviceRecord>,
   printPayload: boolean,
-): Promise<boolean> {
+  shutdown?: Promise<void>,
+): Promise<"paired" | "expired" | "cancelled"> {
   const status = printPayload ? console.error : console.log;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let device: DeviceRecord | undefined;
+  let device: DeviceRecord | undefined | null;
   try {
     await service.start();
     const opened = await service.openPairingWindow();
@@ -29,19 +30,21 @@ export async function runPairingWindow(
     const expiry = new Promise<undefined>((resolve) => {
       timer = setTimeout(() => resolve(undefined), Math.max(0, opened.expiresAtMs - Date.now()));
     });
-    device = await Promise.race([paired, expiry]);
+    const cancelled = shutdown?.then(() => null);
+    device = await Promise.race(cancelled ? [paired, expiry, cancelled] : [paired, expiry]);
   } finally {
     clearTimeout(timer);
     await service.stop();
   }
 
+  if (device === null) return "cancelled";
   if (device === undefined) {
     console.error("配对窗口已过期，没有设备完成配对。");
-    return false;
+    return "expired";
   }
   status(`配对成功：${device.deviceId}`);
   status("接着运行 `orbis host` 常驻即可。");
-  return true;
+  return "paired";
 }
 
 async function renderTerminalQr(text: string): Promise<string> {

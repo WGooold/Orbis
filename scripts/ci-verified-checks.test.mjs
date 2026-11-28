@@ -62,6 +62,11 @@ describe("verified CI check reuse", () => {
 });
 
 describe("release orchestrator plan validation", () => {
+  it("includes the CLI check/build lane by default and can release Linux alone", () => {
+    const linux = { platform: "linux", workflow: "linux-host-build.yml" };
+    expect(buildReleasePlan({ tag: "v0.1.27", sha: SHA }).buildWorkflows).toContainEqual(linux);
+    expect(buildReleasePlan({ tag: "v0.1.27", sha: SHA, platforms: ["linux"] }).buildWorkflows).toEqual([linux]);
+  });
   it("preserves exact workflow paths and requires paired Android release inputs", () => {
     const plan = buildReleasePlan({ tag: "v0.1.25", sha: SHA, platforms: ["windows", "macos", "windows"] });
     expect(plan.buildWorkflows).toEqual([
